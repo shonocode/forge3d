@@ -127,6 +127,10 @@ function getBoneWorldPosition(boneData: BoneData): Vector3 {
 
 // ── Bone visuals ──
 
+export function createBoneVisualForImport(boneId: string, position: Vector3): AbstractMesh {
+  return createBoneVisual(boneId, position);
+}
+
 function createBoneVisual(boneId: string, position: Vector3): AbstractMesh {
   const mesh = MeshBuilder.CreateIcoSphere(
     BONE_VISUAL_PREFIX + boneId,

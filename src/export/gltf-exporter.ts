@@ -3,11 +3,13 @@ import { GLTF2Export } from "@babylonjs/serializers/glTF";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
 import { state, status } from "../state";
+import type { SkeletonData } from "../state";
 import { modelStore } from "../storage/model-store";
 import { metadataStore, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "../tools/selection";
-import { updateHierarchy } from "../ui/panels";
+import { updateHierarchy, updateBoneUI, updateAnimUI } from "../ui/panels";
 import { applyDefaultEdges } from "../tools/mesh-utils";
+import { createBoneVisualForImport, updateHierarchyVisualization } from "../tools/skeleton-tool";
 
 function shouldExportNode(node: import("@babylonjs/core").Node): boolean {
   if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
@@ -117,8 +119,61 @@ export async function loadGLBFromFile(): Promise<void> {
       if (result.meshes.length > 0) {
         selectMesh(result.meshes[result.meshes.length - 1]!, false);
       }
+      // --- Import skeleton from loaded meshes ---
+      for (const mesh of result.meshes) {
+        if (!mesh.skeleton || mesh.name === "__root__") continue;
+
+        state.skeletonCounter++;
+        const skelId = "skel_" + state.skeletonCounter;
+        const skelData: SkeletonData = {
+          skeleton: mesh.skeleton,
+          bones: [],
+          assignedMesh: mesh,
+          hierarchyLines: null,
+        };
+
+        for (const bone of mesh.skeleton.bones) {
+          state.boneCounter++;
+          const boneId = "bone_" + state.boneCounter;
+          const pos = bone.getAbsolutePosition(mesh);
+          const visual = createBoneVisualForImport(boneId, pos);
+
+          const parentBone = bone.parent;
+          let parentId: string | null = null;
+          if (parentBone) {
+            parentId = skelData.bones.find(b => b.bone === parentBone)?.id ?? null;
+          }
+
+          skelData.bones.push({
+            id: boneId,
+            name: bone.name,
+            bone,
+            parentId,
+            visual,
+          });
+        }
+
+        state.skeletonMap.set(skelId, skelData);
+        state.activeSkeletonId = skelId;
+        updateHierarchyVisualization(skelData);
+        break; // first skeleton only
+      }
+
+      // --- Import animation groups ---
+      if (result.animationGroups && result.animationGroups.length > 0) {
+        state.importedAnimGroups = result.animationGroups;
+        // Stop all imported animations initially
+        for (const ag of result.animationGroups) {
+          ag.stop();
+        }
+      }
+
       updateHierarchy();
-      status("Loaded: " + file.name);
+      updateBoneUI();
+      updateAnimUI();
+      const boneCount = state.skeletonMap.get(state.activeSkeletonId ?? "")?.bones.length ?? 0;
+      const animCount = state.importedAnimGroups.length;
+      status(`Loaded: ${file.name} (${boneCount} bones, ${animCount} anims)`);
     } catch (e) {
       console.error("Load error:", e);
       status("⚠ Load エラー: " + (e as Error).message);

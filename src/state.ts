@@ -112,6 +112,7 @@ export const state = {
   isPlaying: false,
   animPreviewGroup: null as AnimationGroup | null,
   animClipCounter: 0,
+  importedAnimGroups: [] as AnimationGroup[],
 
   // Touch modifier toggles (mobile substitute for Ctrl/Shift)
   touchModifiers: { ctrl: false, shift: false },

@@ -43,8 +43,8 @@ export function captureMorph(): void {
 
 export function setMorphInfluence(uid: number, index: number, value: number): void {
   const d = state.morphMap.get(uid);
-  if (!d) return;
-  d.targets[index]!.influence = value;
+  if (!d || !d.targets[index]) return;
+  d.targets[index].influence = value;
   const el = document.getElementById("mv" + index);
   if (el) el.textContent = value.toFixed(2);
 }

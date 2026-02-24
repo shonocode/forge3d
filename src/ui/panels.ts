@@ -104,7 +104,7 @@ export function updateMaterial(): void {
       <div class="cgrid">${PALETTE.map((c) => `<div class="csw" style="background:${c}" data-col="${c}"></div>`).join("")}</div>
       <div class="pr" style="margin-top:6px"><span class="pl">🎨</span>
         <input type="color" value="${mt.diffuseColor.toHexString()}" id="matColorPicker"
-          style="flex:1;height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
+          style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
     </div>
     <div class="pg"><div class="pgt">Properties</div>
       <div class="sr"><label>Spec Power <span id="spV">${(mt.specularPower || 48) | 0}</span></label>
@@ -235,6 +235,7 @@ function getBoneDepth(bd: BoneData, skelData: SkeletonData): number {
 export function updateAnimUI(): void {
   updateAnimClipInfo();
   updateKeyframeList();
+  updateImportedAnimUI();
 }
 
 function updateAnimClipInfo(): void {
@@ -289,6 +290,59 @@ function updateKeyframeList(): void {
   }
 }
 
+// ── Imported Animation UI ──
+
+function updateImportedAnimUI(): void {
+  const el = document.getElementById("importedAnimC");
+  if (!el) return;
+
+  if (state.importedAnimGroups.length === 0) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const options = state.importedAnimGroups
+    .map((g, i) => `<option value="${i}">${g.name || "Anim_" + i}</option>`)
+    .join("");
+
+  el.innerHTML = `
+    <div style="margin-top:8px;border-top:1px solid var(--bg3);padding-top:6px;">
+      <div style="font-size:10px;color:var(--t4);margin-bottom:4px;">Imported Animations (${state.importedAnimGroups.length})</div>
+      <select id="importedAnimSelect" style="width:100%;font-size:10px;padding:3px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;margin-bottom:4px;">
+        ${options}
+      </select>
+      <div style="display:flex;gap:4px;">
+        <button class="abtn" id="playImportedAnim" style="flex:1;">▶ Play</button>
+        <button class="abtn" id="stopImportedAnim" style="flex:1;">■ Stop</button>
+      </div>
+    </div>`;
+
+  // Bind events inline (re-binds each update, but simple and reliable)
+  el.querySelector("#playImportedAnim")?.addEventListener("click", () => {
+    const select = document.getElementById("importedAnimSelect") as HTMLSelectElement;
+    const idx = parseInt(select.value);
+    if (isNaN(idx) || idx < 0 || idx >= state.importedAnimGroups.length) return;
+    // Stop any currently playing
+    for (const ag of state.importedAnimGroups) ag.stop();
+    if (state.animPreviewGroup) {
+      state.animPreviewGroup.stop();
+      state.animPreviewGroup = null;
+    }
+    const group = state.importedAnimGroups[idx]!;
+    group.start(true); // loop
+    state.isPlaying = true;
+  });
+
+  el.querySelector("#stopImportedAnim")?.addEventListener("click", () => {
+    for (const ag of state.importedAnimGroups) ag.stop();
+    if (state.animPreviewGroup) {
+      state.animPreviewGroup.stop();
+      state.animPreviewGroup = null;
+    }
+    state.isPlaying = false;
+  });
+}
+
 // ── Map Editor UI ──
 
 export function updateModelLibrary(models: ModelMetadata[]): void {
@@ -330,7 +384,8 @@ export function updateModelLibrary(models: ModelMetadata[]): void {
     placeBtn.textContent = "+";
     placeBtn.title = "Place in scene";
     placeBtn.addEventListener("click", () => {
-      void placeModel(meta.id, meta.name).then(() => updateMapInstances());
+      placeBtn.disabled = true;
+      void placeModel(meta.id, meta.name).then(() => updateMapInstances()).finally(() => { placeBtn.disabled = false; });
     });
     div.appendChild(placeBtn);
 
@@ -341,8 +396,8 @@ export function updateModelLibrary(models: ModelMetadata[]): void {
     delBtn.textContent = "✕";
     delBtn.title = "Delete from library";
     delBtn.addEventListener("click", () => {
+      delBtn.disabled = true;
       void deleteFromLibrary(meta.id).then(() => {
-        // Re-fetch and re-render
         import("../tools/map-editor").then((m) =>
           m.loadModelLibrary().then((updated) => updateModelLibrary(updated))
         );
