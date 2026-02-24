@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>FORGE 3D</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="theme-color" content="#08080c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- Header -->
+  <div class="hdr">
+    <button class="mob-toggle" id="btnLP">☰</button>
+    <div class="logo">FORGE<span>3D</span></div>
+    <div class="pills" id="pills"></div>
+    <div class="hdr-r"><div class="dot"></div><span id="modeL">OBJECT</span></div>
+    <button class="help-btn" id="btnHelp">?</button>
+    <button class="mob-toggle" id="btnRP">⚙</button>
+  </div>
+
+  <!-- Left -->
+  <div class="lp" id="lpanel">
+    <div class="sec">
+      <div class="sec-t">Primitives</div>
+      <div class="pgrid" id="primGrid"></div>
+    </div>
+    <div class="sec">
+      <div class="sec-t">CSG Boolean</div>
+      <div id="csgBtns"></div>
+      <div style="margin-top:5px;font-size:9px;color:var(--t4);line-height:1.5;">Ctrl/Long-press: 複数選択</div>
+    </div>
+    <div class="sec" style="flex:1;min-height:0;">
+      <div class="sec-t">Hierarchy</div>
+      <div class="slist" id="sList"></div>
+    </div>
+  </div>
+
+  <!-- Viewport -->
+  <div class="vp">
+    <canvas id="rc"></canvas>
+    <div class="vpo">
+      <div class="vtag" id="fpsT">-- FPS</div>
+      <div class="vtag" id="vrtT">0 verts</div>
+      <div class="vtag" id="triT">0 tris</div>
+    </div>
+    <div class="scur" id="scur"></div>
+  </div>
+
+  <!-- Right -->
+  <div class="rp" id="rpanel">
+    <div class="tabs" id="tabBar"></div>
+    <div class="tbody on" id="tb-xform"><div id="xfC"><div class="empty">メッシュを選択</div></div></div>
+    <div class="tbody" id="tb-mat"><div id="matC"><div class="empty">メッシュを選択</div></div></div>
+    <div class="tbody" id="tb-morph">
+      <div class="pg">
+        <div class="pgt">Morph Targets</div>
+        <div id="morC"><div class="empty">モーフ可能なメッシュを選択<br>→ ターゲットを追加</div></div>
+        <button class="abtn" id="btnAddMorph" style="margin-top:6px">+ ターゲット有効化</button>
+        <button class="abtn" id="btnCapMorph">📷 形状キャプチャ</button>
+      </div>
+    </div>
+    <div class="tbody" id="tb-sculpt">
+      <div class="pg">
+        <div class="pgt">Brush</div>
+        <div class="sr"><label>Size <span id="bsV">0.5</span></label>
+          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="brushSize"></div>
+        <div class="sr"><label>Strength <span id="btV">0.05</span></label>
+          <input type="range" min="0.005" max="0.2" step="0.005" value="0.05" id="brushStr"></div>
+        <div class="sr"><label>Falloff <span id="bfV">2.0</span></label>
+          <input type="range" min="0.5" max="4" step="0.1" value="2" id="brushFall"></div>
+      </div>
+      <div class="pg" id="brushBtns"></div>
+    </div>
+    <div class="tbody" id="tb-paint">
+      <div class="pg">
+        <div class="pgt">Paint Brush</div>
+        <div class="pr" style="margin-bottom:6px"><span class="pl">Color</span>
+          <input type="color" value="#ff0000" id="paintColor"
+            style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
+        <div class="sr"><label>Size <span id="psV">20</span></label>
+          <input type="range" min="2" max="80" step="1" value="20" id="paintSize"></div>
+        <div class="sr"><label>Opacity <span id="poV">1.00</span></label>
+          <input type="range" min="0.05" max="1" step="0.05" value="1" id="paintOpacity"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Eraser</span>
+          <input type="checkbox" id="paintEraser" style="margin-left:auto"></div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Actions</div>
+        <button class="abtn" id="btnClearPaint">Clear Paint</button>
+      </div>
+    </div>
+    <div class="tbody" id="tb-weight">
+      <div class="pg">
+        <div class="pgt">Weight Brush</div>
+        <div class="sr"><label>Radius <span id="wrV">0.5</span></label>
+          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="weightRadius"></div>
+        <div class="sr"><label>Strength <span id="wsV">0.3</span></label>
+          <input type="range" min="0.01" max="1" step="0.01" value="0.3" id="weightStr"></div>
+        <div class="sr"><label>Falloff <span id="wfV">2.0</span></label>
+          <input type="range" min="0.5" max="4" step="0.1" value="2" id="weightFall"></div>
+      </div>
+      <div class="pg" id="weightModeBtns">
+        <div class="pgt">Mode</div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Actions</div>
+        <button class="abtn" id="btnInitWeight">Init Weight Data</button>
+        <button class="abtn" id="btnToggleOverlay">Show/Hide Overlay</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Info</div>
+        <div id="weightInfo"><div class="empty">ボーンを選択してウェイト塗り</div></div>
+      </div>
+      <div id="weightHint" style="margin-top:6px;font-size:9px;color:var(--t4);line-height:1.6;">Ctrl+drag: Subtract<br>Shift+drag: Smooth</div>
+    </div>
+    <div class="tbody" id="tb-anim">
+      <div class="pg">
+        <div class="pgt">Clip</div>
+        <div id="animClipInfo"><div class="empty">クリップを作成してアニメーション</div></div>
+        <button class="abtn" id="btnNewClip" style="margin-top:6px">+ New Clip</button>
+        <button class="abtn dan" id="btnDelClip">Delete Clip</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Timeline</div>
+        <div class="sr"><label>Frame <span id="afV">0</span> / <span id="afMax">60</span></label>
+          <input type="range" min="0" max="60" step="1" value="0" id="animFrame"></div>
+        <div class="sr"><label>FPS <span id="fpsV">30</span></label>
+          <input type="range" min="1" max="60" step="1" value="30" id="animFps"></div>
+        <div class="sr"><label>Max Frames <span id="mfV">60</span></label>
+          <input type="range" min="10" max="300" step="10" value="60" id="animMaxFrames"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Loop</span>
+          <select id="animLoop" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+            <option value="cycle">Cycle</option>
+            <option value="constant">Constant</option>
+          </select>
+        </div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Record</div>
+        <button class="abtn pri" id="btnRecordKF">⏺ Record Keyframe</button>
+        <button class="abtn" id="btnRecordAll">⏺ Record All Bones</button>
+        <button class="abtn dan" id="btnDeleteKF">✕ Delete Keyframe</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Playback</div>
+        <button class="abtn pri" id="btnPlayAnim">▶ Play</button>
+        <button class="abtn" id="btnStopAnim">■ Stop</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Export</div>
+        <button class="abtn" id="btnExportAnim">⬇ Export JSON</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Keyframes</div>
+        <div id="kfList"><div class="empty">ボーンを選択してキーフレーム表示</div></div>
+      </div>
+    </div>
+    <div class="tbody" id="tb-bone">
+      <div class="pg">
+        <div class="pgt">Skeleton</div>
+        <div id="skelC"><div class="empty">BONEツールで骨格を作成</div></div>
+        <button class="abtn" id="btnNewSkel" style="margin-top:6px">+ New Skeleton</button>
+        <button class="abtn" id="btnAssignSkel">Assign to Mesh</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Bone Hierarchy</div>
+        <div class="slist" id="boneList"><div class="empty">ボーンなし</div></div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Selected Bone</div>
+        <div id="boneProps"><div class="empty">ボーンを選択</div></div>
+        <button class="abtn dan" id="btnDelBone">Delete Bone</button>
+      </div>
+    </div>
+    <div class="tbody" id="tb-map">
+      <div class="pg">
+        <div class="pgt">Model Library</div>
+        <div id="modelLib" style="max-height:min(200px,35vh);overflow-y:auto;"><div class="empty">Save to Libraryでモデルを保存</div></div>
+        <button class="abtn" id="btnRefreshLib" style="margin-top:6px">↻ Refresh Library</button>
+      </div>
+      <div class="pg">
+        <div class="pgt">Scene Instances</div>
+        <div id="mapInstList" style="max-height:min(180px,30vh);overflow-y:auto;"><div class="empty">ライブラリからモデルを配置</div></div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Layout</div>
+        <div class="pr" style="margin-bottom:6px"><span class="pl" style="font-size:10px;color:var(--t3)">Name</span>
+          <input type="text" id="layoutName" placeholder="Layout name" value=""
+            style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 6px;font-size:10px;"></div>
+        <button class="abtn pri" id="btnExportLayout">⬇ Export Layout JSON</button>
+        <button class="abtn" id="btnImportLayout">📂 Import Layout</button>
+        <button class="abtn dan" id="btnClearScene">✕ Clear Scene</button>
+      </div>
+    </div>
+    <div class="pg" style="margin-top:auto;">
+      <div class="pgt">Actions</div>
+      <button class="abtn pri" id="btnExport">⬇ GLB Export</button>
+      <button class="abtn" id="btnSave">💾 Save to Library</button>
+      <button class="abtn" id="btnLoad">📂 Load GLB</button>
+      <button class="abtn" id="btnDup">⎘ Duplicate</button>
+      <button class="abtn dan" id="btnDel">✕ Delete</button>
+    </div>
+  </div>
+
+  <!-- Mobile bottom bar -->
+  <div class="mob-bottom" id="mobBar"></div>
+
+  <!-- Status -->
+  <div class="stat"><span id="stxt">Ready</span></div>
+</div>
+
+<!-- Overlay for mobile panels -->
+<div class="overlay" id="overlay"></div>
+
+<!-- Help Modal -->
+<div class="help-overlay" id="helpOverlay">
+<div class="help-modal">
+  <div class="help-hdr">
+    <span>FORGE 3D Manual</span>
+    <button class="help-close" id="helpClose">✕</button>
+  </div>
+  <div class="help-body">
+
+    <div class="help-sec">
+      <div class="help-t">Quick Start</div>
+      <p>1. 左パネルからプリミティブを追加</p>
+      <p>2. ツールを切り替えて編集</p>
+      <p>3. GLB Export or Save to Library で保存</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Keyboard Shortcuts</div>
+      <table class="help-keys">
+        <tr><td>V</td><td>Select（選択）</td></tr>
+        <tr><td>G</td><td>Move（移動）</td></tr>
+        <tr><td>R</td><td>Rotate（回転）</td></tr>
+        <tr><td>S</td><td>Scale（拡縮）</td></tr>
+        <tr><td>D</td><td>Sculpt（彫刻）</td></tr>
+        <tr><td>P</td><td>Paint（ペイント）</td></tr>
+        <tr><td>B</td><td>Bone（ボーン）</td></tr>
+        <tr><td>W</td><td>Weight（ウェイト）</td></tr>
+        <tr><td>A</td><td>Anim（アニメーション）</td></tr>
+        <tr><td>Ctrl+D</td><td>Duplicate（複製）</td></tr>
+        <tr><td>Delete</td><td>Delete（削除）</td></tr>
+        <tr><td>Esc</td><td>Deselect（選択解除）</td></tr>
+      </table>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Camera</div>
+      <p>左ドラッグ: 回転</p>
+      <p>右ドラッグ / 2本指: パン</p>
+      <p>ホイール / ピンチ: ズーム</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Select / Transform</div>
+      <p>クリックでメッシュ選択。Ctrl+クリック or 長押し(モバイル)で複数選択。モバイル: 下部バーの ⊚ Multi ボタンでマルチ選択モード。</p>
+      <p>MOV/ROT/SCL でギズモが表示され、ドラッグで変形。右パネル Transform タブで数値入力も可能。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Primitives + CSG</div>
+      <p>左パネルからBox, Sphere, Cylinder等を追加。</p>
+      <p>2つのメッシュを選択して CSG（Union/Subtract/Intersect）で合成。複雑な形状をブーリアン演算で作成。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Sculpt</div>
+      <p>メッシュを選択してSCPモードに切替。ドラッグで頂点を変形。</p>
+      <p>Ctrl+ドラッグ: 反転（Push↔Pull）</p>
+      <p>Shift+ドラッグ: Smooth</p>
+      <p>右パネルでブラシの Size / Strength / Falloff を調整。6つのブラシモード: Push, Pull, Smooth, Flatten, Pinch, Inflate。</p>
+      <p>モバイル: Invert / Smooth トグルボタンで Ctrl/Shift 代替。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Paint</div>
+      <p>メッシュを選択してPNTモードに切替。メッシュ表面に直接ペイント（DynamicTexture）。</p>
+      <p>Color / Size / Opacity / Eraser を右パネルで設定。</p>
+      <p>Clear Paint でテクスチャをリセット。GLBエクスポート時にテクスチャとして埋め込まれる。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Morph Targets</div>
+      <p>メッシュ選択 → Morph タブ → 「ターゲット有効化」でMorphTarget追加。</p>
+      <p>メッシュを変形（Sculpt等）→「形状キャプチャ」で現在の形状をキャプチャ。</p>
+      <p>スライダーで補間。顔の表情変化などに使用。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Bone (Skeleton)</div>
+      <p>BONEモードでメッシュ表面をクリック → ボーンを配置。</p>
+      <p>既存ボーンをクリック → 次のクリックで子ボーンを追加（チェーン作成）。</p>
+      <p>「New Skeleton」でスケルトン作成。「Assign to Mesh」で選択メッシュにアタッチ。</p>
+      <p>ボーンのギズモを動かしてポーズ確認。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Weight Paint</div>
+      <p>スケルトンをアタッチしたメッシュを選択 → WGTモードに切替。</p>
+      <p>「Init Weight Data」でウェイトデータ初期化（必須）。</p>
+      <p>Bone タブでボーンを選択 → メッシュ上をドラッグでウェイト塗り。</p>
+      <p>Ctrl+ドラッグ: Subtract / Shift+ドラッグ: Smooth。モバイル: Invert / Smooth トグルボタン使用。</p>
+      <p>「Show/Hide Overlay」でヒートマップ表示（赤=1.0, 緑=0.5, 青=0.0）。</p>
+      <p>4ボーン/頂点まで。ウェイトは自動正規化（合計=1.0）。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Animation</div>
+      <p>ANMモードに切替 → 「New Clip」でアニメーションクリップ作成。</p>
+      <p>Timeline スライダーでフレーム選択 → ボーンをポーズ → 「Record Keyframe」。</p>
+      <p>「Record All Bones」で全ボーンの現在ポーズを一括記録。</p>
+      <p>「Play」でプレビュー再生。「Export JSON」でアニメーションデータ出力。</p>
+      <p>FPS / Max Frames / Loop Mode を設定可能。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Map Editor</div>
+      <p>Map タブ → 「Refresh Library」でライブラリ読み込み。</p>
+      <p>「+」ボタンでモデルをシーンに配置。既存ギズモで位置・回転・スケール調整。</p>
+      <p>「Export Layout JSON」でシーン配置データを出力。「Import Layout」で復元。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Save / Export</div>
+      <p><b>GLB Export</b>: シーン全体をGLBファイルとしてダウンロード。スケルトン・ウェイト・テクスチャ含む。</p>
+      <p><b>Save to Library</b>: ブラウザ内ストレージ（OPFS/IndexedDB）に保存。Map Editor で再利用可能。</p>
+      <p><b>Load GLB</b>: ファイルからGLB/glTFを読み込み。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">PWA (Progressive Web App)</div>
+      <p>スマホのホーム画面に追加するとオフラインで使用可能。</p>
+      <p>データはブラウザ内に保持。デバイス間の転送は GLB Export → Load GLB で。</p>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Material</div>
+      <p>右パネル Material タブで色変更。カラーパレットまたはカラーピッカーで選択。</p>
+      <p>Specular Power / Alpha / Wireframe を調整可能。</p>
+    </div>
+
+    <div class="help-sec" style="border:none;">
+      <div class="help-t">Workflow Example</div>
+      <p style="color:var(--ac);">モデリング → リギング → アニメーション → エクスポート</p>
+      <p>1. プリミティブ追加 + CSG + Sculpt で形状作成</p>
+      <p>2. Paint で顔やテクスチャを描画</p>
+      <p>3. Bone でスケルトン作成 → Assign to Mesh</p>
+      <p>4. Weight で各ボーンの影響範囲を塗る</p>
+      <p>5. Anim でポーズ → キーフレーム記録 → プレビュー</p>
+      <p>6. GLB Export でファイル出力</p>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
