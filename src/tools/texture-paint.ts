@@ -1,9 +1,9 @@
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
-import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
+import { getAlbedoColor } from "../materials/pbr-helpers";
 
 const TEX_SIZE = 1024;
 
@@ -22,24 +22,48 @@ export function ensurePaintTexture(mesh: AbstractMesh): DynamicTexture {
     true // generate mip maps
   );
 
-  // Fill with the mesh's current diffuse color or white
   const ctx = tex.getContext();
   if (!ctx) {
-    status("⚠ Paint context unavailable");
+    status("\u26a0 Paint context unavailable");
     return tex;
   }
-  const mat = mesh.material as StandardMaterial | null;
-  const baseColor = mat?.diffuseColor?.toHexString() ?? "#ffffff";
-  ctx.fillStyle = baseColor;
-  ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+
+  // If an existing albedo texture exists, try to draw it onto the DynamicTexture canvas
+  let drawnExisting = false;
+  if (mesh.material && "albedoTexture" in mesh.material) {
+    const existingTex = (mesh.material as PBRMaterial).albedoTexture;
+    if (existingTex && !(existingTex instanceof DynamicTexture)) {
+      // Try to load existing texture via its URL onto canvas synchronously
+      const texUrl = (existingTex as unknown as { url?: string }).url;
+      if (texUrl) {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
+          tex.update();
+        };
+        img.src = texUrl;
+      }
+      existingTex.dispose();
+      drawnExisting = false; // Fill with solid as initial state; img.onload will overlay
+    }
+  }
+
+  // Fill with the mesh's current albedo color as base
+  if (!drawnExisting) {
+    const baseColor = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+  }
   tex.update();
 
   // Assign to material
-  if (mat && mat instanceof StandardMaterial) {
-    mat.diffuseTexture = tex;
+  if (mesh.material && "albedoTexture" in mesh.material) {
+    (mesh.material as PBRMaterial).albedoTexture = tex;
   } else {
-    const newMat = new StandardMaterial("paintMat_" + mesh.uniqueId, state.scene);
-    newMat.diffuseTexture = tex;
+    const newMat = new PBRMaterial("paintMat_" + mesh.uniqueId, state.scene);
+    newMat.albedoTexture = tex;
+    newMat.metallic = 0;
+    newMat.roughness = 0.5;
     mesh.material = newMat;
   }
 
@@ -66,15 +90,15 @@ export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
 
   ctx.save();
 
+  ctx.globalCompositeOperation = "source-over";
   if (eraser) {
-    ctx.globalCompositeOperation = "destination-out";
+    // Paint with base color to restore original appearance
+    ctx.fillStyle = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
     ctx.globalAlpha = 1;
   } else {
-    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = color;
     ctx.globalAlpha = opacity;
   }
-
-  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(cx, cy, size, 0, Math.PI * 2);
   ctx.fill();
@@ -92,8 +116,7 @@ export function clearPaintTexture(mesh: AbstractMesh): void {
 
   const ctx = tex.getContext() as CanvasRenderingContext2D | null;
   if (!ctx) return;
-  const mat = mesh.material as StandardMaterial | null;
-  const baseColor = mat?.diffuseColor?.toHexString() ?? "#ffffff";
+  const baseColor = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
   ctx.fillStyle = baseColor;
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
@@ -106,5 +129,6 @@ export function clearPaintTexture(mesh: AbstractMesh): void {
  * Check if a mesh has UV coordinates (required for painting).
  */
 export function hasUVs(mesh: AbstractMesh): boolean {
-  return !!(mesh as Mesh).getVerticesData?.("uv");
+  const uvs = mesh.getVerticesData("uv");
+  return uvs != null && uvs.length > 0;
 }

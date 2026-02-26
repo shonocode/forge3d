@@ -248,6 +248,23 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
   .help-btn{width:32px;height:32px;font-size:13px;}
 }
 
+/* Camera preset buttons */
+.vp-camera{position:absolute;top:10px;right:10px;display:flex;gap:3px;z-index:5;flex-wrap:wrap;max-width:180px;justify-content:flex-end;}
+.cam-btn{background:rgba(8,8,12,.85);backdrop-filter:blur(6px);border:1px solid var(--bd);
+  color:var(--t4);min-width:26px;height:24px;border-radius:4px;cursor:pointer;
+  font-size:9px;font-family:'DM Mono',monospace;display:flex;align-items:center;justify-content:center;
+  padding:0 4px;transition:.12s;letter-spacing:0.5px;}
+.cam-btn:hover,.cam-btn:active{color:var(--t2);border-color:var(--t3);}
+.cam-btn.on{color:var(--ac);border-color:var(--ac);background:rgba(91,127,255,.15);}
+
+/* Viewport shading mode buttons */
+.vp-shading{position:absolute;bottom:10px;left:10px;display:flex;gap:3px;z-index:5;}
+.shade-btn{background:rgba(8,8,12,.85);backdrop-filter:blur(6px);border:1px solid var(--bd);
+  color:var(--t4);width:28px;height:28px;border-radius:4px;cursor:pointer;
+  font-size:14px;display:flex;align-items:center;justify-content:center;transition:.12s;}
+.shade-btn:hover,.shade-btn:active{color:var(--t2);border-color:var(--t3);}
+.shade-btn.on{color:var(--ac);border-color:var(--ac);background:rgba(91,127,255,.15);}
+
 /* Scroll fade hints */
 .scroll-fade{position:relative;}
 .scroll-fade::after{content:'';position:absolute;top:0;right:0;bottom:0;width:24px;
@@ -256,4 +273,9 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 .scroll-fade::before{content:'';position:absolute;top:0;left:0;bottom:0;width:24px;
   background:linear-gradient(to left,transparent,var(--bg1));pointer-events:none;z-index:2;opacity:0;transition:opacity .2s;}
 .scroll-fade.scroll-start::before{opacity:1;}
+
+/* Measurement labels */
+.measure-label{position:absolute;transform:translate(-50%,-100%);padding:2px 6px;
+  background:rgba(255,77,26,.85);color:#fff;font-size:10px;font-family:'DM Mono',monospace;
+  border-radius:3px;pointer-events:none;white-space:nowrap;z-index:8;margin-top:-6px;}
 

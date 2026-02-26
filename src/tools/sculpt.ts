@@ -75,9 +75,10 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
         const vi = i / 3;
         if (avgC && avgC[vi]) {
           const a = avgC[vi]!;
-          pos[i] = pos[i]! + (a.x - pos[i]!) * str * 3;
-          pos[i + 1] = pos[i + 1]! + (a.y - pos[i + 1]!) * str * 3;
-          pos[i + 2] = pos[i + 2]! + (a.z - pos[i + 2]!) * str * 3;
+          const smoothFactor = Math.min(str * 3, 0.9);
+          pos[i] = pos[i]! + (a.x - pos[i]!) * smoothFactor;
+          pos[i + 1] = pos[i + 1]! + (a.y - pos[i + 1]!) * smoothFactor;
+          pos[i + 2] = pos[i + 2]! + (a.z - pos[i + 2]!) * smoothFactor;
         }
         break;
       }
@@ -92,9 +93,9 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
         break;
       }
       case "pinch":
-        pos[i] = pos[i]! - dx * str * 0.4;
-        pos[i + 1] = pos[i + 1]! - dy * str * 0.4;
-        pos[i + 2] = pos[i + 2]! - dz * str * 0.4;
+        pos[i] = pos[i]! - dx * str * 0.4 * dir;
+        pos[i + 1] = pos[i + 1]! - dy * str * 0.4 * dir;
+        pos[i + 2] = pos[i + 2]! - dz * str * 0.4 * dir;
         break;
       case "inflate":
         pos[i] = pos[i]! + nx * str * dir * 0.8;
@@ -129,23 +130,34 @@ function smoothAvg(
     const dz = pos[ix + 2]! - center.z;
     if (dx * dx + dy * dy + dz * dz < R2) inRange.push(i);
   }
-  for (const i of inRange) {
-    const ix = i * 3;
+
+  // Pre-copy positions of in-range vertices for cache efficiency
+  const irCount = inRange.length;
+  const irPos = new Float32Array(irCount * 3);
+  for (let idx = 0; idx < irCount; idx++) {
+    const ix = inRange[idx]! * 3;
+    irPos[idx * 3] = pos[ix]!;
+    irPos[idx * 3 + 1] = pos[ix + 1]!;
+    irPos[idx * 3 + 2] = pos[ix + 2]!;
+  }
+
+  for (let a = 0; a < irCount; a++) {
+    const ax = a * 3;
     let sx = 0, sy = 0, sz = 0, cnt = 0;
-    for (const j of inRange) {
-      if (j === i) continue;
-      const jx = j * 3;
-      const dx = pos[jx]! - pos[ix]!;
-      const dy = pos[jx + 1]! - pos[ix + 1]!;
-      const dz = pos[jx + 2]! - pos[ix + 2]!;
+    for (let b = 0; b < irCount; b++) {
+      if (b === a) continue;
+      const bx = b * 3;
+      const dx = irPos[bx]! - irPos[ax]!;
+      const dy = irPos[bx + 1]! - irPos[ax + 1]!;
+      const dz = irPos[bx + 2]! - irPos[ax + 2]!;
       if (dx * dx + dy * dy + dz * dz < hR2) {
-        sx += pos[jx]!;
-        sy += pos[jx + 1]!;
-        sz += pos[jx + 2]!;
+        sx += irPos[bx]!;
+        sy += irPos[bx + 1]!;
+        sz += irPos[bx + 2]!;
         cnt++;
       }
     }
-    if (cnt > 0) result[i] = { x: sx / cnt, y: sy / cnt, z: sz / cnt };
+    if (cnt > 0) result[inRange[a]!] = { x: sx / cnt, y: sy / cnt, z: sz / cnt };
   }
   return result;
 }

@@ -1,4 +1,4 @@
-import { E, isMobile, state } from "../state";
+import { E, isMobile, state, status } from "../state";
 import type { ToolId } from "../state";
 import { addPrimitive, PRIMS } from "../tools/primitives";
 import { BRUSHES, setBrush } from "../tools/sculpt";
@@ -6,6 +6,11 @@ import { doCSG, type CSGOp } from "../tools/csg";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
 import { exportGLB, saveToLibrary, loadGLBFromFile } from "../export/gltf-exporter";
+import { lastSelected } from "../tools/selection";
+import {
+  recalcNormals, flipNormals, weldVertices, centerOrigin,
+  snapshotVertexData, restoreVertexData,
+} from "../tools/mesh-utils";
 
 export function buildToolPills(): void {
   const TOOLS: { id: ToolId; label: string }[] = [
@@ -71,6 +76,7 @@ export function buildTabs(): void {
     { id: "weight", label: "Weight" },
     { id: "anim", label: "Anim" },
     { id: "map", label: "Map" },
+    { id: "scene", label: "Scene" },
   ];
   const el = E("tabBar");
   for (const [i, t] of TAB_LIST.entries()) {
@@ -128,6 +134,37 @@ export function buildBrushButtons(): void {
       "beforeend",
       '<div style="margin-top:6px;font-size:9px;color:var(--t4);line-height:1.6;">Ctrl+drag: 反転<br>Shift+drag: Smooth</div>'
     );
+  }
+}
+
+export function buildMeshToolButtons(): void {
+  const el = E("meshToolBtns");
+  const tools: { label: string; action: (m: import("@babylonjs/core").AbstractMesh) => boolean }[] = [
+    { label: "Recalc Normals", action: recalcNormals },
+    { label: "Flip Normals", action: flipNormals },
+    { label: "Weld Vertices", action: (m) => weldVertices(m) },
+    { label: "Center Origin", action: centerOrigin },
+  ];
+  for (const tool of tools) {
+    const b = document.createElement("button");
+    b.className = "cbtn";
+    b.textContent = tool.label;
+    b.addEventListener("click", () => {
+      const m = lastSelected();
+      if (!m) { status("メッシュを選択"); return; }
+      const snap = snapshotVertexData(m);
+      const ok = tool.action(m);
+      if (!ok) { status("変更なし"); return; }
+      if (snap) {
+        state.history.push({
+          label: tool.label,
+          undo() { restoreVertexData(m, snap); },
+          redo() { tool.action(m); },
+        });
+      }
+      status(tool.label + " 完了");
+    });
+    el.appendChild(b);
   }
 }
 

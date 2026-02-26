@@ -4,6 +4,8 @@ import { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
 import { getActiveSkeleton, findBoneById } from "./skeleton-tool";
+import { getEasingFunction } from "./easing";
+import type { EasingType } from "./easing";
 
 // Scratch vectors for decomposition
 const _scratchScale = new Vector3();
@@ -189,6 +191,7 @@ export function scrubToFrame(frame: number): void {
   const skelData = getActiveSkeleton();
   if (!skelData) return;
 
+  // First pass: set all bone local matrices
   for (const track of clip.tracks) {
     const bd = skelData.bones.find((b) => b.id === track.boneId);
     if (!bd) continue;
@@ -204,11 +207,17 @@ export function scrubToFrame(frame: number): void {
       new Vector3(pose.position.x, pose.position.y, pose.position.z)
     );
     bd.bone.getLocalMatrix().copyFrom(mat);
+  }
 
-    // Sync visual
-    if (bd.visual) {
-      bd.visual.position.set(pose.position.x, pose.position.y, pose.position.z);
-    }
+  // Recompute absolute transforms after all local matrices are set
+  skelData.skeleton.computeAbsoluteTransforms();
+
+  // Second pass: sync visuals from absolute transforms (correct for child bones)
+  for (const track of clip.tracks) {
+    const bd = skelData.bones.find((b) => b.id === track.boneId);
+    if (!bd?.visual) continue;
+    const abs = bd.bone.getAbsoluteTransform();
+    bd.visual.position.set(abs.m[12]!, abs.m[13]!, abs.m[14]!);
   }
 }
 
@@ -228,14 +237,17 @@ function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null 
     const b = kfs[i + 1]!;
     if (frame >= a.frame && frame <= b.frame) {
       if (a.frame === b.frame) return a;
-      const t = (frame - a.frame) / (b.frame - a.frame);
+      let t = (frame - a.frame) / (b.frame - a.frame);
+      // Apply easing from keyframe a
+      if (a.easing) t = getEasingFunction(a.easing)(t);
+      // Use quaternion slerp for rotation to avoid gimbal lock
+      const quatA = Quaternion.FromEulerAngles(a.rotation.x, a.rotation.y, a.rotation.z);
+      const quatB = Quaternion.FromEulerAngles(b.rotation.x, b.rotation.y, b.rotation.z);
+      const quatInterp = Quaternion.Slerp(quatA, quatB, t);
+      const eulerInterp = quatInterp.toEulerAngles();
       return {
         frame,
-        rotation: {
-          x: a.rotation.x + (b.rotation.x - a.rotation.x) * t,
-          y: a.rotation.y + (b.rotation.y - a.rotation.y) * t,
-          z: a.rotation.z + (b.rotation.z - a.rotation.z) * t,
-        },
+        rotation: { x: eulerInterp.x, y: eulerInterp.y, z: eulerInterp.z },
         position: {
           x: a.position.x + (b.position.x - a.position.x) * t,
           y: a.position.y + (b.position.y - a.position.y) * t,
@@ -289,40 +301,141 @@ function buildAnimationGroup(clip: AnimClipData): AnimationGroup | null {
     const bd = skelData.bones.find((b) => b.id === track.boneId);
     if (!bd || track.keyframes.length === 0) continue;
 
-    // Rotation animation
-    const rotAnim = new Animation(
-      track.boneName + "_rotation",
-      "rotation",
+    // Single matrix animation targeting bone's local matrix
+    const matAnim = new Animation(
+      track.boneName + "_localMatrix",
+      "_matrix",
       clip.frameRate,
-      Animation.ANIMATIONTYPE_VECTOR3,
+      Animation.ANIMATIONTYPE_MATRIX,
       loopMode
     );
-    rotAnim.setKeys(
+    matAnim.setKeys(
       track.keyframes.map((kf) => ({
         frame: kf.frame,
-        value: new Vector3(kf.rotation.x, kf.rotation.y, kf.rotation.z),
+        value: Matrix.Compose(
+          new Vector3(1, 1, 1),
+          Quaternion.FromEulerAngles(kf.rotation.x, kf.rotation.y, kf.rotation.z),
+          new Vector3(kf.position.x, kf.position.y, kf.position.z)
+        ),
       }))
     );
-    group.addTargetedAnimation(rotAnim, bd.bone);
-
-    // Position animation
-    const posAnim = new Animation(
-      track.boneName + "_position",
-      "position",
-      clip.frameRate,
-      Animation.ANIMATIONTYPE_VECTOR3,
-      loopMode
-    );
-    posAnim.setKeys(
-      track.keyframes.map((kf) => ({
-        frame: kf.frame,
-        value: new Vector3(kf.position.x, kf.position.y, kf.position.z),
-      }))
-    );
-    group.addTargetedAnimation(posAnim, bd.bone);
+    group.addTargetedAnimation(matAnim, bd.bone);
   }
 
   return group;
+}
+
+// ── Keyframe Copy/Paste/Easing ──
+
+export function copyKeyframe(): void {
+  const clip = getActiveClip();
+  if (!clip || !state.selectedBoneId) { status("⚠ ボーンを選択"); return; }
+  const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
+  const kf = track?.keyframes.find((k) => k.frame === state.currentFrame);
+  if (!kf) { status("⚠ キーフレームなし"); return; }
+  state.keyframeClipboard = { ...kf };
+  status("Copied keyframe @ F" + kf.frame);
+}
+
+export function pasteKeyframe(): void {
+  const clip = getActiveClip();
+  if (!clip || !state.selectedBoneId || !state.keyframeClipboard) {
+    status("⚠ コピー元なし"); return;
+  }
+  const bd = findBoneById(state.selectedBoneId);
+  if (!bd) return;
+
+  const kf: KeyframeData = {
+    ...state.keyframeClipboard,
+    frame: state.currentFrame,
+  };
+
+  let track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
+  if (!track) {
+    track = { boneId: state.selectedBoneId, boneName: bd.name, keyframes: [] };
+    clip.tracks.push(track);
+  }
+  upsertKeyframe(track, kf);
+  status("Pasted keyframe @ F" + state.currentFrame);
+}
+
+export function setKeyframeEasing(easingType: EasingType): void {
+  const clip = getActiveClip();
+  if (!clip || !state.selectedBoneId) return;
+  const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
+  const kf = track?.keyframes.find((k) => k.frame === state.currentFrame);
+  if (kf) {
+    kf.easing = easingType;
+    status("Easing: " + easingType);
+  }
+}
+
+export function getKeyframeEasing(): EasingType {
+  const clip = getActiveClip();
+  if (!clip || !state.selectedBoneId) return "linear";
+  const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
+  const kf = track?.keyframes.find((k) => k.frame === state.currentFrame);
+  return kf?.easing ?? "linear";
+}
+
+// ── Simple 2-Bone IK (FABRIK) ──
+
+export function solveIK(boneId: string): void {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return;
+  const bd = skelData.bones.find((b) => b.id === boneId);
+  if (!bd?.ikConstraint?.enabled) return;
+
+  const chainLen = bd.ikConstraint.chainLength;
+  const target = new Vector3(bd.ikConstraint.targetX, bd.ikConstraint.targetY, bd.ikConstraint.targetZ);
+
+  // Collect chain from tip to root
+  const chain: typeof skelData.bones[0][] = [];
+  let cur: typeof skelData.bones[0] | undefined = bd;
+  for (let i = 0; i <= chainLen && cur; i++) {
+    chain.push(cur);
+    cur = cur.parentId ? skelData.bones.find((b) => b.id === cur!.parentId) : undefined;
+  }
+  if (chain.length < 2) return;
+
+  const mesh = skelData.assignedMesh;
+  // Get joint positions
+  const positions = chain.map((b) => b.bone.getAbsolutePosition(mesh!).clone());
+
+  // FABRIK iterations
+  for (let iter = 0; iter < 10; iter++) {
+    // Forward reaching (from tip to root)
+    positions[0]!.copyFrom(target);
+    for (let i = 1; i < positions.length; i++) {
+      const segLen = Vector3.Distance(positions[i - 1]!, positions[i]!);
+      if (segLen < 0.0001) continue;
+      const dir = positions[i]!.subtract(positions[i - 1]!).normalize();
+      const boneLen = chain[i - 1]!.bone.length || Vector3.Distance(
+        chain[i - 1]!.bone.getAbsolutePosition(mesh!),
+        chain[i]!.bone.getAbsolutePosition(mesh!)
+      );
+      positions[i]!.copyFrom(positions[i - 1]!.add(dir.scale(boneLen)));
+    }
+
+    // Backward reaching (from root to tip)
+    const rootPos = chain[chain.length - 1]!.bone.getAbsolutePosition(mesh!);
+    positions[positions.length - 1]!.copyFrom(rootPos);
+    for (let i = positions.length - 2; i >= 0; i--) {
+      const segLen = Vector3.Distance(positions[i]!, positions[i + 1]!);
+      if (segLen < 0.0001) continue;
+      const dir = positions[i]!.subtract(positions[i + 1]!).normalize();
+      const boneLen = chain[i]!.bone.length || Vector3.Distance(
+        chain[i]!.bone.getAbsolutePosition(mesh!),
+        chain.length > i + 1 ? chain[i + 1]!.bone.getAbsolutePosition(mesh!) : chain[i]!.bone.getAbsolutePosition(mesh!)
+      );
+      positions[i]!.copyFrom(positions[i + 1]!.add(dir.scale(boneLen)));
+    }
+  }
+
+  // Apply positions back to bone visuals
+  for (let i = 0; i < chain.length; i++) {
+    if (chain[i]!.visual) chain[i]!.visual!.position.copyFrom(positions[i]!);
+  }
 }
 
 // ── Export ──

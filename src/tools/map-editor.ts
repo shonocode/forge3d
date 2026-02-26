@@ -7,6 +7,7 @@ import { metadataStore, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "./selection";
 import { updateHierarchy } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
+import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 
 // ── Scene Layout types ──
 
@@ -77,6 +78,7 @@ export async function placeModel(modelId: string, modelName: string): Promise<vo
         mesh.metadata.mapModelId = modelId;
         mesh.metadata.mapInstanceId = instanceId;
 
+        addShadowCaster(mesh);
         meshUniqueIds.push(mesh.uniqueId);
         state.allMeshes.push(mesh);
       }
@@ -118,6 +120,7 @@ export function removeMapInstance(instanceId: string): void {
       // Deselect if selected
       const selIdx = state.selectedMeshes.indexOf(mesh);
       if (selIdx !== -1) state.selectedMeshes.splice(selIdx, 1);
+      removeShadowCaster(mesh);
       mesh.dispose();
       state.allMeshes.splice(meshIdx, 1);
     }
@@ -201,7 +204,16 @@ export async function importSceneLayout(): Promise<void> {
         return;
       }
 
+      let skipped = 0;
       for (const obj of layout.objects) {
+        // Validate model exists in storage before attempting placement
+        const data = await modelStore.load(obj.modelId);
+        if (!data) {
+          skipped++;
+          console.warn("Layout import: model not found:", obj.modelName, obj.modelId);
+          continue;
+        }
+
         const prevCount = state.mapInstances.length;
         await placeModel(obj.modelId, obj.modelName);
 
@@ -220,7 +232,8 @@ export async function importSceneLayout(): Promise<void> {
         }
       }
 
-      status("Layout imported: " + layout.name + " (" + layout.objects.length + " objects)");
+      const placed = layout.objects.length - skipped;
+      status("Layout imported: " + layout.name + " (" + placed + "/" + layout.objects.length + " objects)" + (skipped ? " — " + skipped + " missing" : ""));
     } catch (e) {
       console.error("Import layout error:", e);
       status("⚠ Import error: " + (e as Error).message);

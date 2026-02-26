@@ -7,6 +7,10 @@ import { duplicateSelected, deleteSelected } from "./tools/actions";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
+import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camera-presets";
+import { applySnapToGizmos } from "./tools/snap";
+import { addMeasurePoint } from "./tools/measure";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -47,6 +51,7 @@ function updateToolUI(t: ToolId): void {
 
 function initTool(t: ToolId): void {
   updateGizmo();
+  applySnapToGizmos();
   if (BONE_TOOLS.has(t)) {
     setBoneVisualsVisible(true);
   } else {
@@ -97,6 +102,13 @@ export function initInput(): void {
     state.keysDown.add(e.key);
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     switch (e.key.toLowerCase()) {
+      case "z":
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          if (e.shiftKey) state.history.redo();
+          else state.history.undo();
+        }
+        break;
       case "v": setTool("select"); break;
       case "g": setTool("move"); break;
       case "r": if (!e.ctrlKey) setTool("rotate"); break;
@@ -113,12 +125,29 @@ export function initInput(): void {
       case "backspace":
         if (e.target === document.body) deleteSelected();
         break;
-      case "escape": deselect(); break;
+      case "escape":
+        if (BONE_TOOLS.has(state.tool) && state.selectedBoneId) {
+          deselectBone();
+        } else {
+          deselect();
+        }
+        break;
+      // Numpad camera presets
+      case "1": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.back! : PRESETS.front!); } break;
+      case "3": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.left! : PRESETS.right!); } break;
+      case "7": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.bottom! : PRESETS.top!); } break;
+      case "5": if (e.code.startsWith("Numpad")) { e.preventDefault(); toggleOrthographic(); } break;
     }
   });
 
   document.addEventListener("keyup", (e) => state.keysDown.delete(e.key));
   window.addEventListener("blur", () => state.keysDown.clear());
+
+  // Undo snapshot state for brush strokes
+  let sculptSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
+  let paintSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: ImageData; halfCanvas: OffscreenCanvas } | null = null;
+  const SNAP_SIZE = 512; // Downscaled snapshot size (1/4 memory of 1024)
+  let weightSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
 
   // Pointer events
   canvas.addEventListener("pointerdown", (e) => {
@@ -126,6 +155,11 @@ export function initInput(): void {
 
     // Sculpt mode
     if (state.tool === "sculpt" && state.selectedMeshes.length) {
+      // Capture position snapshot for undo
+      const target = state.selectedMeshes[state.selectedMeshes.length - 1]!;
+      const posData = target.getVerticesData(VertexBuffer.PositionKind);
+      sculptSnapshot = posData ? { mesh: target, before: new Float32Array(posData) } : null;
+
       state.sculpting = true;
       state.camera.detachControl();
       canvas.setPointerCapture(e.pointerId);
@@ -137,6 +171,7 @@ export function initInput(): void {
         );
         if (pk?.hit) sculptAt(pk.pickedMesh!, pk);
       } catch (err) {
+        console.warn("Sculpt error:", err);
         state.sculpting = false;
         canvas.releasePointerCapture(e.pointerId);
         state.camera.attachControl(canvas, true);
@@ -156,6 +191,21 @@ export function initInput(): void {
           status("UV座標なし — ペイント不可");
           return;
         }
+        // Capture downscaled paint texture snapshot for undo (512×512 = 1MB vs 4MB)
+        const target = pk.pickedMesh!;
+        const paintTex = state.paintTextureMap.get(target.uniqueId);
+        if (paintTex) {
+          const ctx = paintTex.getContext() as CanvasRenderingContext2D | null;
+          if (ctx) {
+            const halfCanvas = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
+            const hCtx = halfCanvas.getContext("2d")!;
+            hCtx.drawImage(ctx.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+            paintSnapshot = { mesh: target, before: hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE), halfCanvas };
+          }
+        } else {
+          paintSnapshot = null;
+        }
+
         state.painting = true;
         state.camera.detachControl();
         canvas.setPointerCapture(e.pointerId);
@@ -217,6 +267,10 @@ export function initInput(): void {
         (m) => state.selectedMeshes.includes(m)
       );
       if (pk?.hit) {
+        // Capture weight data snapshot for undo
+        const wData = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
+        weightSnapshot = wData ? { mesh, before: new Float32Array(wData) } : null;
+
         state.weightPainting = true;
         state.camera.detachControl();
         canvas.setPointerCapture(e.pointerId);
@@ -231,6 +285,18 @@ export function initInput(): void {
       return;
     }
 
+    // Measure mode
+    if (state.measuringActive) {
+      const pk = state.scene.pick(
+        state.scene.pointerX,
+        state.scene.pointerY,
+      );
+      if (pk?.hit && pk.pickedPoint) {
+        addMeasurePoint(pk.pickedPoint);
+      }
+      return;
+    }
+
     // Pick
     const pk = state.scene.pick(
       state.scene.pointerX,
@@ -240,10 +306,7 @@ export function initInput(): void {
     if (pk?.hit) {
       selectMesh(pk.pickedMesh!, e.ctrlKey || e.metaKey || state.multiSelectMode);
     } else if (!e.ctrlKey && !e.metaKey && !state.multiSelectMode) {
-      const pk2 = state.scene.pick(state.scene.pointerX, state.scene.pointerY);
-      if (!pk2?.pickedMesh || !state.allMeshes.includes(pk2.pickedMesh)) {
-        deselect();
-      }
+      deselect();
     }
   });
 
@@ -291,13 +354,88 @@ export function initInput(): void {
   });
 
   canvas.addEventListener("pointerup", (e) => {
-    const wasBrushing = state.sculpting || state.painting || state.weightPainting;
+    const wasSculpting = state.sculpting;
+    const wasPainting = state.painting;
+    const wasWeightPainting = state.weightPainting;
     state.sculpting = false;
     state.painting = false;
     state.weightPainting = false;
-    if (wasBrushing) {
+    if (wasSculpting || wasPainting || wasWeightPainting) {
       canvas.releasePointerCapture(e.pointerId);
       state.camera.attachControl(canvas, true);
+    }
+
+    // Push sculpt undo
+    if (wasSculpting && sculptSnapshot) {
+      const { mesh, before } = sculptSnapshot;
+      const after = mesh.getVerticesData(VertexBuffer.PositionKind);
+      if (after) {
+        const afterCopy = new Float32Array(after);
+        const beforeCopy = before;
+        state.history.push({
+          label: "Sculpt",
+          undo() { mesh.updateVerticesData(VertexBuffer.PositionKind, beforeCopy); },
+          redo() { mesh.updateVerticesData(VertexBuffer.PositionKind, afterCopy); },
+        });
+      }
+      sculptSnapshot = null;
+    }
+
+    // Push paint undo (downscaled 512×512 snapshots)
+    if (wasPainting && paintSnapshot) {
+      const { mesh, before, halfCanvas } = paintSnapshot;
+      const paintTex = state.paintTextureMap.get(mesh.uniqueId);
+      if (paintTex) {
+        const ctx = paintTex.getContext() as CanvasRenderingContext2D | null;
+        if (ctx) {
+          const hCtx = halfCanvas.getContext("2d")!;
+          hCtx.drawImage(ctx.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+          const after = hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE);
+          const m = mesh, beforeData = before, afterData = after;
+          state.history.push({
+            label: "Paint",
+            undo() {
+              const t = state.paintTextureMap.get(m.uniqueId);
+              if (!t) return;
+              const c = t.getContext() as CanvasRenderingContext2D | null;
+              if (!c) return;
+              const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
+              const tc = tmp.getContext("2d")!;
+              tc.putImageData(beforeData, 0, 0);
+              c.drawImage(tmp, 0, 0, 1024, 1024);
+              t.update();
+            },
+            redo() {
+              const t = state.paintTextureMap.get(m.uniqueId);
+              if (!t) return;
+              const c = t.getContext() as CanvasRenderingContext2D | null;
+              if (!c) return;
+              const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
+              const tc = tmp.getContext("2d")!;
+              tc.putImageData(afterData, 0, 0);
+              c.drawImage(tmp, 0, 0, 1024, 1024);
+              t.update();
+            },
+          });
+        }
+      }
+      paintSnapshot = null;
+    }
+
+    // Push weight paint undo
+    if (wasWeightPainting && weightSnapshot) {
+      const { mesh, before } = weightSnapshot;
+      const after = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
+      if (after) {
+        const afterCopy = new Float32Array(after);
+        const beforeCopy = before;
+        state.history.push({
+          label: "Weight Paint",
+          undo() { mesh.setVerticesData(VertexBuffer.MatricesWeightsKind, beforeCopy, true); },
+          redo() { mesh.setVerticesData(VertexBuffer.MatricesWeightsKind, afterCopy, true); },
+        });
+      }
+      weightSnapshot = null;
     }
   });
 

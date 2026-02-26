@@ -3,8 +3,12 @@ import type { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicT
 import type { Bone } from "@babylonjs/core/Bones/bone";
 import type { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
+import type { PointLight } from "@babylonjs/core/Lights/pointLight";
+import type { SpotLight } from "@babylonjs/core/Lights/spotLight";
+import { UndoHistory } from "./undo";
 
 export type ToolId = "select" | "move" | "rotate" | "scale" | "sculpt" | "paint" | "bone" | "weight" | "anim";
+export type ViewportMode = "solid" | "wire" | "matcap" | "textured";
 export type AnimLoopMode = "cycle" | "constant";
 export type WeightMode = "add" | "subtract" | "smooth";
 export type BrushId = "push" | "pull" | "smooth" | "flatten" | "pinch" | "inflate";
@@ -41,6 +45,7 @@ export interface BoneData {
   bone: Bone;
   parentId: string | null;
   visual: AbstractMesh | null;
+  ikConstraint?: IKConstraint;
 }
 
 export interface SkeletonData {
@@ -54,6 +59,15 @@ export interface KeyframeData {
   frame: number;
   rotation: { x: number; y: number; z: number };
   position: { x: number; y: number; z: number };
+  easing?: import("./tools/easing").EasingType;
+}
+
+export interface IKConstraint {
+  enabled: boolean;
+  chainLength: number;
+  targetX: number;
+  targetY: number;
+  targetZ: number;
 }
 
 export interface BoneTrack {
@@ -76,6 +90,85 @@ export interface MapInstance {
   modelId: string;
   modelName: string;
   meshUniqueIds: number[];
+}
+
+// ── Modifier Stack ──
+export type ModifierType = "subdivision" | "mirror" | "array";
+
+export interface OriginalGeometry {
+  positions: Float32Array;
+  normals: Float32Array | null;
+  indices: number[];
+}
+
+export interface BaseModifier {
+  id: string;
+  type: ModifierType;
+  enabled: boolean;
+}
+
+export interface SubdivisionModifier extends BaseModifier {
+  type: "subdivision";
+  level: number;  // 1 or 2
+}
+
+export interface MirrorModifier extends BaseModifier {
+  type: "mirror";
+  axis: "x" | "y" | "z";
+  merge: boolean;
+  mergeTolerance: number;
+}
+
+export interface ArrayModifier extends BaseModifier {
+  type: "array";
+  count: number;
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+}
+
+export type Modifier = SubdivisionModifier | MirrorModifier | ArrayModifier;
+
+// ── Snap Config ──
+export interface SnapConfig {
+  positionEnabled: boolean;
+  positionIncrement: number;
+  rotationEnabled: boolean;
+  rotationIncrement: number;
+  scaleEnabled: boolean;
+  scaleIncrement: number;
+}
+
+// ── Light System ──
+export type LightType = "point" | "spot";
+export interface LightData {
+  id: string;
+  type: LightType;
+  light: PointLight | SpotLight;
+  visual: AbstractMesh;
+  color: string;
+  intensity: number;
+  range: number;
+  angle?: number;
+}
+
+// ── Measurement ──
+export interface MeasurementData {
+  id: string;
+  start: { x: number; y: number; z: number };
+  end: { x: number; y: number; z: number };
+  distance: number;
+  lineMesh: AbstractMesh;
+  labelDiv: HTMLDivElement;
+  startMarker: AbstractMesh;
+  endMarker: AbstractMesh;
+}
+
+// ── Layer System ──
+export interface LayerData {
+  id: string;
+  name: string;
+  visible: boolean;
 }
 
 /** Global editor state — single source of truth */
@@ -113,13 +206,66 @@ export const state = {
   animPreviewGroup: null as AnimationGroup | null,
   animClipCounter: 0,
   importedAnimGroups: [] as AnimationGroup[],
+  keyframeClipboard: null as KeyframeData | null,
 
   // Touch modifier toggles (mobile substitute for Ctrl/Shift)
   touchModifiers: { ctrl: false, shift: false },
   multiSelectMode: false,
 
+  // Modifier stack
+  modifierMap: new Map<number, Modifier[]>(),
+  originalGeometryMap: new Map<number, OriginalGeometry>(),
+  modifierCounter: 0,
+
+  // Layer system
+  layers: [{ id: "layer_1", name: "Layer 1", visible: true }] as LayerData[],
+  activeLayerId: "layer_1" as string,
+  meshLayerMap: new Map<number, string>(),
+  layerCounter: 1,
+
+  // Dynamic lights
+  lightMap: new Map<string, LightData>(),
+  selectedLightId: null as string | null,
+  lightCounter: 0,
+
+  // Measurement
+  measurements: [] as MeasurementData[],
+  measuringActive: false,
+  measureStartPoint: null as import("@babylonjs/core/Maths/math.vector").Vector3 | null,
+  measureCounter: 0,
+
   // Map editor state
   mapInstances: [] as MapInstance[],
+
+  // Environment/Scene state
+  activeEnvPresetId: "studio" as string,
+  envIntensity: 0.8,
+  showSkybox: false,
+  shadowsEnabled: true,
+  shadowQuality: 1024 as 512 | 1024 | 2048,
+  viewportMode: "textured" as ViewportMode,
+  isOrthographic: false,
+  snapConfig: {
+    positionEnabled: false, positionIncrement: 0.5,
+    rotationEnabled: false, rotationIncrement: 15,
+    scaleEnabled: false, scaleIncrement: 0.25,
+  } as SnapConfig,
+
+  // Post-processing
+  postProcess: {
+    bloomEnabled: false,
+    bloomIntensity: 0.5,
+    fxaaEnabled: true,
+    chromaticEnabled: false,
+    chromaticIntensity: 0.5,
+    vignetteEnabled: false,
+    vignetteWeight: 1.5,
+    ssaoEnabled: false,
+    ssaoIntensity: 1.0,
+  },
+
+  // Undo/Redo
+  history: new UndoHistory(),
 
   // Set during init
   scene: null as unknown as Scene,

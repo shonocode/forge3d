@@ -7,7 +7,11 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { GizmoManager } from "@babylonjs/core/Gizmos/gizmoManager";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { state, status } from "../state";
+import { initEnvironment } from "./environment";
+import { initShadows } from "./shadows";
+import { initPostProcess } from "./postprocess";
 
 export function initViewport(): void {
   const canvas = document.getElementById("rc") as HTMLCanvasElement;
@@ -73,6 +77,25 @@ export function initViewport(): void {
   state.camera = cam;
   state.canvas = canvas;
   state.gizmoManager = gizMgr;
+
+  // HDRI environment for PBR
+  initEnvironment();
+
+  // Shadows
+  initShadows(dirL);
+
+  // Post-processing pipeline
+  initPostProcess();
+
+  // Shadow-receiving ground plane
+  const ground = MeshBuilder.CreateGround("shadowGround", { width: 50, height: 50 }, scene);
+  const gMat = new PBRMaterial("groundMat", scene);
+  gMat.albedoColor = new Color3(0.08, 0.08, 0.12);
+  gMat.metallic = 0;
+  gMat.roughness = 1;
+  ground.material = gMat;
+  ground.receiveShadows = true;
+  ground.isPickable = false;
 }
 
 function makeGrid(scene: Scene): void {

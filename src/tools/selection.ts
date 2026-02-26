@@ -1,3 +1,4 @@
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state } from "../state";
 import { updateHierarchy, updateProperties } from "../ui/panels";
@@ -27,6 +28,50 @@ export function lastSelected(): AbstractMesh | undefined {
   return state.selectedMeshes[state.selectedMeshes.length - 1];
 }
 
+let gizmoUndoInitialized = false;
+let dragBefore: { pos: Vector3; rot: Vector3; scl: Vector3; mesh: AbstractMesh } | null = null;
+
+function initGizmoUndo(): void {
+  if (gizmoUndoInitialized) return;
+  gizmoUndoInitialized = true;
+
+  const gm = state.gizmoManager;
+  const gizmos = [gm.gizmos.positionGizmo, gm.gizmos.rotationGizmo, gm.gizmos.scaleGizmo];
+
+  for (const g of gizmos) {
+    if (!g) continue;
+    g.onDragStartObservable.add(() => {
+      const m = lastSelected();
+      if (!m) return;
+      dragBefore = {
+        pos: m.position.clone(),
+        rot: m.rotation.clone(),
+        scl: m.scaling.clone(),
+        mesh: m,
+      };
+    });
+    g.onDragEndObservable.add(() => {
+      if (!dragBefore) return;
+      const { mesh, pos, rot, scl } = dragBefore;
+      const afterPos = mesh.position.clone();
+      const afterRot = mesh.rotation.clone();
+      const afterScl = mesh.scaling.clone();
+      // Only push undo if something actually changed
+      if (!pos.equals(afterPos) || !rot.equals(afterRot) || !scl.equals(afterScl)) {
+        const bPos = pos, bRot = rot, bScl = scl;
+        const aPos = afterPos, aRot = afterRot, aScl = afterScl;
+        const m = mesh;
+        state.history.push({
+          label: "Transform",
+          undo() { m.position.copyFrom(bPos); m.rotation.copyFrom(bRot); m.scaling.copyFrom(bScl); updateProperties(); },
+          redo() { m.position.copyFrom(aPos); m.rotation.copyFrom(aRot); m.scaling.copyFrom(aScl); updateProperties(); },
+        });
+      }
+      dragBefore = null;
+    });
+  }
+}
+
 export function updateGizmo(): void {
   const { gizmoManager: gm, tool, selectedMeshes } = state;
 
@@ -37,7 +82,7 @@ export function updateGizmo(): void {
       gm.positionGizmoEnabled = false;
       gm.rotationGizmoEnabled = false;
       gm.scaleGizmoEnabled = false;
-    } catch { /* ignore */ }
+    } catch (e) { console.warn("Gizmo detach:", e); }
     return;
   }
 
@@ -54,5 +99,7 @@ export function updateGizmo(): void {
     if (tool === "move") gm.positionGizmoEnabled = true;
     else if (tool === "rotate") gm.rotationGizmoEnabled = true;
     else if (tool === "scale") gm.scaleGizmoEnabled = true;
-  } catch { /* ignore gizmo errors */ }
+    // Init undo observers after gizmos are created (lazy by GizmoManager)
+    initGizmoUndo();
+  } catch (e) { console.warn("Gizmo update:", e); }
 }

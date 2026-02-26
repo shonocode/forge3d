@@ -8,13 +8,35 @@ import {
   createClip, getActiveClip, deleteClip,
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
+  copyKeyframe, pasteKeyframe, setKeyframeEasing,
 } from "../tools/animation-tool";
+import { EASING_TYPES } from "../tools/easing";
+import type { EasingType } from "../tools/easing";
+import { findBoneById } from "../tools/skeleton-tool";
 import {
   exportSceneLayout, importSceneLayout, clearAllMapInstances, loadModelLibrary,
 } from "../tools/map-editor";
 import { lastSelected } from "../tools/selection";
-import { updateBoneUI, updateAnimUI, updateModelLibrary, updateMapInstances, updateWeightInfo, registerScrubCallback } from "./panels";
-import { exportGLB, saveToLibrary, loadGLBFromFile } from "../export/gltf-exporter";
+import { addModifier } from "../tools/modifiers";
+import { createLayer } from "../tools/layers";
+import { addLight } from "../tools/lighting";
+import { toggleMeasureMode, clearMeasurements } from "../tools/measure";
+import { updateBoneUI, updateAnimUI, updateModelLibrary, updateMapInstances, updateWeightInfo, updateModifierUI, updateLayerUI, updateLightUI, registerScrubCallback } from "./panels";
+import { exportGLB, exportOBJ, exportSTL, saveToLibrary, loadGLBFromFile } from "../export/gltf-exporter";
+import { setEnvironmentPreset, loadCustomHDRI, setEnvironmentIntensity, toggleSkybox } from "../viewport/environment";
+import { setShadowEnabled, setShadowQuality } from "../viewport/shadows";
+import {
+  setBloomEnabled, setBloomIntensity, setFxaaEnabled,
+  setChromaticEnabled, setChromaticIntensity,
+  setVignetteEnabled, setVignetteWeight,
+  setSsaoEnabled, setSsaoIntensity,
+} from "../viewport/postprocess";
+import { setViewportMode } from "../viewport/shading";
+import { applyCameraPreset, toggleOrthographic, PRESETS } from "../viewport/camera-presets";
+import { applySnapToGizmos } from "../tools/snap";
+import { setParent, clearParent } from "../tools/parenting";
+import { updateHierarchy } from "./panels";
+import type { ViewportMode } from "../state";
 
 function bindSlider(inputId: string, displayId: string, setter: (v: number) => void, formatter?: (v: number) => string): void {
   E(inputId).addEventListener("input", function () {
@@ -27,7 +49,9 @@ function bindSlider(inputId: string, displayId: string, setter: (v: number) => v
 export function bindActionButtons(): void {
   registerScrubCallback(scrubToFrame);
 
-  E("btnExport").addEventListener("click", () => void exportGLB());
+  E("btnExportGLB").addEventListener("click", () => void exportGLB());
+  E("btnExportOBJ").addEventListener("click", exportOBJ);
+  E("btnExportSTL").addEventListener("click", exportSTL);
   E("btnSave").addEventListener("click", () => void saveToLibrary());
   E("btnLoad").addEventListener("click", () => void loadGLBFromFile());
   E("btnDup").addEventListener("click", duplicateSelected);
@@ -151,6 +175,41 @@ export function bindActionButtons(): void {
   });
   E("btnExportAnim").addEventListener("click", () => exportClipAsJSON());
 
+  // Keyframe Edit controls
+  const easingSel = E("kfEasing") as HTMLSelectElement;
+  for (const et of EASING_TYPES) {
+    const opt = document.createElement("option");
+    opt.value = et;
+    opt.textContent = et;
+    easingSel.appendChild(opt);
+  }
+  easingSel.addEventListener("change", function () {
+    setKeyframeEasing(this.value as EasingType);
+    updateAnimUI();
+  });
+  E("btnCopyKF").addEventListener("click", () => { copyKeyframe(); });
+  E("btnPasteKF").addEventListener("click", () => { pasteKeyframe(); updateAnimUI(); });
+
+  // IK controls
+  E("ikEnabled").addEventListener("change", function () {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd) return;
+    const on = (this as HTMLInputElement).checked;
+    if (on) {
+      bd.ikConstraint = { enabled: true, chainLength: +(E("ikChainLen") as HTMLInputElement).value, targetX: 0, targetY: 0, targetZ: 0 };
+    } else {
+      bd.ikConstraint = undefined;
+    }
+  });
+  E("ikChainLen").addEventListener("input", function () {
+    const v = +(this as HTMLInputElement).value;
+    E("ikChainV").textContent = String(v);
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (bd?.ikConstraint) bd.ikConstraint.chainLength = v;
+  });
+
   // Map editor controls
   E("btnRefreshLib").addEventListener("click", () => {
     void loadModelLibrary().then((models) => updateModelLibrary(models));
@@ -165,6 +224,46 @@ export function bindActionButtons(): void {
   E("btnClearScene").addEventListener("click", () => {
     clearAllMapInstances();
     updateMapInstances();
+  });
+
+  // Modifier buttons
+  E("btnAddSubdiv").addEventListener("click", () => {
+    const m = lastSelected();
+    if (m) { addModifier(m, "subdivision"); updateModifierUI(); }
+  });
+  E("btnAddMirror").addEventListener("click", () => {
+    const m = lastSelected();
+    if (m) { addModifier(m, "mirror"); updateModifierUI(); }
+  });
+  E("btnAddArray").addEventListener("click", () => {
+    const m = lastSelected();
+    if (m) { addModifier(m, "array"); updateModifierUI(); }
+  });
+
+  // Snap controls
+  E("snapPos").addEventListener("change", function () {
+    state.snapConfig.positionEnabled = (this as HTMLInputElement).checked;
+    applySnapToGizmos();
+  });
+  E("snapPosVal").addEventListener("change", function () {
+    state.snapConfig.positionIncrement = +(this as HTMLInputElement).value || 0.5;
+    applySnapToGizmos();
+  });
+  E("snapRot").addEventListener("change", function () {
+    state.snapConfig.rotationEnabled = (this as HTMLInputElement).checked;
+    applySnapToGizmos();
+  });
+  E("snapRotVal").addEventListener("change", function () {
+    state.snapConfig.rotationIncrement = +(this as HTMLInputElement).value || 15;
+    applySnapToGizmos();
+  });
+  E("snapScl").addEventListener("change", function () {
+    state.snapConfig.scaleEnabled = (this as HTMLInputElement).checked;
+    applySnapToGizmos();
+  });
+  E("snapSclVal").addEventListener("change", function () {
+    state.snapConfig.scaleIncrement = +(this as HTMLInputElement).value || 0.25;
+    applySnapToGizmos();
   });
 
   E("btnInitWeight").addEventListener("click", () => {
@@ -183,6 +282,119 @@ export function bindActionButtons(): void {
     } else if (m.skeleton && hasWeightData(m)) {
       showWeightOverlay(m);
     }
+  });
+
+  // Scene / Environment controls
+  E("envPreset").addEventListener("change", function () {
+    setEnvironmentPreset((this as HTMLSelectElement).value);
+  });
+  E("btnLoadHDRI").addEventListener("click", () => loadCustomHDRI());
+  E("envIntensity").addEventListener("input", function () {
+    const v = +(this as HTMLInputElement).value;
+    setEnvironmentIntensity(v);
+    E("envIntV").textContent = v.toFixed(2);
+  });
+  E("envSkybox").addEventListener("change", function () {
+    toggleSkybox((this as HTMLInputElement).checked);
+  });
+
+  // Measure controls
+  E("btnMeasure").addEventListener("click", toggleMeasureMode);
+  E("btnClearMeasure").addEventListener("click", clearMeasurements);
+
+  // Light controls
+  E("btnAddPoint").addEventListener("click", () => { addLight("point"); updateLightUI(); });
+  E("btnAddSpot").addEventListener("click", () => { addLight("spot"); updateLightUI(); });
+
+  // Shadow controls
+  E("shadowEnabled").addEventListener("change", function () {
+    setShadowEnabled((this as HTMLInputElement).checked);
+  });
+  E("shadowQuality").addEventListener("change", function () {
+    setShadowQuality(+(this as HTMLSelectElement).value as 512 | 1024 | 2048);
+  });
+
+  // Post-processing controls
+  E("ppFxaa").addEventListener("change", function () { setFxaaEnabled((this as HTMLInputElement).checked); });
+  E("ppBloom").addEventListener("change", function () {
+    const on = (this as HTMLInputElement).checked;
+    setBloomEnabled(on);
+    E("ppBloomIntRow").style.display = on ? "" : "none";
+  });
+  bindSlider("ppBloomInt", "ppBloomV", (v) => setBloomIntensity(v), (v) => v.toFixed(2));
+  E("ppSsao").addEventListener("change", function () {
+    const on = (this as HTMLInputElement).checked;
+    setSsaoEnabled(on);
+    E("ppSsaoIntRow").style.display = on ? "" : "none";
+  });
+  bindSlider("ppSsaoInt", "ppSsaoV", (v) => setSsaoIntensity(v), (v) => v.toFixed(2));
+  E("ppChromatic").addEventListener("change", function () {
+    const on = (this as HTMLInputElement).checked;
+    setChromaticEnabled(on);
+    E("ppChromIntRow").style.display = on ? "" : "none";
+  });
+  bindSlider("ppChromInt", "ppChromV", (v) => setChromaticIntensity(v), (v) => v.toFixed(2));
+  E("ppVignette").addEventListener("change", function () {
+    const on = (this as HTMLInputElement).checked;
+    setVignetteEnabled(on);
+    E("ppVigWeightRow").style.display = on ? "" : "none";
+  });
+  bindSlider("ppVigWeight", "ppVigV", (v) => setVignetteWeight(v), (v) => v.toFixed(2));
+
+  // Viewport shading mode
+  document.querySelectorAll<HTMLElement>(".shade-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode as ViewportMode;
+      setViewportMode(mode);
+      document.querySelectorAll<HTMLElement>(".shade-btn").forEach((b) =>
+        b.classList.toggle("on", b.dataset.mode === mode)
+      );
+    });
+  });
+
+  // Camera presets
+  document.querySelectorAll<HTMLElement>(".cam-btn[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const preset = PRESETS[btn.dataset.preset!];
+      if (preset) applyCameraPreset(preset);
+    });
+  });
+  E("btnOrtho").addEventListener("click", toggleOrthographic);
+
+  // Parenting controls
+  E("btnSetParent").addEventListener("click", () => {
+    if (state.selectedMeshes.length < 2) {
+      import("../state").then((s) => s.status("2つのメッシュを選択（Ctrl+click）"));
+      return;
+    }
+    const child = lastSelected()!;
+    const parent = state.selectedMeshes.find((m) => m !== child)!;
+    const prevParent = child.parent as import("@babylonjs/core").AbstractMesh | null;
+    setParent(child, parent);
+    updateHierarchy();
+    state.history.push({
+      label: "Set Parent",
+      undo() { if (prevParent) setParent(child, prevParent); else clearParent(child); updateHierarchy(); },
+      redo() { setParent(child, parent); updateHierarchy(); },
+    });
+  });
+  E("btnClearParent").addEventListener("click", () => {
+    const m = lastSelected();
+    if (!m || !m.parent) return;
+    const prevParent = m.parent as import("@babylonjs/core").AbstractMesh;
+    clearParent(m);
+    updateHierarchy();
+    state.history.push({
+      label: "Clear Parent",
+      undo() { setParent(m, prevParent); updateHierarchy(); },
+      redo() { clearParent(m); updateHierarchy(); },
+    });
+  });
+
+  // Layer controls
+  E("btnNewLayer").addEventListener("click", () => {
+    createLayer();
+    updateLayerUI();
   });
 
   // Mobile weight hint update

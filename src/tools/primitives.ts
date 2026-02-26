@@ -1,14 +1,16 @@
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, status } from "../state";
-import { selectMesh } from "./selection";
+import { selectMesh, updateGizmo } from "./selection";
 import { updateHierarchy } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
+import { createDefaultPBR } from "../materials/pbr-helpers";
+import { assignToActiveLayer } from "./layers";
+import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
+import { registerMeshForShading } from "../viewport/shading";
 
 export const PALETTE = [
   "#5b7fff", "#4ce0a0", "#ff5c5c", "#ffc855", "#ff8f44",
@@ -40,15 +42,9 @@ const CYL_FACE_UV = [
   new Vector4(1/2, 2/3, 1, 1),   // bottom cap
 ];
 
-function mkMat(hex?: string): StandardMaterial {
-  const { scene } = state;
-  const m = new StandardMaterial("m_" + state.meshCounter, scene);
-  const c = Color3.FromHexString(hex ?? PALETTE[state.colorIndex++ % PALETTE.length]!);
-  m.diffuseColor = c;
-  m.specularColor = new Color3(0.25, 0.25, 0.3);
-  m.specularPower = 48;
-  m.emissiveColor = c.scale(0.03);
-  return m;
+function mkMat(hex?: string): import("@babylonjs/core/Materials/PBR/pbrMaterial").PBRMaterial {
+  const color = hex ?? PALETTE[state.colorIndex++ % PALETTE.length]!;
+  return createDefaultPBR("m_" + state.meshCounter, color);
 }
 
 export function addPrimitive(type: PrimType): AbstractMesh | null {
@@ -90,14 +86,40 @@ export function addPrimitive(type: PrimType): AbstractMesh | null {
       if (pos && idx) {
         const nor = new Float32Array(pos.length);
         VertexData.ComputeNormals(pos, idx, nor);
-        m.setVerticesData(VertexBuffer.NormalKind, Array.from(nor), true);
+        m.setVerticesData(VertexBuffer.NormalKind, nor, true);
       }
     }
   } catch (e) { console.warn("Normal computation:", e); }
 
+  addShadowCaster(m);
+  registerMeshForShading(m);
+  assignToActiveLayer(m);
   state.allMeshes.push(m);
   selectMesh(m, false);
   updateHierarchy();
+
+  // Undo: remove mesh; Redo: re-add
+  const mesh = m;
+  state.history.push({
+    label: "Add " + type,
+    undo() {
+      mesh.setEnabled(false);
+      removeShadowCaster(mesh);
+      const idx = state.allMeshes.indexOf(mesh);
+      if (idx >= 0) state.allMeshes.splice(idx, 1);
+      state.selectedMeshes = state.selectedMeshes.filter((x) => x !== mesh);
+      updateGizmo();
+      updateHierarchy();
+    },
+    redo() {
+      mesh.setEnabled(true);
+      addShadowCaster(mesh);
+      state.allMeshes.push(mesh);
+      selectMesh(mesh, false);
+      updateHierarchy();
+    },
+  });
+
   status(type + " を追加");
   return m;
 }

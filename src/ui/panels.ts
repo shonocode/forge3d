@@ -1,34 +1,49 @@
 import { Tools } from "@babylonjs/core/Misc/tools";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
-import type { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { getAlbedoColor } from "../materials/pbr-helpers";
+import { getTextureInfo, importTextureForSlot, clearTextureSlot, type TextureSlot } from "../tools/texture-import";
 import { state, E } from "../state";
 import type { BoneData, SkeletonData } from "../state";
 import { selectMesh, lastSelected } from "../tools/selection";
 import { deleteOne } from "../tools/actions";
 import { updateMorphUI } from "../tools/morph";
 import { selectBone, getActiveSkeleton } from "../tools/skeleton-tool";
+import { getRootMeshes, getChildren } from "../tools/parenting";
+import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
+import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer } from "../tools/layers";
+import { removeLight, updateLightParam, selectLight } from "../tools/lighting";
+import { getBoundingDimensions } from "../tools/measure";
+import type { Modifier } from "../state";
 import { refreshWeightOverlay, hasWeightData } from "../tools/weight-paint";
-import { getActiveClip } from "../tools/animation-tool";
+import { getActiveClip, getKeyframeEasing } from "../tools/animation-tool";
 import { placeModel, deleteFromLibrary, removeMapInstance } from "../tools/map-editor";
 import type { ModelMetadata } from "../storage/metadata-store";
 import { PALETTE } from "../tools/primitives";
 
-// Callback to avoid circular dependency with animation-tool
+// Callbacks to avoid circular dependencies
 let _scrubCallback: ((frame: number) => void) | null = null;
 export function registerScrubCallback(cb: (frame: number) => void): void {
   _scrubCallback = cb;
 }
 
+let _cacheTransformCallback: ((inputs: HTMLInputElement[]) => void) | null = null;
+export function registerCacheTransformCallback(cb: (inputs: HTMLInputElement[]) => void): void {
+  _cacheTransformCallback = cb;
+}
+
 export function updateHierarchy(): void {
   const el = E("sList");
   el.innerHTML = "";
-  for (const m of state.allMeshes) {
+
+  function addMeshItem(m: import("@babylonjs/core").AbstractMesh, depth: number): void {
     const d = document.createElement("div");
     d.className = "sitem" + (state.selectedMeshes.includes(m) ? " sel" : "");
-    const mat = m.material as StandardMaterial | null;
-    const col = mat?.diffuseColor?.toHexString() ?? "#5b7fff";
-    d.innerHTML = `<div class="cd" style="background:${col}"></div><span>${m.name}</span>
-      <button class="dl" data-name="${m.name}">✕</button>`;
+    d.style.paddingLeft = (8 + depth * 16) + "px";
+    const col = getAlbedoColor(m.material)?.toHexString() ?? "#5b7fff";
+    const indent = depth > 0 ? '<span style="color:var(--t4);margin-right:4px;font-size:8px;">└</span>' : "";
+    d.innerHTML = `<div class="cd" style="background:${col}"></div>${indent}<span>${m.name}</span>
+      <button class="dl">✕</button>`;
     d.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).classList.contains("dl")) return;
       selectMesh(m, e.ctrlKey || e.metaKey);
@@ -36,7 +51,7 @@ export function updateHierarchy(): void {
     const delBtn = d.querySelector<HTMLElement>(".dl")!;
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      deleteOne(m.name);
+      deleteOne(m.uniqueId);
     });
     // Long press for multi-select on mobile
     let lt: ReturnType<typeof setTimeout>;
@@ -44,13 +59,41 @@ export function updateHierarchy(): void {
     d.addEventListener("touchend", () => clearTimeout(lt), { passive: true });
     d.addEventListener("touchmove", () => clearTimeout(lt), { passive: true });
     el.appendChild(d);
+
+    // Recurse into children
+    for (const child of getChildren(m)) {
+      addMeshItem(child, depth + 1);
+    }
+  }
+
+  for (const root of getRootMeshes()) {
+    addMeshItem(root, 0);
   }
 }
 
 export function updateProperties(): void {
   updateTransform();
+  updateDimensions();
   updateMaterial();
   updateMorphUI();
+  updateModifierUI();
+}
+
+export function updateDimensions(): void {
+  const el = E("dimensionsDisplay");
+  const txt = E("dimText");
+  if (!state.selectedMeshes.length) {
+    el.style.display = "none";
+    return;
+  }
+  const m = lastSelected()!;
+  const dims = getBoundingDimensions(m);
+  if (!dims) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+  txt.innerHTML = `W: ${dims.w.toFixed(3)} m &nbsp; H: ${dims.h.toFixed(3)} m &nbsp; D: ${dims.d.toFixed(3)} m`;
 }
 
 export function updateTransform(): void {
@@ -64,7 +107,18 @@ export function updateTransform(): void {
     <div class="pg"><div class="pgt">Position</div>${v3h("pos", m.position)}</div>
     <div class="pg"><div class="pgt">Rotation (°)</div>${v3h("rot", { x: deg(m.rotation.x), y: deg(m.rotation.y), z: deg(m.rotation.z) })}</div>
     <div class="pg"><div class="pgt">Scale</div>${v3h("scl", m.scaling)}</div>`;
-  el.querySelectorAll<HTMLInputElement>(".pi").forEach((inp) => {
+  const inputs = Array.from(el.querySelectorAll<HTMLInputElement>(".pi"));
+  // Save before-state for undo
+  let beforePos = m.position.clone();
+  let beforeRot = m.rotation.clone();
+  let beforeScl = m.scaling.clone();
+
+  inputs.forEach((inp) => {
+    inp.addEventListener("focus", () => {
+      beforePos = m.position.clone();
+      beforeRot = m.rotation.clone();
+      beforeScl = m.scaling.clone();
+    });
     inp.addEventListener("input", () => {
       const [g, a] = inp.dataset.b!.split("_") as [string, "x" | "y" | "z"];
       const v = parseFloat(inp.value) || 0;
@@ -72,7 +126,136 @@ export function updateTransform(): void {
       else if (g === "rot") m.rotation[a] = rad(v);
       else if (g === "scl") m.scaling[a] = v;
     });
+    inp.addEventListener("blur", () => {
+      const afterPos = m.position.clone();
+      const afterRot = m.rotation.clone();
+      const afterScl = m.scaling.clone();
+      if (beforePos.equals(afterPos) && beforeRot.equals(afterRot) && beforeScl.equals(afterScl)) return;
+      const bp = beforePos.clone(), br = beforeRot.clone(), bs = beforeScl.clone();
+      const ap = afterPos, ar = afterRot, as_ = afterScl;
+      const mesh = m;
+      state.history.push({
+        label: "Transform",
+        undo() { mesh.position.copyFrom(bp); mesh.rotation.copyFrom(br); mesh.scaling.copyFrom(bs); updateTransform(); },
+        redo() { mesh.position.copyFrom(ap); mesh.rotation.copyFrom(ar); mesh.scaling.copyFrom(as_); updateTransform(); },
+      });
+    });
   });
+
+  // Cache inputs for render loop live updates
+  _cacheTransformCallback?.(inputs);
+}
+
+export function updateModifierUI(): void {
+  const el = E("modList");
+  const m = lastSelected();
+  if (!m) {
+    el.innerHTML = '<div class="empty">モディファイアなし</div>';
+    return;
+  }
+  const mods = getModifiers(m);
+  if (mods.length === 0) {
+    el.innerHTML = '<div class="empty">モディファイアなし</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const mod of mods) {
+    const row = document.createElement("div");
+    row.style.cssText = "border:1px solid var(--bg3);border-radius:4px;padding:4px 6px;margin-bottom:4px;font-size:10px;";
+
+    // Header: type + toggle + apply + delete
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
+    hdr.innerHTML = `<span style="flex:1;color:${mod.enabled ? "var(--ac)" : "var(--t4)"};font-weight:600;">${modLabel(mod)}</span>`;
+
+    const togBtn = document.createElement("button");
+    togBtn.className = "abtn";
+    togBtn.style.cssText = "padding:1px 4px;font-size:9px;min-width:0;";
+    togBtn.textContent = mod.enabled ? "ON" : "OFF";
+    togBtn.addEventListener("click", () => { toggleModifier(m, mod.id); updateModifierUI(); });
+    hdr.appendChild(togBtn);
+
+    const appBtn = document.createElement("button");
+    appBtn.className = "abtn pri";
+    appBtn.style.cssText = "padding:1px 4px;font-size:9px;min-width:0;";
+    appBtn.textContent = "Apply";
+    appBtn.addEventListener("click", () => { applyModifier(m, mod.id); updateModifierUI(); });
+    hdr.appendChild(appBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "abtn dan";
+    delBtn.style.cssText = "padding:1px 4px;font-size:9px;min-width:0;";
+    delBtn.textContent = "\u2715";
+    delBtn.addEventListener("click", () => { removeModifier(m, mod.id); updateModifierUI(); });
+    hdr.appendChild(delBtn);
+
+    row.appendChild(hdr);
+
+    // Params
+    const params = document.createElement("div");
+    params.style.cssText = "display:flex;flex-direction:column;gap:2px;";
+    buildModParams(params, m, mod);
+    row.appendChild(params);
+
+    el.appendChild(row);
+  }
+}
+
+function modLabel(mod: Modifier): string {
+  switch (mod.type) {
+    case "subdivision": return "Subdivision (L" + mod.level + ")";
+    case "mirror": return "Mirror (" + mod.axis.toUpperCase() + ")";
+    case "array": return "Array (\u00d7" + mod.count + ")";
+  }
+}
+
+function buildModParams(el: HTMLElement, mesh: import("@babylonjs/core").AbstractMesh, mod: Modifier): void {
+  switch (mod.type) {
+    case "subdivision":
+      el.innerHTML = modSlider("Level", mod.level, 1, 2, 1);
+      el.querySelector("input")?.addEventListener("input", function () {
+        updateModifierParam(mesh, mod.id, { level: +this.value });
+        el.querySelector("span.mv")!.textContent = this.value;
+        updateModifierUI();
+      });
+      break;
+    case "mirror": {
+      const axes = ["x", "y", "z"] as const;
+      el.innerHTML = `<div style="display:flex;gap:3px;">${axes.map((a) =>
+        `<button class="abtn${mod.axis === a ? " on" : ""}" data-a="${a}" style="flex:1;padding:1px;font-size:9px;min-width:0;">${a.toUpperCase()}</button>`
+      ).join("")}</div>`;
+      el.querySelectorAll<HTMLElement>("button").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          updateModifierParam(mesh, mod.id, { axis: btn.dataset.a });
+          updateModifierUI();
+        })
+      );
+      break;
+    }
+    case "array":
+      el.innerHTML = modSlider("Count", mod.count, 2, 10, 1) +
+        modSlider("Offset X", mod.offsetX, -5, 5, 0.1) +
+        modSlider("Offset Y", mod.offsetY, -5, 5, 0.1) +
+        modSlider("Offset Z", mod.offsetZ, -5, 5, 0.1);
+      {
+        const inputs = el.querySelectorAll<HTMLInputElement>("input");
+        const keys = ["count", "offsetX", "offsetY", "offsetZ"] as const;
+        inputs.forEach((inp, i) => {
+          inp.addEventListener("input", function () {
+            updateModifierParam(mesh, mod.id, { [keys[i]!]: +this.value });
+            inp.previousElementSibling!.querySelector("span.mv")!.textContent =
+              keys[i] === "count" ? this.value : (+this.value).toFixed(1);
+          });
+        });
+      }
+      break;
+  }
+}
+
+function modSlider(label: string, val: number, min: number, max: number, step: number): string {
+  const display = step >= 1 ? String(val) : val.toFixed(1);
+  return `<div class="sr" style="margin:0;"><label style="font-size:9px;">${label} <span class="mv">${display}</span></label>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${val}"></div>`;
 }
 
 function v3h(pf: string, v: { x: number; y: number; z: number }): string {
@@ -94,25 +277,75 @@ export function updateMaterial(): void {
     return;
   }
   const m = lastSelected()!;
-  const mt = m.material as StandardMaterial | null;
-  if (!mt?.diffuseColor) {
+  const albedo = getAlbedoColor(m.material);
+  if (!albedo) {
     el.innerHTML = '<div class="empty">No material</div>';
     return;
   }
+  const mt = m.material as PBRMaterial;
+  const metallic = mt.metallic ?? 0;
+  const roughness = mt.roughness ?? 0.5;
+  const alpha = mt.alpha != null ? mt.alpha : 1;
+  const emissiveHex = mt.emissiveColor?.toHexString() ?? "#000000";
+  const emissiveInt = mt.emissiveIntensity ?? 0;
+  const ccInt = mt.clearCoat?.intensity ?? 0;
+  const ccRough = mt.clearCoat?.roughness ?? 0;
+  const sheenInt = mt.sheen?.intensity ?? 0;
+  const sheenColor = mt.sheen?.color?.toHexString() ?? "#ffffff";
+  const transInt = mt.subSurface?.refractionIntensity ?? 0;
+  const ior = mt.subSurface?.indexOfRefraction ?? 1.5;
+  const isUnlit = mt.unlit ?? false;
+
   el.innerHTML = `
-    <div class="pg"><div class="pgt">Color</div>
+    <div class="pg"><div class="pgt">Albedo</div>
       <div class="cgrid">${PALETTE.map((c) => `<div class="csw" style="background:${c}" data-col="${c}"></div>`).join("")}</div>
-      <div class="pr" style="margin-top:6px"><span class="pl">🎨</span>
-        <input type="color" value="${mt.diffuseColor.toHexString()}" id="matColorPicker"
+      <div class="pr" style="margin-top:6px"><span class="pl" style="font-size:10px">Color</span>
+        <input type="color" value="${albedo.toHexString()}" id="matColorPicker"
           style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
     </div>
-    <div class="pg"><div class="pgt">Properties</div>
-      <div class="sr"><label>Spec Power <span id="spV">${(mt.specularPower || 48) | 0}</span></label>
-        <input type="range" min="1" max="256" value="${mt.specularPower || 48}" id="matSpecPower"></div>
-      <div class="sr"><label>Alpha <span id="alV">${(mt.alpha != null ? mt.alpha : 1).toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".05" value="${mt.alpha != null ? mt.alpha : 1}" id="matAlpha"></div>
-      <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Wire</span>
+    <div class="pg"><div class="pgt">PBR</div>
+      <div class="sr"><label>Metallic <span id="mtV">${metallic.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${metallic}" id="matMetallic"></div>
+      <div class="sr"><label>Roughness <span id="rgV">${roughness.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${roughness}" id="matRoughness"></div>
+      <div class="sr"><label>Alpha <span id="alV">${alpha.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".05" value="${alpha}" id="matAlpha"></div>
+    </div>
+    <div class="pg"><div class="pgt">Emissive</div>
+      <div class="pr"><span class="pl" style="font-size:10px">Color</span>
+        <input type="color" value="${emissiveHex}" id="matEmissiveColor"
+          style="flex:1;min-height:22px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
+      <div class="sr"><label>Intensity <span id="eiV">${emissiveInt.toFixed(2)}</span></label>
+        <input type="range" min="0" max="5" step=".1" value="${emissiveInt}" id="matEmissiveInt"></div>
+    </div>
+    <div class="pg"><div class="pgt">Clear Coat</div>
+      <div class="sr"><label>Intensity <span id="ccIntV">${ccInt.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${ccInt}" id="matCCInt"></div>
+      <div class="sr"><label>Roughness <span id="ccRoughV">${ccRough.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${ccRough}" id="matCCRough"></div>
+    </div>
+    <div class="pg"><div class="pgt">Sheen</div>
+      <div class="sr"><label>Intensity <span id="sheenIntV">${sheenInt.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${sheenInt}" id="matSheenInt"></div>
+      <div class="pr"><span class="pl" style="font-size:10px">Color</span>
+        <input type="color" value="${sheenColor}" id="matSheenColor"
+          style="flex:1;min-height:22px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
+    </div>
+    <div class="pg"><div class="pgt">Transmission</div>
+      <div class="sr"><label>Intensity <span id="transIntV">${transInt.toFixed(2)}</span></label>
+        <input type="range" min="0" max="1" step=".01" value="${transInt}" id="matTransInt"></div>
+      <div class="sr"><label>IOR <span id="iorV">${ior.toFixed(2)}</span></label>
+        <input type="range" min="1" max="2.5" step=".01" value="${ior}" id="matIOR"></div>
+      <div style="font-size:9px;color:var(--t4);padding:2px 0;">Glass 1.5 · Water 1.33 · Diamond 2.42</div>
+    </div>
+    <div class="pg"><div class="pgt">Textures</div>
+      <div id="texSlots"></div>
+    </div>
+    <div class="pg"><div class="pgt">Display</div>
+      <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Wireframe</span>
         <input type="checkbox" ${mt.wireframe ? "checked" : ""} id="matWire" style="margin-left:auto"></div>
+      <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Unlit</span>
+        <input type="checkbox" ${isUnlit ? "checked" : ""} id="matUnlit" style="margin-left:auto"></div>
     </div>`;
 
   // Attach events
@@ -122,27 +355,133 @@ export function updateMaterial(): void {
   el.querySelector<HTMLInputElement>("#matColorPicker")?.addEventListener("change", function () {
     setColor(this.value);
   });
-  el.querySelector<HTMLInputElement>("#matSpecPower")?.addEventListener("input", function () {
-    (lastSelected()!.material as StandardMaterial).specularPower = +this.value;
-    E("spV").textContent = String(+this.value | 0);
+  el.querySelector<HTMLInputElement>("#matMetallic")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).metallic = +this.value;
+    E("mtV").textContent = (+this.value).toFixed(2);
+  });
+  el.querySelector<HTMLInputElement>("#matRoughness")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).roughness = +this.value;
+    E("rgV").textContent = (+this.value).toFixed(2);
   });
   el.querySelector<HTMLInputElement>("#matAlpha")?.addEventListener("input", function () {
-    (lastSelected()!.material as StandardMaterial).alpha = +this.value;
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).alpha = +this.value;
     E("alV").textContent = (+this.value).toFixed(2);
   });
-  el.querySelector<HTMLInputElement>("#matWire")?.addEventListener("change", function () {
-    (lastSelected()!.material as StandardMaterial).wireframe = this.checked;
+  el.querySelector<HTMLInputElement>("#matEmissiveColor")?.addEventListener("change", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).emissiveColor = Color3.FromHexString(this.value);
   });
+  el.querySelector<HTMLInputElement>("#matEmissiveInt")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).emissiveIntensity = +this.value;
+    E("eiV").textContent = (+this.value).toFixed(2);
+  });
+  el.querySelector<HTMLInputElement>("#matWire")?.addEventListener("change", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).wireframe = this.checked;
+  });
+  el.querySelector<HTMLInputElement>("#matUnlit")?.addEventListener("change", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).unlit = this.checked;
+  });
+  // Clear Coat
+  el.querySelector<HTMLInputElement>("#matCCInt")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    const mat = sel.material as PBRMaterial;
+    mat.clearCoat.isEnabled = +this.value > 0;
+    mat.clearCoat.intensity = +this.value;
+    E("ccIntV").textContent = (+this.value).toFixed(2);
+  });
+  el.querySelector<HTMLInputElement>("#matCCRough")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).clearCoat.roughness = +this.value;
+    E("ccRoughV").textContent = (+this.value).toFixed(2);
+  });
+  // Sheen
+  el.querySelector<HTMLInputElement>("#matSheenInt")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    const mat = sel.material as PBRMaterial;
+    mat.sheen.isEnabled = +this.value > 0;
+    mat.sheen.intensity = +this.value;
+    E("sheenIntV").textContent = (+this.value).toFixed(2);
+  });
+  el.querySelector<HTMLInputElement>("#matSheenColor")?.addEventListener("change", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).sheen.color = Color3.FromHexString(this.value);
+  });
+  // Transmission / IOR
+  el.querySelector<HTMLInputElement>("#matTransInt")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    const mat = sel.material as PBRMaterial;
+    mat.subSurface.isRefractionEnabled = +this.value > 0;
+    mat.subSurface.refractionIntensity = +this.value;
+    E("transIntV").textContent = (+this.value).toFixed(2);
+  });
+  el.querySelector<HTMLInputElement>("#matIOR")?.addEventListener("input", function () {
+    const sel = lastSelected(); if (!sel?.material) return;
+    (sel.material as PBRMaterial).subSurface.indexOfRefraction = +this.value;
+    E("iorV").textContent = (+this.value).toFixed(2);
+  });
+
+  // Texture slots
+  const texInfo = getTextureInfo(m);
+  const slotsEl = el.querySelector<HTMLElement>("#texSlots")!;
+  const SLOT_LABELS: { slot: TextureSlot; label: string }[] = [
+    { slot: "albedo", label: "Albedo" },
+    { slot: "normal", label: "Normal" },
+    { slot: "metallic", label: "Metal/Rough" },
+    { slot: "ao", label: "AO" },
+    { slot: "emissive", label: "Emissive" },
+  ];
+  for (const { slot, label } of SLOT_LABELS) {
+    const info = texInfo[slot];
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;padding:2px 0;";
+    row.innerHTML = `<span style="min-width:60px;color:var(--t3)">${label}</span>
+      <span style="flex:1;color:var(--t4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${info ? info.name : "\u2014"}</span>`;
+    const impBtn = document.createElement("button");
+    impBtn.className = "abtn";
+    impBtn.style.cssText = "padding:1px 5px;font-size:9px;min-width:0;";
+    impBtn.textContent = "+";
+    impBtn.title = "Import " + label;
+    impBtn.addEventListener("click", () => {
+      importTextureForSlot(m, slot);
+    });
+    row.appendChild(impBtn);
+    if (info) {
+      const clrBtn = document.createElement("button");
+      clrBtn.className = "abtn dan";
+      clrBtn.style.cssText = "padding:1px 5px;font-size:9px;min-width:0;";
+      clrBtn.textContent = "\u2715";
+      clrBtn.title = "Clear " + label;
+      clrBtn.addEventListener("click", () => {
+        clearTextureSlot(m, slot);
+        updateMaterial();
+      });
+      row.appendChild(clrBtn);
+    }
+    slotsEl.appendChild(row);
+  }
 }
 
 function setColor(hex: string): void {
   if (!state.selectedMeshes.length) return;
   const m = lastSelected()!;
-  const mat = m.material as StandardMaterial;
-  const c = Color3.FromHexString(hex);
-  mat.diffuseColor = c;
-  mat.emissiveColor = c.scale(0.03);
+  const mat = m.material as PBRMaterial;
+  const prevHex = mat.albedoColor?.toHexString() ?? "#ffffff";
+  mat.albedoColor = Color3.FromHexString(hex);
   updateHierarchy();
+
+  const mesh = m;
+  const oldHex = prevHex, newHex = hex;
+  state.history.push({
+    label: "Color",
+    undo() { (mesh.material as PBRMaterial).albedoColor = Color3.FromHexString(oldHex); updateHierarchy(); },
+    redo() { (mesh.material as PBRMaterial).albedoColor = Color3.FromHexString(newHex); updateHierarchy(); },
+  });
 }
 
 // ── Bone UI ──
@@ -236,6 +575,9 @@ export function updateAnimUI(): void {
   updateAnimClipInfo();
   updateKeyframeList();
   updateImportedAnimUI();
+  // Sync easing dropdown to current keyframe
+  const easingSel = document.getElementById("kfEasing") as HTMLSelectElement | null;
+  if (easingSel) easingSel.value = getKeyframeEasing();
 }
 
 function updateAnimClipInfo(): void {
@@ -468,8 +810,135 @@ export function updateWeightInfo(): void {
     </div>`;
 }
 
+// ── Layer UI ──
+
+export function updateLayerUI(): void {
+  const el = E("layerList");
+  el.innerHTML = "";
+  for (const layer of state.layers) {
+    const count = getMeshesOnLayer(layer.id).length;
+    const isActive = layer.id === state.activeLayerId;
+    const row = document.createElement("div");
+    row.className = "sitem" + (isActive ? " sel" : "");
+    row.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+
+    // Visibility toggle
+    const eyeBtn = document.createElement("button");
+    eyeBtn.style.cssText = "background:none;border:none;color:var(--t3);cursor:pointer;font-size:11px;padding:0 2px;";
+    eyeBtn.textContent = layer.visible ? "\u{1F441}" : "\u25CB";
+    eyeBtn.title = layer.visible ? "Hide" : "Show";
+    eyeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleLayerVisibility(layer.id);
+      updateLayerUI();
+    });
+    row.appendChild(eyeBtn);
+
+    // Name + count
+    const nameSpan = document.createElement("span");
+    nameSpan.style.cssText = "flex:1;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    nameSpan.textContent = layer.name;
+    row.appendChild(nameSpan);
+
+    const countSpan = document.createElement("span");
+    countSpan.style.cssText = "font-size:9px;color:var(--t4);min-width:18px;text-align:right;";
+    countSpan.textContent = String(count);
+    row.appendChild(countSpan);
+
+    // Delete button (only if more than 1 layer)
+    if (state.layers.length > 1) {
+      const delBtn = document.createElement("button");
+      delBtn.className = "dl";
+      delBtn.textContent = "\u2715";
+      delBtn.style.cssText = "font-size:9px;";
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteLayer(layer.id);
+        updateLayerUI();
+      });
+      row.appendChild(delBtn);
+    }
+
+    // Click to set active
+    row.addEventListener("click", () => {
+      setActiveLayer(layer.id);
+      updateLayerUI();
+    });
+
+    el.appendChild(row);
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// ── Light UI ──
+export function updateLightUI(): void {
+  const el = E("lightList");
+  if (state.lightMap.size === 0) {
+    el.innerHTML = '<div class="empty">ライトなし</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const [id, data] of state.lightMap) {
+    const isSel = state.selectedLightId === id;
+    const row = document.createElement("div");
+    row.className = "sitem" + (isSel ? " sel" : "");
+    row.innerHTML = `<div class="cd" style="background:${data.color};border-radius:50%;"></div>
+      <span style="font-size:10px;">${data.type === "point" ? "Point" : "Spot"} ${id.split("_")[1]}</span>
+      <button class="dl" style="margin-left:auto;">✕</button>`;
+    row.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).classList.contains("dl")) return;
+      selectLight(id);
+      updateLightUI();
+    });
+    row.querySelector(".dl")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeLight(id);
+      updateLightUI();
+    });
+    el.appendChild(row);
+
+    // Show properties for selected light
+    if (isSel) {
+      const props = document.createElement("div");
+      props.style.cssText = "padding:6px 8px;background:var(--bg2);border-radius:3px;margin-top:4px;";
+      props.innerHTML = `
+        <div class="pr" style="margin-bottom:4px;"><span class="pl" style="font-size:9px;">Color</span>
+          <input type="color" value="${data.color}" data-lid="${id}" data-lk="color"
+            style="flex:1;min-height:22px;border:none;cursor:pointer;background:var(--bg3);border-radius:3px;padding:0;"></div>
+        <div class="pr" style="margin-bottom:4px;"><span class="pl" style="font-size:9px;">Intensity</span>
+          <input type="range" min="0" max="5" step="0.1" value="${data.intensity}" data-lid="${id}" data-lk="intensity"
+            style="flex:1;"></div>
+        <div class="pr" style="margin-bottom:4px;"><span class="pl" style="font-size:9px;">Range</span>
+          <input type="range" min="1" max="50" step="1" value="${data.range}" data-lid="${id}" data-lk="range"
+            style="flex:1;"></div>
+        ${data.type === "spot" ? `<div class="pr" style="margin-bottom:4px;"><span class="pl" style="font-size:9px;">Angle</span>
+          <input type="range" min="10" max="120" step="1" value="${data.angle ?? 45}" data-lid="${id}" data-lk="angle"
+            style="flex:1;"></div>` : ""}
+        <div class="pr" style="margin-bottom:2px;"><span class="pl x" style="font-size:9px;">X</span>
+          <input type="number" step="0.5" value="${data.light.position.x.toFixed(2)}" data-lid="${id}" data-lk="posX"
+            style="flex:1;background:var(--bg3);color:var(--t1);border:1px solid var(--bd);border-radius:3px;padding:2px 4px;font-size:9px;"></div>
+        <div class="pr" style="margin-bottom:2px;"><span class="pl y" style="font-size:9px;">Y</span>
+          <input type="number" step="0.5" value="${data.light.position.y.toFixed(2)}" data-lid="${id}" data-lk="posY"
+            style="flex:1;background:var(--bg3);color:var(--t1);border:1px solid var(--bd);border-radius:3px;padding:2px 4px;font-size:9px;"></div>
+        <div class="pr"><span class="pl z" style="font-size:9px;">Z</span>
+          <input type="number" step="0.5" value="${data.light.position.z.toFixed(2)}" data-lid="${id}" data-lk="posZ"
+            style="flex:1;background:var(--bg3);color:var(--t1);border:1px solid var(--bd);border-radius:3px;padding:2px 4px;font-size:9px;"></div>`;
+
+      // Bind all inputs
+      props.querySelectorAll<HTMLInputElement>("input").forEach((inp) => {
+        inp.addEventListener("input", () => {
+          const lid = inp.dataset.lid!;
+          const lk = inp.dataset.lk!;
+          const v = inp.type === "color" ? inp.value : +inp.value;
+          updateLightParam(lid, lk, v);
+        });
+      });
+      el.appendChild(props);
+    }
+  }
 }

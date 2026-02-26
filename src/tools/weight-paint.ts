@@ -3,8 +3,9 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
-import type { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { state, status } from "../state";
+import { lastSelected } from "./selection";
 import { getActiveSkeleton } from "./skeleton-tool";
 
 const MAX_INFLUENCES = 4;
@@ -314,11 +315,11 @@ export function showWeightOverlay(mesh: AbstractMesh): void {
   }
 
   // Store original state for restore
-  const mat = mesh.material as StandardMaterial | null;
+  const mat = mesh.material as PBRMaterial | null;
   if (mat && !mesh.metadata?._weightOverlayRestore) {
     if (!mesh.metadata) mesh.metadata = {};
     mesh.metadata._weightOverlayRestore = {
-      disableLighting: mat.disableLighting,
+      unlit: mat.unlit ?? false,
       emissiveColor: mat.emissiveColor?.clone() ?? new Color3(0, 0, 0),
     };
   }
@@ -361,10 +362,10 @@ function updateWeightOverlay(mesh: AbstractMesh, boneIndex: number): void {
   mesh.setVerticesData(VertexBuffer.ColorKind, colors, true);
   mesh.hasVertexAlpha = true;
 
-  const mat = mesh.material as StandardMaterial | null;
+  const mat = mesh.material as PBRMaterial | null;
   if (mat) {
-    // Ensure vertex colors are used — emissive-only rendering
-    mat.disableLighting = true;
+    // Ensure vertex colors are used — unlit rendering
+    mat.unlit = true;
   }
 }
 
@@ -372,33 +373,39 @@ function updateWeightOverlay(mesh: AbstractMesh, boneIndex: number): void {
  * Hide weight overlay, restore original material state.
  */
 export function hideWeightOverlay(mesh: AbstractMesh): void {
-  // Neutralize vertex colors by setting all to white
-  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-  if (pos) {
-    const vertexCount = pos.length / 3;
-    const whites = new Float32Array(vertexCount * 4);
-    for (let i = 0; i < vertexCount; i++) {
-      const ci = i * 4;
-      whites[ci] = 1;
-      whites[ci + 1] = 1;
-      whites[ci + 2] = 1;
-      whites[ci + 3] = 1;
+  // Remove vertex color buffer entirely to avoid affecting normal rendering
+  try {
+    if (typeof (mesh as any).removeVerticesData === "function") {
+      (mesh as any).removeVerticesData(VertexBuffer.ColorKind);
+    } else {
+      // Fallback: set all vertex colors to white
+      const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+      if (pos) {
+        const vertexCount = pos.length / 3;
+        const whites = new Float32Array(vertexCount * 4);
+        for (let i = 0; i < vertexCount; i++) {
+          const ci = i * 4;
+          whites[ci] = 1; whites[ci + 1] = 1; whites[ci + 2] = 1; whites[ci + 3] = 1;
+        }
+        mesh.setVerticesData(VertexBuffer.ColorKind, whites, true);
+      }
     }
-    mesh.setVerticesData(VertexBuffer.ColorKind, whites, true);
+  } catch {
+    // Some mesh types may not support removal; ignore
   }
   mesh.hasVertexAlpha = false;
 
-  const mat = mesh.material as StandardMaterial | null;
+  const mat = mesh.material as PBRMaterial | null;
   if (mat) {
     const restore = mesh.metadata?._weightOverlayRestore;
     if (restore) {
-      mat.disableLighting = restore.disableLighting ?? false;
+      mat.unlit = restore.unlit ?? false;
       if (restore.emissiveColor) {
         mat.emissiveColor = restore.emissiveColor;
       }
       delete mesh.metadata._weightOverlayRestore;
     } else {
-      mat.disableLighting = false;
+      mat.unlit = false;
     }
   }
 
@@ -410,9 +417,8 @@ export function hideWeightOverlay(mesh: AbstractMesh): void {
  */
 export function refreshWeightOverlay(): void {
   if (!state.weightOverlayActive) return;
-  if (!state.selectedMeshes.length) return;
-
-  const mesh = state.selectedMeshes[state.selectedMeshes.length - 1]!;
+  const mesh = lastSelected();
+  if (!mesh) return;
   if (!mesh.skeleton || !hasWeightData(mesh)) return;
 
   const skelData = getActiveSkeleton();

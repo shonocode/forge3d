@@ -1,6 +1,7 @@
 import { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import { Bone } from "@babylonjs/core/Bones/bone";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -122,7 +123,13 @@ function getBoneWorldPosition(boneData: BoneData): Vector3 {
   }
   // Fallback: extract from bone's absolute transform
   const m = boneData.bone.getAbsoluteTransform();
-  return new Vector3(m.m[12], m.m[13], m.m[14]);
+  const localPos = new Vector3(m.m[12], m.m[13], m.m[14]);
+  // Account for assigned mesh's world matrix if present
+  const skelData = getActiveSkeleton();
+  if (skelData?.assignedMesh) {
+    return Vector3.TransformCoordinates(localPos, skelData.assignedMesh.getWorldMatrix());
+  }
+  return localPos;
 }
 
 // ── Bone visuals ──
@@ -264,8 +271,24 @@ function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): void {
     boneData.bone.getLocalMatrix().copyFrom(Matrix.Translation(worldPos.x, worldPos.y, worldPos.z));
   }
 
+  // Recompute absolute transforms and update child bone visuals
+  skelData.skeleton.computeAbsoluteTransforms();
+  updateChildVisuals(boneData.id, skelData);
+
   // Update hierarchy lines
   updateHierarchyVisualization(skelData);
+}
+
+/** Recursively update child bone visuals from their absolute transforms */
+function updateChildVisuals(parentId: string, skelData: SkeletonData): void {
+  for (const child of skelData.bones) {
+    if (child.parentId !== parentId) continue;
+    if (child.visual) {
+      const absTransform = child.bone.getAbsoluteTransform();
+      child.visual.position.set(absTransform.m[12]!, absTransform.m[13]!, absTransform.m[14]!);
+    }
+    updateChildVisuals(child.id, skelData);
+  }
 }
 
 // ── Bone deletion ──
@@ -287,6 +310,14 @@ export function deleteBone(boneId: string): void {
     const idx = skelData.bones.findIndex((b) => b.id === id);
     if (idx === -1) continue;
     const bd = skelData.bones[idx]!;
+
+    // Remove from Babylon.js Skeleton.bones array and reindex weight data
+    const bjsIdx = skelData.skeleton.bones.indexOf(bd.bone);
+    if (bjsIdx !== -1) {
+      reindexWeightData(skelData, bjsIdx);
+      skelData.skeleton.bones.splice(bjsIdx, 1);
+    }
+
     if (bd.visual) {
       bd.visual.dispose();
     }
@@ -295,6 +326,28 @@ export function deleteBone(boneId: string): void {
 
   updateHierarchyVisualization(skelData);
   status("Bone(s) deleted");
+}
+
+/** Update weight data indices after a bone is removed from skeleton.bones */
+function reindexWeightData(skelData: SkeletonData, removedBjsIndex: number): void {
+  if (!skelData.assignedMesh) return;
+  const mesh = skelData.assignedMesh;
+  const indices = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind);
+  if (!indices) return;
+
+  let modified = false;
+  for (let i = 0; i < indices.length; i++) {
+    if (indices[i] === removedBjsIndex) {
+      indices[i] = 0; // fallback to root bone
+      modified = true;
+    } else if (indices[i]! > removedBjsIndex) {
+      indices[i] = indices[i]! - 1; // shift down
+      modified = true;
+    }
+  }
+  if (modified) {
+    mesh.updateVerticesData(VertexBuffer.MatricesIndicesKind, indices);
+  }
 }
 
 function collectDescendants(boneId: string, skelData: SkeletonData, result: Set<string>): void {

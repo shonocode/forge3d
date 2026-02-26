@@ -33,9 +33,27 @@
       <div id="csgBtns"></div>
       <div style="margin-top:5px;font-size:9px;color:var(--t4);line-height:1.5;">Ctrl/Long-press: 複数選択</div>
     </div>
+    <div class="sec">
+      <div class="sec-t">Mesh Tools</div>
+      <div id="meshToolBtns"></div>
+    </div>
+    <div class="sec">
+      <div class="sec-t">Measure</div>
+      <button class="cbtn" id="btnMeasure" style="width:100%;font-size:10px;">Measure Distance</button>
+      <button class="cbtn" id="btnClearMeasure" style="width:100%;margin-top:4px;font-size:10px;">Clear All</button>
+    </div>
+    <div class="sec">
+      <div class="sec-t">Layers</div>
+      <div id="layerList"></div>
+      <button class="cbtn" id="btnNewLayer" style="margin-top:4px;width:100%;">+ New Layer</button>
+    </div>
     <div class="sec" style="flex:1;min-height:0;">
       <div class="sec-t">Hierarchy</div>
       <div class="slist" id="sList"></div>
+      <div style="display:flex;gap:4px;margin-top:4px;">
+        <button class="cbtn" id="btnSetParent" style="flex:1;font-size:9px;">Set Parent</button>
+        <button class="cbtn" id="btnClearParent" style="flex:1;font-size:9px;">Clear Parent</button>
+      </div>
     </div>
   </div>
 
@@ -46,14 +64,60 @@
       <div class="vtag" id="fpsT">-- FPS</div>
       <div class="vtag" id="vrtT">0 verts</div>
       <div class="vtag" id="triT">0 tris</div>
+      <div class="vtag" style="bottom:4px;top:auto;opacity:.6">Grid: 1 m</div>
     </div>
     <div class="scur" id="scur"></div>
+    <div class="vp-camera" id="cameraPresets">
+      <button class="cam-btn" data-preset="front" title="Front">F</button>
+      <button class="cam-btn" data-preset="back" title="Back">Bk</button>
+      <button class="cam-btn" data-preset="right" title="Right">R</button>
+      <button class="cam-btn" data-preset="left" title="Left">L</button>
+      <button class="cam-btn" data-preset="top" title="Top">T</button>
+      <button class="cam-btn" data-preset="bottom" title="Bottom">Bt</button>
+      <button class="cam-btn" id="btnOrtho" title="Orthographic">&#8862;</button>
+    </div>
+    <div class="vp-shading" id="shadingBtns">
+      <button class="shade-btn" data-mode="solid" title="Solid">&#9675;</button>
+      <button class="shade-btn" data-mode="wire" title="Wireframe">&#9671;</button>
+      <button class="shade-btn" data-mode="matcap" title="Matcap">&#9684;</button>
+      <button class="shade-btn on" data-mode="textured" title="Textured">&#9679;</button>
+    </div>
   </div>
 
   <!-- Right -->
   <div class="rp" id="rpanel">
     <div class="tabs" id="tabBar"></div>
-    <div class="tbody on" id="tb-xform"><div id="xfC"><div class="empty">メッシュを選択</div></div></div>
+    <div class="tbody on" id="tb-xform">
+      <div class="pg" id="dimensionsDisplay" style="display:none;">
+        <div class="pgt">Dimensions</div>
+        <div id="dimText" style="font-size:10px;color:var(--t2);line-height:1.6;"></div>
+      </div>
+      <div class="pg" id="snapSection">
+        <div class="pgt">Snap</div>
+        <div class="pr"><span class="pl" style="font-size:10px;">Position</span>
+          <input type="checkbox" id="snapPos" style="margin-left:auto;">
+          <input type="number" id="snapPosVal" value="0.5" step="0.1" min="0.05"
+            style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;">Rotation</span>
+          <input type="checkbox" id="snapRot" style="margin-left:auto;">
+          <input type="number" id="snapRotVal" value="15" step="5" min="1"
+            style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;">Scale</span>
+          <input type="checkbox" id="snapScl" style="margin-left:auto;">
+          <input type="number" id="snapSclVal" value="0.25" step="0.05" min="0.01"
+            style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
+      </div>
+      <div id="xfC"><div class="empty">メッシュを選択</div></div>
+      <div class="pg" id="modifierSection">
+        <div class="pgt">Modifiers</div>
+        <div id="modList"><div class="empty">モディファイアなし</div></div>
+        <div style="display:flex;gap:4px;margin-top:6px;">
+          <button class="abtn" id="btnAddSubdiv" style="flex:1;font-size:9px;">+ Subdiv</button>
+          <button class="abtn" id="btnAddMirror" style="flex:1;font-size:9px;">+ Mirror</button>
+          <button class="abtn" id="btnAddArray" style="flex:1;font-size:9px;">+ Array</button>
+        </div>
+      </div>
+    </div>
     <div class="tbody" id="tb-mat"><div id="matC"><div class="empty">メッシュを選択</div></div></div>
     <div class="tbody" id="tb-morph">
       <div class="pg">
@@ -147,6 +211,15 @@
         <button class="abtn dan" id="btnDeleteKF">✕ Delete Keyframe</button>
       </div>
       <div class="pg">
+        <div class="pgt">Keyframe Edit</div>
+        <div class="pr" style="margin-bottom:4px"><span class="pl" style="font-size:10px;color:var(--t3)">Easing</span>
+          <select id="kfEasing" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:9px;"></select></div>
+        <div style="display:flex;gap:4px;">
+          <button class="abtn" id="btnCopyKF" style="flex:1;font-size:9px;">Copy KF</button>
+          <button class="abtn" id="btnPasteKF" style="flex:1;font-size:9px;">Paste KF</button>
+        </div>
+      </div>
+      <div class="pg">
         <div class="pgt">Playback</div>
         <button class="abtn pri" id="btnPlayAnim">▶ Play</button>
         <button class="abtn" id="btnStopAnim">■ Stop</button>
@@ -176,6 +249,13 @@
         <div id="boneProps"><div class="empty">ボーンを選択</div></div>
         <button class="abtn dan" id="btnDelBone">Delete Bone</button>
       </div>
+      <div class="pg">
+        <div class="pgt">IK Constraint</div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Enable IK</span>
+          <input type="checkbox" id="ikEnabled" style="margin-left:auto"></div>
+        <div class="sr"><label style="font-size:9px;">Chain Length <span id="ikChainV">2</span></label>
+          <input type="range" min="1" max="5" step="1" value="2" id="ikChainLen"></div>
+      </div>
     </div>
     <div class="tbody" id="tb-map">
       <div class="pg">
@@ -197,11 +277,71 @@
         <button class="abtn dan" id="btnClearScene">✕ Clear Scene</button>
       </div>
     </div>
+    <div class="tbody" id="tb-scene">
+      <div class="pg" id="lightSection">
+        <div class="pgt">Lights</div>
+        <div id="lightList"><div class="empty">ライトなし</div></div>
+        <div style="display:flex;gap:4px;margin-top:6px;">
+          <button class="abtn" id="btnAddPoint" style="flex:1;font-size:9px;">+ Point</button>
+          <button class="abtn" id="btnAddSpot" style="flex:1;font-size:9px;">+ Spot</button>
+        </div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Environment</div>
+        <div class="sr"><label>Preset</label>
+          <select id="envPreset" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+            <option value="studio">Studio</option>
+            <option value="country">Country</option>
+          </select></div>
+        <button class="abtn" id="btnLoadHDRI">Import HDRI</button>
+        <div class="sr"><label>Intensity <span id="envIntV">0.80</span></label>
+          <input type="range" min="0" max="3" step=".05" value="0.8" id="envIntensity"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Skybox</span>
+          <input type="checkbox" id="envSkybox" style="margin-left:auto"></div>
+      </div>
+      <div class="pg" id="shadowControls">
+        <div class="pgt">Shadows</div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Enabled</span>
+          <input type="checkbox" checked id="shadowEnabled" style="margin-left:auto"></div>
+        <div class="sr"><label>Quality</label>
+          <select id="shadowQuality" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+            <option value="512">Low (512)</option>
+            <option value="1024" selected>Medium (1024)</option>
+            <option value="2048">High (2048)</option>
+          </select></div>
+      </div>
+      <div class="pg" id="postProcessControls">
+        <div class="pgt">Post-Processing</div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">FXAA</span>
+          <input type="checkbox" checked id="ppFxaa" style="margin-left:auto"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Bloom</span>
+          <input type="checkbox" id="ppBloom" style="margin-left:auto"></div>
+        <div class="sr" id="ppBloomIntRow" style="display:none"><label>Intensity <span id="ppBloomV">0.50</span></label>
+          <input type="range" min="0" max="2" step=".05" value="0.5" id="ppBloomInt"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">SSAO</span>
+          <input type="checkbox" id="ppSsao" style="margin-left:auto"></div>
+        <div class="sr" id="ppSsaoIntRow" style="display:none"><label>Intensity <span id="ppSsaoV">1.00</span></label>
+          <input type="range" min="0.1" max="3" step=".1" value="1" id="ppSsaoInt"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Chromatic</span>
+          <input type="checkbox" id="ppChromatic" style="margin-left:auto"></div>
+        <div class="sr" id="ppChromIntRow" style="display:none"><label>Intensity <span id="ppChromV">0.50</span></label>
+          <input type="range" min="0" max="3" step=".1" value="0.5" id="ppChromInt"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Vignette</span>
+          <input type="checkbox" id="ppVignette" style="margin-left:auto"></div>
+        <div class="sr" id="ppVigWeightRow" style="display:none"><label>Weight <span id="ppVigV">1.50</span></label>
+          <input type="range" min="0" max="5" step=".1" value="1.5" id="ppVigWeight"></div>
+      </div>
+    </div>
     <div class="pg" style="margin-top:auto;">
       <div class="pgt">Actions</div>
-      <button class="abtn pri" id="btnExport">⬇ GLB Export</button>
+      <div class="pgt">Export</div>
+      <div style="display:flex;gap:4px;">
+        <button class="abtn pri" id="btnExportGLB" style="flex:1">⬇ GLB</button>
+        <button class="abtn" id="btnExportOBJ" style="flex:1">OBJ</button>
+        <button class="abtn" id="btnExportSTL" style="flex:1">STL</button>
+      </div>
       <button class="abtn" id="btnSave">💾 Save to Library</button>
-      <button class="abtn" id="btnLoad">📂 Load GLB</button>
+      <button class="abtn" id="btnLoad">📂 Load Model</button>
       <button class="abtn" id="btnDup">⎘ Duplicate</button>
       <button class="abtn dan" id="btnDel">✕ Delete</button>
     </div>
@@ -331,7 +471,7 @@
       <div class="help-t">Save / Export</div>
       <p><b>GLB Export</b>: シーン全体をGLBファイルとしてダウンロード。スケルトン・ウェイト・テクスチャ含む。</p>
       <p><b>Save to Library</b>: ブラウザ内ストレージ（OPFS/IndexedDB）に保存。Map Editor で再利用可能。</p>
-      <p><b>Load GLB</b>: ファイルからGLB/glTFを読み込み。</p>
+      <p><b>Load Model</b>: ファイルからGLB/glTF/OBJ/STLを読み込み。</p>
     </div>
 
     <div class="help-sec">

@@ -4,6 +4,10 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { state, status, E } from "../state";
 import { lastSelected } from "./selection";
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 export function addMorph(): void {
   if (!state.selectedMeshes.length) {
     status("⚠ メッシュを選択");
@@ -41,6 +45,25 @@ export function captureMorph(): void {
   status("キャプチャ: " + tn);
 }
 
+export function deleteMorphTarget(uid: number, index: number): void {
+  const d = state.morphMap.get(uid);
+  if (!d || !d.targets[index]) return;
+  const removed = d.targets.splice(index, 1)[0]!;
+  const mesh = state.allMeshes.find((m) => m.uniqueId === uid);
+
+  // Rebuild manager without the removed target
+  d.manager.dispose();
+  const mm = new MorphTargetManager();
+  for (const t of d.targets) {
+    mm.addTarget(t);
+  }
+  d.manager = mm;
+  if (mesh) mesh.morphTargetManager = mm;
+
+  updateMorphUI();
+  status("モーフ削除: " + removed.name);
+}
+
 export function setMorphInfluence(uid: number, index: number, value: number): void {
   const d = state.morphMap.get(uid);
   if (!d || !d.targets[index]) return;
@@ -64,13 +87,17 @@ export function updateMorphUI(): void {
   el.innerHTML = d.targets
     .map(
       (t, i) => `
-    <div class="sr"><label>${t.name} <span id="mv${i}">${t.influence.toFixed(2)}</span></label>
+    <div class="sr" style="display:flex;align-items:center;gap:4px;">
+      <label style="flex:1;">${escapeHtml(t.name)} <span id="mv${i}">${t.influence.toFixed(2)}</span></label>
       <input type="range" min="0" max="1" step=".01" value="${t.influence}"
-        data-uid="${m.uniqueId}" data-idx="${i}" class="morph-slider"></div>`
+        data-uid="${m.uniqueId}" data-idx="${i}" class="morph-slider" style="flex:2;">
+      <button class="abtn dan morph-del" data-uid="${m.uniqueId}" data-idx="${i}"
+        style="padding:1px 5px;font-size:9px;min-width:0;">✕</button>
+    </div>`
     )
     .join("");
 
-  // Attach event listeners
+  // Attach slider event listeners
   el.querySelectorAll<HTMLInputElement>(".morph-slider").forEach((inp) => {
     inp.addEventListener("input", () => {
       setMorphInfluence(
@@ -78,6 +105,13 @@ export function updateMorphUI(): void {
         Number(inp.dataset.idx),
         Number(inp.value)
       );
+    });
+  });
+
+  // Attach delete button event listeners
+  el.querySelectorAll<HTMLButtonElement>(".morph-del").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      deleteMorphTarget(Number(btn.dataset.uid), Number(btn.dataset.idx));
     });
   });
 }

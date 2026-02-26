@@ -4,6 +4,7 @@ import { state, status } from "../state";
 import { selectMesh } from "./selection";
 import { updateHierarchy } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
+import { cleanupMesh } from "./actions";
 
 export type CSGOp = "union" | "subtract" | "intersect";
 
@@ -19,10 +20,21 @@ export function doCSG(op: CSGOp): void {
       status("⚠ CSGにはMeshが必要です");
       return;
     }
-    a.bakeCurrentTransformIntoVertices();
-    b.bakeCurrentTransformIntoVertices();
-    const ca = CSG.FromMesh(a);
-    const cb = CSG.FromMesh(b);
+
+    // Clone meshes for CSG to preserve originals if operation fails
+    const aClone = a.clone("csg_tmp_a", null);
+    const bClone = b.clone("csg_tmp_b", null);
+    if (!aClone || !bClone) {
+      aClone?.dispose();
+      bClone?.dispose();
+      status("⚠ CSG クローン失敗");
+      return;
+    }
+    aClone.bakeCurrentTransformIntoVertices();
+    bClone.bakeCurrentTransformIntoVertices();
+
+    const ca = CSG.FromMesh(aClone);
+    const cb = CSG.FromMesh(bClone);
     let r: CSG;
     switch (op) {
       case "union": r = ca.union(cb); break;
@@ -34,10 +46,15 @@ export function doCSG(op: CSGOp): void {
     nm.isPickable = true;
     applyDefaultEdges(nm);
 
-    removeMesh(a);
-    removeMesh(b);
-    a.dispose();
-    b.dispose();
+    // Dispose temp clones
+    aClone.dispose();
+    bClone.dispose();
+
+    // Remove originals with full cleanup (paint textures, morphs, skeleton refs)
+    state.selectedMeshes = state.selectedMeshes.filter((x) => x !== a && x !== b);
+    cleanupMesh(a);
+    cleanupMesh(b);
+
     state.allMeshes.push(nm);
     selectMesh(nm, false);
     updateHierarchy();
@@ -46,8 +63,4 @@ export function doCSG(op: CSGOp): void {
     console.error("CSG error:", e);
     status("⚠ CSG エラー: " + (e as Error).message);
   }
-}
-
-function removeMesh(m: Mesh): void {
-  state.allMeshes = state.allMeshes.filter((x) => x !== m);
 }
