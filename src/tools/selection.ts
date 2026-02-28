@@ -1,6 +1,6 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
-import { state } from "../state";
+import { state, isMobile } from "../state";
 import { updateHierarchy, updateProperties } from "../ui/panels";
 import { applySelectedEdges, resetEdges } from "./mesh-utils";
 
@@ -75,6 +75,14 @@ function initGizmoUndo(): void {
 export function updateGizmo(): void {
   const { gizmoManager: gm, tool, selectedMeshes } = state;
 
+  // Bone visual transparency: semi-transparent in weight mode for easier painting
+  const boneVis = tool === "weight" ? 0.4 : 1.0;
+  for (const [, sd] of state.skeletonMap) {
+    for (const bd of sd.bones) {
+      if (bd.visual) bd.visual.visibility = boneVis;
+    }
+  }
+
   // Non-transform tools: detach first, then disable (order matters for Babylon.js internals)
   if (tool === "sculpt" || tool === "paint" || tool === "bone" || tool === "weight" || tool === "anim") {
     try {
@@ -99,7 +107,32 @@ export function updateGizmo(): void {
     if (tool === "move") gm.positionGizmoEnabled = true;
     else if (tool === "rotate") gm.rotationGizmoEnabled = true;
     else if (tool === "scale") gm.scaleGizmoEnabled = true;
+    // Enlarge gizmo handles on mobile for easier touch interaction
+    const ratio = isMobile() ? 1.5 : 1;
+    if (gm.gizmos.positionGizmo) gm.gizmos.positionGizmo.scaleRatio = ratio;
+    if (gm.gizmos.rotationGizmo) gm.gizmos.rotationGizmo.scaleRatio = ratio;
+    if (gm.gizmos.scaleGizmo) gm.gizmos.scaleGizmo.scaleRatio = ratio;
     // Init undo observers after gizmos are created (lazy by GizmoManager)
     initGizmoUndo();
+    initGizmoCameraControl();
   } catch (e) { console.warn("Gizmo update:", e); }
+}
+
+let gizmoCameraInitialized = false;
+
+function initGizmoCameraControl(): void {
+  if (gizmoCameraInitialized) return;
+  gizmoCameraInitialized = true;
+
+  const gm = state.gizmoManager;
+  const gizmos = [gm.gizmos.positionGizmo, gm.gizmos.rotationGizmo, gm.gizmos.scaleGizmo];
+  for (const g of gizmos) {
+    if (!g) continue;
+    g.onDragStartObservable.add(() => {
+      if (isMobile()) state.camera.detachControl();
+    });
+    g.onDragEndObservable.add(() => {
+      if (isMobile() && !state.cameraLocked) state.camera.attachControl(state.canvas, true);
+    });
+  }
 }

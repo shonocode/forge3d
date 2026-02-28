@@ -1,13 +1,15 @@
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
-import "@babylonjs/loaders/glTF";
 import { state, status } from "../state";
 import type { MapInstance } from "../state";
 import { modelStore } from "../storage/model-store";
 import { metadataStore, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "./selection";
-import { updateHierarchy } from "../ui/panels";
+import { updateHierarchy, updateMapInstances } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
+import { unregisterMeshForShading } from "../viewport/shading";
+import { removeMeshFromLayers } from "./layers";
+import { openFileDialog } from "../ui/file-input";
 
 // ── Scene Layout types ──
 
@@ -54,6 +56,7 @@ export async function deleteFromLibrary(modelId: string): Promise<void> {
 export async function placeModel(modelId: string, modelName: string): Promise<void> {
   try {
     status("Loading model...");
+    await import("@babylonjs/loaders/glTF");
     const data = await modelStore.load(modelId);
     if (!data) {
       status("⚠ Model not found in storage");
@@ -91,6 +94,19 @@ export async function placeModel(modelId: string, modelName: string): Promise<vo
       };
       state.mapInstances.push(instance);
 
+      // Undo support for placement
+      const iid = instanceId;
+      state.history.push({
+        label: "Place Model",
+        undo() { removeMapInstance(iid); },
+        redo() { void placeModel(modelId, modelName).then(() => {
+          updateHierarchy();
+        }).catch((e) => {
+          console.warn("Redo place failed:", e);
+          status("\u26a0 Redo failed");
+        }); },
+      });
+
       // Select the last imported mesh
       const lastMesh = result.meshes[result.meshes.length - 1];
       if (lastMesh) selectMesh(lastMesh, false);
@@ -121,6 +137,18 @@ export function removeMapInstance(instanceId: string): void {
       const selIdx = state.selectedMeshes.indexOf(mesh);
       if (selIdx !== -1) state.selectedMeshes.splice(selIdx, 1);
       removeShadowCaster(mesh);
+      // Cleanup associated resources (paint, morph, skeleton, modifiers, shading, layers)
+      const paintTex = state.paintTextureMap.get(mesh.uniqueId);
+      if (paintTex) { paintTex.dispose(); state.paintTextureMap.delete(mesh.uniqueId); }
+      const morph = state.morphMap.get(mesh.uniqueId);
+      if (morph) { morph.manager.dispose(); state.morphMap.delete(mesh.uniqueId); }
+      for (const [, skelData] of state.skeletonMap) {
+        if (skelData.assignedMesh === mesh) skelData.assignedMesh = null;
+      }
+      state.modifierMap.delete(mesh.uniqueId);
+      state.originalGeometryMap.delete(mesh.uniqueId);
+      unregisterMeshForShading(mesh);
+      removeMeshFromLayers(mesh);
       mesh.dispose();
       state.allMeshes.splice(meshIdx, 1);
     }
@@ -182,18 +210,8 @@ export function exportSceneLayout(name: string): void {
   status("Layout exported: " + layout.name);
 }
 
-export async function importSceneLayout(): Promise<void> {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".json";
-  input.style.display = "none";
-  document.body.appendChild(input);
-  const cleanup = () => { if (input.parentNode) input.remove(); };
-  window.addEventListener("focus", () => setTimeout(cleanup, 300), { once: true });
-  input.addEventListener("change", async () => {
-    cleanup();
-    const file = input.files?.[0];
-    if (!file) return;
+export function importSceneLayout(): void {
+  openFileDialog(".json", async (file) => {
     try {
       status("Importing layout...");
       const text = await file.text();
@@ -204,7 +222,10 @@ export async function importSceneLayout(): Promise<void> {
         return;
       }
 
+      const historyBefore = state.history.undoCount();
+      const placedInstanceIds: string[] = [];
       let skipped = 0;
+
       for (const obj of layout.objects) {
         // Validate model exists in storage before attempting placement
         const data = await modelStore.load(obj.modelId);
@@ -221,6 +242,7 @@ export async function importSceneLayout(): Promise<void> {
         if (state.mapInstances.length <= prevCount) continue;
         const inst = state.mapInstances[state.mapInstances.length - 1];
         if (!inst) continue;
+        placedInstanceIds.push(inst.instanceId);
 
         for (const uid of inst.meshUniqueIds) {
           const mesh = state.allMeshes.find((m) => m.uniqueId === uid);
@@ -232,12 +254,57 @@ export async function importSceneLayout(): Promise<void> {
         }
       }
 
+      // Replace individual placeModel undo entries with a single atomic entry
+      if (placedInstanceIds.length > 0) {
+        while (state.history.undoCount() > historyBefore) {
+          state.history.popUndo();
+        }
+        const ids = [...placedInstanceIds];
+        // Save layout data for redo
+        const redoObjects = [...layout.objects];
+        state.history.push({
+          label: "Import Layout (" + ids.length + ")",
+          undo() {
+            for (const id of ids) removeMapInstance(id);
+            updateHierarchy();
+          },
+          redo() {
+            // Re-place all models from stored layout data
+            void (async () => {
+              for (const obj of redoObjects) {
+                const d = await modelStore.load(obj.modelId);
+                if (!d) continue;
+                const prev = state.mapInstances.length;
+                await placeModel(obj.modelId, obj.modelName);
+                // Remove individual undo entry created by placeModel
+                if (state.history.undoCount() > 0) state.history.popUndo();
+                if (state.mapInstances.length <= prev) continue;
+                const ri = state.mapInstances[state.mapInstances.length - 1];
+                if (!ri) continue;
+                for (const uid of ri.meshUniqueIds) {
+                  const mesh = state.allMeshes.find((m) => m.uniqueId === uid);
+                  if (mesh) {
+                    mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
+                    mesh.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
+                    mesh.scaling.set(obj.scale.x, obj.scale.y, obj.scale.z);
+                  }
+                }
+              }
+              updateHierarchy();
+            })().catch((e) => {
+              console.error("Redo layout failed:", e);
+              status("\u26a0 Redo failed");
+            });
+          },
+        });
+      }
+
       const placed = layout.objects.length - skipped;
       status("Layout imported: " + layout.name + " (" + placed + "/" + layout.objects.length + " objects)" + (skipped ? " — " + skipped + " missing" : ""));
+      updateMapInstances();
     } catch (e) {
       console.error("Import layout error:", e);
       status("⚠ Import error: " + (e as Error).message);
     }
   });
-  input.click();
 }

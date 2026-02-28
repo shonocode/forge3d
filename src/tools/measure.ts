@@ -114,14 +114,18 @@ export function updateMeasureOverlay(): void {
 
 /** Get bounding box dimensions for display */
 export function getBoundingDimensions(mesh: import("@babylonjs/core").AbstractMesh): { w: number; h: number; d: number } | null {
-  mesh.computeWorldMatrix(true);
-  const bi = mesh.getBoundingInfo();
-  if (!bi) return null;
-  const min = bi.boundingBox.minimumWorld;
-  const max = bi.boundingBox.maximumWorld;
-  return {
-    w: Math.abs(max.x - min.x),
-    h: Math.abs(max.y - min.y),
-    d: Math.abs(max.z - min.z),
-  };
+  try {
+    mesh.computeWorldMatrix(true);
+    const bi = mesh.getBoundingInfo();
+    if (!bi) return null;
+    const min = bi.boundingBox.minimumWorld;
+    const max = bi.boundingBox.maximumWorld;
+    return {
+      w: Math.abs(max.x - min.x),
+      h: Math.abs(max.y - min.y),
+      d: Math.abs(max.z - min.z),
+    };
+  } catch {
+    return null;
+  }
 }

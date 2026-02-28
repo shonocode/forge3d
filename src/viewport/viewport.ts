@@ -67,7 +67,14 @@ export function initViewport(): void {
     status("⚠ WebGL lost — restoring...");
   });
   canvas.addEventListener("webglcontextrestored", () => {
+    // Re-compile all materials and effects after context restore
     engine.resize();
+    for (const mat of scene.materials) {
+      mat.markDirty();
+    }
+    scene.markAllMaterialsAsDirty(0x3F); // ALL flags
+    // Re-attach camera controls
+    cam.attachControl(canvas, true);
     status("WebGL restored");
   });
 

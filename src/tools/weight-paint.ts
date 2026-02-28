@@ -3,12 +3,16 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
-import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { state, status } from "../state";
 import { lastSelected } from "./selection";
 import { getActiveSkeleton } from "./skeleton-tool";
 
 const MAX_INFLUENCES = 4;
+
+function asPBR(mesh: AbstractMesh): PBRMaterial | null {
+  return mesh.material instanceof PBRMaterial ? mesh.material : null;
+}
 
 // ── Weight data initialization ──
 
@@ -32,11 +36,16 @@ export function initWeightData(mesh: AbstractMesh): void {
   const vertexCount = pos.length / 3;
 
   // Check if weight data already exists
-  const existing = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
-  if (existing && existing.length === vertexCount * MAX_INFLUENCES) {
+  const existingWeights = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
+  if (existingWeights && existingWeights.length === vertexCount * MAX_INFLUENCES) {
     status("Weight data already initialized");
     return;
   }
+
+  // Save previous state for undo
+  const prevIndices = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind);
+  const prevWeights = existingWeights;
+  const prevInfluencers = mesh.numBoneInfluencers;
 
   const indices = new Float32Array(vertexCount * MAX_INFLUENCES);
   const weights = new Float32Array(vertexCount * MAX_INFLUENCES);
@@ -59,6 +68,28 @@ export function initWeightData(mesh: AbstractMesh): void {
 
   // Need to set numBoneInfluencers
   mesh.numBoneInfluencers = MAX_INFLUENCES;
+
+  state.history.push({
+    label: "Init Weights",
+    undo() {
+      if (prevIndices && prevWeights) {
+        mesh.setVerticesData(VertexBuffer.MatricesIndicesKind, prevIndices, true);
+        mesh.setVerticesData(VertexBuffer.MatricesWeightsKind, prevWeights, true);
+        mesh.numBoneInfluencers = prevInfluencers;
+      } else {
+        // No previous data — overwrite with zero buffers
+        const zeroBuf = new Float32Array(vertexCount * MAX_INFLUENCES);
+        mesh.setVerticesData(VertexBuffer.MatricesIndicesKind, zeroBuf, true);
+        mesh.setVerticesData(VertexBuffer.MatricesWeightsKind, zeroBuf, true);
+        mesh.numBoneInfluencers = 0;
+      }
+    },
+    redo() {
+      mesh.setVerticesData(VertexBuffer.MatricesIndicesKind, indices, true);
+      mesh.setVerticesData(VertexBuffer.MatricesWeightsKind, weights, true);
+      mesh.numBoneInfluencers = MAX_INFLUENCES;
+    },
+  });
 
   status("Weight data initialized (" + vertexCount + " vertices)");
 }
@@ -102,7 +133,8 @@ export function paintWeightAt(mesh: AbstractMesh, pick: PickingInfo): void {
   let inv: Matrix;
   try {
     inv = Matrix.Invert(mesh.getWorldMatrix());
-  } catch {
+  } catch (e) {
+    console.warn("Weight paint: matrix inversion failed", e);
     return;
   }
   const hitL = Vector3.TransformCoordinates(hitW, inv);
@@ -315,7 +347,7 @@ export function showWeightOverlay(mesh: AbstractMesh): void {
   }
 
   // Store original state for restore
-  const mat = mesh.material as PBRMaterial | null;
+  const mat = asPBR(mesh);
   if (mat && !mesh.metadata?._weightOverlayRestore) {
     if (!mesh.metadata) mesh.metadata = {};
     mesh.metadata._weightOverlayRestore = {
@@ -362,7 +394,7 @@ function updateWeightOverlay(mesh: AbstractMesh, boneIndex: number): void {
   mesh.setVerticesData(VertexBuffer.ColorKind, colors, true);
   mesh.hasVertexAlpha = true;
 
-  const mat = mesh.material as PBRMaterial | null;
+  const mat = asPBR(mesh);
   if (mat) {
     // Ensure vertex colors are used — unlit rendering
     mat.unlit = true;
@@ -395,7 +427,7 @@ export function hideWeightOverlay(mesh: AbstractMesh): void {
   }
   mesh.hasVertexAlpha = false;
 
-  const mat = mesh.material as PBRMaterial | null;
+  const mat = asPBR(mesh);
   if (mat) {
     const restore = mesh.metadata?._weightOverlayRestore;
     if (restore) {

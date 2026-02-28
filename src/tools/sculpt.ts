@@ -23,6 +23,87 @@ export function setBrush(b: BrushId): void {
   status("Brush: " + b);
 }
 
+// ── Spatial grid for fast radius queries on high-poly meshes ──
+const GRID_THRESHOLD = 5000; // Only use grid for meshes with this many+ vertices
+
+// Reusable grid + bucket pool to reduce GC pressure during sculpt strokes
+const _gridCache = new Map<number, number[]>();
+const _bucketPool: number[][] = [];
+
+// Hash function: pack (ix,iy,iz) into a single number
+const _hashCell = (ix: number, iy: number, iz: number) =>
+  ix * 73856093 + iy * 19349663 + iz * 83492791;
+
+/** Collect vertex indices within radius using a spatial hash grid. */
+function queryRadius(
+  pos: Float32Array | number[],
+  cx: number, cy: number, cz: number,
+  R: number,
+): number[] {
+  const n = pos.length / 3;
+  const R2 = R * R;
+
+  // For small meshes, linear scan is faster than grid overhead
+  if (n < GRID_THRESHOLD) {
+    const result: number[] = [];
+    for (let i = 0; i < pos.length; i += 3) {
+      const dx = pos[i]! - cx;
+      const dy = pos[i + 1]! - cy;
+      const dz = pos[i + 2]! - cz;
+      if (dx * dx + dy * dy + dz * dz < R2) result.push(i);
+    }
+    return result;
+  }
+
+  // Recycle grid and buckets from previous call
+  for (const bucket of _gridCache.values()) {
+    bucket.length = 0;
+    _bucketPool.push(bucket);
+  }
+  _gridCache.clear();
+
+  // Build spatial hash grid with cell size = R (so query checks 3³ = 27 cells)
+  const invCell = 1 / R;
+
+  for (let i = 0; i < pos.length; i += 3) {
+    const ix = Math.floor(pos[i]! * invCell);
+    const iy = Math.floor(pos[i + 1]! * invCell);
+    const iz = Math.floor(pos[i + 2]! * invCell);
+    const h = _hashCell(ix, iy, iz);
+    let bucket = _gridCache.get(h);
+    if (!bucket) {
+      bucket = _bucketPool.pop() ?? [];
+      _gridCache.set(h, bucket);
+    }
+    bucket.push(i);
+  }
+
+  // Query cells within radius
+  const minIx = Math.floor((cx - R) * invCell);
+  const maxIx = Math.floor((cx + R) * invCell);
+  const minIy = Math.floor((cy - R) * invCell);
+  const maxIy = Math.floor((cy + R) * invCell);
+  const minIz = Math.floor((cz - R) * invCell);
+  const maxIz = Math.floor((cz + R) * invCell);
+
+  const result: number[] = [];
+  for (let ix = minIx; ix <= maxIx; ix++) {
+    for (let iy = minIy; iy <= maxIy; iy++) {
+      for (let iz = minIz; iz <= maxIz; iz++) {
+        const bucket = _gridCache.get(_hashCell(ix, iy, iz));
+        if (!bucket) continue;
+        for (const i of bucket) {
+          const dx = pos[i]! - cx;
+          const dy = pos[i + 1]! - cy;
+          const dz = pos[i + 2]! - cz;
+          if (dx * dx + dy * dy + dz * dz < R2) result.push(i);
+        }
+      }
+    }
+  }
+  return result;
+}
+
 export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
   if (!mesh || !pick.hit) return;
   const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
@@ -46,13 +127,13 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
   let avgC: (({ x: number; y: number; z: number }) | undefined)[] | null = null;
   if (brush === "smooth") avgC = smoothAvg(pos, hitL, R);
 
-  const R2 = R * R;
-  for (let i = 0; i < pos.length; i += 3) {
+  // Use spatial query for fast radius lookup
+  const inRadius = queryRadius(pos, hitL.x, hitL.y, hitL.z, R);
+  for (const i of inRadius) {
     const dx = pos[i]! - hitL.x;
     const dy = pos[i + 1]! - hitL.y;
     const dz = pos[i + 2]! - hitL.z;
     const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 >= R2) continue;
     const dist = Math.sqrt(d2);
     const fall = Math.pow(1 - dist / R, F);
     const str = fall * S;
@@ -121,15 +202,10 @@ function smoothAvg(
   const result: (({ x: number; y: number; z: number }) | undefined)[] = new Array(n);
   const hR = R * 0.6;
   const hR2 = hR * hR;
-  const R2 = R * R;
-  const inRange: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const ix = i * 3;
-    const dx = pos[ix]! - center.x;
-    const dy = pos[ix + 1]! - center.y;
-    const dz = pos[ix + 2]! - center.z;
-    if (dx * dx + dy * dy + dz * dz < R2) inRange.push(i);
-  }
+
+  // Use spatial query to find vertices in range
+  const inRangeIdx = queryRadius(pos, center.x, center.y, center.z, R);
+  const inRange: number[] = inRangeIdx.map(i => i / 3);
 
   // Pre-copy positions of in-range vertices for cache efficiency
   const irCount = inRange.length;

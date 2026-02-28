@@ -91,6 +91,10 @@ export function captureKeyframe(): void {
     status("⚠ Select a bone first");
     return;
   }
+  if (state.currentFrame < 0 || state.currentFrame > clip.maxFrames) {
+    status("\u26a0 Frame out of range (0-" + clip.maxFrames + ")");
+    return;
+  }
 
   const bd = findBoneById(state.selectedBoneId);
   if (!bd) return;
@@ -183,9 +187,12 @@ export function deleteKeyframe(): void {
  * Set all bones to interpolated poses at the given frame.
  */
 export function scrubToFrame(frame: number): void {
+  const clip = getActiveClip();
+  if (clip) {
+    frame = Math.max(0, Math.min(frame, clip.maxFrames));
+  }
   state.currentFrame = frame;
 
-  const clip = getActiveClip();
   if (!clip) return;
 
   const skelData = getActiveSkeleton();
@@ -281,8 +288,8 @@ export function playPreview(): void {
 
 export function stopPreview(): void {
   if (state.animPreviewGroup) {
-    state.animPreviewGroup.stop();
-    state.animPreviewGroup.dispose();
+    try { state.animPreviewGroup.stop(); } catch { /* scene may be disposed */ }
+    try { state.animPreviewGroup.dispose(); } catch { /* ignore */ }
     state.animPreviewGroup = null;
   }
   state.isPlaying = false;
@@ -399,8 +406,12 @@ export function solveIK(boneId: string): void {
   if (chain.length < 2) return;
 
   const mesh = skelData.assignedMesh;
+  if (!mesh) {
+    status("\u26a0 Skeleton not assigned to mesh");
+    return;
+  }
   // Get joint positions
-  const positions = chain.map((b) => b.bone.getAbsolutePosition(mesh!).clone());
+  const positions = chain.map((b) => b.bone.getAbsolutePosition(mesh).clone());
 
   // FABRIK iterations
   for (let iter = 0; iter < 10; iter++) {
@@ -411,22 +422,22 @@ export function solveIK(boneId: string): void {
       if (segLen < 0.0001) continue;
       const dir = positions[i]!.subtract(positions[i - 1]!).normalize();
       const boneLen = chain[i - 1]!.bone.length || Vector3.Distance(
-        chain[i - 1]!.bone.getAbsolutePosition(mesh!),
-        chain[i]!.bone.getAbsolutePosition(mesh!)
+        chain[i - 1]!.bone.getAbsolutePosition(mesh),
+        chain[i]!.bone.getAbsolutePosition(mesh)
       );
       positions[i]!.copyFrom(positions[i - 1]!.add(dir.scale(boneLen)));
     }
 
     // Backward reaching (from root to tip)
-    const rootPos = chain[chain.length - 1]!.bone.getAbsolutePosition(mesh!);
+    const rootPos = chain[chain.length - 1]!.bone.getAbsolutePosition(mesh);
     positions[positions.length - 1]!.copyFrom(rootPos);
     for (let i = positions.length - 2; i >= 0; i--) {
       const segLen = Vector3.Distance(positions[i]!, positions[i + 1]!);
       if (segLen < 0.0001) continue;
       const dir = positions[i]!.subtract(positions[i + 1]!).normalize();
       const boneLen = chain[i]!.bone.length || Vector3.Distance(
-        chain[i]!.bone.getAbsolutePosition(mesh!),
-        chain.length > i + 1 ? chain[i + 1]!.bone.getAbsolutePosition(mesh!) : chain[i]!.bone.getAbsolutePosition(mesh!)
+        chain[i]!.bone.getAbsolutePosition(mesh),
+        chain.length > i + 1 ? chain[i + 1]!.bone.getAbsolutePosition(mesh) : chain[i]!.bone.getAbsolutePosition(mesh)
       );
       positions[i]!.copyFrom(positions[i + 1]!.add(dir.scale(boneLen)));
     }

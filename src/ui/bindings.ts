@@ -1,4 +1,4 @@
-import { state, E, isMobile } from "../state";
+import { state, E, isMobile, status } from "../state";
 import { addMorph, captureMorph } from "../tools/morph";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { clearPaintTexture } from "../tools/texture-paint";
@@ -22,7 +22,6 @@ import { createLayer } from "../tools/layers";
 import { addLight } from "../tools/lighting";
 import { toggleMeasureMode, clearMeasurements } from "../tools/measure";
 import { updateBoneUI, updateAnimUI, updateModelLibrary, updateMapInstances, updateWeightInfo, updateModifierUI, updateLayerUI, updateLightUI, registerScrubCallback } from "./panels";
-import { exportGLB, exportOBJ, exportSTL, saveToLibrary, loadGLBFromFile } from "../export/gltf-exporter";
 import { setEnvironmentPreset, loadCustomHDRI, setEnvironmentIntensity, toggleSkybox } from "../viewport/environment";
 import { setShadowEnabled, setShadowQuality } from "../viewport/shadows";
 import {
@@ -49,11 +48,40 @@ function bindSlider(inputId: string, displayId: string, setter: (v: number) => v
 export function bindActionButtons(): void {
   registerScrubCallback(scrubToFrame);
 
-  E("btnExportGLB").addEventListener("click", () => void exportGLB());
-  E("btnExportOBJ").addEventListener("click", exportOBJ);
-  E("btnExportSTL").addEventListener("click", exportSTL);
-  E("btnSave").addEventListener("click", () => void saveToLibrary());
-  E("btnLoad").addEventListener("click", () => void loadGLBFromFile());
+  // Undo/Redo buttons
+  const undoBtn = E("btnUndo") as HTMLButtonElement;
+  const redoBtn = E("btnRedo") as HTMLButtonElement;
+  undoBtn.addEventListener("click", () => state.history.undo());
+  redoBtn.addEventListener("click", () => state.history.redo());
+  state.history.setOnChange(() => {
+    undoBtn.disabled = !state.history.canUndo();
+    redoBtn.disabled = !state.history.canRedo();
+    const uc = state.history.undoCount();
+    const rc = state.history.redoCount();
+    undoBtn.title = uc ? `Undo (${uc})` : "Undo";
+    redoBtn.title = rc ? `Redo (${rc})` : "Redo";
+  });
+
+  E("btnExportGLB").addEventListener("click", async () => {
+    const { exportGLB } = await import("../export/gltf-exporter");
+    void exportGLB();
+  });
+  E("btnExportOBJ").addEventListener("click", async () => {
+    const { exportOBJ } = await import("../export/gltf-exporter");
+    exportOBJ();
+  });
+  E("btnExportSTL").addEventListener("click", async () => {
+    const { exportSTL } = await import("../export/gltf-exporter");
+    exportSTL();
+  });
+  E("btnSave").addEventListener("click", async () => {
+    const { saveToLibrary } = await import("../export/gltf-exporter");
+    void saveToLibrary();
+  });
+  E("btnLoad").addEventListener("click", async () => {
+    const { loadModelFromFile } = await import("../export/gltf-exporter");
+    void loadModelFromFile();
+  });
   E("btnDup").addEventListener("click", duplicateSelected);
   E("btnDel").addEventListener("click", deleteSelected);
   E("btnAddMorph").addEventListener("click", addMorph);
@@ -219,7 +247,7 @@ export function bindActionButtons(): void {
     exportSceneLayout(name);
   });
   E("btnImportLayout").addEventListener("click", () => {
-    void importSceneLayout().then(() => updateMapInstances());
+    importSceneLayout();
   });
   E("btnClearScene").addEventListener("click", () => {
     clearAllMapInstances();
@@ -240,30 +268,42 @@ export function bindActionButtons(): void {
     if (m) { addModifier(m, "array"); updateModifierUI(); }
   });
 
-  // Snap controls
+  // Snap controls — restore from localStorage
+  const savedSnap = localStorage.getItem("forge3d_snap");
+  if (savedSnap) {
+    try { Object.assign(state.snapConfig, JSON.parse(savedSnap)); } catch { /* ignore */ }
+    (E("snapPos") as HTMLInputElement).checked = state.snapConfig.positionEnabled;
+    (E("snapPosVal") as HTMLInputElement).value = String(state.snapConfig.positionIncrement);
+    (E("snapRot") as HTMLInputElement).checked = state.snapConfig.rotationEnabled;
+    (E("snapRotVal") as HTMLInputElement).value = String(state.snapConfig.rotationIncrement);
+    (E("snapScl") as HTMLInputElement).checked = state.snapConfig.scaleEnabled;
+    (E("snapSclVal") as HTMLInputElement).value = String(state.snapConfig.scaleIncrement);
+    applySnapToGizmos();
+  }
+  const saveSnap = () => localStorage.setItem("forge3d_snap", JSON.stringify(state.snapConfig));
   E("snapPos").addEventListener("change", function () {
     state.snapConfig.positionEnabled = (this as HTMLInputElement).checked;
-    applySnapToGizmos();
+    applySnapToGizmos(); saveSnap();
   });
   E("snapPosVal").addEventListener("change", function () {
-    state.snapConfig.positionIncrement = +(this as HTMLInputElement).value || 0.5;
-    applySnapToGizmos();
+    state.snapConfig.positionIncrement = Math.max(0.01, +(this as HTMLInputElement).value || 0.5);
+    applySnapToGizmos(); saveSnap();
   });
   E("snapRot").addEventListener("change", function () {
     state.snapConfig.rotationEnabled = (this as HTMLInputElement).checked;
-    applySnapToGizmos();
+    applySnapToGizmos(); saveSnap();
   });
   E("snapRotVal").addEventListener("change", function () {
-    state.snapConfig.rotationIncrement = +(this as HTMLInputElement).value || 15;
-    applySnapToGizmos();
+    state.snapConfig.rotationIncrement = Math.max(1, +(this as HTMLInputElement).value || 15);
+    applySnapToGizmos(); saveSnap();
   });
   E("snapScl").addEventListener("change", function () {
     state.snapConfig.scaleEnabled = (this as HTMLInputElement).checked;
-    applySnapToGizmos();
+    applySnapToGizmos(); saveSnap();
   });
   E("snapSclVal").addEventListener("change", function () {
-    state.snapConfig.scaleIncrement = +(this as HTMLInputElement).value || 0.25;
-    applySnapToGizmos();
+    state.snapConfig.scaleIncrement = Math.max(0.01, +(this as HTMLInputElement).value || 0.25);
+    applySnapToGizmos(); saveSnap();
   });
 
   E("btnInitWeight").addEventListener("click", () => {
@@ -364,7 +404,7 @@ export function bindActionButtons(): void {
   // Parenting controls
   E("btnSetParent").addEventListener("click", () => {
     if (state.selectedMeshes.length < 2) {
-      import("../state").then((s) => s.status("2つのメッシュを選択（Ctrl+click）"));
+      status("2つのメッシュを選択（Ctrl+click）");
       return;
     }
     const child = lastSelected()!;
@@ -406,9 +446,63 @@ export function bindActionButtons(): void {
 
 export function bindHelp(): void {
   const overlay = E("helpOverlay");
-  E("btnHelp").addEventListener("click", () => overlay.classList.add("open"));
-  E("helpClose").addEventListener("click", () => overlay.classList.remove("open"));
+  const closeBtn = E("helpClose");
+  let previousFocus: HTMLElement | null = null;
+
+  function openHelp(): void {
+    previousFocus = document.activeElement as HTMLElement | null;
+    overlay.classList.add("open");
+    closeBtn.focus();
+  }
+  function closeHelp(): void {
+    overlay.classList.remove("open");
+    previousFocus?.focus();
+    previousFocus = null;
+  }
+
+  E("btnHelp").addEventListener("click", openHelp);
+  closeBtn.addEventListener("click", closeHelp);
   overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) overlay.classList.remove("open");
+    if (e.target === overlay) closeHelp();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.classList.contains("open")) closeHelp();
+  });
+
+  // Focus trap: keep Tab cycling within the modal
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const focusable = overlay.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  });
+
+  // Category tab navigation
+  document.querySelectorAll<HTMLElement>(".help-cat").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const target = document.getElementById("hcat-" + btn.dataset.cat);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.querySelectorAll<HTMLElement>(".help-cat").forEach(b =>
+        b.classList.toggle("on", b === btn));
+    });
+  });
+
+  // Collapsible section toggle
+  document.querySelectorAll<HTMLElement>(".help-t").forEach(title => {
+    title.addEventListener("click", () => {
+      const body = title.nextElementSibling as HTMLElement;
+      if (body?.classList.contains("help-sec-body")) {
+        body.classList.toggle("hidden");
+        title.classList.toggle("collapsed");
+      }
+    });
   });
 }

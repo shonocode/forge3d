@@ -114,6 +114,28 @@ export function addBoneAtPoint(worldPos: Vector3, parentBoneId: string | null): 
   updateHierarchyVisualization(skelData);
   selectBone(boneId);
   status("Bone added: " + boneName);
+
+  const sd = skelData;
+  state.history.push({
+    label: "Add Bone",
+    undo() {
+      const i = sd.bones.indexOf(boneData);
+      if (i >= 0) sd.bones.splice(i, 1);
+      const bjsIdx = sd.skeleton.bones.indexOf(bone);
+      if (bjsIdx >= 0) sd.skeleton.bones.splice(bjsIdx, 1);
+      if (boneData.visual) { boneData.visual.dispose(); boneData.visual = null; }
+      if (state.selectedBoneId === boneId) deselectBone();
+      updateHierarchyVisualization(sd);
+    },
+    redo() {
+      if (!sd.skeleton.bones.includes(bone)) sd.skeleton.bones.push(bone);
+      boneData.visual = createBoneVisual(boneId, worldPos);
+      sd.bones.push(boneData);
+      updateHierarchyVisualization(sd);
+      selectBone(boneId);
+    },
+  });
+
   return boneData;
 }
 
@@ -306,13 +328,24 @@ export function deleteBone(boneId: string): void {
     deselectBone();
   }
 
+  // Snapshot weight data before reindex for undo
+  const mesh = skelData.assignedMesh;
+  const prevIndices = mesh?.getVerticesData(VertexBuffer.MatricesIndicesKind);
+  const indicesSnapshot = prevIndices ? new Float32Array(prevIndices) : null;
+
+  // Track deleted bones for undo
+  const deletedInfo: { data: BoneData; arrayIdx: number; bjsIdx: number; worldPos: Vector3 }[] = [];
+
   for (const id of toDelete) {
     const idx = skelData.bones.findIndex((b) => b.id === id);
     if (idx === -1) continue;
     const bd = skelData.bones[idx]!;
 
-    // Remove from Babylon.js Skeleton.bones array and reindex weight data
     const bjsIdx = skelData.skeleton.bones.indexOf(bd.bone);
+    const worldPos = bd.visual ? bd.visual.position.clone() : new Vector3(0, 0, 0);
+
+    deletedInfo.push({ data: bd, arrayIdx: idx, bjsIdx, worldPos });
+
     if (bjsIdx !== -1) {
       reindexWeightData(skelData, bjsIdx);
       skelData.skeleton.bones.splice(bjsIdx, 1);
@@ -320,12 +353,58 @@ export function deleteBone(boneId: string): void {
 
     if (bd.visual) {
       bd.visual.dispose();
+      bd.visual = null;
     }
     skelData.bones.splice(idx, 1);
   }
 
   updateHierarchyVisualization(skelData);
   status("Bone(s) deleted");
+
+  state.history.push({
+    label: "Delete Bone",
+    undo() {
+      // Restore weight data snapshot
+      if (indicesSnapshot && mesh) {
+        mesh.updateVerticesData(VertexBuffer.MatricesIndicesKind, indicesSnapshot);
+      }
+      // Re-insert bones in reverse order (highest arrayIdx first to preserve indices)
+      const sorted = [...deletedInfo].sort((a, b) => a.arrayIdx - b.arrayIdx);
+      for (const info of sorted) {
+        // Re-insert into Babylon skeleton bones array
+        if (info.bjsIdx !== -1) {
+          skelData.skeleton.bones.splice(info.bjsIdx, 0, info.data.bone);
+        }
+        // Recreate visual
+        info.data.visual = createBoneVisual(info.data.id, info.worldPos);
+        // Re-insert into skelData.bones
+        skelData.bones.splice(info.arrayIdx, 0, info.data);
+      }
+      skelData.skeleton.computeAbsoluteTransforms();
+      updateHierarchyVisualization(skelData);
+    },
+    redo() {
+      if (state.selectedBoneId && toDelete.has(state.selectedBoneId)) {
+        deselectBone();
+      }
+      // Re-delete in reverse arrayIdx order (highest first)
+      const sortedDesc = [...deletedInfo].sort((a, b) => b.arrayIdx - a.arrayIdx);
+      for (const info of sortedDesc) {
+        const bjsIdx = skelData.skeleton.bones.indexOf(info.data.bone);
+        if (bjsIdx !== -1) {
+          reindexWeightData(skelData, bjsIdx);
+          skelData.skeleton.bones.splice(bjsIdx, 1);
+        }
+        if (info.data.visual) {
+          info.data.visual.dispose();
+          info.data.visual = null;
+        }
+        const idx = skelData.bones.indexOf(info.data);
+        if (idx !== -1) skelData.bones.splice(idx, 1);
+      }
+      updateHierarchyVisualization(skelData);
+    },
+  });
 }
 
 /** Update weight data indices after a bone is removed from skeleton.bones */

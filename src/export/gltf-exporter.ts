@@ -10,10 +10,10 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { state, status } from "../state";
+import { state, status, showLoading, hideLoading } from "../state";
 import type { SkeletonData } from "../state";
 import { modelStore } from "../storage/model-store";
-import { metadataStore, type ModelMetadata } from "../storage/metadata-store";
+import { metadataStore, getStorageEstimate, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "../tools/selection";
 import { updateHierarchy, updateBoneUI, updateAnimUI } from "../ui/panels";
 import { applyDefaultEdges } from "../tools/mesh-utils";
@@ -21,6 +21,14 @@ import { addShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
 import { createBoneVisualForImport, updateHierarchyVisualization } from "../tools/skeleton-tool";
 import { assignToActiveLayer } from "../tools/layers";
+import { openFileDialog } from "../ui/file-input";
+
+function sanitizeFilename(name: string): string {
+  return name
+    .replace(/[/\\:*?"<>|]/g, "_")
+    .replace(/^\.+/, "_")
+    .trim() || "model";
+}
 
 function shouldExportNode(node: import("@babylonjs/core").Node): boolean {
   if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
@@ -35,14 +43,18 @@ export async function exportGLB(): Promise<void> {
     status("⚠ メッシュなし");
     return;
   }
+  const raw = prompt("File name:", "model");
+  if (!raw) return;
+  const name = sanitizeFilename(raw);
   try {
+    showLoading("Exporting GLB...");
     status("Exporting GLB...");
-    const result = await GLTF2Export.GLBAsync(state.scene, "model", {
+    const result = await GLTF2Export.GLBAsync(state.scene, name, {
       shouldExportNode,
       shouldExportAnimation: () => true,
       animationSampleRate: 30,
     });
-    const glbFile = result.glTFFiles["model.glb"];
+    const glbFile = result.glTFFiles[name + ".glb"];
     if (!glbFile) {
       status("⚠ Export failed");
       return;
@@ -51,13 +63,15 @@ export async function exportGLB(): Promise<void> {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "model.glb";
+    a.download = name + ".glb";
     a.click();
     URL.revokeObjectURL(url);
-    status("GLB exported");
+    status("GLB exported: " + name + ".glb");
   } catch (e) {
     console.error("GLB export error:", e);
     status("⚠ Export エラー: " + (e as Error).message);
+  } finally {
+    hideLoading();
   }
 }
 
@@ -70,6 +84,7 @@ export async function saveToLibrary(): Promise<void> {
     return;
   }
   try {
+    showLoading("Saving...");
     status("Saving...");
     const result = await GLTF2Export.GLBAsync(state.scene, "model", { shouldExportNode });
     const glbFile = result.glTFFiles["model.glb"];
@@ -81,6 +96,12 @@ export async function saveToLibrary(): Promise<void> {
     const buffer = await blob.arrayBuffer();
     const id = crypto.randomUUID();
     const now = Date.now();
+
+    // Check storage quota
+    const est = await getStorageEstimate();
+    if (est && est.quota > 0 && est.usage / est.quota > 0.9) {
+      status("⚠ ストレージ残量が少なくなっています (" + Math.round(est.usage / est.quota * 100) + "% 使用中)");
+    }
 
     // Save binary to OPFS/IDB
     await modelStore.save(id, buffer);
@@ -100,10 +121,12 @@ export async function saveToLibrary(): Promise<void> {
     };
     await metadataStore.save(meta);
 
-    status("💾 Saved: " + meta.name);
+    status("Saved: " + meta.name);
   } catch (e) {
     console.error("Save error:", e);
     status("⚠ Save エラー: " + (e as Error).message);
+  } finally {
+    hideLoading();
   }
 }
 
@@ -125,9 +148,11 @@ export function exportOBJ(): void {
     (m) => !m.name.startsWith("bone_visual_") && m.name !== "bone_hierarchy_lines",
   ) as Mesh[];
   if (!meshes.length) { status("⚠ メッシュなし"); return; }
+  const raw = prompt("File name:", "model");
+  if (!raw) return;
+  const name = sanitizeFilename(raw);
 
-  const obj = OBJExport.OBJ(meshes, true, "model.mtl", false);
-  // MTL: concatenate for all unique materials
+  const obj = OBJExport.OBJ(meshes, true, name + ".mtl", false);
   const seen = new Set<string>();
   let mtl = "";
   for (const m of meshes) {
@@ -136,9 +161,9 @@ export function exportOBJ(): void {
       mtl += OBJExport.MTL(m);
     }
   }
-  downloadText(obj, "model.obj");
-  if (mtl) downloadText(mtl, "model.mtl");
-  status("OBJ exported");
+  downloadText(obj, name + ".obj");
+  if (mtl) downloadText(mtl, name + ".mtl");
+  status("OBJ exported: " + name + ".obj");
 }
 
 /**
@@ -149,9 +174,12 @@ export function exportSTL(): void {
     (m) => !m.name.startsWith("bone_visual_") && m.name !== "bone_hierarchy_lines",
   ) as Mesh[];
   if (!meshes.length) { status("⚠ メッシュなし"); return; }
+  const raw = prompt("File name:", "model");
+  if (!raw) return;
+  const name = sanitizeFilename(raw);
 
-  STLExport.CreateSTL(meshes, true, "model.stl", true, true);
-  status("STL exported");
+  STLExport.CreateSTL(meshes, true, name + ".stl", true, true);
+  status("STL exported: " + name + ".stl");
 }
 
 /** Convert StandardMaterial to PBRMaterial (for OBJ imports) */
@@ -176,120 +204,116 @@ const STL_PALETTE = [
 let _stlColorIdx = 0;
 
 /**
- * Load a model file from disk (GLB, glTF, OBJ, STL).
+ * Load a File object directly (used by drag & drop and file picker).
  */
-export async function loadModelFromFile(): Promise<void> {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".glb,.gltf,.obj,.stl";
-  input.style.display = "none";
-  document.body.appendChild(input);
-  const cleanup = () => { if (input.parentNode) input.remove(); };
-  window.addEventListener("focus", () => setTimeout(cleanup, 300), { once: true });
-  input.addEventListener("change", async () => {
-    cleanup();
-    const file = input.files?.[0];
-    if (!file) return;
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-    const isOBJ = ext === "obj";
-    const isSTL = ext === "stl";
-    try {
-      status("Loading " + file.name + "...");
-      const result = await SceneLoader.ImportMeshAsync("", "", file, state.scene);
-      for (const mesh of result.meshes) {
-        if (mesh.name === "__root__") continue;
-        // OBJ: convert StandardMaterial → PBRMaterial
-        if (isOBJ && mesh.material instanceof StandardMaterial) {
-          const pbr = convertToPBR(mesh.material);
-          mesh.material = pbr;
-        }
-        // STL: assign default PBR (no material/UV)
-        if (isSTL && (!mesh.material || mesh.material instanceof StandardMaterial)) {
-          const pbr = new PBRMaterial("stl_pbr_" + mesh.uniqueId, state.scene);
-          pbr.albedoColor = STL_PALETTE[_stlColorIdx % STL_PALETTE.length]!;
-          pbr.metallic = 0.1;
-          pbr.roughness = 0.6;
-          _stlColorIdx++;
-          mesh.material = pbr;
-        }
-        mesh.isPickable = true;
-        applyDefaultEdges(mesh);
-        addShadowCaster(mesh);
-        registerMeshForShading(mesh);
-        assignToActiveLayer(mesh);
-        state.allMeshes.push(mesh);
+const MAX_WARN_SIZE = 100 * 1024 * 1024; // 100MB
+
+export async function loadFileDirectly(file: File): Promise<void> {
+  if (file.size > MAX_WARN_SIZE) {
+    if (!confirm(`This file is ${(file.size / (1024 * 1024)).toFixed(0)}MB. Large files may slow down the app. Continue?`)) return;
+  }
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const isOBJ = ext === "obj";
+  const isSTL = ext === "stl";
+  try {
+    showLoading("Loading " + file.name + "...");
+    status("Loading " + file.name + "...");
+    const result = await SceneLoader.ImportMeshAsync("", "", file, state.scene);
+    for (const mesh of result.meshes) {
+      if (mesh.name === "__root__") continue;
+      if (isOBJ && mesh.material instanceof StandardMaterial) {
+        const pbr = convertToPBR(mesh.material);
+        mesh.material = pbr;
       }
-      if (result.meshes.length > 0) {
-        selectMesh(result.meshes[result.meshes.length - 1]!, false);
+      if (isSTL && (!mesh.material || mesh.material instanceof StandardMaterial)) {
+        const pbr = new PBRMaterial("stl_pbr_" + mesh.uniqueId, state.scene);
+        pbr.albedoColor = STL_PALETTE[_stlColorIdx % STL_PALETTE.length]!;
+        pbr.metallic = 0.1;
+        pbr.roughness = 0.6;
+        _stlColorIdx++;
+        mesh.material = pbr;
       }
-      // --- Import skeleton from loaded meshes (GLB/glTF only) ---
-      if (!isOBJ && !isSTL) {
-        for (const mesh of result.meshes) {
-          if (!mesh.skeleton || mesh.name === "__root__") continue;
-
-          state.skeletonCounter++;
-          const skelId = "skel_" + state.skeletonCounter;
-          const skelData: SkeletonData = {
-            skeleton: mesh.skeleton,
-            bones: [],
-            assignedMesh: mesh,
-            hierarchyLines: null,
-          };
-
-          for (const bone of mesh.skeleton.bones) {
-            state.boneCounter++;
-            const boneId = "bone_" + state.boneCounter;
-            const pos = bone.getAbsolutePosition(mesh);
-            const visual = createBoneVisualForImport(boneId, pos);
-
-            const parentBone = bone.parent;
-            let parentId: string | null = null;
-            if (parentBone) {
-              parentId = skelData.bones.find(b => b.bone === parentBone)?.id ?? null;
-            }
-
-            skelData.bones.push({
-              id: boneId,
-              name: bone.name,
-              bone,
-              parentId,
-              visual,
-            });
-          }
-
-          state.skeletonMap.set(skelId, skelData);
-          state.activeSkeletonId = skelId;
-          updateHierarchyVisualization(skelData);
-          break; // first skeleton only
-        }
-
-        // --- Import animation groups ---
-        if (result.animationGroups && result.animationGroups.length > 0) {
-          state.importedAnimGroups = result.animationGroups;
-          for (const ag of result.animationGroups) {
-            ag.stop();
-          }
-        }
-      }
-
-      updateHierarchy();
-      updateBoneUI();
-      updateAnimUI();
-      const meshCount = result.meshes.filter(m => m.name !== "__root__").length;
-      if (isOBJ || isSTL) {
-        status(`Loaded: ${file.name} (${meshCount} meshes)`);
-      } else {
-        const boneCount = state.skeletonMap.get(state.activeSkeletonId ?? "")?.bones.length ?? 0;
-        const animCount = state.importedAnimGroups.length;
-        status(`Loaded: ${file.name} (${boneCount} bones, ${animCount} anims)`);
-      }
-    } catch (e) {
-      console.error("Load error:", e);
-      status("⚠ Load エラー: " + (e as Error).message);
+      mesh.isPickable = true;
+      applyDefaultEdges(mesh);
+      addShadowCaster(mesh);
+      registerMeshForShading(mesh);
+      assignToActiveLayer(mesh);
+      state.allMeshes.push(mesh);
     }
-  });
-  input.click();
+    if (result.meshes.length > 0) {
+      selectMesh(result.meshes[result.meshes.length - 1]!, false);
+    }
+    if (!isOBJ && !isSTL) {
+      for (const mesh of result.meshes) {
+        if (!mesh.skeleton || mesh.name === "__root__") continue;
+
+        state.skeletonCounter++;
+        const skelId = "skel_" + state.skeletonCounter;
+        const skelData: SkeletonData = {
+          skeleton: mesh.skeleton,
+          bones: [],
+          assignedMesh: mesh,
+          hierarchyLines: null,
+        };
+
+        for (const bone of mesh.skeleton.bones) {
+          state.boneCounter++;
+          const boneId = "bone_" + state.boneCounter;
+          const pos = bone.getAbsolutePosition(mesh);
+          const visual = createBoneVisualForImport(boneId, pos);
+
+          const parentBone = bone.parent;
+          let parentId: string | null = null;
+          if (parentBone) {
+            parentId = skelData.bones.find(b => b.bone === parentBone)?.id ?? null;
+          }
+
+          skelData.bones.push({
+            id: boneId,
+            name: bone.name,
+            bone,
+            parentId,
+            visual,
+          });
+        }
+
+        state.skeletonMap.set(skelId, skelData);
+        state.activeSkeletonId = skelId;
+        updateHierarchyVisualization(skelData);
+        break;
+      }
+
+      if (result.animationGroups && result.animationGroups.length > 0) {
+        state.importedAnimGroups = result.animationGroups;
+        for (const ag of result.animationGroups) {
+          ag.stop();
+        }
+      }
+    }
+
+    updateHierarchy();
+    updateBoneUI();
+    updateAnimUI();
+    const meshCount = result.meshes.filter(m => m.name !== "__root__").length;
+    if (isOBJ || isSTL) {
+      status(`Loaded: ${file.name} (${meshCount} meshes)`);
+    } else {
+      const boneCount = state.skeletonMap.get(state.activeSkeletonId ?? "")?.bones.length ?? 0;
+      const animCount = state.importedAnimGroups.length;
+      status(`Loaded: ${file.name} (${boneCount} bones, ${animCount} anims)`);
+    }
+  } catch (e) {
+    console.error("Load error:", e);
+    status("⚠ Load エラー: " + (e as Error).message);
+  } finally {
+    hideLoading();
+  }
 }
 
-/** @deprecated Use loadModelFromFile instead */
-export { loadModelFromFile as loadGLBFromFile };
+/**
+ * Load a model file from disk (GLB, glTF, OBJ, STL).
+ */
+export function loadModelFromFile(): void {
+  openFileDialog(".glb,.gltf,.obj,.stl", (file) => loadFileDirectly(file));
+}
+

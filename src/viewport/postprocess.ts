@@ -43,7 +43,7 @@ export function setChromaticEnabled(on: boolean): void {
 
 export function setChromaticIntensity(v: number): void {
   state.postProcess.chromaticIntensity = v;
-  if (pipeline) pipeline.chromaticAberration.aberrationAmount = v;
+  if (pipeline?.chromaticAberration) pipeline.chromaticAberration.aberrationAmount = v;
 }
 
 export function setVignetteEnabled(on: boolean): void {

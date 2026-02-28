@@ -28,7 +28,7 @@ function createShadowGenerator(): void {
 
   shadowGen = new ShadowGenerator(state.shadowQuality, shadowLight);
   shadowGen.useBlurExponentialShadowMap = true;
-  shadowGen.blurKernel = 32;
+  shadowGen.blurKernel = 16;
   shadowGen.setDarkness(0.5);
 
   // Add existing meshes as shadow casters

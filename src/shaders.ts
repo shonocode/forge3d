@@ -68,21 +68,8 @@ import "@babylonjs/core/Shaders/glowBlurPostProcess.fragment";
 import "@babylonjs/core/Shaders/geometry.vertex";
 import "@babylonjs/core/Shaders/geometry.fragment";
 
-// ── Particles (GPU) ──
-import "@babylonjs/core/Shaders/particles.vertex";
-import "@babylonjs/core/Shaders/particles.fragment";
-import "@babylonjs/core/Shaders/gpuRenderParticles.vertex";
-import "@babylonjs/core/Shaders/gpuRenderParticles.fragment";
-
-// ── Layer / sprites ──
-import "@babylonjs/core/Shaders/layer.vertex";
-import "@babylonjs/core/Shaders/layer.fragment";
-import "@babylonjs/core/Shaders/sprites.vertex";
-import "@babylonjs/core/Shaders/sprites.fragment";
-
 // ── Misc utilities ──
 import "@babylonjs/core/Shaders/passCube.fragment";
 import "@babylonjs/core/Shaders/depthBoxBlur.fragment";
 import "@babylonjs/core/Shaders/lod.fragment";
 import "@babylonjs/core/Shaders/lodCube.fragment";
-import "@babylonjs/core/Shaders/noise.fragment";

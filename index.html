@@ -6,7 +6,7 @@
 <title>FORGE 3D</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="theme-color" content="#08080c">
-<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="/src/styles.css">
 </head>
@@ -14,12 +14,16 @@
 <div id="app">
   <!-- Header -->
   <div class="hdr">
-    <button class="mob-toggle" id="btnLP">☰</button>
+    <button class="mob-toggle" id="btnLP" aria-label="Open left panel">☰</button>
     <div class="logo">FORGE<span>3D</span></div>
     <div class="pills" id="pills"></div>
+    <div class="undo-btns">
+      <button class="undo-btn" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>&#8630;</button>
+      <button class="undo-btn" id="btnRedo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>&#8631;</button>
+    </div>
     <div class="hdr-r"><div class="dot"></div><span id="modeL">OBJECT</span></div>
-    <button class="help-btn" id="btnHelp">?</button>
-    <button class="mob-toggle" id="btnRP">⚙</button>
+    <button class="help-btn" id="btnHelp" aria-label="Help">?</button>
+    <button class="mob-toggle" id="btnRP" aria-label="Open right panel">⚙</button>
   </div>
 
   <!-- Left -->
@@ -59,7 +63,7 @@
 
   <!-- Viewport -->
   <div class="vp">
-    <canvas id="rc"></canvas>
+    <canvas id="rc" aria-label="3D viewport"></canvas>
     <div class="vpo">
       <div class="vtag" id="fpsT">-- FPS</div>
       <div class="vtag" id="vrtT">0 verts</div>
@@ -67,20 +71,23 @@
       <div class="vtag" style="bottom:4px;top:auto;opacity:.6">Grid: 1 m</div>
     </div>
     <div class="scur" id="scur"></div>
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone-text">Drop file here<br><span>.glb .gltf .obj .stl</span></div>
+    </div>
     <div class="vp-camera" id="cameraPresets">
-      <button class="cam-btn" data-preset="front" title="Front">F</button>
-      <button class="cam-btn" data-preset="back" title="Back">Bk</button>
-      <button class="cam-btn" data-preset="right" title="Right">R</button>
-      <button class="cam-btn" data-preset="left" title="Left">L</button>
-      <button class="cam-btn" data-preset="top" title="Top">T</button>
-      <button class="cam-btn" data-preset="bottom" title="Bottom">Bt</button>
-      <button class="cam-btn" id="btnOrtho" title="Orthographic">&#8862;</button>
+      <button class="cam-btn" data-preset="front" title="Front" aria-label="Front view">F</button>
+      <button class="cam-btn" data-preset="back" title="Back" aria-label="Back view">Bk</button>
+      <button class="cam-btn" data-preset="right" title="Right" aria-label="Right view">R</button>
+      <button class="cam-btn" data-preset="left" title="Left" aria-label="Left view">L</button>
+      <button class="cam-btn" data-preset="top" title="Top" aria-label="Top view">T</button>
+      <button class="cam-btn" data-preset="bottom" title="Bottom" aria-label="Bottom view">Bt</button>
+      <button class="cam-btn" id="btnOrtho" title="Orthographic" aria-label="Orthographic toggle">&#8862;</button>
     </div>
     <div class="vp-shading" id="shadingBtns">
-      <button class="shade-btn" data-mode="solid" title="Solid">&#9675;</button>
-      <button class="shade-btn" data-mode="wire" title="Wireframe">&#9671;</button>
-      <button class="shade-btn" data-mode="matcap" title="Matcap">&#9684;</button>
-      <button class="shade-btn on" data-mode="textured" title="Textured">&#9679;</button>
+      <button class="shade-btn" data-mode="solid" title="Solid" aria-label="Solid shading">&#9675;</button>
+      <button class="shade-btn" data-mode="wire" title="Wireframe" aria-label="Wireframe shading">&#9671;</button>
+      <button class="shade-btn" data-mode="matcap" title="Matcap" aria-label="Matcap shading">&#9684;</button>
+      <button class="shade-btn on" data-mode="textured" title="Textured" aria-label="Textured shading">&#9679;</button>
     </div>
   </div>
 
@@ -95,16 +102,16 @@
       <div class="pg" id="snapSection">
         <div class="pgt">Snap</div>
         <div class="pr"><span class="pl" style="font-size:10px;">Position</span>
-          <input type="checkbox" id="snapPos" style="margin-left:auto;">
-          <input type="number" id="snapPosVal" value="0.5" step="0.1" min="0.05"
+          <input type="checkbox" id="snapPos" aria-label="Position snap enabled" style="margin-left:auto;">
+          <input type="number" id="snapPosVal" aria-label="Position snap value" value="0.5" step="0.1" min="0.05"
             style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
         <div class="pr"><span class="pl" style="font-size:10px;">Rotation</span>
-          <input type="checkbox" id="snapRot" style="margin-left:auto;">
-          <input type="number" id="snapRotVal" value="15" step="5" min="1"
+          <input type="checkbox" id="snapRot" aria-label="Rotation snap enabled" style="margin-left:auto;">
+          <input type="number" id="snapRotVal" aria-label="Rotation snap value" value="15" step="5" min="1"
             style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
         <div class="pr"><span class="pl" style="font-size:10px;">Scale</span>
-          <input type="checkbox" id="snapScl" style="margin-left:auto;">
-          <input type="number" id="snapSclVal" value="0.25" step="0.05" min="0.01"
+          <input type="checkbox" id="snapScl" aria-label="Scale snap enabled" style="margin-left:auto;">
+          <input type="number" id="snapSclVal" aria-label="Scale snap value" value="0.25" step="0.05" min="0.01"
             style="width:50px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;margin-left:4px;"></div>
       </div>
       <div id="xfC"><div class="empty">メッシュを選択</div></div>
@@ -131,11 +138,11 @@
       <div class="pg">
         <div class="pgt">Brush</div>
         <div class="sr"><label>Size <span id="bsV">0.5</span></label>
-          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="brushSize"></div>
+          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="brushSize" aria-label="Brush size"></div>
         <div class="sr"><label>Strength <span id="btV">0.05</span></label>
-          <input type="range" min="0.005" max="0.2" step="0.005" value="0.05" id="brushStr"></div>
+          <input type="range" min="0.005" max="0.2" step="0.005" value="0.05" id="brushStr" aria-label="Brush strength"></div>
         <div class="sr"><label>Falloff <span id="bfV">2.0</span></label>
-          <input type="range" min="0.5" max="4" step="0.1" value="2" id="brushFall"></div>
+          <input type="range" min="0.5" max="4" step="0.1" value="2" id="brushFall" aria-label="Brush falloff"></div>
       </div>
       <div class="pg" id="brushBtns"></div>
     </div>
@@ -143,14 +150,14 @@
       <div class="pg">
         <div class="pgt">Paint Brush</div>
         <div class="pr" style="margin-bottom:6px"><span class="pl">Color</span>
-          <input type="color" value="#ff0000" id="paintColor"
+          <input type="color" value="#ff0000" id="paintColor" aria-label="Paint color"
             style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
         <div class="sr"><label>Size <span id="psV">20</span></label>
-          <input type="range" min="2" max="80" step="1" value="20" id="paintSize"></div>
+          <input type="range" min="2" max="80" step="1" value="20" id="paintSize" aria-label="Paint brush size"></div>
         <div class="sr"><label>Opacity <span id="poV">1.00</span></label>
-          <input type="range" min="0.05" max="1" step="0.05" value="1" id="paintOpacity"></div>
+          <input type="range" min="0.05" max="1" step="0.05" value="1" id="paintOpacity" aria-label="Paint opacity"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Eraser</span>
-          <input type="checkbox" id="paintEraser" style="margin-left:auto"></div>
+          <input type="checkbox" id="paintEraser" aria-label="Eraser mode" style="margin-left:auto"></div>
       </div>
       <div class="pg">
         <div class="pgt">Actions</div>
@@ -161,11 +168,11 @@
       <div class="pg">
         <div class="pgt">Weight Brush</div>
         <div class="sr"><label>Radius <span id="wrV">0.5</span></label>
-          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="weightRadius"></div>
+          <input type="range" min="0.1" max="3" step="0.05" value="0.5" id="weightRadius" aria-label="Weight brush radius"></div>
         <div class="sr"><label>Strength <span id="wsV">0.3</span></label>
-          <input type="range" min="0.01" max="1" step="0.01" value="0.3" id="weightStr"></div>
+          <input type="range" min="0.01" max="1" step="0.01" value="0.3" id="weightStr" aria-label="Weight brush strength"></div>
         <div class="sr"><label>Falloff <span id="wfV">2.0</span></label>
-          <input type="range" min="0.5" max="4" step="0.1" value="2" id="weightFall"></div>
+          <input type="range" min="0.5" max="4" step="0.1" value="2" id="weightFall" aria-label="Weight brush falloff"></div>
       </div>
       <div class="pg" id="weightModeBtns">
         <div class="pgt">Mode</div>
@@ -192,13 +199,13 @@
       <div class="pg">
         <div class="pgt">Timeline</div>
         <div class="sr"><label>Frame <span id="afV">0</span> / <span id="afMax">60</span></label>
-          <input type="range" min="0" max="60" step="1" value="0" id="animFrame"></div>
+          <input type="range" min="0" max="60" step="1" value="0" id="animFrame" aria-label="Animation frame"></div>
         <div class="sr"><label>FPS <span id="fpsV">30</span></label>
-          <input type="range" min="1" max="60" step="1" value="30" id="animFps"></div>
+          <input type="range" min="1" max="60" step="1" value="30" id="animFps" aria-label="Frames per second"></div>
         <div class="sr"><label>Max Frames <span id="mfV">60</span></label>
-          <input type="range" min="10" max="300" step="10" value="60" id="animMaxFrames"></div>
+          <input type="range" min="10" max="300" step="10" value="60" id="animMaxFrames" aria-label="Max frames"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Loop</span>
-          <select id="animLoop" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+          <select id="animLoop" aria-label="Loop mode" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
             <option value="cycle">Cycle</option>
             <option value="constant">Constant</option>
           </select>
@@ -213,7 +220,7 @@
       <div class="pg">
         <div class="pgt">Keyframe Edit</div>
         <div class="pr" style="margin-bottom:4px"><span class="pl" style="font-size:10px;color:var(--t3)">Easing</span>
-          <select id="kfEasing" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:9px;"></select></div>
+          <select id="kfEasing" aria-label="Keyframe easing" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:9px;"></select></div>
         <div style="display:flex;gap:4px;">
           <button class="abtn" id="btnCopyKF" style="flex:1;font-size:9px;">Copy KF</button>
           <button class="abtn" id="btnPasteKF" style="flex:1;font-size:9px;">Paste KF</button>
@@ -252,9 +259,9 @@
       <div class="pg">
         <div class="pgt">IK Constraint</div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Enable IK</span>
-          <input type="checkbox" id="ikEnabled" style="margin-left:auto"></div>
+          <input type="checkbox" id="ikEnabled" aria-label="IK enabled" style="margin-left:auto"></div>
         <div class="sr"><label style="font-size:9px;">Chain Length <span id="ikChainV">2</span></label>
-          <input type="range" min="1" max="5" step="1" value="2" id="ikChainLen"></div>
+          <input type="range" min="1" max="5" step="1" value="2" id="ikChainLen" aria-label="IK chain length"></div>
       </div>
     </div>
     <div class="tbody" id="tb-map">
@@ -270,7 +277,7 @@
       <div class="pg">
         <div class="pgt">Layout</div>
         <div class="pr" style="margin-bottom:6px"><span class="pl" style="font-size:10px;color:var(--t3)">Name</span>
-          <input type="text" id="layoutName" placeholder="Layout name" value=""
+          <input type="text" id="layoutName" aria-label="Layout name" placeholder="Layout name" value=""
             style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 6px;font-size:10px;"></div>
         <button class="abtn pri" id="btnExportLayout">⬇ Export Layout JSON</button>
         <button class="abtn" id="btnImportLayout">📂 Import Layout</button>
@@ -289,22 +296,22 @@
       <div class="pg">
         <div class="pgt">Environment</div>
         <div class="sr"><label>Preset</label>
-          <select id="envPreset" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+          <select id="envPreset" aria-label="Environment preset" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
             <option value="studio">Studio</option>
             <option value="country">Country</option>
           </select></div>
         <button class="abtn" id="btnLoadHDRI">Import HDRI</button>
         <div class="sr"><label>Intensity <span id="envIntV">0.80</span></label>
-          <input type="range" min="0" max="3" step=".05" value="0.8" id="envIntensity"></div>
+          <input type="range" min="0" max="3" step=".05" value="0.8" id="envIntensity" aria-label="Environment intensity"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Skybox</span>
-          <input type="checkbox" id="envSkybox" style="margin-left:auto"></div>
+          <input type="checkbox" id="envSkybox" aria-label="Skybox enabled" style="margin-left:auto"></div>
       </div>
       <div class="pg" id="shadowControls">
         <div class="pgt">Shadows</div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Enabled</span>
-          <input type="checkbox" checked id="shadowEnabled" style="margin-left:auto"></div>
+          <input type="checkbox" checked id="shadowEnabled" aria-label="Shadows enabled" style="margin-left:auto"></div>
         <div class="sr"><label>Quality</label>
-          <select id="shadowQuality" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
+          <select id="shadowQuality" aria-label="Shadow quality" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;">
             <option value="512">Low (512)</option>
             <option value="1024" selected>Medium (1024)</option>
             <option value="2048">High (2048)</option>
@@ -313,23 +320,23 @@
       <div class="pg" id="postProcessControls">
         <div class="pgt">Post-Processing</div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">FXAA</span>
-          <input type="checkbox" checked id="ppFxaa" style="margin-left:auto"></div>
+          <input type="checkbox" checked id="ppFxaa" aria-label="FXAA enabled" style="margin-left:auto"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Bloom</span>
-          <input type="checkbox" id="ppBloom" style="margin-left:auto"></div>
+          <input type="checkbox" id="ppBloom" aria-label="Bloom enabled" style="margin-left:auto"></div>
         <div class="sr" id="ppBloomIntRow" style="display:none"><label>Intensity <span id="ppBloomV">0.50</span></label>
-          <input type="range" min="0" max="2" step=".05" value="0.5" id="ppBloomInt"></div>
+          <input type="range" min="0" max="2" step=".05" value="0.5" id="ppBloomInt" aria-label="Bloom intensity"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">SSAO</span>
-          <input type="checkbox" id="ppSsao" style="margin-left:auto"></div>
+          <input type="checkbox" id="ppSsao" aria-label="SSAO enabled" style="margin-left:auto"></div>
         <div class="sr" id="ppSsaoIntRow" style="display:none"><label>Intensity <span id="ppSsaoV">1.00</span></label>
-          <input type="range" min="0.1" max="3" step=".1" value="1" id="ppSsaoInt"></div>
+          <input type="range" min="0.1" max="3" step=".1" value="1" id="ppSsaoInt" aria-label="SSAO intensity"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Chromatic</span>
-          <input type="checkbox" id="ppChromatic" style="margin-left:auto"></div>
+          <input type="checkbox" id="ppChromatic" aria-label="Chromatic aberration enabled" style="margin-left:auto"></div>
         <div class="sr" id="ppChromIntRow" style="display:none"><label>Intensity <span id="ppChromV">0.50</span></label>
-          <input type="range" min="0" max="3" step=".1" value="0.5" id="ppChromInt"></div>
+          <input type="range" min="0" max="3" step=".1" value="0.5" id="ppChromInt" aria-label="Chromatic aberration intensity"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Vignette</span>
-          <input type="checkbox" id="ppVignette" style="margin-left:auto"></div>
+          <input type="checkbox" id="ppVignette" aria-label="Vignette enabled" style="margin-left:auto"></div>
         <div class="sr" id="ppVigWeightRow" style="display:none"><label>Weight <span id="ppVigV">1.50</span></label>
-          <input type="range" min="0" max="5" step=".1" value="1.5" id="ppVigWeight"></div>
+          <input type="range" min="0" max="5" step=".1" value="1.5" id="ppVigWeight" aria-label="Vignette weight"></div>
       </div>
     </div>
     <div class="pg" style="margin-top:auto;">
@@ -351,150 +358,384 @@
   <div class="mob-bottom" id="mobBar"></div>
 
   <!-- Status -->
-  <div class="stat"><span id="stxt">Ready</span></div>
+  <div class="stat" role="status" aria-live="polite"><span id="stxt">Ready</span></div>
 </div>
 
 <!-- Overlay for mobile panels -->
 <div class="overlay" id="overlay"></div>
 
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loadingOverlay" role="alert" aria-live="assertive">
+  <div class="loading-spinner"></div>
+  <div class="loading-text" id="loadingText">Loading...</div>
+</div>
+
 <!-- Help Modal -->
-<div class="help-overlay" id="helpOverlay">
-<div class="help-modal">
+<div class="help-overlay" id="helpOverlay" role="dialog" aria-modal="true" aria-label="FORGE 3D Manual">
+<div class="help-modal" role="document">
   <div class="help-hdr">
     <span>FORGE 3D Manual</span>
-    <button class="help-close" id="helpClose">✕</button>
+    <button class="help-close" id="helpClose" aria-label="Close help">✕</button>
   </div>
   <div class="help-body">
 
+    <!-- Category tabs -->
+    <div class="help-cats">
+      <button class="help-cat on" data-cat="start">Getting Started</button>
+      <button class="help-cat" data-cat="model">Modeling</button>
+      <button class="help-cat" data-cat="surface">Surface</button>
+      <button class="help-cat" data-cat="rig">Rigging</button>
+      <button class="help-cat" data-cat="scene">Scene</button>
+    </div>
+
+    <!-- ═══ GETTING STARTED ═══ -->
+    <div class="help-cat-t" id="hcat-start">GETTING STARTED</div>
+
     <div class="help-sec">
       <div class="help-t">Quick Start</div>
-      <p>1. 左パネルからプリミティブを追加</p>
-      <p>2. ツールを切り替えて編集</p>
-      <p>3. GLB Export or Save to Library で保存</p>
+      <div class="help-sec-body">
+        <p>1. 左パネルからプリミティブを追加</p>
+        <p>2. ツールピル（ヘッダー）でツールを切り替えて編集</p>
+        <p>3. GLB Export / Save to Library で保存</p>
+        <p>4. ファイルをビューポートにドラッグ&ドロップでインポート</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Keyboard Shortcuts</div>
-      <table class="help-keys">
-        <tr><td>V</td><td>Select（選択）</td></tr>
-        <tr><td>G</td><td>Move（移動）</td></tr>
-        <tr><td>R</td><td>Rotate（回転）</td></tr>
-        <tr><td>S</td><td>Scale（拡縮）</td></tr>
-        <tr><td>D</td><td>Sculpt（彫刻）</td></tr>
-        <tr><td>P</td><td>Paint（ペイント）</td></tr>
-        <tr><td>B</td><td>Bone（ボーン）</td></tr>
-        <tr><td>W</td><td>Weight（ウェイト）</td></tr>
-        <tr><td>A</td><td>Anim（アニメーション）</td></tr>
-        <tr><td>Ctrl+D</td><td>Duplicate（複製）</td></tr>
-        <tr><td>Delete</td><td>Delete（削除）</td></tr>
-        <tr><td>Esc</td><td>Deselect（選択解除）</td></tr>
-      </table>
+      <div class="help-sec-body">
+        <table class="help-keys">
+          <tr><td>V</td><td>Select（選択）</td></tr>
+          <tr><td>G</td><td>Move（移動）</td></tr>
+          <tr><td>R</td><td>Rotate（回転）</td></tr>
+          <tr><td>S</td><td>Scale（拡縮）</td></tr>
+          <tr><td>D</td><td>Sculpt（彫刻）</td></tr>
+          <tr><td>P</td><td>Paint（ペイント）</td></tr>
+          <tr><td>B</td><td>Bone（ボーン）</td></tr>
+          <tr><td>W</td><td>Weight（ウェイト）</td></tr>
+          <tr><td>A</td><td>Anim（アニメーション）</td></tr>
+          <tr><td>Ctrl+D</td><td>Duplicate（複製）</td></tr>
+          <tr><td>Delete</td><td>Delete（削除）</td></tr>
+          <tr><td>Esc</td><td>Deselect（選択解除）</td></tr>
+          <tr><td>Ctrl+Z</td><td>Undo（元に戻す）</td></tr>
+          <tr><td>Ctrl+Shift+Z</td><td>Redo（やり直し）</td></tr>
+          <tr><td>F</td><td>Focus（選択メッシュにフォーカス）</td></tr>
+          <tr><td>Ctrl+A</td><td>Select All（全選択）</td></tr>
+          <tr><td>Ctrl+N</td><td>New Scene（シーンクリア）</td></tr>
+          <tr><td>Numpad 1</td><td>Front（正面）/ Ctrl: Back（背面）</td></tr>
+          <tr><td>Numpad 3</td><td>Right（右側面）/ Ctrl: Left（左側面）</td></tr>
+          <tr><td>Numpad 7</td><td>Top（上面）/ Ctrl: Bottom（下面）</td></tr>
+          <tr><td>Numpad 5</td><td>Orthographic Toggle（正射影切替）</td></tr>
+        </table>
+      </div>
     </div>
 
     <div class="help-sec">
-      <div class="help-t">Camera</div>
-      <p>左ドラッグ: 回転</p>
-      <p>右ドラッグ / 2本指: パン</p>
-      <p>ホイール / ピンチ: ズーム</p>
+      <div class="help-t">Camera & Viewport</div>
+      <div class="help-sec-body">
+        <p><b>Camera Controls:</b></p>
+        <p>左ドラッグ: 回転 / 右ドラッグ・2本指: パン / ホイール・ピンチ: ズーム</p>
+        <p><b>Camera Presets（ビューポート右上）:</b></p>
+        <p>F=Front, Bk=Back, R=Right, L=Left, T=Top, Bt=Bottom。クリックでビュー切替。</p>
+        <p>⊞ ボタンで正射影（Orthographic）/透視投影（Perspective）を切替。</p>
+        <p><b>Viewport Shading（左下ボタン）:</b></p>
+        <p>○ Solid: フラットライティング / ◇ Wire: ワイヤーフレーム / ◔ Matcap: マットキャップ / ● Textured: PBRマテリアル表示（デフォルト）</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Mobile Controls</div>
+      <div class="help-sec-body">
+        <p><b>下部バー:</b> +Prim, Undo, Dup, Del, Export, Save, Load</p>
+        <p><b>🔒 Cam</b>: カメラロック — カメラ操作を無効化してギズモ操作に集中。もう一度タップで解除。</p>
+        <p><b>⊚ Multi</b>: マルチセレクトモード — タップで複数メッシュを選択（Ctrl+クリック代替）。</p>
+        <p><b>Sculpt/Weight モード:</b> ⇅ Invert / 〜 Smooth トグルボタンで Ctrl+ドラッグ / Shift+ドラッグ を代替。</p>
+        <p>パネルはスワイプで閉じられます（左パネル=左スワイプ、右パネル=右スワイプ）。</p>
+        <p>ギズモは自動的に1.5倍サイズで表示され、タッチ操作しやすくなっています。</p>
+      </div>
+    </div>
+
+    <!-- ═══ MODELING ═══ -->
+    <div class="help-cat-t" id="hcat-model">MODELING</div>
+
+    <div class="help-sec">
+      <div class="help-t">Primitives + CSG</div>
+      <div class="help-sec-body">
+        <p>左パネルからBox, Sphere, Cylinder, Torus, Plane, Cone, Tube, Disc, Icosphere, Capsule を追加。</p>
+        <p>2つのメッシュを選択（Ctrl+クリック）して CSG 演算:</p>
+        <p>∪ <b>Union</b>（結合）/ − <b>Subtract</b>（差分）/ ∩ <b>Intersect</b>（交差）</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Select / Transform</div>
-      <p>クリックでメッシュ選択。Ctrl+クリック or 長押し(モバイル)で複数選択。モバイル: 下部バーの ⊚ Multi ボタンでマルチ選択モード。</p>
-      <p>MOV/ROT/SCL でギズモが表示され、ドラッグで変形。右パネル Transform タブで数値入力も可能。</p>
+      <div class="help-sec-body">
+        <p>クリックでメッシュ選択。Ctrl+クリック or 長押し(モバイル)で複数選択。</p>
+        <p>MOV/ROT/SCL でギズモが表示され、ドラッグで変形。右パネル Transform タブで数値入力も可能。</p>
+        <p>メッシュの寸法（幅×高さ×奥行き）は Transform タブの Dimensions に表示されます。</p>
+      </div>
     </div>
 
     <div class="help-sec">
-      <div class="help-t">Primitives + CSG</div>
-      <p>左パネルからBox, Sphere, Cylinder等を追加。</p>
-      <p>2つのメッシュを選択して CSG（Union/Subtract/Intersect）で合成。複雑な形状をブーリアン演算で作成。</p>
+      <div class="help-t">Mesh Tools</div>
+      <div class="help-sec-body">
+        <p>左パネル「Mesh Tools」セクション。メッシュを選択して使用。全てUndo対応。</p>
+        <p><b>Recalc Normals</b>: 法線を再計算。Sculpt/CSG後のシェーディング修正に。</p>
+        <p><b>Flip Normals</b>: 法線を反転。メッシュの裏表が逆の場合に。</p>
+        <p><b>Weld Vertices</b>: 近接頂点を結合。CSGやインポート後の重複頂点除去に。</p>
+        <p><b>Center Origin</b>: ピボットをジオメトリ中心に移動。リギング前の準備に。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Modifiers</div>
+      <div class="help-sec-body">
+        <p>右パネル Transform タブの「Modifiers」セクション。非破壊のジオメトリ変換。</p>
+        <p><b>Subdivision</b>: ポリゴンを分割して滑らかに。Level 1-2。</p>
+        <p><b>Mirror</b>: X/Y/Z軸でジオメトリをミラー。Merge ON で対称面の頂点を結合。</p>
+        <p><b>Array</b>: ジオメトリをN回繰り返し配置。X/Y/Zオフセット指定。フェンスや階段に。</p>
+        <p>各モディファイアは ON/OFF トグル、Apply（確定）、Delete（削除）が可能。スタック順に評価されます。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Snap Settings</div>
+      <div class="help-sec-body">
+        <p>右パネル Transform タブの「Snap」セクション。ギズモ操作をグリッドに吸着。</p>
+        <p><b>Position</b>: 移動をスナップ（デフォルト: 0.5m刻み）</p>
+        <p><b>Rotation</b>: 回転をスナップ（デフォルト: 15°刻み）</p>
+        <p><b>Scale</b>: スケールをスナップ（デフォルト: 0.25刻み）</p>
+        <p>チェックボックスで有効化し、数値で刻み幅を調整。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Measurement</div>
+      <div class="help-sec-body">
+        <p>左パネル「Measure」セクション。</p>
+        <p>「Measure Distance」→ メッシュ上の2点をクリック → 距離（メートル）を表示。</p>
+        <p>オレンジのマーカーとラインで視覚表示。複数の測定を同時に表示可能。</p>
+        <p>「Clear All」で全測定を削除。</p>
+      </div>
+    </div>
+
+    <!-- ═══ SURFACE ═══ -->
+    <div class="help-cat-t" id="hcat-surface">SURFACE</div>
+
+    <div class="help-sec">
+      <div class="help-t">Material / PBR</div>
+      <div class="help-sec-body">
+        <p>右パネル Material タブ。メッシュを選択して物理ベースマテリアルを編集。</p>
+        <p><b>Albedo</b>: ベースカラー。パレットまたはカラーピッカーで選択。</p>
+        <p><b>PBR</b>: Metallic（金属感 0-1）/ Roughness（粗さ 0-1）/ Alpha（透明度 0-1）</p>
+        <p><b>Emissive</b>: 発光色 + 強度。自己発光やグロー効果に。</p>
+        <p><b>Clear Coat</b>: 光沢クリアレイヤー。車の塗装やコーティング表現に。</p>
+        <p><b>Sheen</b>: 布のような光沢。ファブリックやベルベット表現に。</p>
+        <p><b>Transmission</b>: 透過+屈折。IOR設定: Glass=1.5, Water=1.33, Diamond=2.42</p>
+        <p><b>Textures</b>: Albedo / Normal / Metal-Rough / AO / Emissive の5スロット。画像をインポート。</p>
+        <p><b>Display</b>: Wireframe トグル / Unlit トグル（ライティング無視）</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Sculpt</div>
-      <p>メッシュを選択してSCPモードに切替。ドラッグで頂点を変形。</p>
-      <p>Ctrl+ドラッグ: 反転（Push↔Pull）</p>
-      <p>Shift+ドラッグ: Smooth</p>
-      <p>右パネルでブラシの Size / Strength / Falloff を調整。6つのブラシモード: Push, Pull, Smooth, Flatten, Pinch, Inflate。</p>
-      <p>モバイル: Invert / Smooth トグルボタンで Ctrl/Shift 代替。</p>
+      <div class="help-sec-body">
+        <p>メッシュを選択してSCPモードに切替。ドラッグで頂点を変形。</p>
+        <p>Ctrl+ドラッグ: 反転（Push↔Pull）/ Shift+ドラッグ: Smooth</p>
+        <p>右パネルでブラシの Size / Strength / Falloff を調整。</p>
+        <p>6ブラシ: <b>Push</b>（押す）, <b>Pull</b>（引く）, <b>Smooth</b>（平滑化）, <b>Flatten</b>（平坦化）, <b>Pinch</b>（つまむ）, <b>Inflate</b>（膨張）</p>
+        <p>モバイル: ⇅ Invert / 〜 Smooth トグルボタンで Ctrl/Shift を代替。</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Paint</div>
-      <p>メッシュを選択してPNTモードに切替。メッシュ表面に直接ペイント（DynamicTexture）。</p>
-      <p>Color / Size / Opacity / Eraser を右パネルで設定。</p>
-      <p>Clear Paint でテクスチャをリセット。GLBエクスポート時にテクスチャとして埋め込まれる。</p>
+      <div class="help-sec-body">
+        <p>メッシュを選択してPNTモードに切替。メッシュ表面に直接ペイント。</p>
+        <p>Color / Size / Opacity / Eraser を右パネルで設定。</p>
+        <p>Clear Paint でテクスチャをリセット。GLBエクスポート時にテクスチャとして埋め込まれます。</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Morph Targets</div>
-      <p>メッシュ選択 → Morph タブ → 「ターゲット有効化」でMorphTarget追加。</p>
-      <p>メッシュを変形（Sculpt等）→「形状キャプチャ」で現在の形状をキャプチャ。</p>
-      <p>スライダーで補間。顔の表情変化などに使用。</p>
+      <div class="help-sec-body">
+        <p>メッシュ選択 → Morph タブ → 「ターゲット有効化」で MorphTarget 追加。</p>
+        <p>メッシュを変形（Sculpt等）→「形状キャプチャ」で現在の形状を記録。</p>
+        <p>スライダーで補間。顔の表情変化やブレンドシェイプに使用。</p>
+      </div>
+    </div>
+
+    <!-- ═══ RIGGING & ANIMATION ═══ -->
+    <div class="help-cat-t" id="hcat-rig">RIGGING &amp; ANIMATION</div>
+
+    <div class="help-sec">
+      <div class="help-t">Bone / Skeleton</div>
+      <div class="help-sec-body">
+        <p>BONEモードでメッシュ表面をクリック → ボーンを配置。</p>
+        <p>既存ボーンをクリック → 次のクリックで子ボーンを追加（チェーン作成）。</p>
+        <p>「New Skeleton」でスケルトン作成。「Assign to Mesh」で選択メッシュにアタッチ。</p>
+        <p>ボーンのギズモを動かしてポーズ確認。ボーン名は右パネルで変更可能。</p>
+      </div>
     </div>
 
     <div class="help-sec">
-      <div class="help-t">Bone (Skeleton)</div>
-      <p>BONEモードでメッシュ表面をクリック → ボーンを配置。</p>
-      <p>既存ボーンをクリック → 次のクリックで子ボーンを追加（チェーン作成）。</p>
-      <p>「New Skeleton」でスケルトン作成。「Assign to Mesh」で選択メッシュにアタッチ。</p>
-      <p>ボーンのギズモを動かしてポーズ確認。</p>
+      <div class="help-t">IK Constraints</div>
+      <div class="help-sec-body">
+        <p>右パネル Bone タブの「IK Constraint」セクション。</p>
+        <p>ボーンを選択 → 「Enable IK」チェックで逆運動学（IK）を有効化。</p>
+        <p>Chain Length: IKチェーンに含める親ボーンの数（1-5）。</p>
+        <p>末端ボーンを動かすとチェーン全体が自然に追従。手足のポーズに便利。</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Weight Paint</div>
-      <p>スケルトンをアタッチしたメッシュを選択 → WGTモードに切替。</p>
-      <p>「Init Weight Data」でウェイトデータ初期化（必須）。</p>
-      <p>Bone タブでボーンを選択 → メッシュ上をドラッグでウェイト塗り。</p>
-      <p>Ctrl+ドラッグ: Subtract / Shift+ドラッグ: Smooth。モバイル: Invert / Smooth トグルボタン使用。</p>
-      <p>「Show/Hide Overlay」でヒートマップ表示（赤=1.0, 緑=0.5, 青=0.0）。</p>
-      <p>4ボーン/頂点まで。ウェイトは自動正規化（合計=1.0）。</p>
+      <div class="help-sec-body">
+        <p>スケルトンをアタッチしたメッシュを選択 → WGTモードに切替。</p>
+        <p>「Init Weight Data」でウェイトデータ初期化（必須）。</p>
+        <p>Bone タブでボーンを選択 → メッシュ上をドラッグでウェイト塗り。</p>
+        <p>モード: <b>Add</b>（加算）/ <b>Subtract</b>（減算）/ <b>Smooth</b>（平滑化）</p>
+        <p>Ctrl+ドラッグ: Subtract / Shift+ドラッグ: Smooth。モバイル: トグルボタン使用。</p>
+        <p>「Show/Hide Overlay」でヒートマップ表示（赤=1.0, 緑=0.5, 青=0.0）。</p>
+        <p>4ボーン/頂点まで。ウェイトは自動正規化（合計=1.0）。</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Animation</div>
-      <p>ANMモードに切替 → 「New Clip」でアニメーションクリップ作成。</p>
-      <p>Timeline スライダーでフレーム選択 → ボーンをポーズ → 「Record Keyframe」。</p>
-      <p>「Record All Bones」で全ボーンの現在ポーズを一括記録。</p>
-      <p>「Play」でプレビュー再生。「Export JSON」でアニメーションデータ出力。</p>
-      <p>FPS / Max Frames / Loop Mode を設定可能。</p>
+      <div class="help-sec-body">
+        <p>ANMモードに切替 → 「New Clip」でアニメーションクリップ作成。</p>
+        <p>Timeline スライダーでフレーム選択 → ボーンをポーズ → 「Record Keyframe」。</p>
+        <p>「Record All Bones」で全ボーンの現在ポーズを一括記録。</p>
+        <p>「Play」でプレビュー再生。「Export JSON」でアニメーションデータ出力。</p>
+        <p>FPS / Max Frames / Loop Mode（Cycle/Constant）を設定可能。</p>
+        <p>GLBインポート時のアニメーションは Imported Animations セクションで再生可能。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Easing Curves</div>
+      <div class="help-sec-body">
+        <p>右パネル Anim タブの「Keyframe Edit」セクション。</p>
+        <p>キーフレーム間の補間曲線をイージングで制御。ドロップダウンから選択。</p>
+        <p>種類: Linear, Quad, Cubic, Elastic, Bounce（各 In/Out/InOut）</p>
+        <p>「Copy KF」でキーフレームをコピー → 別フレームで「Paste KF」で貼り付け。</p>
+      </div>
+    </div>
+
+    <!-- ═══ SCENE & PROJECT ═══ -->
+    <div class="help-cat-t" id="hcat-scene">SCENE &amp; PROJECT</div>
+
+    <div class="help-sec">
+      <div class="help-t">Layers</div>
+      <div class="help-sec-body">
+        <p>左パネル「Layers」セクション。メッシュをレイヤーで整理。</p>
+        <p>「+ New Layer」でレイヤー作成。クリックでアクティブレイヤーを切替。</p>
+        <p>新しいプリミティブやインポートはアクティブレイヤーに追加されます。</p>
+        <p>目のアイコンでレイヤーの表示/非表示を切替。シーン整理に便利。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Hierarchy / Parenting</div>
+      <div class="help-sec-body">
+        <p>左パネル「Hierarchy」セクション。</p>
+        <p><b>Set Parent</b>: 2つ以上のメッシュを選択（Ctrl+クリック）→ 最後に選択したメッシュが子になる。</p>
+        <p><b>Clear Parent</b>: 選択メッシュの親子関係を解除。</p>
+        <p>子メッシュは親のトランスフォーム（移動/回転/スケール）に追従します。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Lighting</div>
+      <div class="help-sec-body">
+        <p>右パネル Scene タブの「Lights」セクション。最大8ライト。</p>
+        <p><b>+ Point</b>: 全方向に光を放つポイントライト。</p>
+        <p><b>+ Spot</b>: 指定方向に円錐状の光を放つスポットライト。角度調整可能。</p>
+        <p>各ライト: Color（色）/ Intensity（強度 0-5）/ Range（範囲 1-50）を設定。</p>
+        <p>ライトの球体/コーンをクリックして位置を移動可能。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Environment / HDRI</div>
+      <div class="help-sec-body">
+        <p>右パネル Scene タブの「Environment」セクション。</p>
+        <p><b>Preset</b>: Studio / Country からプリセットを選択。</p>
+        <p><b>Import HDRI</b>: カスタム .hdr ファイルを読み込み。画像ベースライティング。</p>
+        <p><b>Intensity</b>: 環境光の強度（0-3）。反射や間接照明に影響。</p>
+        <p><b>Skybox</b>: 環境をビューポート背景として表示。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Shadows</div>
+      <div class="help-sec-body">
+        <p>右パネル Scene タブの「Shadows」セクション。</p>
+        <p>チェックボックスで影を有効化/無効化。</p>
+        <p>Quality: Low(512) / Medium(1024) / High(2048) — シャドウマップ解像度。</p>
+        <p>全メッシュが自動的に影を投影・受影します。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Post-Processing</div>
+      <div class="help-sec-body">
+        <p>右パネル Scene タブの「Post-Processing」セクション。</p>
+        <p><b>FXAA</b>: アンチエイリアシング（デフォルトON）。エッジのギザギザを軽減。</p>
+        <p><b>Bloom</b>: 明るい部分のグロー効果。Intensity で強度調整。</p>
+        <p><b>SSAO</b>: スクリーンスペースアンビエントオクルージョン。凹部に自然な影を追加。</p>
+        <p><b>Chromatic</b>: 色収差エフェクト。レンズのような色ずれ。</p>
+        <p><b>Vignette</b>: 画面端を暗くするビネット効果。Weight で強度調整。</p>
+      </div>
+    </div>
+
+    <div class="help-sec">
+      <div class="help-t">Save / Export / Import</div>
+      <div class="help-sec-body">
+        <p><b>GLB Export</b>: シーン全体をGLBとしてダウンロード。スケルトン・ウェイト・テクスチャ・アニメーション含む。</p>
+        <p><b>OBJ Export</b>: .obj + .mtl ファイルとしてダウンロード。マテリアル付きジオメトリのみ。</p>
+        <p><b>STL Export</b>: バイナリ .stl としてダウンロード。3Dプリント用ジオメトリのみ。</p>
+        <p><b>Save to Library</b>: ブラウザ内ストレージ（OPFS/IndexedDB）に保存。Map Editorで再利用可能。</p>
+        <p><b>Load Model</b>: ファイル選択ダイアログから GLB/glTF/OBJ/STL を読み込み。</p>
+        <p><b>Drag &amp; Drop</b>: ファイルをビューポートに直接ドロップしてインポート。</p>
+        <p><b>Undo/Redo</b>: ヘッダーの ↶/↷ ボタンまたは Ctrl+Z / Ctrl+Shift+Z。</p>
+      </div>
     </div>
 
     <div class="help-sec">
       <div class="help-t">Map Editor</div>
-      <p>Map タブ → 「Refresh Library」でライブラリ読み込み。</p>
-      <p>「+」ボタンでモデルをシーンに配置。既存ギズモで位置・回転・スケール調整。</p>
-      <p>「Export Layout JSON」でシーン配置データを出力。「Import Layout」で復元。</p>
+      <div class="help-sec-body">
+        <p>Map タブ → 「Refresh Library」でライブラリ読み込み。</p>
+        <p>「+」ボタンでモデルをシーンに配置。ギズモで位置・回転・スケール調整。</p>
+        <p>「Export Layout JSON」でシーン配置データを出力。「Import Layout」で復元。</p>
+        <p>「Clear Scene」でシーン内の全インスタンスをクリア。</p>
+      </div>
     </div>
 
     <div class="help-sec">
-      <div class="help-t">Save / Export</div>
-      <p><b>GLB Export</b>: シーン全体をGLBファイルとしてダウンロード。スケルトン・ウェイト・テクスチャ含む。</p>
-      <p><b>Save to Library</b>: ブラウザ内ストレージ（OPFS/IndexedDB）に保存。Map Editor で再利用可能。</p>
-      <p><b>Load Model</b>: ファイルからGLB/glTF/OBJ/STLを読み込み。</p>
-    </div>
-
-    <div class="help-sec">
-      <div class="help-t">PWA (Progressive Web App)</div>
-      <p>スマホのホーム画面に追加するとオフラインで使用可能。</p>
-      <p>データはブラウザ内に保持。デバイス間の転送は GLB Export → Load GLB で。</p>
-    </div>
-
-    <div class="help-sec">
-      <div class="help-t">Material</div>
-      <p>右パネル Material タブで色変更。カラーパレットまたはカラーピッカーで選択。</p>
-      <p>Specular Power / Alpha / Wireframe を調整可能。</p>
+      <div class="help-t">PWA</div>
+      <div class="help-sec-body">
+        <p>スマホのホーム画面に追加するとオフラインで使用可能。</p>
+        <p>データはブラウザ内に保持。デバイス間の転送は GLB Export → Load で。</p>
+      </div>
     </div>
 
     <div class="help-sec" style="border:none;">
       <div class="help-t">Workflow Example</div>
-      <p style="color:var(--ac);">モデリング → リギング → アニメーション → エクスポート</p>
-      <p>1. プリミティブ追加 + CSG + Sculpt で形状作成</p>
-      <p>2. Paint で顔やテクスチャを描画</p>
-      <p>3. Bone でスケルトン作成 → Assign to Mesh</p>
-      <p>4. Weight で各ボーンの影響範囲を塗る</p>
-      <p>5. Anim でポーズ → キーフレーム記録 → プレビュー</p>
-      <p>6. GLB Export でファイル出力</p>
+      <div class="help-sec-body">
+        <p style="color:var(--ac);">セットアップ → モデリング → リギング → アニメーション → エクスポート</p>
+        <p>1. Environment / Lighting でシーンを設定</p>
+        <p>2. プリミティブ追加 + CSG + Sculpt で形状作成</p>
+        <p>3. Material で PBR マテリアルを設定</p>
+        <p>4. Paint でテクスチャを描画</p>
+        <p>5. Layers でオブジェクトを整理</p>
+        <p>6. Bone でスケルトン作成 → Assign to Mesh</p>
+        <p>7. Weight で各ボーンの影響範囲を塗る</p>
+        <p>8. Anim でポーズ → キーフレーム記録 → プレビュー</p>
+        <p>9. GLB Export でファイル出力</p>
+      </div>
     </div>
 
   </div>

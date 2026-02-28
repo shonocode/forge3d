@@ -3,10 +3,7 @@ import { MorphTarget } from "@babylonjs/core/Morph/morphTarget";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { state, status, E } from "../state";
 import { lastSelected } from "./selection";
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
+import { escapeHtml } from "../ui/escape";
 
 export function addMorph(): void {
   if (!state.selectedMeshes.length) {

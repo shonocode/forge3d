@@ -17,8 +17,10 @@ export interface ModelMetadata {
 const DB_NAME = "forge3d_meta";
 const STORE_NAME = "catalog";
 const DB_VERSION = 1;
+let _db: IDBDatabase | null = null;
 
 function openDB(): Promise<IDBDatabase> {
+  if (_db) return Promise.resolve(_db);
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
@@ -27,7 +29,7 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_NAME, { keyPath: "id" });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => { _db = req.result; resolve(_db); };
     req.onerror = () => reject(req.error);
   });
 }

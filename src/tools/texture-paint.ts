@@ -19,7 +19,7 @@ export function ensurePaintTexture(mesh: AbstractMesh): DynamicTexture {
     "paintTex_" + mesh.uniqueId,
     TEX_SIZE,
     state.scene,
-    true // generate mip maps
+    false // skip mipmaps for paint performance
   );
 
   const ctx = tex.getContext();
@@ -37,14 +37,25 @@ export function ensurePaintTexture(mesh: AbstractMesh): DynamicTexture {
       const texUrl = (existingTex as unknown as { url?: string }).url;
       if (texUrl) {
         const img = new Image();
+        const texToDispose = existingTex;
         img.onload = () => {
           ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
           tex.update();
+          texToDispose.dispose();
+        };
+        img.onerror = () => {
+          // Fallback: fill with solid color on load failure
+          const baseColor = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
+          ctx.fillStyle = baseColor;
+          ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+          tex.update();
+          texToDispose.dispose();
         };
         img.src = texUrl;
+        drawnExisting = true; // Image loading handles canvas; skip immediate fill
+      } else {
+        existingTex.dispose();
       }
-      existingTex.dispose();
-      drawnExisting = false; // Fill with solid as initial state; img.onload will overlay
     }
   }
 
@@ -116,12 +127,40 @@ export function clearPaintTexture(mesh: AbstractMesh): void {
 
   const ctx = tex.getContext() as CanvasRenderingContext2D | null;
   if (!ctx) return;
+
+  // Snapshot before clear for undo
+  const beforeData = ctx.getImageData(0, 0, TEX_SIZE, TEX_SIZE);
+
   const baseColor = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
   ctx.fillStyle = baseColor;
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
   ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
   tex.update();
+
+  state.history.push({
+    label: "Clear Paint",
+    undo() {
+      const t = state.paintTextureMap.get(mesh.uniqueId);
+      if (!t) return;
+      const c = t.getContext() as CanvasRenderingContext2D | null;
+      if (!c) return;
+      c.putImageData(beforeData, 0, 0);
+      t.update();
+    },
+    redo() {
+      const t = state.paintTextureMap.get(mesh.uniqueId);
+      if (!t) return;
+      const c = t.getContext() as CanvasRenderingContext2D | null;
+      if (!c) return;
+      c.fillStyle = baseColor;
+      c.globalCompositeOperation = "source-over";
+      c.globalAlpha = 1;
+      c.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+      t.update();
+    },
+  });
+
   status("Paint cleared");
 }
 

@@ -34,6 +34,11 @@ export function applyCameraPreset(preset: CameraPreset): void {
     cam.beta, preset.beta, Animation.ANIMATIONLOOPMODE_CONSTANT,
   );
 
+  // Highlight active preset button
+  document.querySelectorAll<HTMLElement>(".cam-btn").forEach((b) => {
+    b.classList.toggle("on", b.dataset.preset === preset.name.toLowerCase());
+  });
+
   status(preset.name + " view");
 }
 

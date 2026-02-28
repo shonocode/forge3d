@@ -59,14 +59,16 @@ async function listOPFS(): Promise<string[]> {
 
 const IDB_NAME = "forge3d_models";
 const IDB_STORE = "blobs";
+let _idb: IDBDatabase | null = null;
 
 function openIDB(): Promise<IDBDatabase> {
+  if (_idb) return Promise.resolve(_idb);
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = () => {
       req.result.createObjectStore(IDB_STORE);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => { _idb = req.result; resolve(_idb); };
     req.onerror = () => reject(req.error);
   });
 }
@@ -118,8 +120,10 @@ export const modelStore = {
     if (hasOPFS()) {
       try {
         return await saveToOPFS(id, data);
-      } catch {
-        // OPFS full or failed — fall back to IDB
+      } catch (e) {
+        console.warn("OPFS save failed, falling back to IDB:", e);
+        // Clean up any partial OPFS write
+        try { await deleteFromOPFS(id); } catch { /* ignore */ }
       }
     }
     return saveToIDB(id, data);

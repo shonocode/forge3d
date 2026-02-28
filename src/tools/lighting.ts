@@ -6,6 +6,7 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { state, status } from "../state";
 import type { LightData, LightType } from "../state";
+import { updateLightUI } from "../ui/panels";
 
 const MAX_LIGHTS = 8;
 
@@ -68,23 +69,69 @@ export function addLight(type: LightType): LightData | null {
   };
   state.lightMap.set(id, data);
   status((type === "point" ? "Point" : "Spot") + " Light added");
+
+  state.history.push({
+    label: "Add Light",
+    undo() {
+      data.light.setEnabled(false);
+      data.visual.setEnabled(false);
+      state.lightMap.delete(id);
+      if (state.selectedLightId === id) state.selectedLightId = null;
+      updateLightUI();
+    },
+    redo() {
+      data.light.setEnabled(true);
+      data.visual.setEnabled(true);
+      state.lightMap.set(id, data);
+      updateLightUI();
+    },
+  });
+
   return data;
 }
 
 export function removeLight(id: string): void {
   const data = state.lightMap.get(id);
   if (!data) return;
-  data.light.dispose();
-  data.visual.dispose();
+  // Soft-delete for undo support
+  data.light.setEnabled(false);
+  data.visual.setEnabled(false);
   state.lightMap.delete(id);
   if (state.selectedLightId === id) state.selectedLightId = null;
   status("Light removed");
+
+  state.history.push({
+    label: "Remove Light",
+    undo() {
+      data.light.setEnabled(true);
+      data.visual.setEnabled(true);
+      state.lightMap.set(id, data);
+      updateLightUI();
+    },
+    redo() {
+      data.light.setEnabled(false);
+      data.visual.setEnabled(false);
+      state.lightMap.delete(id);
+      if (state.selectedLightId === id) state.selectedLightId = null;
+      updateLightUI();
+    },
+  });
 }
 
-export function updateLightParam(id: string, key: string, value: number | string): void {
-  const data = state.lightMap.get(id);
-  if (!data) return;
+function getLightParamValue(data: LightData, key: string): number | string {
+  switch (key) {
+    case "color": return data.color;
+    case "intensity": return data.intensity;
+    case "range": return data.range;
+    case "angle": return data.angle ?? 45;
+    case "posX": return data.light.position.x;
+    case "posY": return data.light.position.y;
+    case "posZ": return data.light.position.z;
+    default: return 0;
+  }
+}
 
+function applyLightParam(data: LightData, key: string, value: number | string): void {
   switch (key) {
     case "color":
       data.color = value as string;
@@ -118,6 +165,21 @@ export function updateLightParam(id: string, key: string, value: number | string
       data.visual.position.z = value as number;
       break;
   }
+}
+
+export function updateLightParam(id: string, key: string, value: number | string): void {
+  const data = state.lightMap.get(id);
+  if (!data) return;
+
+  const prev = getLightParamValue(data, key);
+  applyLightParam(data, key, value);
+  if (prev === value) return;
+
+  state.history.push({
+    label: "Light Param",
+    undo() { applyLightParam(data, key, prev); updateLightUI(); },
+    redo() { applyLightParam(data, key, value); updateLightUI(); },
+  });
 }
 
 export function selectLight(id: string): void {

@@ -5,7 +5,6 @@ import { BRUSHES, setBrush } from "../tools/sculpt";
 import { doCSG, type CSGOp } from "../tools/csg";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
-import { exportGLB, saveToLibrary, loadGLBFromFile } from "../export/gltf-exporter";
 import { lastSelected } from "../tools/selection";
 import {
   recalcNormals, flipNormals, weldVertices, centerOrigin,
@@ -13,23 +12,28 @@ import {
 } from "../tools/mesh-utils";
 
 export function buildToolPills(): void {
-  const TOOLS: { id: ToolId; label: string }[] = [
-    { id: "select", label: "SEL" },
-    { id: "move", label: "MOV" },
-    { id: "rotate", label: "ROT" },
-    { id: "scale", label: "SCL" },
-    { id: "sculpt", label: "SCP" },
-    { id: "paint", label: "PNT" },
-    { id: "bone", label: "BONE" },
-    { id: "weight", label: "WGT" },
-    { id: "anim", label: "ANM" },
+  const mobile = isMobile();
+  const TOOLS: { id: ToolId; label: string; key: string; aria: string }[] = [
+    { id: "select", label: "SEL", key: "V", aria: "Select tool" },
+    { id: "move", label: "MOV", key: "G", aria: "Move tool" },
+    { id: "rotate", label: "ROT", key: "R", aria: "Rotate tool" },
+    { id: "scale", label: "SCL", key: "S", aria: "Scale tool" },
+    { id: "sculpt", label: "SCP", key: "D", aria: "Sculpt tool" },
+    { id: "paint", label: "PNT", key: "P", aria: "Paint tool" },
+    { id: "bone", label: "BONE", key: "B", aria: "Bone tool" },
+    { id: "weight", label: "WGT", key: "W", aria: "Weight paint tool" },
+    { id: "anim", label: "ANM", key: "A", aria: "Animation tool" },
   ];
   const el = E("pills");
   for (const t of TOOLS) {
     const b = document.createElement("button");
     b.className = "pill" + (t.id === "select" ? " on" : "");
     b.dataset.tool = t.id;
-    b.textContent = t.label;
+    b.innerHTML = mobile
+      ? t.label
+      : `${t.label}<span style="opacity:.4;font-size:8px;margin-left:2px">${t.key}</span>`;
+    b.title = t.label + " [" + t.key + "]";
+    b.setAttribute("aria-label", t.aria);
     b.addEventListener("click", () => setTool(t.id));
     el.appendChild(b);
   }
@@ -41,6 +45,7 @@ export function buildPrimitiveGrid(): void {
     const b = document.createElement("button");
     b.className = "pbtn";
     b.innerHTML = `<span class="ic">${p.icon}</span>${p.label}`;
+    b.setAttribute("aria-label", "Add " + p.label);
     b.addEventListener("click", () => {
       addPrimitive(p.id);
       if (isMobile()) closeAllPanels();
@@ -60,6 +65,7 @@ export function buildCSGButtons(): void {
     const b = document.createElement("button");
     b.className = "cbtn";
     b.innerHTML = `<span class="sy">${sym}</span>${label}`;
+    b.setAttribute("aria-label", label);
     b.addEventListener("click", () => doCSG(op));
     el.appendChild(b);
   }
@@ -79,13 +85,26 @@ export function buildTabs(): void {
     { id: "scene", label: "Scene" },
   ];
   const el = E("tabBar");
+  el.setAttribute("role", "tablist");
   for (const [i, t] of TAB_LIST.entries()) {
     const b = document.createElement("button");
     b.className = "tb" + (i === 0 ? " on" : "");
     b.dataset.tab = t.id;
     b.textContent = t.label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", i === 0 ? "true" : "false");
+    b.setAttribute("aria-controls", "tb-" + t.id);
+    b.id = "tab-" + t.id;
     b.addEventListener("click", () => switchTab(t.id));
     el.appendChild(b);
+  }
+  // Set tabpanel roles on content containers
+  for (const t of TAB_LIST) {
+    const panel = document.getElementById("tb-" + t.id);
+    if (panel) {
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", "tab-" + t.id);
+    }
   }
 }
 
@@ -97,6 +116,7 @@ export function buildBrushButtons(): void {
     b.className = "abtn bon" + (br.id === "push" ? " on" : "");
     b.id = "sb_" + br.id;
     b.textContent = br.label;
+    b.setAttribute("aria-label", br.label);
     b.addEventListener("click", () => setBrush(br.id));
     el.appendChild(b);
   }
@@ -149,6 +169,7 @@ export function buildMeshToolButtons(): void {
     const b = document.createElement("button");
     b.className = "cbtn";
     b.textContent = tool.label;
+    b.setAttribute("aria-label", tool.label);
     b.addEventListener("click", () => {
       const m = lastSelected();
       if (!m) { status("メッシュを選択"); return; }
@@ -172,19 +193,45 @@ export function buildMobileBar(): void {
   const el = E("mobBar");
   const items: { label: string; cls?: string; handler: () => void }[] = [
     { label: "\uff0b Prim", handler: () => togglePanel("lp") },
-    { label: "\u2b07 Export", cls: "pri", handler: () => void exportGLB() },
-    { label: "\ud83d\udcbe Save", handler: () => void saveToLibrary() },
-    { label: "\ud83d\udcc2 Load", handler: () => void loadGLBFromFile() },
+    { label: "\u21b6 Undo", handler: () => state.history.undo() },
     { label: "\u2398 Dup", handler: duplicateSelected },
     { label: "\u2715 Del", cls: "dan", handler: deleteSelected },
+    { label: "\u2b07 Export", cls: "pri", handler: () => {
+      void import("../export/gltf-exporter").then(m => m.exportGLB());
+    }},
+    { label: "\ud83d\udcbe Save", handler: () => {
+      void import("../export/gltf-exporter").then(m => m.saveToLibrary());
+    }},
+    { label: "\ud83d\udcc2 Load", handler: () => {
+      void import("../export/gltf-exporter").then(m => m.loadModelFromFile());
+    }},
   ];
   for (const item of items) {
     const b = document.createElement("button");
     b.className = "mbtn" + (item.cls ? " " + item.cls : "");
     b.textContent = item.label;
+    b.setAttribute("aria-label", item.label);
     b.addEventListener("click", item.handler);
     el.appendChild(b);
   }
+
+  // Camera lock toggle
+  const camLock = document.createElement("button");
+  camLock.className = "mbtn";
+  camLock.id = "btnCamLock";
+  camLock.textContent = "\ud83d\udd12 Cam";
+  camLock.addEventListener("click", () => {
+    state.cameraLocked = !state.cameraLocked;
+    camLock.classList.toggle("on", state.cameraLocked);
+    if (state.cameraLocked) {
+      state.camera.detachControl();
+      status("Camera locked");
+    } else {
+      state.camera.attachControl(state.canvas, true);
+      status("Camera unlocked");
+    }
+  });
+  el.appendChild(camLock);
 
   // Multi-select toggle
   const multi = document.createElement("button");

@@ -2,6 +2,7 @@ import { CubeTexture } from "@babylonjs/core/Materials/Textures/cubeTexture";
 import { HDRCubeTexture } from "@babylonjs/core/Materials/Textures/hdrCubeTexture";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { state, status } from "../state";
+import { openFileDialog } from "../ui/file-input";
 
 export interface EnvPreset {
   id: string;
@@ -26,6 +27,7 @@ export const ENV_PRESETS: EnvPreset[] = [
 ];
 
 let skybox: import("@babylonjs/core").Mesh | null = null;
+let _customBlobUrl: string | null = null;
 
 /**
  * Set default environment on scene initialization.
@@ -49,28 +51,24 @@ export function setEnvironmentPreset(id: string): void {
  * Let the user pick a custom .hdr or .env file.
  */
 export function loadCustomHDRI(): void {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".hdr,.env";
-  input.style.display = "none";
-  document.body.appendChild(input);
-  const cleanup = () => { if (input.parentNode) input.remove(); };
-  window.addEventListener("focus", () => setTimeout(cleanup, 300), { once: true });
-  input.addEventListener("change", () => {
-    cleanup();
-    const file = input.files?.[0];
-    if (!file) return;
+  openFileDialog(".hdr,.env", (file) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
     const url = URL.createObjectURL(file);
+    _customBlobUrl = url;
     applyEnvironment(url, ext === "hdr" ? "hdr" : "env");
     state.activeEnvPresetId = "custom";
     status("Environment: " + file.name);
   });
-  input.click();
 }
 
 function applyEnvironment(url: string, type: "env" | "hdr"): void {
   const { scene } = state;
+
+  // Revoke previous custom blob URL to prevent memory leak
+  if (_customBlobUrl && _customBlobUrl !== url) {
+    URL.revokeObjectURL(_customBlobUrl);
+    _customBlobUrl = null;
+  }
 
   // Dispose previous environment texture
   if (scene.environmentTexture) {

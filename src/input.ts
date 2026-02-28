@@ -3,13 +3,14 @@ import type { ToolId } from "./state";
 import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selection";
 import { sculptAt } from "./tools/sculpt";
 import { paintAt, hasUVs } from "./tools/texture-paint";
-import { duplicateSelected, deleteSelected } from "./tools/actions";
+import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
+import { updateHierarchy, updateProperties } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
 import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camera-presets";
 import { applySnapToGizmos } from "./tools/snap";
-import { addMeasurePoint } from "./tools/measure";
+import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
@@ -28,7 +29,7 @@ export function setTool(t: ToolId): void {
 }
 
 function cleanupTool(prev: ToolId): void {
-  if (prev === "anim" && state.isPlaying) stopPreview();
+  if (prev === "anim") stopPreview();
   if (prev === "weight" && state.weightOverlayActive) {
     const mesh = lastSelected();
     if (mesh) hideWeightOverlay(mesh);
@@ -62,12 +63,20 @@ function initTool(t: ToolId): void {
     const mesh = lastSelected();
     if (mesh?.skeleton && state.selectedBoneId) showWeightOverlay(mesh);
   }
+  if (t === "paint") {
+    const mesh = lastSelected();
+    if (mesh && !mesh.isVerticesDataPresent(VertexBuffer.UVKind)) {
+      status("⚠ UVがないメッシュはペイントできません");
+    }
+  }
 }
 
 export function switchTab(id: string): void {
-  document.querySelectorAll<HTMLElement>(".tb").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tab === id)
-  );
+  document.querySelectorAll<HTMLElement>(".tb").forEach((b) => {
+    const isActive = b.dataset.tab === id;
+    b.classList.toggle("on", isActive);
+    b.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
   document.querySelectorAll<HTMLElement>(".tbody").forEach((b) =>
     b.classList.toggle("on", b.id === "tb-" + id)
   );
@@ -100,7 +109,8 @@ export function initInput(): void {
   // Keyboard
   document.addEventListener("keydown", (e) => {
     state.keysDown.add(e.key);
-    if ((e.target as HTMLElement).tagName === "INPUT") return;
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement).isContentEditable) return;
     switch (e.key.toLowerCase()) {
       case "z":
         if (e.ctrlKey || e.metaKey) {
@@ -120,7 +130,67 @@ export function initInput(): void {
       case "p": setTool("paint"); break;
       case "b": setTool("bone"); break;
       case "w": if (!e.ctrlKey) setTool("weight"); break;
-      case "a": if (!e.ctrlKey) setTool("anim"); break;
+      case "a":
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          // Select all meshes
+          for (const m of state.allMeshes) selectMesh(m, true);
+          status(state.allMeshes.length + " meshes selected");
+        } else {
+          setTool("anim");
+        }
+        break;
+      case "n":
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          if (state.allMeshes.length === 0 || confirm("Clear scene? Unsaved changes will be lost.")) {
+            stopPreview();
+            const toRemove = [...state.allMeshes];
+            for (const m of toRemove) cleanupMesh(m);
+            state.selectedMeshes = [];
+            state.meshCounter = 0;
+            state.colorIndex = 0;
+            state.paintTextureMap.clear();
+            state.morphMap.clear();
+            state.modifierMap.clear();
+            state.originalGeometryMap.clear();
+            state.skeletonMap.clear();
+            state.activeSkeletonId = null;
+            state.selectedBoneId = null;
+            state.boneCounter = 0;
+            state.skeletonCounter = 0;
+            state.animClips = [];
+            state.activeClipId = null;
+            for (const ag of state.importedAnimGroups) {
+              try { ag.stop(); } catch { /* ignore */ }
+              try { ag.dispose(); } catch { /* ignore */ }
+            }
+            state.importedAnimGroups = [];
+            state.lightMap.clear();
+            state.selectedLightId = null;
+            state.lightCounter = 0;
+            state.mapInstances = [];
+            clearMeasurements();
+            state.history.clear();
+            updateGizmo();
+            updateHierarchy();
+            updateProperties();
+            status("New scene");
+          }
+        }
+        break;
+      case "f":
+        if (!e.ctrlKey && !e.metaKey) {
+          // Focus/frame selected mesh
+          const sel = lastSelected();
+          if (sel) {
+            const bounds = sel.getBoundingInfo().boundingSphere;
+            state.camera.setTarget(bounds.centerWorld);
+            state.camera.radius = Math.max(bounds.radiusWorld * 3, 2);
+            status("Focus: " + sel.name);
+          }
+        }
+        break;
       case "delete":
       case "backspace":
         if (e.target === document.body) deleteSelected();
@@ -174,7 +244,7 @@ export function initInput(): void {
         console.warn("Sculpt error:", err);
         state.sculpting = false;
         canvas.releasePointerCapture(e.pointerId);
-        state.camera.attachControl(canvas, true);
+        if (!state.cameraLocked) state.camera.attachControl(canvas, true);
       }
       return;
     }
@@ -214,7 +284,7 @@ export function initInput(): void {
         } catch (err) {
           state.painting = false;
           canvas.releasePointerCapture(e.pointerId);
-          state.camera.attachControl(canvas, true);
+          if (!state.cameraLocked) state.camera.attachControl(canvas, true);
         }
       }
       return;
@@ -279,7 +349,7 @@ export function initInput(): void {
         } catch (err) {
           state.weightPainting = false;
           canvas.releasePointerCapture(e.pointerId);
-          state.camera.attachControl(canvas, true);
+          if (!state.cameraLocked) state.camera.attachControl(canvas, true);
         }
       }
       return;
@@ -336,20 +406,31 @@ export function initInput(): void {
     return state.scene.pick(state.scene.pointerX, state.scene.pointerY, (m) => state.selectedMeshes.includes(m));
   }
 
+  // Debounce cursor DOM updates with rAF; drag actions fire immediately
+  let cursorRafId = 0;
   canvas.addEventListener("pointermove", (e) => {
-    const cur = E("scur");
     const cfg = BRUSH_TOOLS.find((b) => b.tool === state.tool);
     if (cfg) {
-      cur.style.display = "block";
-      const rect = canvas.getBoundingClientRect();
-      cur.style.left = (e.clientX - rect.left) + "px";
-      cur.style.top = (e.clientY - rect.top) + "px";
-      const sz = cfg.getSize();
-      cur.style.width = sz + "px";
-      cur.style.height = sz + "px";
+      // Execute drag action immediately (not debounced) for responsive brushing
       if (cfg.isDragging()) cfg.onDrag();
+      // Debounce visual cursor position updates
+      const cx = e.clientX, cy = e.clientY;
+      if (!cursorRafId) {
+        cursorRafId = requestAnimationFrame(() => {
+          cursorRafId = 0;
+          const cur = E("scur");
+          cur.style.display = "block";
+          const rect = canvas.getBoundingClientRect();
+          cur.style.left = (cx - rect.left) + "px";
+          cur.style.top = (cy - rect.top) + "px";
+          const sz = cfg.getSize();
+          cur.style.width = sz + "px";
+          cur.style.height = sz + "px";
+        });
+      }
     } else {
-      cur.style.display = "none";
+      if (cursorRafId) { cancelAnimationFrame(cursorRafId); cursorRafId = 0; }
+      E("scur").style.display = "none";
     }
   });
 
@@ -362,7 +443,7 @@ export function initInput(): void {
     state.weightPainting = false;
     if (wasSculpting || wasPainting || wasWeightPainting) {
       canvas.releasePointerCapture(e.pointerId);
-      state.camera.attachControl(canvas, true);
+      if (!state.cameraLocked) state.camera.attachControl(canvas, true);
     }
 
     // Push sculpt undo
@@ -399,10 +480,11 @@ export function initInput(): void {
               if (!t) return;
               const c = t.getContext() as CanvasRenderingContext2D | null;
               if (!c) return;
+              const sz = t.getSize().width;
               const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
               const tc = tmp.getContext("2d")!;
               tc.putImageData(beforeData, 0, 0);
-              c.drawImage(tmp, 0, 0, 1024, 1024);
+              c.drawImage(tmp, 0, 0, sz, sz);
               t.update();
             },
             redo() {
@@ -410,10 +492,11 @@ export function initInput(): void {
               if (!t) return;
               const c = t.getContext() as CanvasRenderingContext2D | null;
               if (!c) return;
+              const sz = t.getSize().width;
               const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
               const tc = tmp.getContext("2d")!;
               tc.putImageData(afterData, 0, 0);
-              c.drawImage(tmp, 0, 0, 1024, 1024);
+              c.drawImage(tmp, 0, 0, sz, sz);
               t.update();
             },
           });
@@ -454,6 +537,23 @@ export function initInput(): void {
     const el = document.querySelector<HTMLElement>(sel);
     if (el) initScrollFade(el);
   }
+
+  // Drag & drop file import
+  let dragCounter = 0;
+  const dropZone = E("dropZone");
+
+  canvas.addEventListener("dragenter", (e) => { e.preventDefault(); dragCounter++; dropZone.classList.add("active"); });
+  canvas.addEventListener("dragleave", (e) => { e.preventDefault(); if (--dragCounter <= 0) { dragCounter = 0; dropZone.classList.remove("active"); } });
+  canvas.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer!.dropEffect = "copy"; });
+  canvas.addEventListener("drop", async (e) => {
+    e.preventDefault(); dragCounter = 0; dropZone.classList.remove("active");
+    const file = e.dataTransfer?.files[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!["glb", "gltf", "obj", "stl"].includes(ext)) { status("\u26a0 Unsupported: ." + ext); return; }
+    const { loadFileDirectly } = await import("./export/gltf-exporter");
+    await loadFileDirectly(file);
+  });
 
   // Resize
   window.addEventListener("resize", () => {

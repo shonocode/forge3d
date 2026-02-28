@@ -2,6 +2,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, status } from "../state";
+import { openFileDialog } from "../ui/file-input";
 
 export type TextureSlot = "albedo" | "normal" | "metallic" | "ao" | "emissive";
 
@@ -20,21 +21,11 @@ export function importTextureForSlot(mesh: AbstractMesh, slot: TextureSlot): voi
     return;
   }
 
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "image/*,.ktx2,.ktx";
-  input.style.display = "none";
-  document.body.appendChild(input);
-  const cleanup = () => { if (input.parentNode) input.remove(); };
-  window.addEventListener("focus", () => setTimeout(cleanup, 300), { once: true });
-
-  input.addEventListener("change", () => {
-    cleanup();
-    const file = input.files?.[0];
-    if (!file) return;
+  openFileDialog("image/*,.ktx2,.ktx", (file) => {
     const url = URL.createObjectURL(file);
     const tex = new Texture(url, state.scene, false, true, Texture.TRILINEAR_SAMPLINGMODE, () => {
-      URL.revokeObjectURL(url);
+      // Delay revoke to ensure GPU has fetched the blob data
+      setTimeout(() => URL.revokeObjectURL(url), 500);
     });
     tex.name = file.name;
 
@@ -58,7 +49,6 @@ export function importTextureForSlot(mesh: AbstractMesh, slot: TextureSlot): voi
 
     status("Texture: " + file.name + " \u2192 " + slot);
   });
-  input.click();
 }
 
 export function clearTextureSlot(mesh: AbstractMesh, slot: TextureSlot): void {
@@ -67,19 +57,29 @@ export function clearTextureSlot(mesh: AbstractMesh, slot: TextureSlot): void {
 
   const prop = SLOT_PROP[slot];
   const existing = (mat as unknown as Record<string, unknown>)[prop] as Texture | null;
-  if (existing) {
-    existing.dispose();
-    (mat as unknown as Record<string, unknown>)[prop] = null;
+  if (!existing) return;
+
+  // Don't dispose — keep reference for undo
+  (mat as unknown as Record<string, unknown>)[prop] = null;
+
+  // Detach paint texture if clearing albedo (keep for undo)
+  let paintTex: import("@babylonjs/core/Materials/Textures/dynamicTexture").DynamicTexture | null = null;
+  if (slot === "albedo") {
+    paintTex = state.paintTextureMap.get(mesh.uniqueId) ?? null;
+    if (paintTex) state.paintTextureMap.delete(mesh.uniqueId);
   }
 
-  // Also clear paint texture if clearing albedo
-  if (slot === "albedo") {
-    const paintTex = state.paintTextureMap.get(mesh.uniqueId);
-    if (paintTex) {
-      paintTex.dispose();
-      state.paintTextureMap.delete(mesh.uniqueId);
-    }
-  }
+  state.history.push({
+    label: "Clear Texture",
+    undo() {
+      (mat as unknown as Record<string, unknown>)[prop] = existing;
+      if (paintTex) state.paintTextureMap.set(mesh.uniqueId, paintTex);
+    },
+    redo() {
+      (mat as unknown as Record<string, unknown>)[prop] = null;
+      if (paintTex) state.paintTextureMap.delete(mesh.uniqueId);
+    },
+  });
 
   status("Cleared: " + slot + " texture");
 }

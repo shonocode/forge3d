@@ -3,11 +3,12 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { getAlbedoColor } from "../materials/pbr-helpers";
 import { getTextureInfo, importTextureForSlot, clearTextureSlot, type TextureSlot } from "../tools/texture-import";
-import { state, E } from "../state";
+import { state, E, status } from "../state";
 import type { BoneData, SkeletonData } from "../state";
 import { selectMesh, lastSelected } from "../tools/selection";
 import { deleteOne } from "../tools/actions";
 import { updateMorphUI } from "../tools/morph";
+import { escapeHtml } from "./escape";
 import { selectBone, getActiveSkeleton } from "../tools/skeleton-tool";
 import { getRootMeshes, getChildren } from "../tools/parenting";
 import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
@@ -42,7 +43,7 @@ export function updateHierarchy(): void {
     d.style.paddingLeft = (8 + depth * 16) + "px";
     const col = getAlbedoColor(m.material)?.toHexString() ?? "#5b7fff";
     const indent = depth > 0 ? '<span style="color:var(--t4);margin-right:4px;font-size:8px;">└</span>' : "";
-    d.innerHTML = `<div class="cd" style="background:${col}"></div>${indent}<span>${m.name}</span>
+    d.innerHTML = `<div class="cd" style="background:${col}"></div>${indent}<span>${escapeHtml(m.name)}</span>
       <button class="dl">✕</button>`;
     d.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).classList.contains("dl")) return;
@@ -259,10 +260,11 @@ function modSlider(label: string, val: number, min: number, max: number, step: n
 }
 
 function v3h(pf: string, v: { x: number; y: number; z: number }): string {
+  const label = pf === "pos" ? "Position" : pf === "rot" ? "Rotation" : "Scale";
   return (["x", "y", "z"] as const)
     .map(
       (a) =>
-        `<div class="pr"><span class="pl ${a}">${a.toUpperCase()}</span><input type="number" step="0.1" class="pi" data-b="${pf}_${a}" value="${v[a].toFixed(3)}"></div>`
+        `<div class="pr"><span class="pl ${a}">${a.toUpperCase()}</span><input type="number" step="0.1" class="pi" data-b="${pf}_${a}" value="${v[a].toFixed(3)}" aria-label="${label} ${a.toUpperCase()}"></div>`
     )
     .join("");
 }
@@ -300,42 +302,42 @@ export function updateMaterial(): void {
     <div class="pg"><div class="pgt">Albedo</div>
       <div class="cgrid">${PALETTE.map((c) => `<div class="csw" style="background:${c}" data-col="${c}"></div>`).join("")}</div>
       <div class="pr" style="margin-top:6px"><span class="pl" style="font-size:10px">Color</span>
-        <input type="color" value="${albedo.toHexString()}" id="matColorPicker"
+        <input type="color" value="${albedo.toHexString()}" id="matColorPicker" aria-label="Albedo color"
           style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
     </div>
     <div class="pg"><div class="pgt">PBR</div>
       <div class="sr"><label>Metallic <span id="mtV">${metallic.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${metallic}" id="matMetallic"></div>
+        <input type="range" min="0" max="1" step=".01" value="${metallic}" id="matMetallic" aria-label="Metallic"></div>
       <div class="sr"><label>Roughness <span id="rgV">${roughness.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${roughness}" id="matRoughness"></div>
+        <input type="range" min="0" max="1" step=".01" value="${roughness}" id="matRoughness" aria-label="Roughness"></div>
       <div class="sr"><label>Alpha <span id="alV">${alpha.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".05" value="${alpha}" id="matAlpha"></div>
+        <input type="range" min="0" max="1" step=".05" value="${alpha}" id="matAlpha" aria-label="Alpha"></div>
     </div>
     <div class="pg"><div class="pgt">Emissive</div>
       <div class="pr"><span class="pl" style="font-size:10px">Color</span>
-        <input type="color" value="${emissiveHex}" id="matEmissiveColor"
+        <input type="color" value="${emissiveHex}" id="matEmissiveColor" aria-label="Emissive color"
           style="flex:1;min-height:22px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
       <div class="sr"><label>Intensity <span id="eiV">${emissiveInt.toFixed(2)}</span></label>
-        <input type="range" min="0" max="5" step=".1" value="${emissiveInt}" id="matEmissiveInt"></div>
+        <input type="range" min="0" max="5" step=".1" value="${emissiveInt}" id="matEmissiveInt" aria-label="Emissive intensity"></div>
     </div>
     <div class="pg"><div class="pgt">Clear Coat</div>
       <div class="sr"><label>Intensity <span id="ccIntV">${ccInt.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${ccInt}" id="matCCInt"></div>
+        <input type="range" min="0" max="1" step=".01" value="${ccInt}" id="matCCInt" aria-label="Clear coat intensity"></div>
       <div class="sr"><label>Roughness <span id="ccRoughV">${ccRough.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${ccRough}" id="matCCRough"></div>
+        <input type="range" min="0" max="1" step=".01" value="${ccRough}" id="matCCRough" aria-label="Clear coat roughness"></div>
     </div>
     <div class="pg"><div class="pgt">Sheen</div>
       <div class="sr"><label>Intensity <span id="sheenIntV">${sheenInt.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${sheenInt}" id="matSheenInt"></div>
+        <input type="range" min="0" max="1" step=".01" value="${sheenInt}" id="matSheenInt" aria-label="Sheen intensity"></div>
       <div class="pr"><span class="pl" style="font-size:10px">Color</span>
-        <input type="color" value="${sheenColor}" id="matSheenColor"
+        <input type="color" value="${sheenColor}" id="matSheenColor" aria-label="Sheen color"
           style="flex:1;min-height:22px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>
     </div>
     <div class="pg"><div class="pgt">Transmission</div>
       <div class="sr"><label>Intensity <span id="transIntV">${transInt.toFixed(2)}</span></label>
-        <input type="range" min="0" max="1" step=".01" value="${transInt}" id="matTransInt"></div>
+        <input type="range" min="0" max="1" step=".01" value="${transInt}" id="matTransInt" aria-label="Transmission intensity"></div>
       <div class="sr"><label>IOR <span id="iorV">${ior.toFixed(2)}</span></label>
-        <input type="range" min="1" max="2.5" step=".01" value="${ior}" id="matIOR"></div>
+        <input type="range" min="1" max="2.5" step=".01" value="${ior}" id="matIOR" aria-label="Index of refraction"></div>
       <div style="font-size:9px;color:var(--t4);padding:2px 0;">Glass 1.5 · Water 1.33 · Diamond 2.42</div>
     </div>
     <div class="pg"><div class="pgt">Textures</div>
@@ -343,9 +345,9 @@ export function updateMaterial(): void {
     </div>
     <div class="pg"><div class="pgt">Display</div>
       <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Wireframe</span>
-        <input type="checkbox" ${mt.wireframe ? "checked" : ""} id="matWire" style="margin-left:auto"></div>
+        <input type="checkbox" ${mt.wireframe ? "checked" : ""} id="matWire" aria-label="Wireframe" style="margin-left:auto"></div>
       <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Unlit</span>
-        <input type="checkbox" ${isUnlit ? "checked" : ""} id="matUnlit" style="margin-left:auto"></div>
+        <input type="checkbox" ${isUnlit ? "checked" : ""} id="matUnlit" aria-label="Unlit" style="margin-left:auto"></div>
     </div>`;
 
   // Attach events
@@ -355,75 +357,127 @@ export function updateMaterial(): void {
   el.querySelector<HTMLInputElement>("#matColorPicker")?.addEventListener("change", function () {
     setColor(this.value);
   });
-  el.querySelector<HTMLInputElement>("#matMetallic")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).metallic = +this.value;
-    E("mtV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matRoughness")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).roughness = +this.value;
-    E("rgV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matAlpha")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).alpha = +this.value;
-    E("alV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matEmissiveColor")?.addEventListener("change", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).emissiveColor = Color3.FromHexString(this.value);
-  });
-  el.querySelector<HTMLInputElement>("#matEmissiveInt")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).emissiveIntensity = +this.value;
-    E("eiV").textContent = (+this.value).toFixed(2);
-  });
+
+  // Undo-tracked material slider helper
+  function trackSlider(
+    id: string, displayId: string,
+    get: (mat: PBRMaterial) => number,
+    set: (mat: PBRMaterial, v: number) => void,
+  ): void {
+    const inp = el.querySelector<HTMLInputElement>("#" + id);
+    if (!inp) return;
+    let before = 0;
+    inp.addEventListener("pointerdown", () => {
+      const sel = lastSelected();
+      if (sel?.material) before = get(sel.material as PBRMaterial);
+    });
+    inp.addEventListener("input", function () {
+      const sel = lastSelected(); if (!sel?.material) return;
+      const v = +this.value;
+      if (isNaN(v)) return;
+      set(sel.material as PBRMaterial, v);
+      E(displayId).textContent = v.toFixed(2);
+    });
+    inp.addEventListener("change", function () {
+      const sel = lastSelected(); if (!sel?.material) return;
+      const after = +this.value;
+      if (isNaN(after) || before === after) return;
+      const mesh = sel, b = before, a = after;
+      state.history.push({
+        label: "Material",
+        undo() { set(mesh.material as PBRMaterial, b); updateMaterial(); },
+        redo() { set(mesh.material as PBRMaterial, a); updateMaterial(); },
+      });
+    });
+  }
+
+  trackSlider("matMetallic", "mtV", (m) => m.metallic ?? 0, (m, v) => { m.metallic = v; });
+  trackSlider("matRoughness", "rgV", (m) => m.roughness ?? 0.5, (m, v) => { m.roughness = v; });
+  trackSlider("matAlpha", "alV", (m) => m.alpha, (m, v) => { m.alpha = v; });
+  trackSlider("matEmissiveInt", "eiV", (m) => m.emissiveIntensity ?? 0, (m, v) => { m.emissiveIntensity = v; });
+  trackSlider("matCCInt", "ccIntV",
+    (m) => m.clearCoat?.intensity ?? 0,
+    (m, v) => { m.clearCoat.isEnabled = v > 0; m.clearCoat.intensity = v; });
+  trackSlider("matCCRough", "ccRoughV",
+    (m) => m.clearCoat?.roughness ?? 0,
+    (m, v) => { m.clearCoat.roughness = v; });
+  trackSlider("matSheenInt", "sheenIntV",
+    (m) => m.sheen?.intensity ?? 0,
+    (m, v) => { m.sheen.isEnabled = v > 0; m.sheen.intensity = v; });
+  trackSlider("matTransInt", "transIntV",
+    (m) => m.subSurface?.refractionIntensity ?? 0,
+    (m, v) => { m.subSurface.isRefractionEnabled = v > 0; m.subSurface.refractionIntensity = v; });
+  trackSlider("matIOR", "iorV",
+    (m) => m.subSurface?.indexOfRefraction ?? 1.5,
+    (m, v) => { m.subSurface.indexOfRefraction = v; });
+
+  // Emissive color with undo
+  {
+    const inp = el.querySelector<HTMLInputElement>("#matEmissiveColor");
+    if (inp) {
+      let beforeHex = "";
+      inp.addEventListener("focus", () => {
+        const sel = lastSelected();
+        if (sel?.material) beforeHex = (sel.material as PBRMaterial).emissiveColor?.toHexString() ?? "#000000";
+      });
+      inp.addEventListener("change", function () {
+        const sel = lastSelected(); if (!sel?.material) return;
+        (sel.material as PBRMaterial).emissiveColor = Color3.FromHexString(this.value);
+        const mesh = sel, b = beforeHex, a = this.value;
+        state.history.push({
+          label: "Emissive Color",
+          undo() { (mesh.material as PBRMaterial).emissiveColor = Color3.FromHexString(b); updateMaterial(); },
+          redo() { (mesh.material as PBRMaterial).emissiveColor = Color3.FromHexString(a); updateMaterial(); },
+        });
+      });
+    }
+  }
+  // Sheen color with undo
+  {
+    const inp = el.querySelector<HTMLInputElement>("#matSheenColor");
+    if (inp) {
+      let beforeHex = "";
+      inp.addEventListener("focus", () => {
+        const sel = lastSelected();
+        if (sel?.material) beforeHex = (sel.material as PBRMaterial).sheen?.color?.toHexString() ?? "#ffffff";
+      });
+      inp.addEventListener("change", function () {
+        const sel = lastSelected(); if (!sel?.material) return;
+        (sel.material as PBRMaterial).sheen.color = Color3.FromHexString(this.value);
+        const mesh = sel, b = beforeHex, a = this.value;
+        state.history.push({
+          label: "Sheen Color",
+          undo() { (mesh.material as PBRMaterial).sheen.color = Color3.FromHexString(b); updateMaterial(); },
+          redo() { (mesh.material as PBRMaterial).sheen.color = Color3.FromHexString(a); updateMaterial(); },
+        });
+      });
+    }
+  }
+  // Wireframe with undo
   el.querySelector<HTMLInputElement>("#matWire")?.addEventListener("change", function () {
     const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).wireframe = this.checked;
+    const mat = sel.material as PBRMaterial;
+    const before = !this.checked; // was opposite before change
+    mat.wireframe = this.checked;
+    const mesh = sel, b = before, a = this.checked;
+    state.history.push({
+      label: "Wireframe",
+      undo() { (mesh.material as PBRMaterial).wireframe = b; updateMaterial(); },
+      redo() { (mesh.material as PBRMaterial).wireframe = a; updateMaterial(); },
+    });
   });
+  // Unlit with undo
   el.querySelector<HTMLInputElement>("#matUnlit")?.addEventListener("change", function () {
     const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).unlit = this.checked;
-  });
-  // Clear Coat
-  el.querySelector<HTMLInputElement>("#matCCInt")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
     const mat = sel.material as PBRMaterial;
-    mat.clearCoat.isEnabled = +this.value > 0;
-    mat.clearCoat.intensity = +this.value;
-    E("ccIntV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matCCRough")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).clearCoat.roughness = +this.value;
-    E("ccRoughV").textContent = (+this.value).toFixed(2);
-  });
-  // Sheen
-  el.querySelector<HTMLInputElement>("#matSheenInt")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    const mat = sel.material as PBRMaterial;
-    mat.sheen.isEnabled = +this.value > 0;
-    mat.sheen.intensity = +this.value;
-    E("sheenIntV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matSheenColor")?.addEventListener("change", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).sheen.color = Color3.FromHexString(this.value);
-  });
-  // Transmission / IOR
-  el.querySelector<HTMLInputElement>("#matTransInt")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    const mat = sel.material as PBRMaterial;
-    mat.subSurface.isRefractionEnabled = +this.value > 0;
-    mat.subSurface.refractionIntensity = +this.value;
-    E("transIntV").textContent = (+this.value).toFixed(2);
-  });
-  el.querySelector<HTMLInputElement>("#matIOR")?.addEventListener("input", function () {
-    const sel = lastSelected(); if (!sel?.material) return;
-    (sel.material as PBRMaterial).subSurface.indexOfRefraction = +this.value;
-    E("iorV").textContent = (+this.value).toFixed(2);
+    const before = !this.checked;
+    mat.unlit = this.checked;
+    const mesh = sel, b = before, a = this.checked;
+    state.history.push({
+      label: "Unlit",
+      undo() { (mesh.material as PBRMaterial).unlit = b; updateMaterial(); },
+      redo() { (mesh.material as PBRMaterial).unlit = a; updateMaterial(); },
+    });
   });
 
   // Texture slots
@@ -469,18 +523,22 @@ export function updateMaterial(): void {
 
 function setColor(hex: string): void {
   if (!state.selectedMeshes.length) return;
-  const m = lastSelected()!;
-  const mat = m.material as PBRMaterial;
-  const prevHex = mat.albedoColor?.toHexString() ?? "#ffffff";
-  mat.albedoColor = Color3.FromHexString(hex);
+  // Apply to all selected meshes
+  const targets = state.selectedMeshes.filter(m => m.material && "albedoColor" in m.material);
+  if (!targets.length) return;
+  const prevColors = targets.map(m => ({
+    mesh: m,
+    hex: (m.material as PBRMaterial).albedoColor?.toHexString() ?? "#ffffff",
+  }));
+  const color = Color3.FromHexString(hex);
+  for (const m of targets) (m.material as PBRMaterial).albedoColor = color.clone();
   updateHierarchy();
 
-  const mesh = m;
-  const oldHex = prevHex, newHex = hex;
+  const newHex = hex;
   state.history.push({
     label: "Color",
-    undo() { (mesh.material as PBRMaterial).albedoColor = Color3.FromHexString(oldHex); updateHierarchy(); },
-    redo() { (mesh.material as PBRMaterial).albedoColor = Color3.FromHexString(newHex); updateHierarchy(); },
+    undo() { for (const p of prevColors) (p.mesh.material as PBRMaterial).albedoColor = Color3.FromHexString(p.hex); updateHierarchy(); },
+    redo() { const c = Color3.FromHexString(newHex); for (const p of prevColors) (p.mesh.material as PBRMaterial).albedoColor = c.clone(); updateHierarchy(); },
   });
 }
 
@@ -524,7 +582,7 @@ function updateBoneHierarchy(): void {
     const div = document.createElement("div");
     div.className = "sitem" + (bd.id === state.selectedBoneId ? " sel" : "");
     div.style.paddingLeft = (8 + depth * 12) + "px";
-    div.innerHTML = `<span style="color:var(--ac);font-size:10px;">●</span><span>${bd.name}</span>`;
+    div.innerHTML = `<span style="color:var(--ac);font-size:10px;">●</span><span>${escapeHtml(bd.name)}</span>`;
     div.addEventListener("click", () => {
       selectBone(bd.id);
       updateBoneUI();
@@ -551,8 +609,8 @@ function updateBoneProperties(): void {
     : "— (root)";
   el.innerHTML = `
     <div style="font-size:10px;color:var(--t2);line-height:1.6;">
-      <div><span style="color:var(--t4)">Name:</span> ${bd.name}</div>
-      <div><span style="color:var(--t4)">Parent:</span> ${parentName}</div>
+      <div><span style="color:var(--t4)">Name:</span> ${escapeHtml(bd.name)}</div>
+      <div><span style="color:var(--t4)">Parent:</span> ${escapeHtml(parentName)}</div>
       ${pos ? `<div><span style="color:var(--t4)">Pos:</span> ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}</div>` : ""}
     </div>`;
 }
@@ -662,7 +720,7 @@ function updateImportedAnimUI(): void {
   // Bind events inline (re-binds each update, but simple and reliable)
   el.querySelector("#playImportedAnim")?.addEventListener("click", () => {
     const select = document.getElementById("importedAnimSelect") as HTMLSelectElement;
-    const idx = parseInt(select.value);
+    const idx = parseInt(select.value, 10);
     if (isNaN(idx) || idx < 0 || idx >= state.importedAnimGroups.length) return;
     // Stop any currently playing
     for (const ag of state.importedAnimGroups) ag.stop();
@@ -727,7 +785,10 @@ export function updateModelLibrary(models: ModelMetadata[]): void {
     placeBtn.title = "Place in scene";
     placeBtn.addEventListener("click", () => {
       placeBtn.disabled = true;
-      void placeModel(meta.id, meta.name).then(() => updateMapInstances()).finally(() => { placeBtn.disabled = false; });
+      void placeModel(meta.id, meta.name)
+        .then(() => updateMapInstances())
+        .catch(() => status("\u26a0 \u914d\u7f6e\u306b\u5931\u6557"))
+        .finally(() => { placeBtn.disabled = false; });
     });
     div.appendChild(placeBtn);
 
@@ -743,7 +804,9 @@ export function updateModelLibrary(models: ModelMetadata[]): void {
         import("../tools/map-editor").then((m) =>
           m.loadModelLibrary().then((updated) => updateModelLibrary(updated))
         );
-      });
+      }).catch(() => {
+        status("\u26a0 \u524a\u9664\u306b\u5931\u6557");
+      }).finally(() => { delBtn.disabled = false; });
     });
     div.appendChild(delBtn);
 
@@ -827,6 +890,7 @@ export function updateLayerUI(): void {
     eyeBtn.style.cssText = "background:none;border:none;color:var(--t3);cursor:pointer;font-size:11px;padding:0 2px;";
     eyeBtn.textContent = layer.visible ? "\u{1F441}" : "\u25CB";
     eyeBtn.title = layer.visible ? "Hide" : "Show";
+    eyeBtn.setAttribute("aria-label", (layer.visible ? "Hide" : "Show") + " layer " + layer.name);
     eyeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleLayerVisibility(layer.id);

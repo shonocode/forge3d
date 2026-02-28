@@ -1,7 +1,7 @@
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { state } from "../state";
+import { state, status } from "../state";
 import type { Modifier, ModifierType, OriginalGeometry, SubdivisionModifier, MirrorModifier, ArrayModifier } from "../state";
 
 // ── Geometry helpers ──
@@ -171,9 +171,17 @@ function ensureOriginal(mesh: AbstractMesh): void {
   }
 }
 
+const MAX_MODIFIERS = 8;
+
 export function addModifier(mesh: AbstractMesh, type: ModifierType): Modifier | null {
   ensureOriginal(mesh);
   if (!state.originalGeometryMap.has(mesh.uniqueId)) return null;
+
+  const existing = state.modifierMap.get(mesh.uniqueId) ?? [];
+  if (existing.length >= MAX_MODIFIERS) {
+    status("\u26a0 \u30e2\u30c7\u30a3\u30d5\u30a1\u30a4\u30a2\u4e0a\u9650 (" + MAX_MODIFIERS + ")");
+    return null;
+  }
 
   state.modifierCounter++;
   const id = "mod_" + state.modifierCounter;
@@ -195,6 +203,29 @@ export function addModifier(mesh: AbstractMesh, type: ModifierType): Modifier | 
   mods.push(mod);
   state.modifierMap.set(mesh.uniqueId, mods);
   evaluateModifierStack(mesh);
+
+  state.history.push({
+    label: "Add Modifier",
+    undo() {
+      const ms = state.modifierMap.get(mesh.uniqueId);
+      if (!ms) return;
+      const i = ms.indexOf(mod);
+      if (i >= 0) ms.splice(i, 1);
+      if (ms.length === 0) {
+        state.modifierMap.delete(mesh.uniqueId);
+        const orig = state.originalGeometryMap.get(mesh.uniqueId);
+        if (orig) { applyGeometry(mesh, orig); state.originalGeometryMap.delete(mesh.uniqueId); }
+      } else { evaluateModifierStack(mesh); }
+    },
+    redo() {
+      ensureOriginal(mesh);
+      const ms = state.modifierMap.get(mesh.uniqueId) ?? [];
+      ms.push(mod);
+      state.modifierMap.set(mesh.uniqueId, ms);
+      evaluateModifierStack(mesh);
+    },
+  });
+
   return mod;
 }
 
@@ -203,10 +234,11 @@ export function removeModifier(mesh: AbstractMesh, modId: string): void {
   if (!mods) return;
   const idx = mods.findIndex((m) => m.id === modId);
   if (idx < 0) return;
+  const removed = mods[idx]!;
+
   mods.splice(idx, 1);
   if (mods.length === 0) {
     state.modifierMap.delete(mesh.uniqueId);
-    // Restore original geometry
     const orig = state.originalGeometryMap.get(mesh.uniqueId);
     if (orig) {
       applyGeometry(mesh, orig);
@@ -215,24 +247,61 @@ export function removeModifier(mesh: AbstractMesh, modId: string): void {
   } else {
     evaluateModifierStack(mesh);
   }
+
+  state.history.push({
+    label: "Remove Modifier",
+    undo() {
+      ensureOriginal(mesh);
+      const ms = state.modifierMap.get(mesh.uniqueId) ?? [];
+      ms.splice(idx, 0, removed);
+      state.modifierMap.set(mesh.uniqueId, ms);
+      evaluateModifierStack(mesh);
+    },
+    redo() {
+      const ms = state.modifierMap.get(mesh.uniqueId);
+      if (!ms) return;
+      const i = ms.indexOf(removed);
+      if (i >= 0) ms.splice(i, 1);
+      if (ms.length === 0) {
+        state.modifierMap.delete(mesh.uniqueId);
+        const orig = state.originalGeometryMap.get(mesh.uniqueId);
+        if (orig) { applyGeometry(mesh, orig); state.originalGeometryMap.delete(mesh.uniqueId); }
+      } else { evaluateModifierStack(mesh); }
+    },
+  });
 }
 
 export function toggleModifier(mesh: AbstractMesh, modId: string): void {
   const mods = state.modifierMap.get(mesh.uniqueId);
   const mod = mods?.find((m) => m.id === modId);
-  if (mod) {
-    mod.enabled = !mod.enabled;
-    evaluateModifierStack(mesh);
-  }
+  if (!mod) return;
+  mod.enabled = !mod.enabled;
+  evaluateModifierStack(mesh);
+
+  state.history.push({
+    label: "Toggle Modifier",
+    undo() { mod.enabled = !mod.enabled; evaluateModifierStack(mesh); },
+    redo() { mod.enabled = !mod.enabled; evaluateModifierStack(mesh); },
+  });
 }
 
 export function updateModifierParam(mesh: AbstractMesh, modId: string, params: Record<string, unknown>): void {
   const mods = state.modifierMap.get(mesh.uniqueId);
   const mod = mods?.find((m) => m.id === modId);
-  if (mod) {
-    Object.assign(mod, params);
-    evaluateModifierStack(mesh);
+  if (!mod) return;
+
+  const before: Record<string, unknown> = {};
+  for (const key of Object.keys(params)) {
+    before[key] = (mod as unknown as Record<string, unknown>)[key];
   }
+  Object.assign(mod, params);
+  evaluateModifierStack(mesh);
+
+  state.history.push({
+    label: "Modifier Param",
+    undo() { Object.assign(mod, before); evaluateModifierStack(mesh); },
+    redo() { Object.assign(mod, params); evaluateModifierStack(mesh); },
+  });
 }
 
 /** Bake a modifier permanently — removes it and updates the original geometry */

@@ -7,6 +7,7 @@ import { buildToolPills, buildPrimitiveGrid, buildCSGButtons, buildTabs, buildBr
 import { bindActionButtons, bindHelp } from "./ui/bindings";
 import { registerCacheTransformCallback, updateLayerUI } from "./ui/panels";
 import { requestPersistentStorage } from "./storage/metadata-store";
+import { startAutoSave, loadCheckpoint, clearCheckpoint } from "./storage/autosave";
 import { Tools } from "@babylonjs/core/Misc/tools";
 import "@babylonjs/core/Materials/Textures/Loaders/ktxTextureLoader";
 import { updateOrthoFrustum } from "./viewport/camera-presets";
@@ -33,24 +34,36 @@ let _statsFrame = 0;
 let _cachedTransformInputs: HTMLInputElement[] = [];
 registerCacheTransformCallback((inputs) => { _cachedTransformInputs = inputs; });
 
+// Cache DOM refs outside render loop
+const _fpsEl = E("fpsT");
+const _vrtEl = E("vrtT");
+const _triEl = E("triT");
+
 state.engine.runRenderLoop(() => {
   state.scene.render();
   updateOrthoFrustum();
   updateMeasureOverlay();
-  E("fpsT").textContent = state.engine.getFps().toFixed(0) + " FPS";
+  ++_statsFrame;
 
-  // Update vertex/triangle counts every 30 frames instead of every frame
-  if (++_statsFrame % 30 === 0) {
+  // FPS: update every 10 frames
+  if (_statsFrame % 10 === 0) {
+    _fpsEl.textContent = state.engine.getFps().toFixed(0) + " FPS";
+  }
+
+  // Vertex/triangle counts: update every 60 frames (~1s at 60fps)
+  if (_statsFrame % 60 === 0) {
     let tv = 0;
     let tt = 0;
     for (const m of state.allMeshes) {
-      const p = m.getVerticesData("position");
-      const idx = m.getIndices();
-      if (p) tv += p.length / 3;
-      if (idx) tt += idx.length / 3;
+      try {
+        const p = m.getVerticesData("position");
+        const idx = m.getIndices();
+        if (p) tv += p.length / 3;
+        if (idx) tt += idx.length / 3;
+      } catch { /* disposed mesh — skip */ }
     }
-    E("vrtT").textContent = tv.toLocaleString() + " v";
-    E("triT").textContent = tt.toLocaleString() + " t";
+    _vrtEl.textContent = tv.toLocaleString() + " v";
+    _triEl.textContent = tt.toLocaleString() + " t";
   }
 
   // Live transform update using cached inputs
@@ -76,7 +89,11 @@ document.addEventListener("visibilitychange", () => {
     state.sculpting = false;
     state.painting = false;
     state.weightPainting = false;
-    if (wasBrushing) state.camera.attachControl(state.canvas, true);
+    if (wasBrushing && !state.cameraLocked) state.camera.attachControl(state.canvas, true);
+    // Reset touch modifiers
+    state.touchModifiers.ctrl = false;
+    state.touchModifiers.shift = false;
+    document.querySelectorAll<HTMLElement>(".touch-mod").forEach((b) => b.classList.remove("on"));
   }
 });
 
@@ -84,11 +101,49 @@ document.addEventListener("visibilitychange", () => {
 document.addEventListener(
   "click",
   () => {
-    requestPersistentStorage().then((granted) => {
-      if (granted) console.log("Persistent storage granted");
-    });
+    void requestPersistentStorage();
   },
   { once: true }
 );
+
+// ── Offline detection ──
+window.addEventListener("offline", () => status("\u26a0 Offline mode"));
+window.addEventListener("online", () => status("Back online"));
+
+// ── Warn before leaving with unsaved work ──
+window.addEventListener("beforeunload", (e) => {
+  if (state.allMeshes.length > 0) {
+    e.preventDefault();
+  }
+});
+
+// ── Auto-save ──
+startAutoSave();
+
+// ── Check for recovery checkpoint on startup ──
+void (async () => {
+  try {
+    const cp = await loadCheckpoint();
+    if (!cp) return;
+    const age = Date.now() - cp.timestamp;
+    if (age > 24 * 60 * 60 * 1000) {
+      // Older than 24h — discard
+      await clearCheckpoint();
+      return;
+    }
+    const mins = Math.round(age / 60000);
+    const label = mins < 1 ? "just now" : mins + " min ago";
+    if (confirm("Recover unsaved work from " + label + "?")) {
+      status("Recovering...");
+      const file = new File([cp.data], "recovery.glb", { type: "model/gltf-binary" });
+      const { loadFileDirectly } = await import("./export/gltf-exporter");
+      await loadFileDirectly(file);
+      status("Session recovered");
+    }
+    await clearCheckpoint();
+  } catch (e) {
+    console.warn("Recovery check failed:", e);
+  }
+})();
 
 status("Ready — プリミティブを追加して開始");

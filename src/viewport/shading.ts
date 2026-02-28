@@ -83,20 +83,16 @@ export function setViewportMode(mode: ViewportMode): void {
       break;
 
     case "solid":
-      // If coming directly from textured, originals already stored
-      if (prev === "textured") storeOriginals();
       state.scene.environmentIntensity = 0;
       break;
 
     case "wire":
-      if (prev === "textured") storeOriginals();
       for (const m of state.allMeshes) {
         if (m.material) m.material.wireframe = true;
       }
       break;
 
     case "matcap": {
-      if (prev === "textured") storeOriginals();
       const mc = getOrCreateMatcap();
       for (const m of state.allMeshes) {
         m.material = mc;

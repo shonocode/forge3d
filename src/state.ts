@@ -211,6 +211,7 @@ export const state = {
   // Touch modifier toggles (mobile substitute for Ctrl/Shift)
   touchModifiers: { ctrl: false, shift: false },
   multiSelectMode: false,
+  cameraLocked: false,
 
   // Modifier stack
   modifierMap: new Map<number, Modifier[]>(),
@@ -275,9 +276,28 @@ export const state = {
   gizmoManager: null as unknown as GizmoManager,
 };
 
+let _statusTimer: ReturnType<typeof setTimeout> | null = null;
 export function status(s: string): void {
   const el = document.getElementById("stxt");
-  if (el) el.textContent = s;
+  const bar = el?.parentElement;
+  if (!el || !bar) return;
+  el.textContent = s;
+  bar.classList.remove("stat-err", "stat-ok", "stat-fade");
+  if (s.startsWith("⚠")) bar.classList.add("stat-err");
+  else if (/exported|saved|loaded|completed/i.test(s)) bar.classList.add("stat-ok");
+  if (_statusTimer) clearTimeout(_statusTimer);
+  _statusTimer = setTimeout(() => bar.classList.add("stat-fade"), 4000);
+}
+
+export function showLoading(msg = "Loading..."): void {
+  const el = document.getElementById("loadingOverlay");
+  const txt = document.getElementById("loadingText");
+  if (el) el.classList.add("active");
+  if (txt) txt.textContent = msg;
+}
+export function hideLoading(): void {
+  const el = document.getElementById("loadingOverlay");
+  if (el) el.classList.remove("active");
 }
 
 export function E(id: string): HTMLElement {

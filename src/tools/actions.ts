@@ -122,10 +122,12 @@ export function cleanupMesh(m: AbstractMesh): void {
   // Modifier stack cleanup
   state.modifierMap.delete(m.uniqueId);
   state.originalGeometryMap.delete(m.uniqueId);
-  // Map instance cleanup
-  state.mapInstances = state.mapInstances.filter(
-    (mi) => !mi.meshUniqueIds.includes(m.uniqueId)
-  );
+  // Map instance cleanup — remove UID from instances, drop empty ones
+  for (const mi of state.mapInstances) {
+    const uidIdx = mi.meshUniqueIds.indexOf(m.uniqueId);
+    if (uidIdx !== -1) mi.meshUniqueIds.splice(uidIdx, 1);
+  }
+  state.mapInstances = state.mapInstances.filter((mi) => mi.meshUniqueIds.length > 0);
   removeShadowCaster(m);
   unregisterMeshForShading(m);
   removeMeshFromLayers(m);
@@ -137,6 +139,9 @@ export function cleanupMesh(m: AbstractMesh): void {
 
 export function deleteSelected(): void {
   if (!state.selectedMeshes.length) return;
+  const count = state.selectedMeshes.length;
+  const names = state.selectedMeshes.map(m => m.name).join(", ");
+  if (!confirm(count === 1 ? `Delete "${names}"?` : `Delete ${count} meshes?\n${names}`)) return;
   const deleted = [...state.selectedMeshes];
 
   // Save parent relationships for undo, then detach children
@@ -171,10 +176,10 @@ export function deleteSelected(): void {
         addShadowCaster(m);
         state.allMeshes.push(m);
       }
-      // Restore parent relationships
+      // Restore parent relationships (only if parent is still in scene)
       for (const m of deleted) {
         const p = parentMap.get(m.uniqueId);
-        if (p) m.setParent(p);
+        if (p && state.allMeshes.includes(p)) m.setParent(p);
       }
       selectMesh(deleted[deleted.length - 1]!, false);
       updateHierarchy();
