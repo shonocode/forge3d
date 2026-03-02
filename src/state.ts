@@ -212,6 +212,7 @@ export const state = {
   touchModifiers: { ctrl: false, shift: false },
   multiSelectMode: false,
   cameraLocked: false,
+  gizmoAxis: "all" as "all" | "x" | "y" | "z",
 
   // Modifier stack
   modifierMap: new Map<number, Modifier[]>(),

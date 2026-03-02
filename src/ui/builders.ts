@@ -5,7 +5,7 @@ import { BRUSHES, setBrush } from "../tools/sculpt";
 import { doCSG, type CSGOp } from "../tools/csg";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
-import { lastSelected } from "../tools/selection";
+import { lastSelected, applyGizmoAxisConstraint } from "../tools/selection";
 import {
   recalcNormals, flipNormals, weldVertices, centerOrigin,
   snapshotVertexData, restoreVertexData,
@@ -243,4 +243,30 @@ export function buildMobileBar(): void {
     multi.classList.toggle("on", state.multiSelectMode);
   });
   el.appendChild(multi);
+
+  // Axis constraint buttons (visible only in transform modes)
+  const axisWrap = document.createElement("div");
+  axisWrap.id = "axisConstraint";
+  axisWrap.className = "axis-btns";
+  const axisItems: { label: string; value: "all" | "x" | "y" | "z" }[] = [
+    { label: "ALL", value: "all" },
+    { label: "X", value: "x" },
+    { label: "Y", value: "y" },
+    { label: "Z", value: "z" },
+  ];
+  for (const item of axisItems) {
+    const b = document.createElement("button");
+    b.className = "mbtn axis-btn" + (item.value === "all" ? " on" : "");
+    b.textContent = item.label;
+    b.dataset.axis = item.value;
+    b.addEventListener("click", () => {
+      state.gizmoAxis = item.value;
+      axisWrap.querySelectorAll<HTMLElement>(".axis-btn").forEach((x) =>
+        x.classList.toggle("on", x === b)
+      );
+      applyGizmoAxisConstraint();
+    });
+    axisWrap.appendChild(b);
+  }
+  el.appendChild(axisWrap);
 }

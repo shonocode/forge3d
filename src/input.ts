@@ -38,6 +38,14 @@ function cleanupTool(prev: ToolId): void {
   state.touchModifiers.ctrl = false;
   state.touchModifiers.shift = false;
   document.querySelectorAll<HTMLElement>(".touch-mod").forEach((b) => b.classList.remove("on"));
+  // Reset gizmo axis constraint
+  state.gizmoAxis = "all";
+  const axisEl = document.getElementById("axisConstraint");
+  if (axisEl) {
+    axisEl.querySelectorAll<HTMLElement>(".axis-btn").forEach((b) =>
+      b.classList.toggle("on", b.dataset.axis === "all")
+    );
+  }
 }
 
 function updateToolUI(t: ToolId): void {
@@ -48,6 +56,13 @@ function updateToolUI(t: ToolId): void {
     t === "sculpt" ? "SCULPT" : t === "paint" ? "PAINT" : t === "bone" ? "BONE" : t === "weight" ? "WEIGHT" : t === "anim" ? "ANIM" : "OBJECT";
   const tab = TOOL_TABS[t];
   if (tab) switchTab(tab);
+
+  // Show/hide axis constraint buttons for transform tools (mobile)
+  const axisEl = document.getElementById("axisConstraint");
+  if (axisEl) {
+    const show = t === "move" || t === "rotate" || t === "scale";
+    axisEl.style.display = show ? "flex" : "none";
+  }
 }
 
 function initTool(t: ToolId): void {

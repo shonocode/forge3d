@@ -203,6 +203,14 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
   select{font-size:13px;min-height:36px;}
   .touch-mod{flex:1;}
   .touch-mod.on{border-color:var(--ac);color:var(--ac);background:var(--acg);}
+  /* Axis constraint buttons */
+  .axis-btns{display:none;gap:2px;align-items:center;margin-left:4px;
+    border-left:1px solid var(--bd);padding-left:6px;}
+  .mob-bottom .axis-btn{font-weight:700;min-width:28px;padding:4px 6px;font-size:10px;text-align:center;}
+  .axis-btn[data-axis="all"].on{border-color:var(--ac);color:var(--ac);background:var(--acg);}
+  .axis-btn[data-axis="x"]{color:#e55;}.axis-btn[data-axis="x"].on{border-color:#e55;background:rgba(238,85,85,.12);}
+  .axis-btn[data-axis="y"]{color:#5e5;}.axis-btn[data-axis="y"].on{border-color:#5e5;background:rgba(85,238,85,.12);}
+  .axis-btn[data-axis="z"]{color:#66f;}.axis-btn[data-axis="z"].on{border-color:#66f;background:rgba(102,102,255,.12);}
 }
 /* Phone portrait — wrap pills & mobile bar */
 @media(max-width:600px){

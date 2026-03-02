@@ -28,6 +28,11 @@ export function lastSelected(): AbstractMesh | undefined {
   return state.selectedMeshes[state.selectedMeshes.length - 1];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setSensitivity(gizmo: any, value: number): void {
+  if (gizmo && "sensitivity" in gizmo) gizmo.sensitivity = value;
+}
+
 let gizmoUndoInitialized = false;
 let dragBefore: { pos: Vector3; rot: Vector3; scl: Vector3; mesh: AbstractMesh } | null = null;
 
@@ -108,10 +113,36 @@ export function updateGizmo(): void {
     else if (tool === "rotate") gm.rotationGizmoEnabled = true;
     else if (tool === "scale") gm.scaleGizmoEnabled = true;
     // Enlarge gizmo handles on mobile for easier touch interaction
-    const ratio = isMobile() ? 1.5 : 1;
-    if (gm.gizmos.positionGizmo) gm.gizmos.positionGizmo.scaleRatio = ratio;
-    if (gm.gizmos.rotationGizmo) gm.gizmos.rotationGizmo.scaleRatio = ratio;
-    if (gm.gizmos.scaleGizmo) gm.gizmos.scaleGizmo.scaleRatio = ratio;
+    const mobile = isMobile();
+    const ratio = mobile ? 2 : 1;
+    if (gm.gizmos.positionGizmo) {
+      gm.gizmos.positionGizmo.scaleRatio = ratio;
+      if (mobile) {
+        // Disable planar drag squares — too small and confusing on touch
+        gm.gizmos.positionGizmo.planarGizmoEnabled = false;
+        // Reduce sensitivity for finer control with finger drag
+        setSensitivity(gm.gizmos.positionGizmo.xGizmo, 0.8);
+        setSensitivity(gm.gizmos.positionGizmo.yGizmo, 0.8);
+        setSensitivity(gm.gizmos.positionGizmo.zGizmo, 0.8);
+      }
+    }
+    if (gm.gizmos.rotationGizmo) {
+      gm.gizmos.rotationGizmo.scaleRatio = ratio;
+      if (mobile) {
+        setSensitivity(gm.gizmos.rotationGizmo.xGizmo, 0.6);
+        setSensitivity(gm.gizmos.rotationGizmo.yGizmo, 0.6);
+        setSensitivity(gm.gizmos.rotationGizmo.zGizmo, 0.6);
+      }
+    }
+    if (gm.gizmos.scaleGizmo) {
+      gm.gizmos.scaleGizmo.scaleRatio = ratio;
+      if (mobile) {
+        setSensitivity(gm.gizmos.scaleGizmo.xGizmo, 0.8);
+        setSensitivity(gm.gizmos.scaleGizmo.yGizmo, 0.8);
+        setSensitivity(gm.gizmos.scaleGizmo.zGizmo, 0.8);
+      }
+    }
+    if (mobile) applyGizmoAxisConstraint();
     // Init undo observers after gizmos are created (lazy by GizmoManager)
     initGizmoUndo();
     initGizmoCameraControl();
@@ -134,5 +165,24 @@ function initGizmoCameraControl(): void {
     g.onDragEndObservable.add(() => {
       if (isMobile() && !state.cameraLocked) state.camera.attachControl(state.canvas, true);
     });
+  }
+}
+
+/** Show/hide individual gizmo axes based on state.gizmoAxis (mobile axis constraint) */
+export function applyGizmoAxisConstraint(): void {
+  const { gizmoManager: gm, gizmoAxis: axis } = state;
+  const AXES = [
+    { prop: "xGizmo", match: "x" },
+    { prop: "yGizmo", match: "y" },
+    { prop: "zGizmo", match: "z" },
+  ] as const;
+  for (const parent of [gm.gizmos.positionGizmo, gm.gizmos.rotationGizmo, gm.gizmos.scaleGizmo]) {
+    if (!parent) continue;
+    for (const { prop, match } of AXES) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sub = (parent as any)[prop];
+      const show = axis === "all" || match === axis;
+      if (sub?._rootMesh) sub._rootMesh.setEnabled(show);
+    }
   }
 }
