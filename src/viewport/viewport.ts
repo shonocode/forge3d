@@ -8,7 +8,7 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { GizmoManager } from "@babylonjs/core/Gizmos/gizmoManager";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import { state, status } from "../state";
+import { state, status, isMobile } from "../state";
 import { initEnvironment } from "./environment";
 import { initShadows } from "./shadows";
 import { initPostProcess } from "./postprocess";
@@ -55,7 +55,7 @@ export function initViewport(): void {
   makeGrid(scene);
 
   // Gizmo
-  const gizMgr = new GizmoManager(scene);
+  const gizMgr = new GizmoManager(scene, isMobile() ? 3 : 1);
   gizMgr.positionGizmoEnabled = false;
   gizMgr.rotationGizmoEnabled = false;
   gizMgr.scaleGizmoEnabled = false;

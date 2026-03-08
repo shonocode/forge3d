@@ -189,6 +189,25 @@ export function buildMeshToolButtons(): void {
   }
 }
 
+export function buildGizmoFAB(): void {
+  const el = E("gizmoFab");
+  const GIZMO_TOOLS: { id: ToolId; icon: string; aria: string }[] = [
+    { id: "select", icon: "\u2196", aria: "Select tool" },
+    { id: "move",   icon: "\u2725", aria: "Move tool" },
+    { id: "rotate", icon: "\u21bb", aria: "Rotate tool" },
+    { id: "scale",  icon: "\u2921", aria: "Scale tool" },
+  ];
+  for (const t of GIZMO_TOOLS) {
+    const b = document.createElement("button");
+    b.className = "gfab-btn" + (t.id === "select" ? " on" : "");
+    b.dataset.tool = t.id;
+    b.textContent = t.icon;
+    b.setAttribute("aria-label", t.aria);
+    b.addEventListener("click", () => setTool(t.id));
+    el.appendChild(b);
+  }
+}
+
 export function buildMobileBar(): void {
   const el = E("mobBar");
   const items: { label: string; cls?: string; handler: () => void }[] = [

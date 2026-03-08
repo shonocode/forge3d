@@ -108,10 +108,14 @@ export function updateGizmo(): void {
     else if (tool === "rotate") gm.rotationGizmoEnabled = true;
     else if (tool === "scale") gm.scaleGizmoEnabled = true;
     // Enlarge gizmo handles on mobile for easier touch interaction
-    const ratio = isMobile() ? 1.5 : 1;
+    const ratio = isMobile() ? 2.5 : 1;
     if (gm.gizmos.positionGizmo) gm.gizmos.positionGizmo.scaleRatio = ratio;
     if (gm.gizmos.rotationGizmo) gm.gizmos.rotationGizmo.scaleRatio = ratio;
     if (gm.gizmos.scaleGizmo) gm.gizmos.scaleGizmo.scaleRatio = ratio;
+    // Enable planar gizmo handles on mobile (easier to grab than thin axes)
+    if (gm.gizmos.positionGizmo && isMobile()) {
+      gm.gizmos.positionGizmo.planarGizmoEnabled = true;
+    }
     // Init undo observers after gizmos are created (lazy by GizmoManager)
     initGizmoUndo();
     initGizmoCameraControl();

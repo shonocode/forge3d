@@ -44,6 +44,9 @@ function updateToolUI(t: ToolId): void {
   document.querySelectorAll<HTMLElement>(".pill").forEach((b) =>
     b.classList.toggle("on", b.dataset.tool === t)
   );
+  document.querySelectorAll<HTMLElement>(".gfab-btn").forEach((b) =>
+    b.classList.toggle("on", b.dataset.tool === t)
+  );
   E("modeL").textContent =
     t === "sculpt" ? "SCULPT" : t === "paint" ? "PAINT" : t === "bone" ? "BONE" : t === "weight" ? "WEIGHT" : t === "anim" ? "ANIM" : "OBJECT";
   const tab = TOOL_TABS[t];
@@ -375,7 +378,7 @@ export function initInput(): void {
     );
     if (pk?.hit) {
       selectMesh(pk.pickedMesh!, e.ctrlKey || e.metaKey || state.multiSelectMode);
-    } else if (!e.ctrlKey && !e.metaKey && !state.multiSelectMode) {
+    } else if (!e.ctrlKey && !e.metaKey && !state.multiSelectMode && !state.gizmoManager.isHovered) {
       deselect();
     }
   });
