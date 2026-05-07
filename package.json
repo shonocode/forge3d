@@ -12,14 +12,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@babylonjs/core": "^8.50.0",
-    "@babylonjs/loaders": "^8.50.0",
-    "@babylonjs/serializers": "^8.50.0"
+    "@babylonjs/core": "^9.5.2",
+    "@babylonjs/loaders": "^9.5.2",
+    "@babylonjs/serializers": "^9.5.2"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
-    "typescript": "^5.9.0",
-    "vite": "^7.3.0",
+    "typescript": "^6.0.0",
+    "vite": "^8.0.10",
     "vite-plugin-compression": "^0.5.1",
     "vite-plugin-pwa": "^1.2.0",
     "vitest": "^4.0.18",
