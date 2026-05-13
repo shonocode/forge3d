@@ -1,9 +1,10 @@
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
-import { Animation } from "@babylonjs/core/Animations/animation";
-import { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
+import type { Observer } from "@babylonjs/core/Misc/observable";
+import type { Scene } from "@babylonjs/core/scene";
+import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
-import { getActiveSkeleton, findBoneById } from "./skeleton-tool";
+import { getActiveSkeleton, findBoneById, updateHierarchyVisualization } from "./skeleton-tool";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
 
@@ -216,16 +217,26 @@ export function scrubToFrame(frame: number): void {
     bd.bone.getLocalMatrix().copyFrom(mat);
   }
 
-  // Recompute absolute transforms after all local matrices are set
-  skelData.skeleton.computeAbsoluteTransforms();
+  syncBoneVisuals();
+}
 
-  // Second pass: sync visuals from absolute transforms (correct for child bones)
-  for (const track of clip.tracks) {
-    const bd = skelData.bones.find((b) => b.id === track.boneId);
-    if (!bd?.visual) continue;
+/**
+ * Recompute the active skeleton's absolute transforms and copy each bone's
+ * world position into its associated visual gizmo. Call this whenever
+ * something external (own clip playback, imported AnimationGroup, IK solve)
+ * has mutated the skeleton's bone matrices.
+ */
+export function syncBoneVisuals(): void {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return;
+  skelData.skeleton.computeAbsoluteTransforms();
+  for (const bd of skelData.bones) {
+    if (!bd.visual) continue;
     const abs = bd.bone.getAbsoluteTransform();
     bd.visual.position.set(abs.m[12]!, abs.m[13]!, abs.m[14]!);
   }
+  // Connector lines between bones — must follow each frame too.
+  updateHierarchyVisualization(skelData);
 }
 
 function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null {
@@ -267,6 +278,21 @@ function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null 
 }
 
 // ── Preview playback ──
+//
+// Drives playback by advancing `state.currentFrame` in real time and
+// calling `scrubToFrame()` each render tick. This keeps a single source
+// of truth for bone pose evaluation (interpolation + easing + visual
+// gizmo sync) instead of duplicating it in a Babylon AnimationGroup.
+
+let _playObserver: Nullable<Observer<Scene>> = null;
+let _playStartFrame = 0;
+let _playStartTimeMs = 0;
+let _playbackTickCb: ((frame: number) => void) | null = null;
+
+/** UI registers here to be notified of frame advances during playback. */
+export function setPlaybackTickCallback(cb: ((frame: number) => void) | null): void {
+  _playbackTickCb = cb;
+}
 
 export function playPreview(): void {
   const clip = getActiveClip();
@@ -274,62 +300,52 @@ export function playPreview(): void {
     status("⚠ No keyframes to play");
     return;
   }
+  if (!state.scene) {
+    status("⚠ Scene not ready");
+    return;
+  }
 
   stopPreview();
 
-  const group = buildAnimationGroup(clip);
-  if (!group) return;
-
-  state.animPreviewGroup = group;
+  // Resume from current frame; if at/past end, restart from 0.
+  _playStartFrame = state.currentFrame >= clip.maxFrames ? 0 : state.currentFrame;
+  _playStartTimeMs = performance.now();
   state.isPlaying = true;
-  group.start(clip.loopMode === "cycle");
   status("Playing: " + clip.name);
+
+  _playObserver = state.scene.onBeforeRenderObservable.add(_tickPlayback);
 }
 
 export function stopPreview(): void {
-  if (state.animPreviewGroup) {
-    try { state.animPreviewGroup.stop(); } catch { /* scene may be disposed */ }
-    try { state.animPreviewGroup.dispose(); } catch { /* ignore */ }
-    state.animPreviewGroup = null;
+  if (_playObserver && state.scene) {
+    state.scene.onBeforeRenderObservable.remove(_playObserver);
   }
+  _playObserver = null;
   state.isPlaying = false;
 }
 
-function buildAnimationGroup(clip: AnimClipData): AnimationGroup | null {
-  const skelData = getActiveSkeleton();
-  if (!skelData) return null;
+function _tickPlayback(): void {
+  const clip = getActiveClip();
+  if (!clip || !state.isPlaying) return;
 
-  const group = new AnimationGroup(clip.name, state.scene);
-  const loopMode = clip.loopMode === "cycle"
-    ? Animation.ANIMATIONLOOPMODE_CYCLE
-    : Animation.ANIMATIONLOOPMODE_CONSTANT;
+  const elapsedSec = (performance.now() - _playStartTimeMs) / 1000;
+  let frame = _playStartFrame + elapsedSec * clip.frameRate;
 
-  for (const track of clip.tracks) {
-    const bd = skelData.bones.find((b) => b.id === track.boneId);
-    if (!bd || track.keyframes.length === 0) continue;
-
-    // Single matrix animation targeting bone's local matrix
-    const matAnim = new Animation(
-      track.boneName + "_localMatrix",
-      "_matrix",
-      clip.frameRate,
-      Animation.ANIMATIONTYPE_MATRIX,
-      loopMode
-    );
-    matAnim.setKeys(
-      track.keyframes.map((kf) => ({
-        frame: kf.frame,
-        value: Matrix.Compose(
-          new Vector3(1, 1, 1),
-          Quaternion.FromEulerAngles(kf.rotation.x, kf.rotation.y, kf.rotation.z),
-          new Vector3(kf.position.x, kf.position.y, kf.position.z)
-        ),
-      }))
-    );
-    group.addTargetedAnimation(matAnim, bd.bone);
+  if (frame >= clip.maxFrames) {
+    if (clip.loopMode === "cycle") {
+      const range = clip.maxFrames > 0 ? clip.maxFrames : 1;
+      frame = ((frame % range) + range) % range;
+    } else {
+      frame = clip.maxFrames;
+      scrubToFrame(frame);
+      _playbackTickCb?.(frame);
+      stopPreview();
+      return;
+    }
   }
 
-  return group;
+  scrubToFrame(frame);
+  _playbackTickCb?.(frame);
 }
 
 // ── Keyframe Copy/Paste/Easing ──

@@ -9,6 +9,7 @@ import {
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
   copyKeyframe, pasteKeyframe, setKeyframeEasing,
+  setPlaybackTickCallback,
 } from "../tools/animation-tool";
 import { EASING_TYPES } from "../tools/easing";
 import type { EasingType } from "../tools/easing";
@@ -47,6 +48,15 @@ function bindSlider(inputId: string, displayId: string, setter: (v: number) => v
 
 export function bindActionButtons(): void {
   registerScrubCallback(scrubToFrame);
+
+  // Sync timeline slider + label as playback advances frames.
+  setPlaybackTickCallback((frame) => {
+    const f = Math.floor(frame);
+    const slider = E("animFrame") as HTMLInputElement;
+    slider.value = String(f);
+    E("afV").textContent = String(f);
+    state.currentFrame = f;
+  });
 
   // Undo/Redo buttons
   const undoBtn = E("btnUndo") as HTMLButtonElement;

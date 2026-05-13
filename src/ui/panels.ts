@@ -17,7 +17,10 @@ import { removeLight, updateLightParam, selectLight } from "../tools/lighting";
 import { getBoundingDimensions } from "../tools/measure";
 import type { Modifier } from "../state";
 import { refreshWeightOverlay, hasWeightData } from "../tools/weight-paint";
-import { getActiveClip, getKeyframeEasing } from "../tools/animation-tool";
+import { getActiveClip, getKeyframeEasing, stopPreview, syncBoneVisuals } from "../tools/animation-tool";
+import type { Observer } from "@babylonjs/core/Misc/observable";
+import type { Scene } from "@babylonjs/core/scene";
+import type { Nullable } from "@babylonjs/core/types";
 import { placeModel, deleteFromLibrary, removeMapInstance } from "../tools/map-editor";
 import type { ModelMetadata } from "../storage/metadata-store";
 import { PALETTE } from "../tools/primitives";
@@ -26,6 +29,22 @@ import { PALETTE } from "../tools/primitives";
 let _scrubCallback: ((frame: number) => void) | null = null;
 export function registerScrubCallback(cb: (frame: number) => void): void {
   _scrubCallback = cb;
+}
+
+// Imported AnimationGroup playback drives Babylon bones directly; we still
+// need to sync forge3d's bone gizmo visuals each frame.
+let _importedSyncObserver: Nullable<Observer<Scene>> = null;
+function startImportedVisualSync(): void {
+  if (!state.scene || _importedSyncObserver) return;
+  _importedSyncObserver = state.scene.onBeforeRenderObservable.add(syncBoneVisuals);
+}
+function stopImportedPlayback(): void {
+  if (_importedSyncObserver && state.scene) {
+    state.scene.onBeforeRenderObservable.remove(_importedSyncObserver);
+  }
+  _importedSyncObserver = null;
+  for (const ag of state.importedAnimGroups) ag.stop();
+  state.isPlaying = false;
 }
 
 let _cacheTransformCallback: ((inputs: HTMLInputElement[]) => void) | null = null;
@@ -722,24 +741,18 @@ function updateImportedAnimUI(): void {
     const select = document.getElementById("importedAnimSelect") as HTMLSelectElement;
     const idx = parseInt(select.value, 10);
     if (isNaN(idx) || idx < 0 || idx >= state.importedAnimGroups.length) return;
-    // Stop any currently playing
-    for (const ag of state.importedAnimGroups) ag.stop();
-    if (state.animPreviewGroup) {
-      state.animPreviewGroup.stop();
-      state.animPreviewGroup = null;
-    }
+    // Stop any currently playing (own preview + imported)
+    stopPreview();
+    stopImportedPlayback();
     const group = state.importedAnimGroups[idx]!;
     group.start(true); // loop
     state.isPlaying = true;
+    startImportedVisualSync();
   });
 
   el.querySelector("#stopImportedAnim")?.addEventListener("click", () => {
-    for (const ag of state.importedAnimGroups) ag.stop();
-    if (state.animPreviewGroup) {
-      state.animPreviewGroup.stop();
-      state.animPreviewGroup = null;
-    }
-    state.isPlaying = false;
+    stopPreview();
+    stopImportedPlayback();
   });
 }
 

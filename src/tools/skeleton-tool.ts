@@ -6,6 +6,7 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import { state, status } from "../state";
@@ -174,36 +175,54 @@ function createBoneVisual(boneId: string, position: Vector3): AbstractMesh {
 }
 
 export function updateHierarchyVisualization(skelData: SkeletonData): void {
-  // Dispose old lines
-  if (skelData.hierarchyLines) {
-    skelData.hierarchyLines.dispose();
-    skelData.hierarchyLines = null;
-  }
-
   // Build line segments for parent→child connections
   const lines: Vector3[][] = [];
   for (const bd of skelData.bones) {
-    if (bd.parentId) {
-      const parent = skelData.bones.find((b) => b.id === bd.parentId);
-      if (parent) {
-        const parentPos = getBoneWorldPosition(parent);
-        const childPos = getBoneWorldPosition(bd);
-        lines.push([parentPos, childPos]);
-      }
-    }
+    if (!bd.parentId) continue;
+    const parent = skelData.bones.find((b) => b.id === bd.parentId);
+    if (!parent) continue;
+    lines.push([getBoneWorldPosition(parent), getBoneWorldPosition(bd)]);
   }
 
-  if (lines.length === 0) return;
+  // Topology changed (or first time): rebuild fresh LineSystem.
+  // CreateLineSystem's `instance` update path requires the same number of
+  // lines AND the same vertex count per line, so we dispose when the
+  // structure differs.
+  const existing = skelData.hierarchyLines;
+  const sameTopology = existing && _hierarchyLineCount === lines.length;
 
+  if (lines.length === 0) {
+    if (existing) {
+      existing.dispose();
+      skelData.hierarchyLines = null;
+      _hierarchyLineCount = 0;
+    }
+    return;
+  }
+
+  if (sameTopology) {
+    // In-place point update — no GC churn during playback.
+    MeshBuilder.CreateLineSystem(
+      HIERARCHY_LINES_NAME,
+      { lines, instance: existing as LinesMesh },
+      state.scene
+    );
+    return;
+  }
+
+  if (existing) existing.dispose();
   const lineSystem = MeshBuilder.CreateLineSystem(
     HIERARCHY_LINES_NAME,
-    { lines },
+    { lines, updatable: true },
     state.scene
   );
   lineSystem.color = new Color3(0.36, 0.5, 1);
   lineSystem.isPickable = false;
   skelData.hierarchyLines = lineSystem;
+  _hierarchyLineCount = lines.length;
 }
+
+let _hierarchyLineCount = 0;
 
 // ── Gizmo drag observer tracking ──
 

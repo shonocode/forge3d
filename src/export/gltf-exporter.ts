@@ -19,9 +19,11 @@ import { updateHierarchy, updateBoneUI, updateAnimUI } from "../ui/panels";
 import { applyDefaultEdges } from "../tools/mesh-utils";
 import { addShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
-import { createBoneVisualForImport, updateHierarchyVisualization } from "../tools/skeleton-tool";
+import { createBoneVisualForImport, updateHierarchyVisualization, getActiveSkeleton } from "../tools/skeleton-tool";
 import { assignToActiveLayer } from "../tools/layers";
 import { openFileDialog } from "../ui/file-input";
+import { prepareExportRig, disposeExportRig } from "./skeleton-export-bridge";
+import type { ExportRig } from "./skeleton-export-bridge";
 
 function sanitizeFilename(name: string): string {
   return name
@@ -32,6 +34,9 @@ function sanitizeFilename(name: string): string {
 
 function shouldExportNode(node: import("@babylonjs/core").Node): boolean {
   if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
+  // Linked TransformNodes belonging to bones must be emitted so the
+  // GLTF skin references valid joint nodes.
+  if (node.name.startsWith("boneTN_")) return true;
   return state.allMeshes.includes(node as never);
 }
 
@@ -46,9 +51,15 @@ export async function exportGLB(): Promise<void> {
   const raw = prompt("File name:", "model");
   if (!raw) return;
   const name = sanitizeFilename(raw);
+
+  const skelData = getActiveSkeleton();
+  let rig: ExportRig | null = null;
   try {
     showLoading("Exporting GLB...");
     status("Exporting GLB...");
+    if (skelData && skelData.bones.length > 0) {
+      rig = prepareExportRig(skelData, state.scene);
+    }
     const result = await GLTF2Export.GLBAsync(state.scene, name, {
       shouldExportNode,
       shouldExportAnimation: () => true,
@@ -71,6 +82,7 @@ export async function exportGLB(): Promise<void> {
     console.error("GLB export error:", e);
     status("⚠ Export エラー: " + (e as Error).message);
   } finally {
+    if (skelData && rig) disposeExportRig(skelData, rig);
     hideLoading();
   }
 }
@@ -83,10 +95,19 @@ export async function saveToLibrary(): Promise<void> {
     status("⚠ メッシュなし");
     return;
   }
+  const skelData = getActiveSkeleton();
+  let rig: ExportRig | null = null;
   try {
     showLoading("Saving...");
     status("Saving...");
-    const result = await GLTF2Export.GLBAsync(state.scene, "model", { shouldExportNode });
+    if (skelData && skelData.bones.length > 0) {
+      rig = prepareExportRig(skelData, state.scene);
+    }
+    const result = await GLTF2Export.GLBAsync(state.scene, "model", {
+      shouldExportNode,
+      shouldExportAnimation: () => true,
+      animationSampleRate: 30,
+    });
     const glbFile = result.glTFFiles["model.glb"];
     if (!glbFile) {
       status("⚠ Save failed");
@@ -126,6 +147,7 @@ export async function saveToLibrary(): Promise<void> {
     console.error("Save error:", e);
     status("⚠ Save エラー: " + (e as Error).message);
   } finally {
+    if (skelData && rig) disposeExportRig(skelData, rig);
     hideLoading();
   }
 }

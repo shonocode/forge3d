@@ -203,7 +203,6 @@ export const state = {
   activeClipId: null as string | null,
   currentFrame: 0,
   isPlaying: false,
-  animPreviewGroup: null as AnimationGroup | null,
   animClipCounter: 0,
   importedAnimGroups: [] as AnimationGroup[],
   keyframeClipboard: null as KeyframeData | null,

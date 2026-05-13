@@ -61,14 +61,26 @@ export async function clearCheckpoint(): Promise<void> {
 async function doAutoSave(): Promise<void> {
   if (_saving || !state.allMeshes.length) return;
   _saving = true;
+  // Lazy imports keep the initial bundle small and avoid circular deps.
+  const { GLTF2Export } = await import("@babylonjs/serializers/glTF");
+  const { getActiveSkeleton } = await import("../tools/skeleton-tool");
+  const { prepareExportRig, disposeExportRig } = await import("../export/skeleton-export-bridge");
+  type Rig = Awaited<ReturnType<typeof prepareExportRig>>;
+
+  const skelData = getActiveSkeleton();
+  let rig: Rig | null = null;
   try {
-    // Dynamic import to avoid circular dependency and keep initial bundle small
-    const { GLTF2Export } = await import("@babylonjs/serializers/glTF");
+    if (skelData && skelData.bones.length > 0) {
+      rig = prepareExportRig(skelData, state.scene);
+    }
     const result = await GLTF2Export.GLBAsync(state.scene, "autosave", {
       shouldExportNode(node) {
         if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
+        if (node.name.startsWith("boneTN_")) return true;
         return state.allMeshes.includes(node as never);
       },
+      shouldExportAnimation: () => true,
+      animationSampleRate: 30,
     });
     const glbFile = result.glTFFiles["autosave.glb"];
     if (glbFile) {
@@ -79,6 +91,7 @@ async function doAutoSave(): Promise<void> {
   } catch (e) {
     console.warn("Auto-save failed:", e);
   } finally {
+    if (skelData && rig) disposeExportRig(skelData, rig);
     _saving = false;
   }
 }
