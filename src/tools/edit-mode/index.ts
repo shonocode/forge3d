@@ -1,7 +1,7 @@
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
-import { state, status, E, type ComponentMode } from "../../state";
+import { state, status, E, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh } from "./build";
 import { commitTopology } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
@@ -74,7 +74,20 @@ export function enterEditMode(mesh: AbstractMesh): void {
   // Auto-jump to the Edit tab so operator buttons + sliders are visible.
   switchTab("edit");
   refreshEditToolsUI();
-  status("Edit Mode — Tab to exit, 1/2/3 for V/E/F");
+  // Mobile: hardware Tab key doesn't exist. Open the right panel so the user
+  // can actually reach the Mark Seam / Unwrap / V-E-F buttons by tapping.
+  // Close the left panel first to mirror togglePanel's "only one open" rule.
+  if (isMobile()) {
+    const lp = E("lpanel");
+    const rp = E("rpanel");
+    const ov = E("overlay");
+    lp.classList.remove("open");
+    rp.classList.add("open");
+    ov.classList.add("open");
+  }
+  // Also reflect the toggle state on the mobile bottom-bar Edit button.
+  document.querySelectorAll<HTMLElement>("#btnMobEdit").forEach((b) => b.classList.add("on"));
+  status(isMobile() ? "Edit Mode — Editボタンで戻れる、1/2/3 をパネルから選択" : "Edit Mode — Tab to exit, 1/2/3 for V/E/F");
 }
 
 export function exitEditMode(): void {
@@ -92,6 +105,8 @@ export function exitEditMode(): void {
   refreshEditToolsUI();
   // Back to a sensible default tab when leaving Edit Mode.
   switchTab("xform");
+  // Clear the mobile bottom-bar Edit button state.
+  document.querySelectorAll<HTMLElement>("#btnMobEdit").forEach((b) => b.classList.remove("on"));
   updateProperties();
   status("Object Mode");
 }

@@ -507,4 +507,17 @@ export function buildMobileBar(): void {
     multi.classList.toggle("on", state.multiSelectMode);
   });
   el.appendChild(multi);
+
+  // Edit Mode toggle \u2014 the desktop equivalent is Tab, which mobile keyboards
+  // either lack entirely or hide behind multiple submenus. A dedicated button
+  // is the only practical entrypoint to component editing on touch devices.
+  const editBtn = document.createElement("button");
+  editBtn.className = "mbtn";
+  editBtn.id = "btnMobEdit";
+  editBtn.textContent = "\u270e Edit";
+  editBtn.setAttribute("aria-label", "Toggle Edit Mode");
+  editBtn.addEventListener("click", () => {
+    void import("../tools/edit-mode").then((mod) => mod.toggleEditMode());
+  });
+  el.appendChild(editBtn);
 }

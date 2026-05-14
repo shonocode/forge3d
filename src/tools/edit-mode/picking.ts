@@ -2,9 +2,18 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import { edgeEnd, edgeOrigin, forEachEdge, type EditMesh } from "./half-edge";
+import { isMobile } from "../../state";
 
-const VERT_PICK_RADIUS_PX = 12;
-const EDGE_PICK_RADIUS_PX = 10;
+// Pick radii scale up on touch devices so fingers can actually hit a vertex
+// dot. The mobile multiplier (×2.2) mirrors the gizmo handle scaling already
+// used elsewhere in the app.
+const VERT_PICK_RADIUS_PX_DESKTOP = 12;
+const EDGE_PICK_RADIUS_PX_DESKTOP = 10;
+const MOBILE_PICK_SCALE = 2.2;
+const vertPickRadius = (): number =>
+  isMobile() ? VERT_PICK_RADIUS_PX_DESKTOP * MOBILE_PICK_SCALE : VERT_PICK_RADIUS_PX_DESKTOP;
+const edgePickRadius = (): number =>
+  isMobile() ? EDGE_PICK_RADIUS_PX_DESKTOP * MOBILE_PICK_SCALE : EDGE_PICK_RADIUS_PX_DESKTOP;
 
 /**
  * Pick a vertex under the cursor by projecting all vertices to screen space.
@@ -24,8 +33,9 @@ export function pickVertex(scene: Scene, em: EditMesh, screenX: number, screenY:
   const vp = camera.viewport.toGlobal(w, h);
   const transform = scene.getTransformMatrix();
 
+  const r = vertPickRadius();
   let best = -1;
-  let bestDist2 = VERT_PICK_RADIUS_PX * VERT_PICK_RADIUS_PX;
+  let bestDist2 = r * r;
 
   const v3 = new Vector3();
   for (let i = 0; i < em.vertices.length; i++) {
@@ -58,8 +68,9 @@ export function pickEdge(scene: Scene, em: EditMesh, screenX: number, screenY: n
   const va = new Vector3();
   const vb = new Vector3();
 
+  const r = edgePickRadius();
   let best = -1;
-  let bestDist2 = EDGE_PICK_RADIUS_PX * EDGE_PICK_RADIUS_PX;
+  let bestDist2 = r * r;
 
   forEachEdge(em, (he) => {
     const a = edgeOrigin(em, he);
