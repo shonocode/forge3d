@@ -9,7 +9,7 @@ import { selectMesh, lastSelected } from "../tools/selection";
 import { deleteOne } from "../tools/actions";
 import { updateMorphUI } from "../tools/morph";
 import { escapeHtml } from "./escape";
-import { selectBone, getActiveSkeleton } from "../tools/skeleton-tool";
+import { selectBone, getActiveSkeleton, syncBoneFromVisual } from "../tools/skeleton-tool";
 import { getRootMeshes, getChildren } from "../tools/parenting";
 import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
 import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer } from "../tools/layers";
@@ -18,6 +18,8 @@ import { getBoundingDimensions } from "../tools/measure";
 import type { Modifier } from "../state";
 import { refreshWeightOverlay, hasWeightData } from "../tools/weight-paint";
 import { getActiveClip, getKeyframeEasing, stopPreview, syncBoneVisuals } from "../tools/animation-tool";
+import { drawGraphEditor } from "../tools/graph-editor";
+import { drawDopesheet } from "../tools/dopesheet";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Nullable } from "@babylonjs/core/types";
@@ -567,7 +569,51 @@ export function updateBoneUI(): void {
   updateSkeletonInfo();
   updateBoneHierarchy();
   updateBoneProperties();
+  updateIKInspector();
   refreshWeightOverlay();
+  // Weight tab's bone-slot list follows the same `selectedBoneId`, so
+  // sync it here too. updateWeightInfo() also re-renders the slot
+  // list as part of its body.
+  updateWeightInfo();
+  // Selected bone change → both timeline views update (graph follows
+  // the new track, dopesheet highlights the new row).
+  drawGraphEditor();
+  drawDopesheet();
+}
+
+/**
+ * Reflect the selected bone's `ikConstraint` into the IK panel inputs so
+ * changing selection shows the right values. Without this the panel
+ * stays stale from the previously selected bone.
+ */
+function updateIKInspector(): void {
+  const enabledEl = document.getElementById("ikEnabled") as HTMLInputElement | null;
+  const chainEl = document.getElementById("ikChainLen") as HTMLInputElement | null;
+  const chainV = document.getElementById("ikChainV");
+  const tx = document.getElementById("ikTargetX") as HTMLInputElement | null;
+  const ty = document.getElementById("ikTargetY") as HTMLInputElement | null;
+  const tz = document.getElementById("ikTargetZ") as HTMLInputElement | null;
+  if (!enabledEl || !chainEl || !chainV || !tx || !ty || !tz) return;
+
+  const skelData = getActiveSkeleton();
+  const bd = skelData && state.selectedBoneId
+    ? skelData.bones.find((b) => b.id === state.selectedBoneId)
+    : null;
+  const ik = bd?.ikConstraint;
+
+  if (ik?.enabled) {
+    enabledEl.checked = true;
+    chainEl.value = String(ik.chainLength);
+    chainV.textContent = String(ik.chainLength);
+    tx.value = ik.targetX.toFixed(3);
+    ty.value = ik.targetY.toFixed(3);
+    tz.value = ik.targetZ.toFixed(3);
+  } else {
+    enabledEl.checked = false;
+    // Leave chainLen/target inputs at last value — they're irrelevant
+    // when IK is off and clearing them would lose the user's defaults
+    // for the next time they enable IK.
+  }
 }
 
 function updateSkeletonInfo(): void {
@@ -630,8 +676,25 @@ function updateBoneProperties(): void {
     <div style="font-size:10px;color:var(--t2);line-height:1.6;">
       <div><span style="color:var(--t4)">Name:</span> ${escapeHtml(bd.name)}</div>
       <div><span style="color:var(--t4)">Parent:</span> ${escapeHtml(parentName)}</div>
-      ${pos ? `<div><span style="color:var(--t4)">Pos:</span> ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}</div>` : ""}
-    </div>`;
+    </div>
+    ${pos ? `<div class="pg" style="margin-top:4px"><div class="pgt">Position</div>${v3h("bonepos", pos)}</div>` : ""}`;
+
+  // Wire up the position inputs — typing a new value moves the bone
+  // visual in world space, then `syncBoneFromVisual` rebuilds the local
+  // matrix and propagates to children. Symmetric with the gizmo drag
+  // path so a typed change behaves identically to a drag-to-end.
+  if (pos) {
+    const inputs = Array.from(el.querySelectorAll<HTMLInputElement>(".pi"));
+    inputs.forEach((inp) => {
+      inp.addEventListener("input", () => {
+        const [, a] = inp.dataset.b!.split("_") as [string, "x" | "y" | "z"];
+        const v = parseFloat(inp.value);
+        if (Number.isNaN(v) || !bd.visual) return;
+        bd.visual.position[a] = v;
+        syncBoneFromVisual(bd, skelData);
+      });
+    });
+  }
 }
 
 function getBoneDepth(bd: BoneData, skelData: SkeletonData): number {
@@ -655,6 +718,10 @@ export function updateAnimUI(): void {
   // Sync easing dropdown to current keyframe
   const easingSel = document.getElementById("kfEasing") as HTMLSelectElement | null;
   if (easingSel) easingSel.value = getKeyframeEasing();
+  // Clip / keyframe / easing changes all require both timeline views
+  // to redraw so their shape / key positions match the new state.
+  drawGraphEditor();
+  drawDopesheet();
 }
 
 function updateAnimClipInfo(): void {
@@ -871,6 +938,7 @@ export function updateWeightInfo(): void {
   const m = lastSelected();
   if (!m || !m.skeleton) {
     el.innerHTML = '<div class="empty">\u30b9\u30b1\u30eb\u30c8\u30f3\u3092\u30a2\u30bf\u30c3\u30c1\u3057\u305f\u30e1\u30c3\u30b7\u30e5\u3092\u9078\u629e</div>';
+    updateBoneSlotList();
     return;
   }
   const hasW = hasWeightData(m);
@@ -884,6 +952,77 @@ export function updateWeightInfo(): void {
       <div><span style="color:var(--t4)">Bones:</span> ${boneCount}</div>
       <div><span style="color:var(--t4)">Active Bone:</span> ${boneName}</div>
     </div>`;
+  updateBoneSlotList();
+}
+
+/**
+ * Render the Bone Slots list \u2014 Blender's "Vertex Groups" panel
+ * equivalent. Lets the user switch the active paint target without
+ * leaving the Weight tab. Each row shows the bone name and how many
+ * vertices currently have a non-trivial weight assigned to it (when
+ * weight data is initialized), so the user can see at a glance which
+ * slots are populated vs empty.
+ *
+ * Sorting: hierarchy order (matches the Bone tab + Dopesheet rows).
+ * Highlight: the currently `selectedBoneId` row is filled \u2014 same
+ * style as the bone hierarchy panel for visual consistency.
+ */
+function updateBoneSlotList(): void {
+  const el = E("boneSlotList");
+  const m = lastSelected();
+  const skelData = getActiveSkeleton();
+  if (!m || !m.skeleton || !skelData) {
+    el.innerHTML = '<div class="empty">\u30b9\u30b1\u30eb\u30c8\u30f3\u3092\u30a2\u30bf\u30c3\u30c1\u3057\u305f\u30e1\u30c3\u30b7\u30e5\u3092\u9078\u629e</div>';
+    return;
+  }
+  if (skelData.bones.length === 0) {
+    el.innerHTML = '<div class="empty">\u30dc\u30fc\u30f3\u306a\u3057</div>';
+    return;
+  }
+
+  // Pre-compute per-bone vertex counts so the loop below stays O(N+M)
+  // rather than scanning weights inside the row builder. We treat
+  // weight > 0.01 as "assigned" \u2014 anything below that is essentially
+  // residual smoothing noise and would clutter the count.
+  const bjsBones = m.skeleton.bones;
+  const counts = new Array<number>(bjsBones.length).fill(0);
+  if (hasWeightData(m)) {
+    const weights = m.getVerticesData("matricesWeights");
+    const indices = m.getVerticesData("matricesIndices");
+    if (weights && indices) {
+      for (let i = 0; i < weights.length; i++) {
+        if (weights[i]! > 0.01) {
+          const bjsIdx = indices[i]!;
+          if (bjsIdx >= 0 && bjsIdx < counts.length) counts[bjsIdx]!++;
+        }
+      }
+    }
+  }
+
+  el.innerHTML = "";
+  for (const bd of skelData.bones) {
+    const bjsIdx = bjsBones.indexOf(bd.bone);
+    const count = bjsIdx >= 0 ? counts[bjsIdx]! : 0;
+    const isSel = bd.id === state.selectedBoneId;
+    const row = document.createElement("div");
+    row.className = "sitem" + (isSel ? " sel" : "");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;font-size:10px;padding:3px 6px";
+    row.innerHTML = `
+      <span style="color:var(--ac);font-size:9px">\u25cf</span>
+      <span style="flex:1">${escapeHtml(bd.name)}</span>
+      <span style="color:var(--t4);font-size:9px;font-variant-numeric:tabular-nums">${count}v</span>`;
+    row.title = `${bd.name} \u2014 ${count} \u9802\u70b9\u304c\u30a6\u30a7\u30a4\u30c8\u4ed8\u304d`;
+    row.addEventListener("click", () => {
+      // Re-use the existing selectBone path so gizmo / overlays /
+      // graph editor / dopesheet all stay in sync. Without this the
+      // Weight tab would diverge from every other view.
+      selectBone(bd.id);
+      // Refresh the weight overlay too (it follows selectedBoneId).
+      refreshWeightOverlay();
+      updateWeightInfo();
+    });
+    el.appendChild(row);
+  }
 }
 
 // ── Layer UI ──

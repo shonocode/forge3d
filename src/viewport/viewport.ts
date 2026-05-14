@@ -11,7 +11,6 @@ import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { state, status, isMobile } from "../state";
 import { initEnvironment } from "./environment";
 import { initShadows } from "./shadows";
-import { initPostProcess } from "./postprocess";
 
 export function initViewport(): void {
   const canvas = document.getElementById("rc") as HTMLCanvasElement;
@@ -90,9 +89,6 @@ export function initViewport(): void {
 
   // Shadows
   initShadows(dirL);
-
-  // Post-processing pipeline
-  initPostProcess();
 
   // Shadow-receiving ground plane
   const ground = MeshBuilder.CreateGround("shadowGround", { width: 50, height: 50 }, scene);

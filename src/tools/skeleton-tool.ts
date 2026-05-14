@@ -1,6 +1,6 @@
 import { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import { Bone } from "@babylonjs/core/Bones/bone";
-import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -227,17 +227,28 @@ let _hierarchyLineCount = 0;
 // ── Gizmo drag observer tracking ──
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _dragEndObserver: Observer<any> | null = null;
+let _posDragEndObserver: Observer<any> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _rotDragEndObserver: Observer<any> | null = null;
 
 function cleanupDragObservers(): void {
-  if (_dragEndObserver) {
+  if (_posDragEndObserver) {
     try {
       const posGizmo = state.gizmoManager.gizmos?.positionGizmo;
       if (posGizmo) {
-        posGizmo.onDragEndObservable.remove(_dragEndObserver);
+        posGizmo.onDragEndObservable.remove(_posDragEndObserver);
       }
     } catch { /* gizmo may already be disposed */ }
-    _dragEndObserver = null;
+    _posDragEndObserver = null;
+  }
+  if (_rotDragEndObserver) {
+    try {
+      const rotGizmo = state.gizmoManager.gizmos?.rotationGizmo;
+      if (rotGizmo) {
+        rotGizmo.onDragEndObservable.remove(_rotDragEndObserver);
+      }
+    } catch { /* gizmo may already be disposed */ }
+    _rotDragEndObserver = null;
   }
 }
 
@@ -264,20 +275,43 @@ export function selectBone(boneId: string): void {
 
   boneData.visual.material = getSelectedBoneMaterial();
 
-  // Attach gizmo for bone movement
+  // Attach gizmo — Edit Mode uses position, Pose Mode uses rotation.
+  // Rotation gizmo is "world axes" in this V1 (gizmo's default). Local-axis
+  // rotation would be more intuitive for pose work and is a future polish:
+  // set `rotGizmo.updateGizmoRotationToMatchAttachedMesh = true` once bone
+  // visuals carry a meaningful orientation (currently they're isotropic
+  // spheres so local vs world is visually indistinguishable mid-drag — only
+  // the final baked rotation differs).
   const gm = state.gizmoManager;
   try {
-    gm.positionGizmoEnabled = true;
-    gm.rotationGizmoEnabled = false;
+    const isPose = state.boneEditMode === "pose";
+    gm.positionGizmoEnabled = !isPose;
+    gm.rotationGizmoEnabled = isPose;
     gm.scaleGizmoEnabled = false;
+
+    // Ensure the visual has a rotationQuaternion before the rotation gizmo
+    // attaches — without it the gizmo writes to mesh.rotation (Euler) which
+    // bypasses our quaternion read path in syncBoneRotationFromVisual.
+    if (isPose && !boneData.visual.rotationQuaternion) {
+      boneData.visual.rotationQuaternion = Quaternion.Identity();
+    }
+
     gm.attachToMesh(boneData.visual);
 
-    // Subscribe to gizmo drag end — sync bone matrix + hierarchy on release
-    const posGizmo = gm.gizmos?.positionGizmo;
-    if (posGizmo) {
-      _dragEndObserver = posGizmo.onDragEndObservable.add(() => {
-        syncBoneFromVisual(boneData, skelData);
-      });
+    if (isPose) {
+      const rotGizmo = gm.gizmos?.rotationGizmo;
+      if (rotGizmo) {
+        _rotDragEndObserver = rotGizmo.onDragEndObservable.add(() => {
+          syncBoneRotationFromVisual(boneData, skelData);
+        });
+      }
+    } else {
+      const posGizmo = gm.gizmos?.positionGizmo;
+      if (posGizmo) {
+        _posDragEndObserver = posGizmo.onDragEndObservable.add(() => {
+          syncBoneFromVisual(boneData, skelData);
+        });
+      }
     }
   } catch { /* ignore gizmo errors */ }
 }
@@ -295,7 +329,7 @@ export function deselectBone(): void {
   try { state.gizmoManager.attachToMesh(null); } catch { /* ignore */ }
 }
 
-function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): void {
+export function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): void {
   if (!boneData.visual) return;
 
   const worldPos = boneData.visual.position;
@@ -317,6 +351,55 @@ function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): void {
   updateChildVisuals(boneData.id, skelData);
 
   // Update hierarchy lines
+  updateHierarchyVisualization(skelData);
+}
+
+/**
+ * Bake the gizmo-applied rotation on the bone's visual into the bone's
+ * local matrix, then propagate to descendants and reset the visual's
+ * quaternion to identity.
+ *
+ * The visual's quaternion is reset because:
+ *   1. The rotation is now part of the bone's local transform — child
+ *      visuals already reflect the new pose via `computeAbsoluteTransforms`.
+ *   2. Leaving non-identity quaternion on the parent visual would
+ *      compound on the next drag (gizmo would start from the current
+ *      orientation, but the bone matrix is already rotated → double-apply).
+ *
+ * Translation in the local matrix is preserved by decomposing first.
+ * Scale is preserved too, although bones almost always have unit scale.
+ */
+export function syncBoneRotationFromVisual(boneData: BoneData, skelData: SkeletonData): void {
+  if (!boneData.visual?.rotationQuaternion) return;
+
+  const newRotation = boneData.visual.rotationQuaternion.clone();
+
+  // Decompose current local matrix into translation, rotation, scale
+  // so we can swap in the new rotation without destroying position.
+  const localMat = boneData.bone.getLocalMatrix();
+  const curScale = new Vector3();
+  const curRotation = new Quaternion();
+  const curTranslation = new Vector3();
+  localMat.decompose(curScale, curRotation, curTranslation);
+
+  // The gizmo applied a delta rotation on top of the visual's identity
+  // quaternion (we reset it on previous drag end), so `newRotation` IS
+  // the new rotation in world axes. Compose absolute (not multiplied)
+  // — visually identical to standard pose-tool behavior.
+  const newLocal = Matrix.Compose(curScale, newRotation, curTranslation);
+  boneData.bone.getLocalMatrix().copyFrom(newLocal);
+  boneData.bone.markAsDirty();
+
+  // Recompute world transforms for the whole skeleton, then resync
+  // every descendant visual's position. The selected bone's own
+  // position doesn't change (translation preserved) so it stays put.
+  skelData.skeleton.computeAbsoluteTransforms();
+  updateChildVisuals(boneData.id, skelData);
+
+  // Bake done — clear the visual's rotation so the next gizmo drag
+  // starts from identity again. Without this, repeat drags compound.
+  boneData.visual.rotationQuaternion.copyFromFloats(0, 0, 0, 1);
+
   updateHierarchyVisualization(skelData);
 }
 
@@ -483,6 +566,20 @@ export function setBoneVisualsVisible(visible: boolean): void {
       skelData.hierarchyLines.isVisible = visible;
     }
   }
+}
+
+/**
+ * True when any bone visual across any skeleton is currently shown.
+ * Used to decide which way to flip on toggle. Returns `false` if no
+ * skeletons exist (toggle is a no-op caller-side in that case).
+ */
+export function areBoneVisualsVisible(): boolean {
+  for (const [, skelData] of state.skeletonMap) {
+    for (const bd of skelData.bones) {
+      if (bd.visual?.isVisible) return true;
+    }
+  }
+  return false;
 }
 
 // ── Bone picking helpers ──

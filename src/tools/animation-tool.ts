@@ -1,4 +1,8 @@
 import { Vector3, Quaternion, Matrix } from "@babylonjs/core/Maths/math.vector";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Nullable } from "@babylonjs/core/types";
@@ -7,6 +11,8 @@ import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
 import { getActiveSkeleton, findBoneById, updateHierarchyVisualization } from "./skeleton-tool";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
+import { evaluateBezierSegment } from "./bezier";
+import type { AnimChannel } from "../state";
 
 // Scratch vectors for decomposition
 const _scratchScale = new Vector3();
@@ -239,7 +245,60 @@ export function syncBoneVisuals(): void {
   updateHierarchyVisualization(skelData);
 }
 
-function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null {
+/**
+ * Read a scalar channel value from a keyframe via short channel id.
+ * Centralized here so Bezier evaluation can look up "what is `rx` on
+ * this key" without each call site duplicating the switch.
+ */
+function channelValue(kf: KeyframeData, ch: AnimChannel): number {
+  switch (ch) {
+    case "px": return kf.position.x;
+    case "py": return kf.position.y;
+    case "pz": return kf.position.z;
+    case "rx": return kf.rotation.x;
+    case "ry": return kf.rotation.y;
+    case "rz": return kf.rotation.z;
+  }
+}
+
+/**
+ * Pick the interpolated value of one channel on the segment from
+ * `a` to `b` at the given frame.
+ *
+ * Priority:
+ *   1. If both ends have tangents for this channel → cubic Bezier
+ *      (full per-channel curve control).
+ *   2. Otherwise → linear lerp on the channel, with `t` shaped by
+ *      `a.easing` if present. This matches the V1 behavior.
+ *
+ * Returning a scalar per call instead of pre-allocating a result
+ * vector keeps this branch-friendly and avoids per-frame allocations
+ * during real-time playback.
+ */
+function interpolateChannel(a: KeyframeData, b: KeyframeData, ch: AnimChannel, frame: number): number {
+  const va = channelValue(a, ch);
+  const vb = channelValue(b, ch);
+
+  const aTan = a.tangents?.[ch];
+  const bTan = b.tangents?.[ch];
+  if (aTan && bTan) {
+    return evaluateBezierSegment(
+      frame,
+      a.frame, va,
+      aTan.out[0], aTan.out[1],
+      b.frame, vb,
+      bTan.in[0], bTan.in[1],
+    );
+  }
+
+  // Easing fallback (matches V1 path).
+  if (a.frame === b.frame) return va;
+  let t = (frame - a.frame) / (b.frame - a.frame);
+  if (a.easing) t = getEasingFunction(a.easing)(t);
+  return va + (vb - va) * t;
+}
+
+export function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null {
   const kfs = track.keyframes;
   if (kfs.length === 0) return null;
   if (kfs.length === 1) return kfs[0]!;
@@ -255,21 +314,42 @@ function interpolateTrack(track: BoneTrack, frame: number): KeyframeData | null 
     const b = kfs[i + 1]!;
     if (frame >= a.frame && frame <= b.frame) {
       if (a.frame === b.frame) return a;
-      let t = (frame - a.frame) / (b.frame - a.frame);
-      // Apply easing from keyframe a
-      if (a.easing) t = getEasingFunction(a.easing)(t);
-      // Use quaternion slerp for rotation to avoid gimbal lock
-      const quatA = Quaternion.FromEulerAngles(a.rotation.x, a.rotation.y, a.rotation.z);
-      const quatB = Quaternion.FromEulerAngles(b.rotation.x, b.rotation.y, b.rotation.z);
-      const quatInterp = Quaternion.Slerp(quatA, quatB, t);
-      const eulerInterp = quatInterp.toEulerAngles();
+
+      // If any rotation channel has Bezier tangents on either end, we
+      // can't use a single quaternion slerp — interpolate each Euler
+      // axis independently. This trades the slerp's gimbal-lock
+      // resistance for the user's explicit per-channel control. Bones
+      // doing big sweeps that need slerp should leave their rotation
+      // tangents off and stick with easing mode.
+      const hasRotTangent = ["rx", "ry", "rz"].some((ch) =>
+        a.tangents?.[ch as AnimChannel] || b.tangents?.[ch as AnimChannel],
+      );
+
+      let rx: number, ry: number, rz: number;
+      if (hasRotTangent) {
+        rx = interpolateChannel(a, b, "rx", frame);
+        ry = interpolateChannel(a, b, "ry", frame);
+        rz = interpolateChannel(a, b, "rz", frame);
+      } else {
+        // V1 path: shared `t` from easing, quaternion slerp.
+        let t = (frame - a.frame) / (b.frame - a.frame);
+        if (a.easing) t = getEasingFunction(a.easing)(t);
+        const quatA = Quaternion.FromEulerAngles(a.rotation.x, a.rotation.y, a.rotation.z);
+        const quatB = Quaternion.FromEulerAngles(b.rotation.x, b.rotation.y, b.rotation.z);
+        const quatInterp = Quaternion.Slerp(quatA, quatB, t);
+        const eulerInterp = quatInterp.toEulerAngles();
+        rx = eulerInterp.x;
+        ry = eulerInterp.y;
+        rz = eulerInterp.z;
+      }
+
       return {
         frame,
-        rotation: { x: eulerInterp.x, y: eulerInterp.y, z: eulerInterp.z },
+        rotation: { x: rx, y: ry, z: rz },
         position: {
-          x: a.position.x + (b.position.x - a.position.x) * t,
-          y: a.position.y + (b.position.y - a.position.y) * t,
-          z: a.position.z + (b.position.z - a.position.z) * t,
+          x: interpolateChannel(a, b, "px", frame),
+          y: interpolateChannel(a, b, "py", frame),
+          z: interpolateChannel(a, b, "pz", frame),
         },
       };
     }
@@ -463,6 +543,78 @@ export function solveIK(boneId: string): void {
   for (let i = 0; i < chain.length; i++) {
     if (chain[i]!.visual) chain[i]!.visual!.position.copyFrom(positions[i]!);
   }
+}
+
+/**
+ * Iterate every bone with an enabled IK constraint and run {@link solveIK}.
+ * Cheap when no bones have IK (early-out per skeleton). Designed to be
+ * called from the per-frame render observable — see {@link installIkRenderHook}.
+ */
+export function solveAllIKConstraints(): void {
+  for (const [, skel] of state.skeletonMap) {
+    for (const bd of skel.bones) {
+      if (bd.ikConstraint?.enabled) solveIK(bd.id);
+    }
+  }
+}
+
+let _ikRenderObserver: Nullable<Observer<Scene>> = null;
+
+/**
+ * Subscribe {@link solveAllIKConstraints} to the scene's pre-render hook.
+ * Idempotent — calling twice is safe (re-subscribes after disposing the
+ * previous observer). Call once during scene bootstrap.
+ */
+export function installIkRenderHook(scene: Scene): void {
+  if (_ikRenderObserver) {
+    scene.onBeforeRenderObservable.remove(_ikRenderObserver);
+    _ikRenderObserver = null;
+  }
+  _ikRenderObserver = scene.onBeforeRenderObservable.add(() => {
+    solveAllIKConstraints();
+    updateIkTargetMarker();
+  });
+}
+
+// ── IK target visual marker ──
+//
+// A small magenta sphere shows where the selected bone's IK target sits
+// in world space. Visible only while the selected bone has IK enabled;
+// otherwise hidden. The mesh is created lazily on first need and reused
+// — disposing/recreating it per selection would thrash GPU buffers.
+
+let _ikTargetMarker: Mesh | null = null;
+
+/**
+ * Reposition (and show/hide) the IK target marker based on the currently
+ * selected bone's IK constraint. No-op if no bone is selected or IK isn't
+ * enabled. Lazy-creates the marker mesh on first call that needs it.
+ */
+export function updateIkTargetMarker(): void {
+  const sceneRef = state.scene;
+  if (!sceneRef) return;
+
+  let bd = null;
+  if (state.selectedBoneId) bd = findBoneById(state.selectedBoneId);
+  const ik = bd?.ikConstraint;
+
+  if (!ik?.enabled) {
+    if (_ikTargetMarker) _ikTargetMarker.isVisible = false;
+    return;
+  }
+
+  if (!_ikTargetMarker) {
+    _ikTargetMarker = MeshBuilder.CreateSphere("__ikTargetMarker", { diameter: 0.08 }, sceneRef);
+    const mat = new StandardMaterial("__ikTargetMarkerMat", sceneRef);
+    mat.emissiveColor = new Color3(1, 0.2, 1);
+    mat.disableLighting = true;
+    _ikTargetMarker.material = mat;
+    _ikTargetMarker.isPickable = false;
+    _ikTargetMarker.renderingGroupId = 1; // draw on top of geometry
+  }
+
+  _ikTargetMarker.isVisible = true;
+  _ikTargetMarker.position.set(ik.targetX, ik.targetY, ik.targetZ);
 }
 
 // ── Export ──

@@ -1,11 +1,9 @@
 import "@babylonjs/serializers/glTF/2.0";
 import { GLTF2Export } from "@babylonjs/serializers/glTF";
 import { OBJExport } from "@babylonjs/serializers/OBJ";
-import { STLExport } from "@babylonjs/serializers/stl";
 import { SceneLoader } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
 import "@babylonjs/loaders/OBJ";
-import "@babylonjs/loaders/STL";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -188,22 +186,6 @@ export function exportOBJ(): void {
   status("OBJ exported: " + name + ".obj");
 }
 
-/**
- * Export the current scene as binary STL and trigger download.
- */
-export function exportSTL(): void {
-  const meshes = state.allMeshes.filter(
-    (m) => !m.name.startsWith("bone_visual_") && m.name !== "bone_hierarchy_lines",
-  ) as Mesh[];
-  if (!meshes.length) { status("⚠ メッシュなし"); return; }
-  const raw = prompt("File name:", "model");
-  if (!raw) return;
-  const name = sanitizeFilename(raw);
-
-  STLExport.CreateSTL(meshes, true, name + ".stl", true, true);
-  status("STL exported: " + name + ".stl");
-}
-
 /** Convert StandardMaterial to PBRMaterial (for OBJ imports) */
 function convertToPBR(mat: StandardMaterial): PBRMaterial {
   const pbr = new PBRMaterial(mat.name + "_pbr", state.scene);
@@ -216,15 +198,6 @@ function convertToPBR(mat: StandardMaterial): PBRMaterial {
   return pbr;
 }
 
-/** Default PBR palette colors for STL imports */
-const STL_PALETTE = [
-  new Color3(0.7, 0.7, 0.72),
-  new Color3(0.55, 0.65, 0.78),
-  new Color3(0.78, 0.6, 0.55),
-  new Color3(0.6, 0.75, 0.6),
-];
-let _stlColorIdx = 0;
-
 /**
  * Load a File object directly (used by drag & drop and file picker).
  */
@@ -236,7 +209,6 @@ export async function loadFileDirectly(file: File): Promise<void> {
   }
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
   const isOBJ = ext === "obj";
-  const isSTL = ext === "stl";
   try {
     showLoading("Loading " + file.name + "...");
     status("Loading " + file.name + "...");
@@ -245,14 +217,6 @@ export async function loadFileDirectly(file: File): Promise<void> {
       if (mesh.name === "__root__") continue;
       if (isOBJ && mesh.material instanceof StandardMaterial) {
         const pbr = convertToPBR(mesh.material);
-        mesh.material = pbr;
-      }
-      if (isSTL && (!mesh.material || mesh.material instanceof StandardMaterial)) {
-        const pbr = new PBRMaterial("stl_pbr_" + mesh.uniqueId, state.scene);
-        pbr.albedoColor = STL_PALETTE[_stlColorIdx % STL_PALETTE.length]!;
-        pbr.metallic = 0.1;
-        pbr.roughness = 0.6;
-        _stlColorIdx++;
         mesh.material = pbr;
       }
       mesh.isPickable = true;
@@ -265,7 +229,7 @@ export async function loadFileDirectly(file: File): Promise<void> {
     if (result.meshes.length > 0) {
       selectMesh(result.meshes[result.meshes.length - 1]!, false);
     }
-    if (!isOBJ && !isSTL) {
+    if (!isOBJ) {
       for (const mesh of result.meshes) {
         if (!mesh.skeleton || mesh.name === "__root__") continue;
 
@@ -317,7 +281,7 @@ export async function loadFileDirectly(file: File): Promise<void> {
     updateBoneUI();
     updateAnimUI();
     const meshCount = result.meshes.filter(m => m.name !== "__root__").length;
-    if (isOBJ || isSTL) {
+    if (isOBJ) {
       status(`Loaded: ${file.name} (${meshCount} meshes)`);
     } else {
       const boneCount = state.skeletonMap.get(state.activeSkeletonId ?? "")?.bones.length ?? 0;

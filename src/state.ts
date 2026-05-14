@@ -55,11 +55,62 @@ export interface SkeletonData {
   hierarchyLines: AbstractMesh | null;
 }
 
+/**
+ * Channel identifier for per-axis tangent storage.
+ *
+ * The graph editor speaks in these short codes so the data model stays
+ * compact and the same key works for both lookup and serialization.
+ */
+export type AnimChannel = "px" | "py" | "pz" | "rx" | "ry" | "rz";
+
+/**
+ * Cubic Bezier handle pair for one channel of one keyframe.
+ *
+ * Both `in` and `out` are deltas **from the keyframe in graph space**
+ * — `[deltaFrame, deltaValue]`. `in` is the incoming handle (points
+ * back toward the previous key, so its dx is typically negative);
+ * `out` is the outgoing handle (points toward the next key, dx
+ * positive).
+ *
+ * Stored as tuples (not `{x,y}` or `{dx,dy}` objects) to keep
+ * serialized clips small — six channels × two tangents × two numbers
+ * adds up across long animations.
+ */
+export interface KeyframeChannelTangent {
+  in: [number, number];
+  out: [number, number];
+}
+
+/**
+ * Per-channel tangent map. Optional per channel: a key can have a
+ * custom curve on `rx` but linear/easing-driven curves on the rest.
+ * `interpolateTrack` falls back to the keyframe's `easing` when a
+ * channel has no tangent on either side of a segment.
+ */
+export interface KeyframeTangents {
+  px?: KeyframeChannelTangent;
+  py?: KeyframeChannelTangent;
+  pz?: KeyframeChannelTangent;
+  rx?: KeyframeChannelTangent;
+  ry?: KeyframeChannelTangent;
+  rz?: KeyframeChannelTangent;
+}
+
 export interface KeyframeData {
   frame: number;
   rotation: { x: number; y: number; z: number };
   position: { x: number; y: number; z: number };
   easing?: import("./tools/easing").EasingType;
+  /**
+   * Optional per-channel Bezier handles. When set on both surrounding
+   * keys of a segment for a given channel, the runtime uses cubic
+   * Bezier interpolation for that channel instead of `easing`. Other
+   * channels keep their easing-based interpolation.
+   *
+   * Missing entirely → "linear / easing" mode (V1 behavior preserved
+   * for existing clips that pre-date Bezier support).
+   */
+  tangents?: KeyframeTangents;
 }
 
 export interface IKConstraint {
@@ -197,6 +248,19 @@ export const state = {
   selectedBoneId: null as string | null,
   boneCounter: 0,
   skeletonCounter: 0,
+  /**
+   * Bone editing sub-mode (only meaningful while a bone-family tool is active).
+   *
+   * - `"edit"`: position gizmo on selected bone — for laying out the rest pose.
+   *   Drag moves the bone in world space; `syncBoneFromVisual` rebuilds the
+   *   local matrix.
+   * - `"pose"`: rotation gizmo on selected bone — for keyframable poses.
+   *   Drag rotates the bone; `syncBoneRotationFromVisual` bakes the rotation
+   *   into the local matrix and propagates to children.
+   *
+   * Defaults to `"edit"` so first-time skeleton construction behaves as before.
+   */
+  boneEditMode: "edit" as "edit" | "pose",
 
   // Animation state
   animClips: [] as AnimClipData[],

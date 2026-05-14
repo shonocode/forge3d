@@ -5,7 +5,7 @@ import { sculptAt } from "./tools/sculpt";
 import { paintAt, hasUVs } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
-import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
+import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
 import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camera-presets";
@@ -192,6 +192,37 @@ export function initInput(): void {
             state.camera.radius = Math.max(bounds.radiusWorld * 3, 2);
             status("Focus: " + sel.name);
           }
+        }
+        break;
+      case "h":
+        // Blender-style hide toggles for animation work:
+        //   H        → toggle all meshes
+        //   Shift+H  → toggle bones (overrides the auto-toggle from initTool;
+        //              switching tools will re-apply auto behaviour, which is
+        //              intentional — manual override is per-session, not sticky).
+        // Skip when modifiers (other than Shift) are held to avoid clashing
+        // with browser shortcuts.
+        if (e.ctrlKey || e.metaKey || e.altKey) break;
+        if (e.shiftKey) {
+          if (state.skeletonMap.size === 0) {
+            status("No skeleton to toggle");
+            break;
+          }
+          const newVisible = !areBoneVisualsVisible();
+          setBoneVisualsVisible(newVisible);
+          status(newVisible ? "Bones shown" : "Bones hidden");
+        } else {
+          if (state.allMeshes.length === 0) {
+            status("No meshes to toggle");
+            break;
+          }
+          // Use first mesh's state as the toggle reference (matches Blender's
+          // "if any visible → hide all; else show all" intuition closely enough
+          // for the common case where everything is in sync).
+          const first = state.allMeshes[0]!;
+          const newVisible = !first.isVisible;
+          for (const m of state.allMeshes) m.isVisible = newVisible;
+          status(newVisible ? "Meshes shown" : "Meshes hidden");
         }
         break;
       case "delete":

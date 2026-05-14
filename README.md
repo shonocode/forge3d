@@ -20,7 +20,7 @@ Runs entirely in the browser as a Progressive Web App (PWA) — no server requir
 - **Measurement Tool** — Distance between points
 - **Layer System** — Organize meshes into layers
 - **Post-Processing** — FXAA, Bloom, SSAO, Chromatic Aberration, Vignette
-- **Import/Export** — GLB, glTF, OBJ, STL (drag & drop supported)
+- **Import/Export** — GLB, glTF, OBJ (drag & drop supported)
 - **Save to Library** — Persistent browser storage (OPFS/IndexedDB)
 - **Auto-Save** — Automatic checkpoint every 30 seconds with crash recovery
 - **Undo/Redo** — Full undo support for all operations
@@ -122,7 +122,7 @@ src/
     autosave.ts        — Automatic checkpoint save/restore
 
   export/
-    gltf-exporter.ts   — GLB/OBJ/STL export, file import
+    gltf-exporter.ts   — GLB/OBJ export, file import
 ```
 
 ## Keyboard Shortcuts
@@ -138,6 +138,9 @@ src/
 | B | Bone |
 | W | Weight |
 | A | Animation |
+| F | Focus / frame selected |
+| H | Toggle mesh visibility |
+| Shift+H | Toggle bone visibility (override tool auto) |
 | Ctrl+D | Duplicate |
 | Delete | Delete selected |
 | Esc | Deselect |

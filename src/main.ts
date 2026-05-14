@@ -12,9 +12,13 @@ import { Tools } from "@babylonjs/core/Misc/tools";
 import "@babylonjs/core/Materials/Textures/Loaders/ktxTextureLoader";
 import { updateOrthoFrustum } from "./viewport/camera-presets";
 import { updateMeasureOverlay } from "./tools/measure";
+import { installIkRenderHook } from "./tools/animation-tool";
+import { initGraphEditor, drawGraphEditor } from "./tools/graph-editor";
+import { initDopesheet, drawDopesheet } from "./tools/dopesheet";
 
 // ── Init ──
 initViewport();
+installIkRenderHook(state.scene); // FABRIK solver runs each frame on enabled bones
 initInput();
 
 // ── Build UI ──
@@ -29,6 +33,10 @@ buildGizmoFAB();
 bindActionButtons();
 bindHelp();
 updateLayerUI();
+initGraphEditor();
+drawGraphEditor();
+initDopesheet();
+drawDopesheet();
 
 // ── Render Loop ──
 let _statsFrame = 0;

@@ -9,11 +9,13 @@ import {
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
   copyKeyframe, pasteKeyframe, setKeyframeEasing,
-  setPlaybackTickCallback,
+  setPlaybackTickCallback, updateIkTargetMarker,
 } from "../tools/animation-tool";
 import { EASING_TYPES } from "../tools/easing";
 import type { EasingType } from "../tools/easing";
-import { findBoneById } from "../tools/skeleton-tool";
+import { findBoneById, selectBone as selectBoneFn } from "../tools/skeleton-tool";
+import { drawGraphEditor } from "../tools/graph-editor";
+import { drawDopesheet } from "../tools/dopesheet";
 import {
   exportSceneLayout, importSceneLayout, clearAllMapInstances, loadModelLibrary,
 } from "../tools/map-editor";
@@ -25,12 +27,6 @@ import { toggleMeasureMode, clearMeasurements } from "../tools/measure";
 import { updateBoneUI, updateAnimUI, updateModelLibrary, updateMapInstances, updateWeightInfo, updateModifierUI, updateLayerUI, updateLightUI, registerScrubCallback } from "./panels";
 import { setEnvironmentPreset, loadCustomHDRI, setEnvironmentIntensity, toggleSkybox } from "../viewport/environment";
 import { setShadowEnabled, setShadowQuality } from "../viewport/shadows";
-import {
-  setBloomEnabled, setBloomIntensity, setFxaaEnabled,
-  setChromaticEnabled, setChromaticIntensity,
-  setVignetteEnabled, setVignetteWeight,
-  setSsaoEnabled, setSsaoIntensity,
-} from "../viewport/postprocess";
 import { setViewportMode } from "../viewport/shading";
 import { applyCameraPreset, toggleOrthographic, PRESETS } from "../viewport/camera-presets";
 import { applySnapToGizmos } from "../tools/snap";
@@ -56,6 +52,11 @@ export function bindActionButtons(): void {
     slider.value = String(f);
     E("afV").textContent = String(f);
     state.currentFrame = f;
+    // Move the yellow playhead in both timeline views each tick.
+    // Both renderers are cheap — see their top-of-file notes for why
+    // this is safe per-frame.
+    drawGraphEditor();
+    drawDopesheet();
   });
 
   // Undo/Redo buttons
@@ -79,10 +80,6 @@ export function bindActionButtons(): void {
   E("btnExportOBJ").addEventListener("click", async () => {
     const { exportOBJ } = await import("../export/gltf-exporter");
     exportOBJ();
-  });
-  E("btnExportSTL").addEventListener("click", async () => {
-    const { exportSTL } = await import("../export/gltf-exporter");
-    exportSTL();
   });
   E("btnSave").addEventListener("click", async () => {
     const { saveToLibrary } = await import("../export/gltf-exporter");
@@ -228,6 +225,25 @@ export function bindActionButtons(): void {
   E("btnCopyKF").addEventListener("click", () => { copyKeyframe(); });
   E("btnPasteKF").addEventListener("click", () => { pasteKeyframe(); updateAnimUI(); });
 
+  // Bone Edit / Pose mode toggle. Switching modes detaches the current
+  // gizmo and re-attaches with the new gizmo flavor by re-running
+  // selectBone() on the active selection (if any). Without the
+  // re-select, the gizmo would stay frozen on the previous mode until
+  // the user clicked another bone.
+  const setBoneMode = (mode: "edit" | "pose"): void => {
+    state.boneEditMode = mode;
+    E("btnBoneModeEdit").classList.toggle("on", mode === "edit");
+    E("btnBoneModePose").classList.toggle("on", mode === "pose");
+    if (state.selectedBoneId) {
+      // Re-select to swap gizmo type. selectBone() handles cleanup of the
+      // previous mode's drag observer internally.
+      selectBoneFn(state.selectedBoneId);
+    }
+    status(mode === "pose" ? "Bone: Pose Mode (rotate)" : "Bone: Edit Mode (position)");
+  };
+  E("btnBoneModeEdit").addEventListener("click", () => setBoneMode("edit"));
+  E("btnBoneModePose").addEventListener("click", () => setBoneMode("pose"));
+
   // IK controls
   E("ikEnabled").addEventListener("change", function () {
     if (!state.selectedBoneId) return;
@@ -235,10 +251,23 @@ export function bindActionButtons(): void {
     if (!bd) return;
     const on = (this as HTMLInputElement).checked;
     if (on) {
-      bd.ikConstraint = { enabled: true, chainLength: +(E("ikChainLen") as HTMLInputElement).value, targetX: 0, targetY: 0, targetZ: 0 };
+      // Default target to the bone's current tip position so enabling
+      // IK doesn't snap the chain to world origin (jarring + makes the
+      // feature look broken). User can drag the target afterward.
+      const p = bd.visual?.position;
+      const tx = p?.x ?? 0, ty = p?.y ?? 0, tz = p?.z ?? 0;
+      bd.ikConstraint = {
+        enabled: true,
+        chainLength: +(E("ikChainLen") as HTMLInputElement).value,
+        targetX: tx, targetY: ty, targetZ: tz,
+      };
+      (E("ikTargetX") as HTMLInputElement).value = tx.toFixed(3);
+      (E("ikTargetY") as HTMLInputElement).value = ty.toFixed(3);
+      (E("ikTargetZ") as HTMLInputElement).value = tz.toFixed(3);
     } else {
       bd.ikConstraint = undefined;
     }
+    updateIkTargetMarker();
   });
   E("ikChainLen").addEventListener("input", function () {
     const v = +(this as HTMLInputElement).value;
@@ -246,6 +275,46 @@ export function bindActionButtons(): void {
     if (!state.selectedBoneId) return;
     const bd = findBoneById(state.selectedBoneId);
     if (bd?.ikConstraint) bd.ikConstraint.chainLength = v;
+  });
+
+  // Target XYZ — typed numeric inputs. Each writes through to the
+  // selected bone's ikConstraint and refreshes the IK target marker so
+  // the user sees where the chain is being pulled.
+  const wireIkTargetField = (id: "ikTargetX" | "ikTargetY" | "ikTargetZ", axis: "X" | "Y" | "Z"): void => {
+    E(id).addEventListener("input", function () {
+      const v = +(this as HTMLInputElement).value;
+      if (Number.isNaN(v)) return;
+      if (!state.selectedBoneId) return;
+      const bd = findBoneById(state.selectedBoneId);
+      if (!bd?.ikConstraint) return;
+      bd.ikConstraint[`target${axis}` as "targetX" | "targetY" | "targetZ"] = v;
+      updateIkTargetMarker();
+    });
+  };
+  wireIkTargetField("ikTargetX", "X");
+  wireIkTargetField("ikTargetY", "Y");
+  wireIkTargetField("ikTargetZ", "Z");
+
+  // "Snap to Bone" — convenience: drop the IK target onto the currently
+  // selected bone's tip so enabling IK doesn't yank the chain to the
+  // origin. Without this the default (0,0,0) target makes IK feel
+  // broken on first toggle.
+  E("btnIkSnapTarget").addEventListener("click", () => {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.ikConstraint || !bd.visual) {
+      status("⚠ Enable IK and select a bone first");
+      return;
+    }
+    const p = bd.visual.position;
+    bd.ikConstraint.targetX = p.x;
+    bd.ikConstraint.targetY = p.y;
+    bd.ikConstraint.targetZ = p.z;
+    (E("ikTargetX") as HTMLInputElement).value = p.x.toFixed(3);
+    (E("ikTargetY") as HTMLInputElement).value = p.y.toFixed(3);
+    (E("ikTargetZ") as HTMLInputElement).value = p.z.toFixed(3);
+    updateIkTargetMarker();
+    status("IK target snapped to bone");
   });
 
   // Map editor controls
@@ -363,33 +432,6 @@ export function bindActionButtons(): void {
   E("shadowQuality").addEventListener("change", function () {
     setShadowQuality(+(this as HTMLSelectElement).value as 512 | 1024 | 2048);
   });
-
-  // Post-processing controls
-  E("ppFxaa").addEventListener("change", function () { setFxaaEnabled((this as HTMLInputElement).checked); });
-  E("ppBloom").addEventListener("change", function () {
-    const on = (this as HTMLInputElement).checked;
-    setBloomEnabled(on);
-    E("ppBloomIntRow").style.display = on ? "" : "none";
-  });
-  bindSlider("ppBloomInt", "ppBloomV", (v) => setBloomIntensity(v), (v) => v.toFixed(2));
-  E("ppSsao").addEventListener("change", function () {
-    const on = (this as HTMLInputElement).checked;
-    setSsaoEnabled(on);
-    E("ppSsaoIntRow").style.display = on ? "" : "none";
-  });
-  bindSlider("ppSsaoInt", "ppSsaoV", (v) => setSsaoIntensity(v), (v) => v.toFixed(2));
-  E("ppChromatic").addEventListener("change", function () {
-    const on = (this as HTMLInputElement).checked;
-    setChromaticEnabled(on);
-    E("ppChromIntRow").style.display = on ? "" : "none";
-  });
-  bindSlider("ppChromInt", "ppChromV", (v) => setChromaticIntensity(v), (v) => v.toFixed(2));
-  E("ppVignette").addEventListener("change", function () {
-    const on = (this as HTMLInputElement).checked;
-    setVignetteEnabled(on);
-    E("ppVigWeightRow").style.display = on ? "" : "none";
-  });
-  bindSlider("ppVigWeight", "ppVigV", (v) => setVignetteWeight(v), (v) => v.toFixed(2));
 
   // Viewport shading mode
   document.querySelectorAll<HTMLElement>(".shade-btn").forEach((btn) => {

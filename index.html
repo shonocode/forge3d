@@ -72,7 +72,7 @@
     </div>
     <div class="scur" id="scur"></div>
     <div class="drop-zone" id="dropZone">
-      <div class="drop-zone-text">Drop file here<br><span>.glb .gltf .obj .stl</span></div>
+      <div class="drop-zone-text">Drop file here<br><span>.glb .gltf .obj</span></div>
     </div>
     <div class="vp-camera" id="cameraPresets">
       <button class="cam-btn" data-preset="front" title="Front" aria-label="Front view">F</button>
@@ -184,6 +184,10 @@
         <button class="abtn" id="btnToggleOverlay">Show/Hide Overlay</button>
       </div>
       <div class="pg">
+        <div class="pgt">Bone Slots</div>
+        <div class="slist" id="boneSlotList" style="max-height:min(180px,30vh);overflow-y:auto"><div class="empty">スケルトンをアタッチしたメッシュを選択</div></div>
+      </div>
+      <div class="pg">
         <div class="pgt">Info</div>
         <div id="weightInfo"><div class="empty">ボーンを選択してウェイト塗り</div></div>
       </div>
@@ -240,8 +244,26 @@
         <div class="pgt">Keyframes</div>
         <div id="kfList"><div class="empty">ボーンを選択してキーフレーム表示</div></div>
       </div>
+      <div class="pg">
+        <div class="pgt">Graph Editor</div>
+        <div id="graphChannels" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:4px;font-size:9px"></div>
+        <canvas id="graphCanvas" width="280" height="160" style="width:100%;height:160px;background:var(--bg3);border-radius:3px;cursor:crosshair;display:block"></canvas>
+        <div id="graphInfo" style="font-size:9px;color:var(--t4);margin-top:2px;line-height:1.4">クリックでフレームへスクラブ</div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Dopesheet</div>
+        <canvas id="dopeCanvas" width="280" height="120" style="width:100%;height:120px;background:var(--bg3);border-radius:3px;cursor:pointer;display:block"></canvas>
+        <div id="dopeInfo" style="font-size:9px;color:var(--t4);margin-top:2px;line-height:1.4">行クリックでボーン選択、キーをクリックでスクラブ</div>
+      </div>
     </div>
     <div class="tbody" id="tb-bone">
+      <div class="pg">
+        <div class="pgt">Mode</div>
+        <div style="display:flex;gap:4px">
+          <button class="abtn on" id="btnBoneModeEdit" style="flex:1;font-size:10px" title="Edit Mode: position gizmo, rest pose layout">Edit</button>
+          <button class="abtn" id="btnBoneModePose" style="flex:1;font-size:10px" title="Pose Mode: rotation gizmo, keyframable poses">Pose</button>
+        </div>
+      </div>
       <div class="pg">
         <div class="pgt">Skeleton</div>
         <div id="skelC"><div class="empty">BONEツールで骨格を作成</div></div>
@@ -263,6 +285,14 @@
           <input type="checkbox" id="ikEnabled" aria-label="IK enabled" style="margin-left:auto"></div>
         <div class="sr"><label style="font-size:9px;">Chain Length <span id="ikChainV">2</span></label>
           <input type="range" min="1" max="5" step="1" value="2" id="ikChainLen" aria-label="IK chain length"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Target</span>
+          <button class="abtn" id="btnIkSnapTarget" style="margin-left:auto;font-size:10px;padding:2px 8px" title="Snap target to current bone tip position">Snap to Bone</button></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">X</label>
+          <input type="number" step="0.1" id="ikTargetX" aria-label="IK target X" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Y</label>
+          <input type="number" step="0.1" id="ikTargetY" aria-label="IK target Y" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Z</label>
+          <input type="number" step="0.1" id="ikTargetZ" aria-label="IK target Z" style="flex:1;font-size:10px" value="0"></div>
       </div>
     </div>
     <div class="tbody" id="tb-map">
@@ -318,27 +348,6 @@
             <option value="2048">High (2048)</option>
           </select></div>
       </div>
-      <div class="pg" id="postProcessControls">
-        <div class="pgt">Post-Processing</div>
-        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">FXAA</span>
-          <input type="checkbox" checked id="ppFxaa" aria-label="FXAA enabled" style="margin-left:auto"></div>
-        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Bloom</span>
-          <input type="checkbox" id="ppBloom" aria-label="Bloom enabled" style="margin-left:auto"></div>
-        <div class="sr" id="ppBloomIntRow" style="display:none"><label>Intensity <span id="ppBloomV">0.50</span></label>
-          <input type="range" min="0" max="2" step=".05" value="0.5" id="ppBloomInt" aria-label="Bloom intensity"></div>
-        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">SSAO</span>
-          <input type="checkbox" id="ppSsao" aria-label="SSAO enabled" style="margin-left:auto"></div>
-        <div class="sr" id="ppSsaoIntRow" style="display:none"><label>Intensity <span id="ppSsaoV">1.00</span></label>
-          <input type="range" min="0.1" max="3" step=".1" value="1" id="ppSsaoInt" aria-label="SSAO intensity"></div>
-        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Chromatic</span>
-          <input type="checkbox" id="ppChromatic" aria-label="Chromatic aberration enabled" style="margin-left:auto"></div>
-        <div class="sr" id="ppChromIntRow" style="display:none"><label>Intensity <span id="ppChromV">0.50</span></label>
-          <input type="range" min="0" max="3" step=".1" value="0.5" id="ppChromInt" aria-label="Chromatic aberration intensity"></div>
-        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Vignette</span>
-          <input type="checkbox" id="ppVignette" aria-label="Vignette enabled" style="margin-left:auto"></div>
-        <div class="sr" id="ppVigWeightRow" style="display:none"><label>Weight <span id="ppVigV">1.50</span></label>
-          <input type="range" min="0" max="5" step=".1" value="1.5" id="ppVigWeight" aria-label="Vignette weight"></div>
-      </div>
     </div>
     <div class="pg" style="margin-top:auto;">
       <div class="pgt">Actions</div>
@@ -346,7 +355,6 @@
       <div style="display:flex;gap:4px;">
         <button class="abtn pri" id="btnExportGLB" style="flex:1">⬇ GLB</button>
         <button class="abtn" id="btnExportOBJ" style="flex:1">OBJ</button>
-        <button class="abtn" id="btnExportSTL" style="flex:1">STL</button>
       </div>
       <button class="abtn" id="btnSave">💾 Save to Library</button>
       <button class="abtn" id="btnLoad">📂 Load Model</button>
@@ -680,26 +688,14 @@
       </div>
     </div>
 
-    <div class="help-sec">
-      <div class="help-t">Post-Processing</div>
-      <div class="help-sec-body">
-        <p>右パネル Scene タブの「Post-Processing」セクション。</p>
-        <p><b>FXAA</b>: アンチエイリアシング（デフォルトON）。エッジのギザギザを軽減。</p>
-        <p><b>Bloom</b>: 明るい部分のグロー効果。Intensity で強度調整。</p>
-        <p><b>SSAO</b>: スクリーンスペースアンビエントオクルージョン。凹部に自然な影を追加。</p>
-        <p><b>Chromatic</b>: 色収差エフェクト。レンズのような色ずれ。</p>
-        <p><b>Vignette</b>: 画面端を暗くするビネット効果。Weight で強度調整。</p>
-      </div>
-    </div>
 
     <div class="help-sec">
       <div class="help-t">Save / Export / Import</div>
       <div class="help-sec-body">
         <p><b>GLB Export</b>: シーン全体をGLBとしてダウンロード。スケルトン・ウェイト・テクスチャ・アニメーション含む。</p>
         <p><b>OBJ Export</b>: .obj + .mtl ファイルとしてダウンロード。マテリアル付きジオメトリのみ。</p>
-        <p><b>STL Export</b>: バイナリ .stl としてダウンロード。3Dプリント用ジオメトリのみ。</p>
         <p><b>Save to Library</b>: ブラウザ内ストレージ（OPFS/IndexedDB）に保存。Map Editorで再利用可能。</p>
-        <p><b>Load Model</b>: ファイル選択ダイアログから GLB/glTF/OBJ/STL を読み込み。</p>
+        <p><b>Load Model</b>: ファイル選択ダイアログから GLB/glTF/OBJ を読み込み。</p>
         <p><b>Drag &amp; Drop</b>: ファイルをビューポートに直接ドロップしてインポート。</p>
         <p><b>Undo/Redo</b>: ヘッダーの ↶/↷ ボタンまたは Ctrl+Z / Ctrl+Shift+Z。</p>
       </div>
