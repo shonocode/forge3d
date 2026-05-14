@@ -45,6 +45,28 @@ src/
 - Undo 対応: `state.history.push({ label, undo(), redo() })` パターン
 - compound undo は `state.history.popUndo()` で個別エントリを除去してまとめる
 
+## Documentation Sync Rule
+
+`MANUAL.html` is the user-facing operations manual (Japanese). **It MUST be
+updated in the same commit whenever any of the following change**:
+
+- Keybindings (add / remove / repurpose) → update §14 ショートカット早見表
+  and the affected feature section
+- New features or operators → add to the appropriate section, or create a new
+  one if it's a major addition
+- Behavior changes of existing features (e.g. lifting a V1 restriction,
+  changing default parameters, adding modes) → update the relevant section
+- UI layout changes (new tabs, panel reorganization) → update §1.1 画面構成
+  and the affected feature section
+- New domain terminology → add to §15 用語解説
+
+The manual is the single source of truth for what's "supposed to work" from a
+user's perspective. If code says one thing and MANUAL.html says another,
+users will hit confused dead-ends. Keep them in lockstep.
+
+The file lives at `forge3d/MANUAL.html` — open directly in a browser, no
+server needed.
+
 ## Testing
 
 - **Framework:** Vitest (node 環境、globals: true)

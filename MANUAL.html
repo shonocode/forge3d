@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Forge3D 操作マニュアル</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{
+  --bg0:#08080c;--bg1:#0e0e14;--bg2:#14141c;--bg3:#1a1a24;--bg4:#22222e;
+  --bd:#1e1e2c;--t1:#e4e4f0;--t2:#9898b0;--t3:#606078;--t4:#5a5a72;
+  --ac:#5b7fff;--ac2:#7b9fff;--acg:rgba(91,127,255,.12);
+  --red:#ff5c5c;--grn:#4ce0a0;--ylw:#ffc855;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg0);color:var(--t1);
+  font-family:"IBM Plex Sans JP","Hiragino Sans","Yu Gothic",sans-serif;
+  font-size:14px;line-height:1.7;}
+body{display:grid;grid-template-columns:240px 1fr;min-height:100vh;}
+nav{background:var(--bg1);border-right:1px solid var(--bd);
+  padding:24px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;font-size:12px;}
+nav h1{font-family:"DM Mono",monospace;font-size:13px;color:var(--ac);
+  margin:0 0 18px;letter-spacing:2px;}
+nav ol{list-style:none;padding:0;margin:0;}
+nav ol li{margin:3px 0;}
+nav ol a{color:var(--t3);text-decoration:none;display:block;padding:4px 8px;border-radius:3px;}
+nav ol a:hover{color:var(--t1);background:var(--bg3);}
+nav ol a.on{color:#fff;background:var(--ac);}
+nav ol ol{padding-left:14px;font-size:11px;}
+
+main{padding:32px 48px 80px;max-width:920px;}
+h1.t{font-family:"DM Mono",monospace;font-size:28px;color:var(--ac);
+  margin:0 0 8px;letter-spacing:1px;}
+.sub{color:var(--t3);font-size:13px;margin-bottom:48px;}
+
+section{margin-bottom:48px;}
+h2{font-family:"DM Mono",monospace;font-size:18px;color:var(--t1);
+  border-bottom:1px solid var(--bd);padding-bottom:6px;margin-top:48px;}
+h3{font-size:14px;color:var(--ac2);margin-top:24px;margin-bottom:8px;}
+h4{font-size:13px;color:var(--t2);margin-top:16px;margin-bottom:4px;}
+p{margin:8px 0;}
+ul,ol{padding-left:22px;}
+li{margin:3px 0;}
+strong{color:var(--t1);}
+code,kbd{font-family:"DM Mono","SF Mono",monospace;font-size:12px;
+  background:var(--bg3);padding:1px 6px;border-radius:3px;color:var(--ylw);}
+kbd{background:var(--bg2);border:1px solid var(--bd);color:var(--ac2);
+  font-size:11px;padding:1px 5px;}
+.note{background:var(--bg2);border-left:3px solid var(--ac);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+.warn{background:rgba(255,92,92,.06);border-left:3px solid var(--red);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+.tip{background:rgba(76,224,160,.06);border-left:3px solid var(--grn);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+
+table{border-collapse:collapse;margin:12px 0;font-size:13px;width:100%;}
+th,td{border:1px solid var(--bd);padding:6px 10px;text-align:left;vertical-align:top;}
+th{background:var(--bg2);color:var(--ac2);font-weight:500;font-size:12px;}
+td:first-child{color:var(--ylw);font-family:"DM Mono",monospace;white-space:nowrap;}
+
+.cheat td:first-child{width:160px;}
+.cheat td:nth-child(2){width:130px;color:var(--t2);font-family:"DM Mono",monospace;}
+
+.terms td:first-child{width:170px;}
+
+a.anchor{color:var(--ac2);text-decoration:none;}
+a.anchor:hover{text-decoration:underline;}
+
+footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
+  color:var(--t4);font-size:11px;}
+
+@media (max-width:760px){
+  body{grid-template-columns:1fr;}
+  nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--bd);}
+  main{padding:24px 20px 60px;}
+}
+</style>
+</head>
+<body>
+
+<nav>
+<h1>FORGE3D</h1>
+<ol id="toc">
+  <li><a href="#intro">1. はじめに</a></li>
+  <li><a href="#basic">2. 基本操作</a>
+    <ol>
+      <li><a href="#basic-camera">2.1 カメラ</a></li>
+      <li><a href="#basic-select">2.2 選択 / Gizmo</a></li>
+      <li><a href="#basic-undo">2.3 Undo / Redo</a></li>
+    </ol>
+  </li>
+  <li><a href="#prim">3. プリミティブ生成</a></li>
+  <li><a href="#edit">4. Edit Mode</a>
+    <ol>
+      <li><a href="#edit-enter">4.1 Edit Mode への入り方</a></li>
+      <li><a href="#edit-select">4.2 頂点 / 辺 / 面の選択</a></li>
+      <li><a href="#edit-extrude">4.3 Extrude</a></li>
+      <li><a href="#edit-inset">4.4 Inset</a></li>
+      <li><a href="#edit-bevel">4.5 Bevel</a></li>
+      <li><a href="#edit-loopcut">4.6 Loop Cut</a></li>
+      <li><a href="#edit-knife">4.7 Knife</a></li>
+      <li><a href="#edit-delete">4.8 Delete</a></li>
+    </ol>
+  </li>
+  <li><a href="#sculpt">5. Sculpt</a></li>
+  <li><a href="#paint">6. Paint</a></li>
+  <li><a href="#bone">7. Bone / Rigging</a></li>
+  <li><a href="#weight">8. Weight Paint</a></li>
+  <li><a href="#anim">9. Animation</a></li>
+  <li><a href="#mod">10. Modifiers</a></li>
+  <li><a href="#csg">11. CSG (ブール演算)</a></li>
+  <li><a href="#misc">12. その他のツール</a>
+    <ol>
+      <li><a href="#misc-morph">12.1 Morph Target</a></li>
+      <li><a href="#misc-light">12.2 Light</a></li>
+      <li><a href="#misc-measure">12.3 Measure</a></li>
+      <li><a href="#misc-layer">12.4 Layer / 親子付け</a></li>
+    </ol>
+  </li>
+  <li><a href="#io">13. インポート / エクスポート</a></li>
+  <li><a href="#shortcuts">14. ショートカット早見表</a></li>
+  <li><a href="#glossary">15. 用語解説</a></li>
+  <li><a href="#update">16. 更新ルール</a></li>
+</ol>
+</nav>
+
+<main>
+
+<h1 class="t">FORGE3D 操作マニュアル</h1>
+<div class="sub">ブラウザで動く Babylon.js ベースの 3D DCC ツール (Blender 的ポジション)。
+このページは forge3d の機能と操作を一覧する一次資料。</div>
+
+<!-- =================================================================== -->
+<section id="intro">
+<h2>1. はじめに</h2>
+<p>Forge3D は <strong>モデリング / スカルプト / リギング / アニメ / エクスポート</strong> を
+ブラウザだけで完結させるツール。Blender に近い構成だが、Web 前提なので
+オフライン保存・PWA・タッチ対応が組み込まれている。</p>
+
+<h3>1.1 起動と画面構成</h3>
+<ul>
+  <li><strong>ヘッダー</strong>（上）: モード表示 (<code>OBJECT</code> / <code>EDIT</code> / <code>SCULPT</code> ...)、ツール pill、FPS・頂点数</li>
+  <li><strong>左パネル</strong>: プリミティブ、ツール (Sculpt/Paint/Bone/Weight/Anim)、CSG、メッシュユーティリティ</li>
+  <li><strong>ビューポート</strong>（中央）: 3D 編集領域、Arc Rotate カメラ</li>
+  <li><strong>右パネル</strong>: タブ式の詳細設定 (Transform / Material / Edit / Anim ...)</li>
+  <li><strong>ステータスバー</strong>（下）: 操作結果のメッセージ表示</li>
+</ul>
+
+<h3>1.2 保存と復元</h3>
+<ul>
+  <li><strong>自動保存</strong>: 30 秒ごとに OPFS / IndexedDB にチェックポイント保存。クラッシュ時は次回起動で復元を提案</li>
+  <li><strong>Model Library</strong>: Map タブの「Save to Library」で複数モデルをローカル保存</li>
+  <li><strong>エクスポート</strong>: GLB / OBJ / STL ファイルとしてダウンロード</li>
+</ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="basic">
+<h2>2. 基本操作</h2>
+
+<h3 id="basic-camera">2.1 カメラ</h3>
+<ul>
+  <li><strong>左ドラッグ</strong>: 回転 (Arc Rotate)</li>
+  <li><strong>中ドラッグ / ホイール押し</strong>: パン</li>
+  <li><strong>ホイール / ピンチ</strong>: ズーム</li>
+  <li><strong>テンキー 1/3/7</strong>: 前/右/上ビュー (Ctrl 併用で反対側)</li>
+  <li><strong>テンキー 5</strong>: 透視/正投影トグル</li>
+  <li><strong>F キー</strong>: 選択メッシュへフォーカス</li>
+</ul>
+
+<h3 id="basic-select">2.2 選択 / Gizmo</h3>
+<ul>
+  <li><strong>クリック</strong>: メッシュ選択</li>
+  <li><strong>Ctrl/Cmd+クリック</strong>: 複数選択 (追加 / 解除)</li>
+  <li><strong>V</strong>: Select ツール</li>
+  <li><strong>G / R / S</strong>: 移動 (Move) / 回転 (Rotate) / 拡縮 (Scale) Gizmo</li>
+  <li><strong>Ctrl+A</strong>: 全選択</li>
+  <li><strong>Esc</strong>: 選択解除</li>
+</ul>
+<div class="note">Gizmo はドラッグした分だけ history に1エントリ。Ctrl+Z で 1 操作戻る。</div>
+
+<h3 id="basic-undo">2.3 Undo / Redo</h3>
+<ul>
+  <li><strong>Ctrl+Z</strong>: 元に戻す (最大 50 履歴)</li>
+  <li><strong>Ctrl+Shift+Z</strong>: やり直し</li>
+</ul>
+<p>Sculpt / Paint / Weight Paint のブラシストロークは「ストローク開始 → 終了」を 1 履歴として記録。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="prim">
+<h2>3. プリミティブ生成</h2>
+<p>左パネルの「Primitives」セクションから 8 種類を生成可能：</p>
+<table>
+  <tr><th>形状</th><th>説明</th></tr>
+  <tr><td>Box</td><td>立方体 (1×1×1)</td></tr>
+  <tr><td>Sphere</td><td>球 (UV Sphere)</td></tr>
+  <tr><td>Cylinder</td><td>円柱</td></tr>
+  <tr><td>Cone</td><td>円錐</td></tr>
+  <tr><td>Torus</td><td>トーラス (ドーナツ型)</td></tr>
+  <tr><td>Plane</td><td>板状の四角形</td></tr>
+  <tr><td>Torus Knot</td><td>結び目状の特殊形状</td></tr>
+  <tr><td>Ico Sphere</td><td>正二十面体ベースの球</td></tr>
+</table>
+<p>生成直後は原点に配置され、自動的に選択状態になる。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="edit">
+<h2>4. Edit Mode</h2>
+<p><strong>頂点 / 辺 / 面</strong>を直接編集するモード。Blender の Tab で切り替わる
+Edit Mode に相当。形状の細部調整、ループ追加、コーナー処理など。</p>
+
+<h3 id="edit-enter">4.1 Edit Mode への入り方</h3>
+<ol>
+  <li>編集したいメッシュを 1 つ選択</li>
+  <li><kbd>Tab</kbd> を押す → 右パネルが Edit タブに自動切替、頂点 dots が表示される</li>
+  <li>もう一度 <kbd>Tab</kbd> で Object Mode に戻る</li>
+</ol>
+<p>Edit Mode 中は他のツール (Sculpt/Paint 等) には切り替わらない。先に Tab で抜ける必要がある。</p>
+
+<h3 id="edit-select">4.2 頂点 / 辺 / 面の選択</h3>
+<table>
+  <tr><th>キー</th><th>モード</th><th>選択するもの</th></tr>
+  <tr><td>1</td><td>Vertex</td><td>頂点（白いドット）</td></tr>
+  <tr><td>2</td><td>Edge</td><td>辺（灰色のライン → 選択で黄）</td></tr>
+  <tr><td>3</td><td>Face</td><td>面（選択で半透明黄ハイライト）</td></tr>
+</table>
+<ul>
+  <li><strong>クリック</strong>: 単一選択（既存の選択をクリア）</li>
+  <li><strong>Ctrl+クリック</strong>: トグル選択（追加 / 解除）</li>
+  <li><strong>B</strong>: Box Select → 次のドラッグで矩形選択</li>
+  <li><strong>A</strong>: 全選択</li>
+  <li><strong>Esc</strong>: 選択クリア</li>
+</ul>
+<p>選択した要素の重心に <strong>位置 Gizmo</strong> が現れる。ドラッグで選択要素全体を平行移動。</p>
+
+<h3 id="edit-extrude">4.3 Extrude (押し出し)</h3>
+<p>選択を複製して新しい geometry を生やす。<strong>キー: <kbd>E</kbd></strong></p>
+
+<h4>Face モード — 面の押し出し</h4>
+<p>典型的な「指を生やす」「キューブの一面を引き出す」操作：</p>
+<ol>
+  <li>Face モード（<kbd>3</kbd>）で面を 1 つ以上選択</li>
+  <li><kbd>E</kbd> → 選択面の cap が複製される（位置は同じ、重なって見える）</li>
+  <li>Gizmo をドラッグして引き出す</li>
+  <li>連続して <kbd>E</kbd> → ドラッグ → <kbd>E</kbd> → ... で階段状に伸ばせる</li>
+</ol>
+
+<h4>Edge モード — 辺の押し出し (fin)</h4>
+<ol>
+  <li>Edge モード（<kbd>2</kbd>）で辺を選択（境界辺がオススメ）</li>
+  <li><kbd>E</kbd> → 各辺に「fin」と呼ばれる 2 三角形のパッチが取り付けられる</li>
+  <li>ループ状の辺を選んで extrude すると、共有頂点が dedup されて連続したスカートになる</li>
+</ol>
+<div class="note">内部辺 (内部の辺) を extrude すると 3 面が 1 辺を共有する <strong>non-manifold</strong> 状態になる
+（Blender も同じ仕様）。シルエットや fin geometry の追加に有用。</div>
+
+<h4>Vertex モード</h4>
+<div class="warn">未対応 — 三角メッシュでは「面に属さない単独辺」が表現できないため、エラーメッセージを表示して終了。</div>
+
+<h3 id="edit-inset">4.4 Inset (内側オフセット)</h3>
+<p>面の内側にスケールしたコピーを作る。Extrude と組み合わせて「ボス / ボタン」造形。<strong>キー: <kbd>I</kbd></strong></p>
+<ol>
+  <li>Face モードで面を 1 つ以上選択</li>
+  <li><kbd>I</kbd> → 各面の内側に小さなコピーが作られ、cap が選択状態に</li>
+  <li>続けて <kbd>E</kbd> → ドラッグで「凹みボタン」や「凸ボス」</li>
+</ol>
+<p>インセット量は右パネルの <strong>Inset Amount</strong> スライダーで調整（0 = なし、0.5 = 中心まで縮小）。</p>
+<div class="note">forge3d の Inset は <strong>Individual Faces モード</strong>（Blender の「個別面」）。
+複数面を選んで I すると各面が独立してインセットされる（Region モードでは無い）。</div>
+
+<h3 id="edit-bevel">4.5 Bevel (面取り)</h3>
+<p>辺を「面取り」する。直角コーナーを丸める時など。<strong>キー: <kbd>Ctrl+B</kbd></strong></p>
+<ol>
+  <li>Edge モードで辺を選択（複数可、ただし共有頂点があるとエラー）</li>
+  <li><kbd>Ctrl+B</kbd> → 選択辺が chamfer (面取り) クアッドに置換</li>
+  <li>幅は右パネルの <strong>Bevel Width</strong> スライダー (0〜0.49)</li>
+</ol>
+<p>内部的には頂点ファンを分割し、暗黙のコーナー三角キャップで manifold を保つ高度な処理を行っている。</p>
+<div class="warn"><strong>V2 制限</strong>: 1 頂点に 2 本以上の選択辺があると bail。
+複雑なコーナー (Blender の "Branch" ケース) は V3 へ繰越。</div>
+
+<h3 id="edit-loopcut">4.6 Loop Cut (ループカット)</h3>
+<p>メッシュをぐるりと一周する辺のループを追加する。関節用ループや細部用ループの挿入に。<strong>キー: <kbd>Ctrl+R</kbd></strong></p>
+<ol>
+  <li>Edge モードで <strong>1 本</strong>の辺を選択（ループの seed として使われる）</li>
+  <li><kbd>Ctrl+R</kbd> → 自動でループを検出し、各辺の中点を結ぶ新しいループが挿入される</li>
+  <li>挿入後は Vertex モードに自動切替、新しい中点群が選択状態 → そのまま Gizmo で動かせる</li>
+</ol>
+<p>ループ検出は「<strong>隣接 2 面の法線が平行か (コプラナリティ)</strong>」で四角形を推定して歩く。
+立方体や円柱の側面など、quad-meshed なプリミティブで正しく動作する。</p>
+<div class="warn">急角度のコーナー (法線の cos 値 &lt; 0.7) ではループが切れて falls back に per-tri 分割。
+通常は「切れて当然」な箇所なので望ましい挙動。</div>
+
+<h3 id="edit-knife">4.7 Knife (V1 — 対角線フリップ)</h3>
+<p>2 頂点を新しい辺で繋ぐ。<strong>キー: <kbd>K</kbd></strong></p>
+<ol>
+  <li>Vertex モードで <strong>ちょうど 2 つ</strong>の頂点を選択</li>
+  <li>2 頂点が「隣接 2 三角形の各 off-edge vertex」になっているとき有効</li>
+  <li><kbd>K</kbd> → 共有辺が消えて、2 頂点を直結する新しい辺に置換 (= edge flip)</li>
+</ol>
+<p>三角化の整理に重宝。Bevel / Inset の後で対角線の向きを変えたい時など。</p>
+<div class="warn"><strong>V1 制限</strong>: 隣接でない 2 頂点を選んだ場合はエラー。
+本来のフリーハンド Knife (任意の線分でメッシュを切る) は V2 (線分 × 辺の交差計算が必要) で別途実装予定。</div>
+
+<h3 id="edit-delete">4.8 Delete</h3>
+<p>選択した要素を削除。<strong>キー: <kbd>X</kbd> / <kbd>Delete</kbd> / <kbd>Backspace</kbd></strong></p>
+<ul>
+  <li><strong>Vertex モード</strong>: その頂点に触れる全ての面が消える</li>
+  <li><strong>Edge モード</strong>: その辺の両側の面が消える</li>
+  <li><strong>Face モード</strong>: 選択面が消える (頂点と辺は残る → Blender の "Only Faces" 相当)</li>
+</ul>
+<div class="note">削除で孤立した頂点は position buffer に残る (Blender の "Delete Loose" は別オペレータ)。
+気になる場合は <strong>Object Mode の Mesh Tools → Weld Vertices</strong> で掃除できる。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="sculpt">
+<h2>5. Sculpt (スカルプト)</h2>
+<p>有機的な凹凸を「塗る」感覚で作る。筋肉、しわ、形状調整に。<strong>キー: <kbd>D</kbd></strong></p>
+
+<h3>5.1 ブラシの種類</h3>
+<table>
+  <tr><th>ブラシ</th><th>効果</th></tr>
+  <tr><td>Push</td><td>頂点を法線方向に押し出す (凸)</td></tr>
+  <tr><td>Pull</td><td>頂点を法線方向に引っ込める (凹)</td></tr>
+  <tr><td>Smooth</td><td>近傍頂点の平均位置に滑らかに</td></tr>
+  <tr><td>Flatten</td><td>平面に近づける</td></tr>
+  <tr><td>Pinch</td><td>頂点を中心に集める (尖らせる)</td></tr>
+  <tr><td>Inflate</td><td>各頂点を法線方向に膨張</td></tr>
+</table>
+
+<h3>5.2 パラメータ</h3>
+<ul>
+  <li><strong>Radius</strong>: ブラシ半径 (ワールド単位)</li>
+  <li><strong>Strength</strong>: 1 ストロークあたりの変位量</li>
+  <li><strong>Falloff</strong>: 中心から外側への減衰指数</li>
+</ul>
+<div class="tip">高ポリゴンメッシュには空間グリッド最適化が効いて、数万頂点でも対話的に動く。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="paint">
+<h2>6. Paint (テクスチャペイント)</h2>
+<p>UV 座標を持つメッシュの表面に色を塗る。<strong>キー: <kbd>P</kbd></strong></p>
+<ul>
+  <li>1024×1024 の動的テクスチャに直接描画</li>
+  <li>カラーピッカーで色選択、ブラシサイズ・不透明度・消しゴムモードあり</li>
+  <li>UV 座標がないメッシュには使えない (警告メッセージ表示)</li>
+  <li>テクスチャインポートで読み込んだアルベドの上にペイント可能</li>
+</ul>
+<div class="note">プリミティブは生成時に UV が自動付与される。インポートメッシュは元の UV を尊重。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="bone">
+<h2>7. Bone / Rigging (ボーン / リギング)</h2>
+<p>キャラクターを動かすためのスケルトンを組む。<strong>キー: <kbd>B</kbd></strong></p>
+
+<h3>7.1 ボーン作成</h3>
+<ol>
+  <li>Bone ツール (<kbd>B</kbd>) に入る</li>
+  <li>ビューポートをクリックでその位置にボーンを追加 (球状のビジュアル表示)</li>
+  <li>既存ボーンをクリックして親選択 → 次のクリックで子ボーン</li>
+</ol>
+
+<h3>7.2 編集モードとポーズモード</h3>
+<table>
+  <tr><th>モード</th><th>Gizmo</th><th>用途</th></tr>
+  <tr><td>Edit</td><td>位置</td><td>rest pose のレイアウト</td></tr>
+  <tr><td>Pose</td><td>回転</td><td>キーフレーマブルなポーズ</td></tr>
+</table>
+<p>右パネルから切替。Edit でレイアウト → Pose でアニメ用のポーズを作る流れ。</p>
+
+<h3>7.3 ボーンの操作</h3>
+<ul>
+  <li>ボーンクリック → 選択 → Gizmo で動かす</li>
+  <li>右パネルの Bone リストから名前変更 / 削除 / IK 設定</li>
+  <li><strong>Shift+H</strong>: ボーン表示トグル</li>
+</ul>
+
+<h3>7.4 メッシュへのアサイン</h3>
+<p>右パネルの「Assign Skeleton」でメッシュにスケルトンを割り当て → Weight Paint へ進む。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="weight">
+<h2>8. Weight Paint (ウェイトペイント)</h2>
+<p>各頂点がどのボーンにどれだけ影響されるかを塗る。<strong>キー: <kbd>W</kbd></strong></p>
+<ol>
+  <li>スケルトンが割り当てられたメッシュを選択</li>
+  <li>ボーンを 1 つ選択 (Weight Paint 中もボーンビジュアルが表示)</li>
+  <li>メッシュ上をドラッグでウェイトを塗る</li>
+</ol>
+<table>
+  <tr><th>モード</th><th>動作</th></tr>
+  <tr><td>Add</td><td>ウェイトを加算 (デフォルト)</td></tr>
+  <tr><td>Subtract</td><td>ウェイトを減算</td></tr>
+  <tr><td>Smooth</td><td>近傍と平均化</td></tr>
+</table>
+<p>Ctrl/Shift キーで一時的にモード切替可能。1 頂点あたり最大 4 ボーンの影響を保持 (Babylon の標準仕様)。</p>
+<div class="tip">塗ったウェイトはグレースケールオーバーレイで可視化される
+(明るい = そのボーンに強く影響)。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="anim">
+<h2>9. Animation (アニメーション)</h2>
+<p>ボーンを動かして時間軸上にキーフレームを置く。<strong>キー: <kbd>A</kbd></strong></p>
+
+<h3>9.1 クリップ管理</h3>
+<ul>
+  <li>右パネルの Anim タブで「New Clip」 → 名前と Frame Rate / Max Frames を設定</li>
+  <li>複数クリップ作成可、アクティブクリップを切替</li>
+</ul>
+
+<h3>9.2 キーフレームの作成</h3>
+<ol>
+  <li>フレーム位置を Timeline で指定</li>
+  <li>ボーンを Pose モードで動かす</li>
+  <li>「Key Bone」(個別) または「Key All」(全ボーン) でキャプチャ</li>
+</ol>
+
+<h3>9.3 編集</h3>
+<ul>
+  <li><strong>Dopesheet</strong>: キーフレーム一覧を時間軸上で表示・編集</li>
+  <li><strong>Graph Editor</strong>: 個別チャンネルの Bezier カーブ編集</li>
+  <li><strong>Easing</strong>: Linear / Ease In/Out/InOut の組み合わせを各キーに設定可能</li>
+  <li>キーフレームのコピー / ペースト / 削除</li>
+</ul>
+
+<h3>9.4 再生</h3>
+<p>Timeline 下の Play ボタンで再生プレビュー。Loop Mode を Cycle / Constant で切替。</p>
+
+<h3>9.5 エクスポート</h3>
+<p>クリップ単位で JSON 出力。GLB エクスポート時も AnimationGroup として埋め込まれる。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="mod">
+<h2>10. Modifiers (モディファイア)</h2>
+<p>非破壊的にメッシュを変形する Stack。右パネルの Transform タブから設定。</p>
+
+<table>
+  <tr><th>Modifier</th><th>パラメータ</th><th>用途</th></tr>
+  <tr><td>Subdivision</td><td>Level (1 or 2)</td><td>Loop subdivision で滑らかに</td></tr>
+  <tr><td>Mirror</td><td>Axis (X/Y/Z)、Merge、Tolerance</td><td>軸対称な複製</td></tr>
+  <tr><td>Array</td><td>Count、Offset X/Y/Z</td><td>線形配列複製</td></tr>
+</table>
+<div class="note">モディファイアは元データを保持したまま見た目を変える「ライブプレビュー」。
+Apply で確定的にメッシュを焼き込み (今後実装予定の操作)。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="csg">
+<h2>11. CSG (ブール演算)</h2>
+<p>2 つのメッシュを論理演算で合成。左パネルの「CSG」セクションから。</p>
+<table>
+  <tr><th>演算</th><th>結果</th></tr>
+  <tr><td>Union</td><td>A ∪ B (合体)</td></tr>
+  <tr><td>Subtract</td><td>A − B (B の形に A から穴を開ける)</td></tr>
+  <tr><td>Intersect</td><td>A ∩ B (重なり部分のみ残す)</td></tr>
+</table>
+<ol>
+  <li>メッシュ A を選択 (target)</li>
+  <li>Ctrl+クリックでメッシュ B も追加選択 (cutter)</li>
+  <li>CSG ボタンをクリック → 結果が新しいメッシュとして生成</li>
+</ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="misc">
+<h2>12. その他のツール</h2>
+
+<h3 id="misc-morph">12.1 Morph Target (Shape Key)</h3>
+<p>顔の表情など、複数の形状をブレンドする仕組み。右パネルの Morph タブ。</p>
+<ul>
+  <li>ベース形状から複数のターゲット形状を作成</li>
+  <li>各ターゲットの influence (0-1) で混合</li>
+  <li>GLB エクスポートで morph target として保存</li>
+</ul>
+
+<h3 id="misc-light">12.2 Light</h3>
+<p>動的なライトを追加。Scene タブの「Lights」セクション。</p>
+<table>
+  <tr><th>種類</th><th>パラメータ</th></tr>
+  <tr><td>Point</td><td>Color, Intensity, Range</td></tr>
+  <tr><td>Spot</td><td>Color, Intensity, Range, Angle</td></tr>
+</table>
+<p>シーンには Hemispheric (環境光) と Directional (主光源) が常時 1 つずつ存在。</p>
+
+<h3 id="misc-measure">12.3 Measure (計測)</h3>
+<p>2 点間の距離を測る。</p>
+<ol>
+  <li>Measure ツール起動</li>
+  <li>2 点をクリック → 距離が画面上に表示される</li>
+  <li>複数の計測を保持可能 (リストで管理)</li>
+</ol>
+
+<h3 id="misc-layer">12.4 Layer / 親子付け (Parenting)</h3>
+<ul>
+  <li><strong>Layer</strong>: メッシュをグループ分けして表示/非表示を一括制御</li>
+  <li><strong>Parenting</strong>: メッシュに親メッシュを設定 → 親が動くと子も追従。循環参照は自動チェックで防止</li>
+</ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="io">
+<h2>13. インポート / エクスポート</h2>
+
+<h3>13.1 対応フォーマット</h3>
+<table>
+  <tr><th>形式</th><th>Import</th><th>Export</th><th>備考</th></tr>
+  <tr><td>GLB</td><td>○</td><td>○</td><td>推奨。スケルトン・アニメ・morph 完全対応</td></tr>
+  <tr><td>glTF</td><td>○</td><td>(GLB のみ)</td><td>テキスト+バイナリ</td></tr>
+  <tr><td>OBJ</td><td>○</td><td>○</td><td>静的メッシュのみ</td></tr>
+  <tr><td>STL</td><td>○</td><td>○</td><td>3D プリント用</td></tr>
+  <tr><td>HDR / EXR</td><td>○</td><td>—</td><td>環境マップ用</td></tr>
+</table>
+
+<h3>13.2 ドラッグ&ドロップ</h3>
+<p>ビューポートにファイルをドロップすると自動でインポート (上記対応フォーマット)。</p>
+
+<h3>13.3 ローカル保存</h3>
+<ul>
+  <li><strong>OPFS</strong> (Origin Private File System) 優先 → 大容量に対応</li>
+  <li>未対応ブラウザでは <strong>IndexedDB</strong> にフォールバック</li>
+  <li>Model Library から保存・読み込み・削除</li>
+  <li>自動保存 30 秒間隔 (クラッシュ復旧用、24 時間で自動失効)</li>
+</ul>
+</section>
+
+<!-- =================================================================== -->
+<section id="shortcuts">
+<h2>14. ショートカット早見表</h2>
+
+<h3>14.1 グローバル</h3>
+<table class="cheat">
+  <tr><th>キー</th><th>場面</th><th>動作</th></tr>
+  <tr><td>V</td><td>any</td><td>Select ツール</td></tr>
+  <tr><td>G / R / S</td><td>any</td><td>Move / Rotate / Scale Gizmo</td></tr>
+  <tr><td>D</td><td>any</td><td>Sculpt ツール</td></tr>
+  <tr><td>P</td><td>any</td><td>Paint ツール</td></tr>
+  <tr><td>B</td><td>Object</td><td>Bone ツール</td></tr>
+  <tr><td>W</td><td>Object</td><td>Weight Paint ツール</td></tr>
+  <tr><td>A</td><td>Object</td><td>Anim ツール</td></tr>
+  <tr><td>Tab</td><td>Object↔Edit</td><td>Edit Mode toggle</td></tr>
+  <tr><td>F</td><td>any</td><td>選択メッシュへフォーカス</td></tr>
+  <tr><td>H / Shift+H</td><td>any</td><td>メッシュ / ボーン表示トグル</td></tr>
+  <tr><td>Ctrl+D</td><td>any</td><td>選択メッシュ複製</td></tr>
+  <tr><td>Ctrl+A</td><td>Object</td><td>全選択</td></tr>
+  <tr><td>Ctrl+N</td><td>any</td><td>シーン新規作成 (確認あり)</td></tr>
+  <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>any</td><td>Undo / Redo</td></tr>
+  <tr><td>Delete / Backspace</td><td>Object</td><td>選択メッシュ削除</td></tr>
+  <tr><td>Esc</td><td>any</td><td>選択解除</td></tr>
+  <tr><td>Numpad 1/3/7</td><td>any</td><td>前/右/上ビュー (Ctrl で反対)</td></tr>
+  <tr><td>Numpad 5</td><td>any</td><td>透視/正投影</td></tr>
+</table>
+
+<h3>14.2 Edit Mode 専用</h3>
+<table class="cheat">
+  <tr><th>キー</th><th>モード</th><th>動作</th></tr>
+  <tr><td>1 / 2 / 3</td><td>Edit</td><td>Vertex / Edge / Face mode</td></tr>
+  <tr><td>クリック</td><td>Edit</td><td>選択</td></tr>
+  <tr><td>Ctrl+クリック</td><td>Edit</td><td>選択追加 / 解除</td></tr>
+  <tr><td>B</td><td>Edit</td><td>Box Select</td></tr>
+  <tr><td>A</td><td>Edit</td><td>全コンポーネント選択</td></tr>
+  <tr><td>E</td><td>Edit / face,edge</td><td>Extrude</td></tr>
+  <tr><td>I</td><td>Edit / face</td><td>Inset</td></tr>
+  <tr><td>Ctrl+B</td><td>Edit / edge</td><td>Bevel</td></tr>
+  <tr><td>Ctrl+R</td><td>Edit / edge</td><td>Loop Cut</td></tr>
+  <tr><td>K</td><td>Edit / vertex</td><td>Knife (2 頂点)</td></tr>
+  <tr><td>X / Delete</td><td>Edit</td><td>削除</td></tr>
+</table>
+</section>
+
+<!-- =================================================================== -->
+<section id="glossary">
+<h2>15. 用語解説</h2>
+
+<table class="terms">
+  <tr><th>用語</th><th>意味</th></tr>
+  <tr><td>Mesh</td><td>頂点 (vertex) と三角形 (face) で表現された 3D 形状。Forge3D 内部はすべて三角メッシュ。</td></tr>
+  <tr><td>Vertex / 頂点</td><td>3D 空間の点。位置 (x, y, z) を持つ。</td></tr>
+  <tr><td>Edge / 辺</td><td>2 つの頂点を結ぶ線分。</td></tr>
+  <tr><td>Face / 面</td><td>3 つの頂点で囲まれた三角形。法線 (どちらが外側か) を持つ。</td></tr>
+  <tr><td>Normal / 法線</td><td>面 (または頂点) の「外向き方向」を示すベクトル。光の当たり方を計算するのに使う。</td></tr>
+  <tr><td>UV</td><td>3D 表面を 2D に展開した座標 (u, v)。テクスチャの貼り方を決める。</td></tr>
+  <tr><td>Triangulation / 三角形化</td><td>四角形以上の多角形を三角形に分割すること。Forge3D の内部表現は常に三角化済み。</td></tr>
+  <tr><td>Manifold</td><td>「閉じていて穴がない」「各辺がちょうど 2 面に共有される」状態。3D プリントや物理計算で重要。</td></tr>
+  <tr><td>Boundary edge / 境界辺</td><td>1 つの面にしか属していない辺。Manifold な閉メッシュには存在しない。開いたメッシュ (Plane や open shell) の縁。</td></tr>
+  <tr><td>Non-manifold</td><td>3 つ以上の面が 1 辺を共有している状態など、CG として「不正」または特殊な状態。意図的に作ることもある (fin geometry など)。</td></tr>
+  <tr><td>Half-Edge</td><td>各辺を「向きのある半辺」として表現するデータ構造。Edit Mode の内部実装で使用 (各 face が 3 つの half-edge を持ち、twin で隣接 face と繋がる)。</td></tr>
+  <tr><td>Implicit Quad</td><td>三角メッシュで、隣接する 2 つの三角形を「論理的な四角形」として扱う考え方。Loop Cut の検出に使う。</td></tr>
+  <tr><td>Diagonal / 対角線</td><td>四角形を 2 つの三角形に分けるときの分割線。三角化の方向を決める。</td></tr>
+  <tr><td>Gizmo</td><td>ビューポート上のドラッグ可能な操作ハンドル (3 軸の矢印 / 円 / 角キューブ)。位置・回転・拡縮に使う。</td></tr>
+  <tr><td>Centroid / 重心</td><td>選択頂点の平均位置。Edit Mode の Gizmo はここに配置される。</td></tr>
+  <tr><td>Skin / Skinning</td><td>メッシュをスケルトンに「皮膚」として貼り付けること。各頂点が複数ボーンの影響を受ける (weight)。</td></tr>
+  <tr><td>Bone Weight</td><td>頂点ごとの「このボーンに何 % 影響される」の重み (0-1)。合計が 1 になるよう正規化される。</td></tr>
+  <tr><td>Rest Pose</td><td>キャラクターの「初期姿勢」。アニメーション前の基準ポーズ。</td></tr>
+  <tr><td>IK (Inverse Kinematics)</td><td>「先端をここに置きたい」から「関節をどう曲げる？」を逆算する仕組み。手足の制御に使う。</td></tr>
+  <tr><td>Keyframe</td><td>時間軸上の「ここでこの値」を記録する点。間は補間される。</td></tr>
+  <tr><td>Easing</td><td>キーフレーム間の補間カーブ。Linear (一定) / Ease In/Out など。</td></tr>
+  <tr><td>Bezier handle</td><td>キーフレームの前後に出ている曲線制御点。Graph Editor で操作。</td></tr>
+  <tr><td>Morph Target / Shape Key</td><td>頂点位置の差分セット。「笑い顔」「怒り顔」などを複数登録して混合できる。</td></tr>
+  <tr><td>Modifier</td><td>メッシュを非破壊的に変形する Stack 操作。Subdivision / Mirror / Array など。</td></tr>
+  <tr><td>CSG (Constructive Solid Geometry)</td><td>2 メッシュのブール演算。Union / Subtract / Intersect。</td></tr>
+  <tr><td>PBR (Physically Based Rendering)</td><td>物理ベースの質感表現。Albedo (色) / Metallic (金属度) / Roughness (粗さ) などのパラメータで制御。</td></tr>
+  <tr><td>HDRI</td><td>High Dynamic Range Image。広い輝度範囲を持つ環境マップ画像 (.hdr / .exr)。リアルな反射と照明用。</td></tr>
+  <tr><td>Matcap</td><td>Material Capture。事前にレンダリングされた球の画像から表面の見た目を決める手抜きシェーディング。</td></tr>
+  <tr><td>Extrude / 押し出し</td><td>選択要素を複製して新しい geometry を生やす。最も基本的なモデリング操作。</td></tr>
+  <tr><td>Inset / インセット</td><td>面の内側にスケールしたコピーを作る。ボタン形状の起点。</td></tr>
+  <tr><td>Bevel / 面取り</td><td>辺を「斜めに削った面」に置換。角を丸める。</td></tr>
+  <tr><td>Loop Cut / ループカット</td><td>メッシュをぐるりと一周する辺ループを追加。関節用ループなどに。</td></tr>
+  <tr><td>Knife / ナイフ</td><td>任意の線分でメッシュを切る。Forge3D V1 は隣接対角線フリップのみ。</td></tr>
+  <tr><td>OPFS</td><td>Origin Private File System。ブラウザ内でファイルを永続化する Web API。GB 単位の容量に対応。</td></tr>
+  <tr><td>PWA (Progressive Web App)</td><td>インストール可能な Web アプリ。オフライン動作・ホーム画面追加など、ネイティブアプリ風の体験を提供。</td></tr>
+  <tr><td>FXAA / SSAO / Bloom</td><td>ポストプロセス効果。FXAA = 軽量アンチエイリアス、SSAO = 環境光遮蔽、Bloom = 明るい部分の光漏れ。</td></tr>
+</table>
+</section>
+
+<!-- =================================================================== -->
+<section id="update">
+<h2>16. 更新ルール</h2>
+<div class="warn"><strong>forge3d のコードを変更したら、このファイル (MANUAL.html) も同じコミット内で更新すること。</strong></div>
+
+<p>forge3d/CLAUDE.md にも同じルールが書かれている。具体的には以下のいずれかが発生したら本書を更新：</p>
+<ul>
+  <li>新しい <strong>キーバインド</strong>の追加・変更 → §14 ショートカットと該当機能の説明を更新</li>
+  <li>新しい <strong>機能 / オペレータ</strong>の追加 → 該当セクションに追記、必要なら新セクション</li>
+  <li>既存機能の <strong>挙動変更</strong> (たとえば Bevel の制限緩和、Knife の対応範囲拡大など) → 該当節を更新</li>
+  <li><strong>UI 配置</strong>の変更 (新タブ、パネル移動など) → §1.1 と該当節を更新</li>
+  <li>新しい <strong>用語</strong>を導入 → §15 用語解説に追加</li>
+</ul>
+<p>コードと文書が乖離するとユーザーが「動くはずの操作が動かない」状態になるので、
+小さな変更でも同期させる。</p>
+
+<footer>
+Forge3D Manual — Last updated: 2026-05-15<br>
+forge3d/MANUAL.html は forge3d リポジトリの直下にある。ブラウザで直接開けば表示される。
+</footer>
+</section>
+
+</main>
+
+<script>
+// Highlight current section in sidebar
+const links = document.querySelectorAll('nav a');
+const sections = document.querySelectorAll('section[id]');
+function update(){
+  const y = window.scrollY + 100;
+  let cur = sections[0].id;
+  sections.forEach(s => { if (s.offsetTop <= y) cur = s.id; });
+  links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + cur));
+}
+window.addEventListener('scroll', update);
+update();
+</script>
+
+</body>
+</html>
