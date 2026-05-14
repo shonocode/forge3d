@@ -3,7 +3,7 @@ import "./shaders"; // Register all Babylon.js shaders in ShaderStore before ren
 import { initViewport } from "./viewport/viewport";
 import { state, E, status } from "./state";
 import { initInput } from "./input";
-import { buildToolPills, buildPrimitiveGrid, buildCSGButtons, buildTabs, buildBrushButtons, buildMeshToolButtons, buildMobileBar, buildGizmoFAB } from "./ui/builders";
+import { buildToolPills, buildPrimitiveGrid, buildCSGButtons, buildTabs, buildBrushButtons, buildMeshToolButtons, buildMobileBar, buildGizmoFAB, buildEditToolsPanel } from "./ui/builders";
 import { bindActionButtons, bindHelp } from "./ui/bindings";
 import { registerCacheTransformCallback, updateLayerUI } from "./ui/panels";
 import { requestPersistentStorage } from "./storage/metadata-store";
@@ -28,6 +28,7 @@ buildCSGButtons();
 buildTabs();
 buildBrushButtons();
 buildMeshToolButtons();
+buildEditToolsPanel();
 buildMobileBar();
 buildGizmoFAB();
 bindActionButtons();

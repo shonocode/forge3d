@@ -6,8 +6,21 @@ import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { PointLight } from "@babylonjs/core/Lights/pointLight";
 import type { SpotLight } from "@babylonjs/core/Lights/spotLight";
 import { UndoHistory } from "./undo";
+import type { EditMesh } from "./tools/edit-mode/half-edge";
 
 export type ToolId = "select" | "move" | "rotate" | "scale" | "sculpt" | "paint" | "bone" | "weight" | "anim";
+export type ComponentMode = "vertex" | "edge" | "face";
+
+export interface EditSelection {
+  mode: ComponentMode;
+  /**
+   * Selected component IDs in the active mode:
+   *   vertex → vertex index
+   *   edge   → canonical half-edge index (min(he, twin))
+   *   face   → face index
+   */
+  indices: Set<number>;
+}
 export type ViewportMode = "solid" | "wire" | "matcap" | "textured";
 export type AnimLoopMode = "cycle" | "constant";
 export type WeightMode = "add" | "subtract" | "smooth";
@@ -326,6 +339,16 @@ export const state = {
     vignetteWeight: 1.5,
     ssaoEnabled: false,
     ssaoIntensity: 1.0,
+  },
+
+  // Edit Mode (component-level editing — see forge3d/EDIT-MODE-DESIGN.md)
+  editMesh: null as EditMesh | null,
+  editSelection: { mode: "vertex", indices: new Set<number>() } as EditSelection,
+  editConfig: {
+    /** Per-face inset interpolation toward centroid (0 = no inset, 0.5 = halfway). */
+    insetAmount: 0.2,
+    /** Bevel split factor along incident edges (0 = no bevel, must stay < 0.5). */
+    bevelWidth: 0.15,
   },
 
   // Undo/Redo

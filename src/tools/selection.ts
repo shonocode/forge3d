@@ -3,6 +3,7 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, isMobile } from "../state";
 import { updateHierarchy, updateProperties } from "../ui/panels";
 import { applySelectedEdges, resetEdges } from "./mesh-utils";
+import { isEditMode } from "./edit-mode";
 
 export function selectMesh(mesh: AbstractMesh | null, additive: boolean): void {
   if (!additive) {
@@ -83,8 +84,8 @@ export function updateGizmo(): void {
     }
   }
 
-  // Non-transform tools: detach first, then disable (order matters for Babylon.js internals)
-  if (tool === "sculpt" || tool === "paint" || tool === "bone" || tool === "weight" || tool === "anim") {
+  // Edit Mode owns its own component gizmo — hide the object-mode gizmo entirely.
+  if (isEditMode() || tool === "sculpt" || tool === "paint" || tool === "bone" || tool === "weight" || tool === "anim") {
     try {
       gm.attachToMesh(null);
       gm.positionGizmoEnabled = false;

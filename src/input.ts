@@ -12,6 +12,7 @@ import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camer
 import { applySnapToGizmos } from "./tools/snap";
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection } from "./tools/edit-mode";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -114,6 +115,38 @@ export function initInput(): void {
     state.keysDown.add(e.key);
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement).isContentEditable) return;
+
+    // Edit Mode: Tab toggle + component mode keys. Handled before the regular
+    // shortcut switch so 1/2/3/B/A don't collide with Object Mode bindings.
+    if (e.key === "Tab") {
+      e.preventDefault();
+      toggleEditMode();
+      return;
+    }
+    if (isEditMode()) {
+      if (e.key === "1" && !e.code.startsWith("Numpad")) { setComponentMode("vertex"); return; }
+      if (e.key === "2" && !e.code.startsWith("Numpad")) { setComponentMode("edge"); return; }
+      if (e.key === "3" && !e.code.startsWith("Numpad")) { setComponentMode("face"); return; }
+      if (e.key.toLowerCase() === "b" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); startBoxSelect(); return; }
+      if (e.key.toLowerCase() === "a" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); selectAllComponents(); return; }
+      if (e.key.toLowerCase() === "e" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); extrudeSelection(); return; }
+      if (e.key.toLowerCase() === "i" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); insetSelection(); return; }
+      if (e.key.toLowerCase() === "b" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); bevelSelection(); return; }
+      if (e.key.toLowerCase() === "r" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); loopCutSelection(); return; }
+      if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); knifeSelection(); return; }
+      if (e.key.toLowerCase() === "x" || e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
+      if (e.key === "Escape") { e.preventDefault(); clearComponentSelection(); return; }
+      // Allow undo/redo to pass through; everything else is suppressed so
+      // Object Mode tool-switch keys don't change the tool while editing.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) state.history.redo();
+        else state.history.undo();
+        return;
+      }
+      return;
+    }
+
     switch (e.key.toLowerCase()) {
       case "z":
         if (e.ctrlKey || e.metaKey) {
@@ -256,6 +289,15 @@ export function initInput(): void {
   // Pointer events
   canvas.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
+
+    // Edit Mode (component-level): intercept before any other tool handler.
+    if (isEditMode()) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const consumed = handleEditModePointerDown(x, y, e.ctrlKey || e.metaKey || state.multiSelectMode);
+      if (consumed) return;
+    }
 
     // Sculpt mode
     if (state.tool === "sculpt" && state.selectedMeshes.length) {

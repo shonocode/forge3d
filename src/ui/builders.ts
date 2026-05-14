@@ -81,6 +81,7 @@ export function buildTabs(): void {
     { id: "bone", label: "Bone" },
     { id: "weight", label: "Weight" },
     { id: "anim", label: "Anim" },
+    { id: "edit", label: "Edit" },
     { id: "map", label: "Map" },
     { id: "scene", label: "Scene" },
   ];
@@ -186,6 +187,224 @@ export function buildMeshToolButtons(): void {
       status(tool.label + " 完了");
     });
     el.appendChild(b);
+  }
+}
+
+/**
+ * Build the Edit Mode tools panel. Lives under the "Edit" tab and shows the
+ * current component mode (V/E/F), per-op action buttons, and parameter
+ * sliders for the operators that have tunable values.
+ *
+ * Buttons are grouped by mode applicability — operators only valid in a
+ * specific mode (Inset = face, Bevel/Loop Cut = edge, Knife = vertex) are
+ * disabled when the current mode doesn't match. We don't hide them so users
+ * can see the full op palette and discover what each mode unlocks.
+ */
+export function buildEditToolsPanel(): void {
+  const el = E("tb-edit");
+  el.innerHTML = "";
+
+  // Component mode selector (V/E/F)
+  const modeSection = document.createElement("div");
+  modeSection.className = "pg";
+  modeSection.innerHTML = '<div class="pgt">Component Mode</div>';
+  const modeRow = document.createElement("div");
+  modeRow.style.cssText = "display:flex;gap:4px;";
+  const MODES: { id: "vertex" | "edge" | "face"; label: string; key: string }[] = [
+    { id: "vertex", label: "Vertex", key: "1" },
+    { id: "edge",   label: "Edge",   key: "2" },
+    { id: "face",   label: "Face",   key: "3" },
+  ];
+  for (const m of MODES) {
+    const b = document.createElement("button");
+    b.className = "abtn em-mode-btn";
+    b.dataset.editMode = m.id;
+    b.textContent = `${m.label} (${m.key})`;
+    b.style.flex = "1";
+    b.setAttribute("aria-label", `${m.label} mode`);
+    b.addEventListener("click", () => {
+      void import("../tools/edit-mode").then(({ setComponentMode, isEditMode }) => {
+        if (!isEditMode()) {
+          status("⚠ Enter Edit Mode (Tab) first");
+          return;
+        }
+        setComponentMode(m.id);
+        refreshEditToolsUI();
+      });
+    });
+    modeRow.appendChild(b);
+  }
+  modeSection.appendChild(modeRow);
+  el.appendChild(modeSection);
+
+  // Operator buttons section
+  const opSection = document.createElement("div");
+  opSection.className = "pg";
+  opSection.innerHTML = '<div class="pgt">Operators</div>';
+
+  type Op = {
+    label: string;
+    key: string;
+    modes: Array<"vertex" | "edge" | "face">;
+    action: () => Promise<void>;
+  };
+  const ops: Op[] = [
+    {
+      label: "Extrude",
+      key: "E",
+      modes: ["face", "edge"],
+      action: async () => (await import("../tools/edit-mode")).extrudeSelection(),
+    },
+    {
+      label: "Inset",
+      key: "I",
+      modes: ["face"],
+      action: async () => (await import("../tools/edit-mode")).insetSelection(),
+    },
+    {
+      label: "Bevel",
+      key: "Ctrl+B",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).bevelSelection(),
+    },
+    {
+      label: "Loop Cut",
+      key: "Ctrl+R",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).loopCutSelection(),
+    },
+    {
+      label: "Knife",
+      key: "K",
+      modes: ["vertex"],
+      action: async () => (await import("../tools/edit-mode")).knifeSelection(),
+    },
+    {
+      label: "Delete",
+      key: "X",
+      modes: ["vertex", "edge", "face"],
+      action: async () => (await import("../tools/edit-mode")).deleteSelection(),
+    },
+  ];
+
+  for (const op of ops) {
+    const b = document.createElement("button");
+    b.className = "abtn em-op-btn";
+    b.dataset.editModes = op.modes.join(",");
+    b.dataset.editOp = op.label;
+    b.innerHTML = `<span>${op.label}</span><span style="float:right;color:var(--t4);font-size:9px">${op.key}</span>`;
+    b.setAttribute("aria-label", `${op.label} (${op.key})`);
+    b.style.cssText = "text-align:left;display:block;width:100%;";
+    b.addEventListener("click", () => { void op.action(); });
+    opSection.appendChild(b);
+  }
+  el.appendChild(opSection);
+
+  // Selection helpers
+  const selSection = document.createElement("div");
+  selSection.className = "pg";
+  selSection.innerHTML = '<div class="pgt">Selection</div>';
+  for (const [label, key, handler] of [
+    ["Select All", "A", "selectAllComponents"],
+    ["Box Select", "B", "startBoxSelect"],
+    ["Clear",      "Esc", "clearComponentSelection"],
+  ] as const) {
+    const b = document.createElement("button");
+    b.className = "abtn";
+    b.innerHTML = `<span>${label}</span><span style="float:right;color:var(--t4);font-size:9px">${key}</span>`;
+    b.style.cssText = "text-align:left;display:block;width:100%;";
+    b.addEventListener("click", () => {
+      void import("../tools/edit-mode").then((mod) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (mod as any)[handler]?.();
+      });
+    });
+    selSection.appendChild(b);
+  }
+  el.appendChild(selSection);
+
+  // Parameter sliders
+  const paramSection = document.createElement("div");
+  paramSection.className = "pg";
+  paramSection.innerHTML = '<div class="pgt">Parameters</div>';
+
+  paramSection.appendChild(
+    makeSlider("Inset Amount", "em-inset-amount", state.editConfig.insetAmount, 0, 0.5, 0.01, (v) => {
+      state.editConfig.insetAmount = v;
+    }),
+  );
+  paramSection.appendChild(
+    makeSlider("Bevel Width", "em-bevel-width", state.editConfig.bevelWidth, 0, 0.49, 0.01, (v) => {
+      state.editConfig.bevelWidth = v;
+    }),
+  );
+  el.appendChild(paramSection);
+
+  // Help footer
+  const help = document.createElement("div");
+  help.style.cssText = "margin-top:8px;font-size:9px;color:var(--t4);line-height:1.6;padding:6px;";
+  help.innerHTML =
+    "<b>Tab</b> ↔ Object Mode<br>" +
+    "<b>Click</b>: select · <b>Ctrl+click</b>: add<br>" +
+    "<b>Ctrl+Z / Shift+Ctrl+Z</b>: undo / redo";
+  el.appendChild(help);
+
+  refreshEditToolsUI();
+}
+
+function makeSlider(
+  label: string,
+  id: string,
+  initial: number,
+  min: number,
+  max: number,
+  step: number,
+  onChange: (v: number) => void,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "sr";
+  const lab = document.createElement("label");
+  const valSpan = document.createElement("span");
+  valSpan.textContent = initial.toFixed(2);
+  lab.appendChild(document.createTextNode(label + " "));
+  lab.appendChild(valSpan);
+  wrap.appendChild(lab);
+
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(initial);
+  input.id = id;
+  input.setAttribute("aria-label", label);
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    valSpan.textContent = v.toFixed(2);
+    onChange(v);
+  });
+  wrap.appendChild(input);
+  return wrap;
+}
+
+/**
+ * Update the Edit Tools UI to reflect the current state — disable ops that
+ * don't match the active component mode, highlight the current mode button.
+ * Safe to call from anywhere; no-op if the panel hasn't been built yet.
+ */
+export function refreshEditToolsUI(): void {
+  // Component-mode buttons
+  const currentMode = state.editSelection.mode;
+  for (const b of document.querySelectorAll<HTMLElement>(".em-mode-btn")) {
+    b.classList.toggle("on", b.dataset.editMode === currentMode);
+  }
+  // Operator buttons: enable only those matching current mode (when in Edit Mode)
+  const inEdit = state.editMesh !== null;
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".em-op-btn")) {
+    const modes = (b.dataset.editModes ?? "").split(",");
+    const enabled = inEdit && modes.includes(currentMode);
+    b.disabled = !enabled;
+    b.style.opacity = enabled ? "1" : "0.4";
   }
 }
 
