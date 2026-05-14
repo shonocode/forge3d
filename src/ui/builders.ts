@@ -280,6 +280,12 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).knifeSelection(),
     },
     {
+      label: "Mark Seam",
+      key: "Shift+S",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).markSeamSelection(),
+    },
+    {
       label: "Delete",
       key: "X",
       modes: ["vertex", "edge", "face"],
@@ -322,6 +328,26 @@ export function buildEditToolsPanel(): void {
     selSection.appendChild(b);
   }
   el.appendChild(selSection);
+
+  // UV Unwrap section — sits outside the mode-gated op list because Unwrap
+  // operates on the whole mesh regardless of which component mode is active.
+  const uvSection = document.createElement("div");
+  uvSection.className = "pg";
+  uvSection.innerHTML = '<div class="pgt">UV Unwrap</div>';
+  const unwrapBtn = document.createElement("button");
+  unwrapBtn.className = "abtn";
+  unwrapBtn.innerHTML = '<span>Smart UV Project</span><span style="float:right;color:var(--t4);font-size:9px">U</span>';
+  unwrapBtn.style.cssText = "text-align:left;display:block;width:100%;";
+  unwrapBtn.addEventListener("click", () => {
+    void import("../tools/edit-mode").then((mod) => mod.unwrapMesh());
+  });
+  uvSection.appendChild(unwrapBtn);
+  const seamHelp = document.createElement("div");
+  seamHelp.style.cssText = "font-size:9px;color:var(--t4);line-height:1.5;margin-top:6px;";
+  seamHelp.innerHTML = "Edge mode で辺を選び <b>Mark Seam</b> でシーム指定 → <b>Smart UV Project</b><br>" +
+    "<span style=\"color:var(--red)\">⚠ rig 済みメッシュには使えない</span>";
+  uvSection.appendChild(seamHelp);
+  el.appendChild(uvSection);
 
   // Parameter sliders
   const paramSection = document.createElement("div");

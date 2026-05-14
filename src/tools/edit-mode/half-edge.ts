@@ -37,6 +37,25 @@ export interface EditMesh {
   halfEdges: HalfEdge[];
   /** Local-space positions, length = vertices.length * 3, mutable. */
   positions: Float32Array;
+  /**
+   * Edges marked as UV seams. Keyed by `seamKey(v1, v2)` = "min_max" of the
+   * two vertex indices, NOT by half-edge index — this lets seams survive
+   * topology rebuilds (extrude / bevel / etc.) as long as the endpoint
+   * vertex IDs stay valid. Unwrap uses these to break face clusters.
+   */
+  seams: Set<string>;
+}
+
+/** Build a stable, direction-agnostic key for an edge between two vertices. */
+export function seamKey(v1: number, v2: number): string {
+  return v1 < v2 ? `${v1}_${v2}` : `${v2}_${v1}`;
+}
+
+/** True iff the given (canonical) half-edge is currently marked as a seam. */
+export function isSeam(em: EditMesh, he: number): boolean {
+  const a = edgeOrigin(em, he);
+  const b = edgeEnd(em, he);
+  return em.seams.has(seamKey(a, b));
 }
 
 /** Half-edge representing the edge from `vertex(he)` to `vertex(next)`. */

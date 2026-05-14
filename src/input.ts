@@ -12,7 +12,7 @@ import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camer
 import { applySnapToGizmos } from "./tools/snap";
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection } from "./tools/edit-mode";
+import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection, markSeamSelection, unwrapMesh } from "./tools/edit-mode";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -134,6 +134,8 @@ export function initInput(): void {
       if (e.key.toLowerCase() === "b" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); bevelSelection(); return; }
       if (e.key.toLowerCase() === "r" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); loopCutSelection(); return; }
       if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); knifeSelection(); return; }
+      if (e.key.toLowerCase() === "s" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); markSeamSelection(); return; }
+      if (e.key.toLowerCase() === "u" && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); unwrapMesh(); return; }
       if (e.key.toLowerCase() === "x" || e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
       if (e.key === "Escape") { e.preventDefault(); clearComponentSelection(); return; }
       // Allow undo/redo to pass through; everything else is suppressed so

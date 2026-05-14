@@ -9,6 +9,9 @@ import { createComponentGizmo, type ComponentGizmo } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
 import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut } from "./operators";
+import { smartUVProject, toggleSeams } from "./uv-unwrap";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { rebuildHalfEdges, toIndexArray } from "./half-edge";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
@@ -268,6 +271,129 @@ export function knifeSelection(): void {
     }
     return result;
   });
+}
+
+/**
+ * Toggle seam markers on the currently selected edges. Seams are visualized
+ * as red lines and used by Unwrap to break face clusters.
+ */
+export function markSeamSelection(): void {
+  const em = state.editMesh;
+  if (!em || !currentOverlay) return;
+  if (state.editSelection.mode !== "edge") {
+    status("⚠ Mark Seam: edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Select edges to mark/unmark as seams");
+    return;
+  }
+  const sel = new Set(state.editSelection.indices);
+  const before = new Set(em.seams);
+  toggleSeams(em, sel);
+  const after = new Set(em.seams);
+  rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  state.history.push({
+    label: "Mark Seam",
+    undo() { em.seams.clear(); for (const k of before) em.seams.add(k); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
+    redo() { em.seams.clear(); for (const k of after) em.seams.add(k); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
+  });
+  status(`Seams: ${em.seams.size} edge(s)`);
+}
+
+/**
+ * Run Smart UV Project on the active EditMesh, rebuild the Babylon mesh with
+ * the new UVs (vertex count grows: each face becomes 3 unique verts in V1),
+ * and re-enter Edit Mode on the rebuilt geometry.
+ *
+ * Warns and aborts if the source mesh has skeleton or morph data — those
+ * would be invalidated by the vertex buffer rewrite. The user has to bake or
+ * remove them first.
+ */
+export function unwrapMesh(): void {
+  const em = state.editMesh;
+  if (!em || !currentOverlay || !currentGizmo) return;
+  const mesh = em.source;
+  if (mesh.skeleton) {
+    status("⚠ Unwrap: mesh has skeleton — remove rigging first (UV unwrap rebuilds verts)");
+    return;
+  }
+  if (mesh.morphTargetManager) {
+    status("⚠ Unwrap: mesh has morph targets — clear them first");
+    return;
+  }
+
+  // Snapshot for undo.
+  const beforePos = new Float32Array(em.positions);
+  const beforeIdxRaw = mesh.getIndices() ?? [];
+  const beforeIdx: number[] = Array.from(beforeIdxRaw);
+  const beforeUV = mesh.getVerticesData(VertexBuffer.UVKind);
+  const beforeUVCopy = beforeUV ? new Float32Array(beforeUV) : null;
+  const beforeSel = new Set(state.editSelection.indices);
+  const beforeMode = state.editSelection.mode;
+
+  const result = smartUVProject(em);
+
+  // Apply to Babylon mesh.
+  const vd = new VertexData();
+  vd.positions = new Float32Array(result.positions);
+  vd.indices = result.indices.slice();
+  vd.uvs = new Float32Array(result.uvs);
+  const normals = new Float32Array(result.positions.length);
+  VertexData.ComputeNormals(result.positions, result.indices, normals);
+  vd.normals = normals;
+  vd.applyToMesh(mesh, true);
+
+  // Rebuild EditMesh + overlay.
+  rebuildHalfEdges(em, new Float32Array(result.positions), result.indices.slice());
+  // After the rebuild, the previous selection's component IDs are stale.
+  state.editSelection.indices.clear();
+  rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  currentGizmo.refresh(em, state.editSelection);
+  refreshEditToolsUI();
+
+  const afterPos = new Float32Array(em.positions);
+  const afterIdx = result.indices.slice();
+  const afterUV = new Float32Array(result.uvs);
+
+  state.history.push({
+    label: "Unwrap",
+    undo() {
+      const m = em.source;
+      const vd2 = new VertexData();
+      vd2.positions = new Float32Array(beforePos);
+      vd2.indices = beforeIdx.slice();
+      if (beforeUVCopy) vd2.uvs = new Float32Array(beforeUVCopy);
+      const n2 = new Float32Array(beforePos.length);
+      VertexData.ComputeNormals(beforePos, beforeIdx, n2);
+      vd2.normals = n2;
+      vd2.applyToMesh(m, true);
+      rebuildHalfEdges(em, new Float32Array(beforePos), beforeIdx.slice());
+      state.editSelection.indices = new Set(beforeSel);
+      state.editSelection.mode = beforeMode;
+      if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+      if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
+      refreshEditToolsUI();
+    },
+    redo() {
+      const m = em.source;
+      const vd2 = new VertexData();
+      vd2.positions = new Float32Array(afterPos);
+      vd2.indices = afterIdx.slice();
+      vd2.uvs = new Float32Array(afterUV);
+      const n2 = new Float32Array(afterPos.length);
+      VertexData.ComputeNormals(afterPos, afterIdx, n2);
+      vd2.normals = n2;
+      vd2.applyToMesh(m, true);
+      rebuildHalfEdges(em, new Float32Array(afterPos), afterIdx.slice());
+      state.editSelection.indices.clear();
+      if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+      if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
+      refreshEditToolsUI();
+    },
+  });
+
+  status(`Unwrap: ${em.vertices.length} verts, ${em.faces.length} faces`);
 }
 
 export function loopCutSelection(): void {

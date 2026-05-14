@@ -59,7 +59,7 @@ export function buildEditMesh(source: Mesh): EditMesh | null {
     pairEdge(edgeMap, halfEdges, key(c, a), i2);
   }
 
-  return { source, vertices, faces, halfEdges, positions };
+  return { source, vertices, faces, halfEdges, positions, seams: new Set<string>() };
 }
 
 function pairEdge(

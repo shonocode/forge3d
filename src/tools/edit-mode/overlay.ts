@@ -7,12 +7,14 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
-import { edgeEnd, edgeOrigin, faceVertices, forEachEdge, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, faceVertices, forEachEdge, isSeam, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 const SELECTED_RGB: [number, number, number] = [1, 0.85, 0.15];
 const UNSELECTED_VERTEX: [number, number, number] = [1, 1, 1];
 const UNSELECTED_EDGE: [number, number, number] = [0.55, 0.55, 0.7];
+const SEAM_RGB: [number, number, number] = [1, 0.25, 0.2];
+const SEAM_SELECTED_RGB: [number, number, number] = [1, 0.55, 0.15]; // orange = both selected and seam
 
 /**
  * Component overlay: three child meshes attached to the source mesh (so they
@@ -124,8 +126,14 @@ function buildEdgeLines(scene: Scene, em: EditMesh, sel: EditSelection): LinesMe
     const pa = new Vector3(em.positions[a * 3]!, em.positions[a * 3 + 1]!, em.positions[a * 3 + 2]!);
     const pb = new Vector3(em.positions[b * 3]!, em.positions[b * 3 + 1]!, em.positions[b * 3 + 2]!);
     const isSel = showSelected && sel.indices.has(he);
-    const rgb = isSel ? SELECTED_RGB : UNSELECTED_EDGE;
-    const c = new Color4(rgb[0], rgb[1], rgb[2], isSel ? 1 : 0.7);
+    const isSeamEdge = isSeam(em, he);
+    let rgb: [number, number, number];
+    let alpha: number;
+    if (isSel && isSeamEdge) { rgb = SEAM_SELECTED_RGB; alpha = 1; }
+    else if (isSel) { rgb = SELECTED_RGB; alpha = 1; }
+    else if (isSeamEdge) { rgb = SEAM_RGB; alpha = 1; }
+    else { rgb = UNSELECTED_EDGE; alpha = 0.7; }
+    const c = new Color4(rgb[0], rgb[1], rgb[2], alpha);
     lines.push([pa, pb]);
     colors.push([c, c]);
   });
