@@ -244,6 +244,26 @@ export function bindActionButtons(): void {
   E("btnBoneModeEdit").addEventListener("click", () => setBoneMode("edit"));
   E("btnBoneModePose").addEventListener("click", () => setBoneMode("pose"));
 
+  // Bone display controls — size slider + X-ray toggle.
+  // Async import keeps the bone-tool dependency outside the bindings critical
+  // path; the controls aren't wired until first use anyway.
+  const boneSize = E("boneSize") as HTMLInputElement;
+  const boneSizeV = E("boneSizeV");
+  const boneXray = E("boneXray") as HTMLInputElement;
+  boneSize.value = String(state.boneDisplay.size);
+  boneSizeV.textContent = state.boneDisplay.size.toFixed(2);
+  boneXray.checked = state.boneDisplay.xray;
+  boneSize.addEventListener("input", () => {
+    const v = parseFloat(boneSize.value);
+    state.boneDisplay.size = v;
+    boneSizeV.textContent = v.toFixed(2);
+    void import("../tools/skeleton-tool").then((mod) => mod.applyBoneDisplayConfig());
+  });
+  boneXray.addEventListener("change", () => {
+    state.boneDisplay.xray = boneXray.checked;
+    void import("../tools/skeleton-tool").then((mod) => mod.applyBoneDisplayConfig());
+  });
+
   // IK controls
   E("ikEnabled").addEventListener("change", function () {
     if (!state.selectedBoneId) return;

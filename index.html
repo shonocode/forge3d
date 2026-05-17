@@ -275,6 +275,16 @@
         <div class="slist" id="boneList"><div class="empty">ボーンなし</div></div>
       </div>
       <div class="pg">
+        <div class="pgt">Display</div>
+        <div class="sr"><label style="font-size:9px;">Bone Size <span id="boneSizeV">1.00</span></label>
+          <input type="range" min="0.25" max="4" step="0.05" value="1" id="boneSize" aria-label="Bone visual size"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="メッシュ越しにボーンを表示 (Blender の X-Ray armature 相当)">X-Ray</span>
+          <input type="checkbox" checked id="boneXray" aria-label="Bone X-ray (show through mesh)" style="margin-left:auto"></div>
+        <div style="margin-top:6px;font-size:9px;color:var(--t4);line-height:1.5;">
+          <kbd style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 4px;border-radius:2px">Shift+H</kbd> でボーン全体の表示/非表示
+        </div>
+      </div>
+      <div class="pg">
         <div class="pgt">Selected Bone</div>
         <div id="boneProps"><div class="empty">ボーンを選択</div></div>
         <button class="abtn dan" id="btnDelBone">Delete Bone</button>

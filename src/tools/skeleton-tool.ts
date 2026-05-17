@@ -5,6 +5,7 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Engine } from "@babylonjs/core/Engines/engine";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
@@ -25,6 +26,7 @@ function getBoneMaterial(): StandardMaterial {
     boneMaterial.diffuseColor = new Color3(0.36, 0.5, 1);
     boneMaterial.emissiveColor = new Color3(0.18, 0.25, 0.5);
     boneMaterial.wireframe = false;
+    applyXrayToMaterial(boneMaterial, state.boneDisplay.xray);
   }
   return boneMaterial;
 }
@@ -34,8 +36,25 @@ function getSelectedBoneMaterial(): StandardMaterial {
     selectedBoneMaterial = new StandardMaterial("boneSelMat", state.scene);
     selectedBoneMaterial.diffuseColor = new Color3(1, 0.8, 0.2);
     selectedBoneMaterial.emissiveColor = new Color3(0.5, 0.4, 0.1);
+    applyXrayToMaterial(selectedBoneMaterial, state.boneDisplay.xray);
   }
   return selectedBoneMaterial;
+}
+
+/**
+ * Make a material draw "on top" — depth test always passes and depth write
+ * disabled, so the rendered surface ignores anything in front of it. Used
+ * for bone visuals when X-ray is on, so the spine bone is visible through
+ * the body mesh during rigging.
+ */
+function applyXrayToMaterial(mat: StandardMaterial, xray: boolean): void {
+  if (xray) {
+    mat.disableDepthWrite = true;
+    mat.depthFunction = Engine.ALWAYS;
+  } else {
+    mat.disableDepthWrite = false;
+    mat.depthFunction = Engine.LEQUAL;
+  }
 }
 
 // ── Skeleton management ──
@@ -171,6 +190,10 @@ function createBoneVisual(boneId: string, position: Vector3): AbstractMesh {
   mesh.material = getBoneMaterial();
   mesh.isPickable = true;
   mesh.metadata = { boneId };
+  // Inherit current display config so newly-created bones match the active
+  // size / X-ray settings without needing a manual refresh.
+  mesh.scaling.setAll(state.boneDisplay.size);
+  mesh.renderingGroupId = state.boneDisplay.xray ? 1 : 0;
   return mesh;
 }
 
@@ -218,8 +241,30 @@ export function updateHierarchyVisualization(skelData: SkeletonData): void {
   );
   lineSystem.color = new Color3(0.36, 0.5, 1);
   lineSystem.isPickable = false;
+  lineSystem.renderingGroupId = state.boneDisplay.xray ? 1 : 0;
   skelData.hierarchyLines = lineSystem;
   _hierarchyLineCount = lines.length;
+}
+
+/**
+ * Push the current `state.boneDisplay` into every existing bone visual and
+ * hierarchy line across all skeletons. Call after the user adjusts the size
+ * slider or X-ray toggle.
+ */
+export function applyBoneDisplayConfig(): void {
+  const { size, xray } = state.boneDisplay;
+  if (boneMaterial) applyXrayToMaterial(boneMaterial, xray);
+  if (selectedBoneMaterial) applyXrayToMaterial(selectedBoneMaterial, xray);
+  for (const [, skelData] of state.skeletonMap) {
+    for (const bd of skelData.bones) {
+      if (!bd.visual) continue;
+      bd.visual.scaling.setAll(size);
+      bd.visual.renderingGroupId = xray ? 1 : 0;
+    }
+    if (skelData.hierarchyLines) {
+      skelData.hierarchyLines.renderingGroupId = xray ? 1 : 0;
+    }
+  }
 }
 
 let _hierarchyLineCount = 0;

@@ -341,6 +341,18 @@ export const state = {
     ssaoIntensity: 1.0,
   },
 
+  // Bone display config — controls visual size of bone gizmos and whether
+  // they X-ray through meshes. Defaults match Blender's armature convention
+  // (size = 1.0 reference, X-ray on).
+  boneDisplay: {
+    /** Scale multiplier for bone sphere visuals. 1.0 = default world radius
+     *  of ~0.06; bump up for large meshes, down for fine detail. */
+    size: 1.0,
+    /** When true, bones render in a higher layer with depth test disabled so
+     *  they're visible even when embedded inside a skinned mesh. */
+    xray: true,
+  },
+
   // Edit Mode (component-level editing — see forge3d/EDIT-MODE-DESIGN.md)
   editMesh: null as EditMesh | null,
   editSelection: { mode: "vertex", indices: new Set<number>() } as EditSelection,
