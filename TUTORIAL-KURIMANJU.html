@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Forge3D チュートリアル — くりまんじゅうを作る</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{
+  --bg0:#08080c;--bg1:#0e0e14;--bg2:#14141c;--bg3:#1a1a24;--bg4:#22222e;
+  --bd:#1e1e2c;--t1:#e4e4f0;--t2:#9898b0;--t3:#606078;--t4:#5a5a72;
+  --ac:#5b7fff;--ac2:#7b9fff;--acg:rgba(91,127,255,.12);
+  --red:#ff5c5c;--grn:#4ce0a0;--ylw:#ffc855;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg0);color:var(--t1);
+  font-family:"IBM Plex Sans JP","Hiragino Sans","Yu Gothic",sans-serif;
+  font-size:14px;line-height:1.75;}
+body{display:grid;grid-template-columns:260px 1fr;min-height:100vh;}
+nav{background:var(--bg1);border-right:1px solid var(--bd);
+  padding:24px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;font-size:12px;}
+nav h1{font-family:"DM Mono",monospace;font-size:12px;color:var(--ac);
+  margin:0 0 4px;letter-spacing:2px;}
+nav .nav-sub{color:var(--t4);font-size:10px;margin-bottom:14px;}
+nav ol{list-style:none;padding:0;margin:0;}
+nav ol li{margin:2px 0;}
+nav ol a{color:var(--t3);text-decoration:none;display:block;padding:4px 8px;border-radius:3px;}
+nav ol a:hover{color:var(--t1);background:var(--bg3);}
+nav ol a.on{color:#fff;background:var(--ac);}
+nav .back{display:block;margin-top:24px;padding-top:14px;border-top:1px solid var(--bd);
+  font-size:10px;color:var(--t3);text-decoration:none;}
+nav .back:hover{color:var(--ac2);}
+
+main{padding:32px 56px 100px;max-width:920px;}
+h1.t{font-family:"DM Mono",monospace;font-size:24px;color:var(--ac);
+  margin:0 0 6px;letter-spacing:1px;}
+.lead{color:var(--t2);font-size:14px;margin-bottom:32px;line-height:1.7;}
+.lead small{color:var(--t4);}
+
+section{margin-bottom:56px;}
+h2{font-family:"DM Mono",monospace;font-size:18px;color:var(--t1);
+  border-bottom:1px solid var(--bd);padding-bottom:8px;margin-top:48px;
+  display:flex;align-items:baseline;gap:10px;}
+h2 .num{color:var(--ac);font-size:14px;}
+h3{font-size:14px;color:var(--ac2);margin-top:24px;margin-bottom:8px;}
+h4{font-size:13px;color:var(--t2);margin-top:16px;margin-bottom:6px;}
+p{margin:8px 0;}
+ul,ol{padding-left:22px;}
+li{margin:4px 0;}
+strong{color:var(--t1);}
+code,kbd{font-family:"DM Mono","SF Mono",monospace;font-size:12px;
+  background:var(--bg3);padding:1px 6px;border-radius:3px;color:var(--ylw);}
+kbd{background:var(--bg2);border:1px solid var(--bd);color:var(--ac2);
+  font-size:11px;padding:1px 5px;}
+
+.goal{background:rgba(91,127,255,.08);border-left:3px solid var(--ac);
+  padding:10px 14px;margin:14px 0;font-size:13px;}
+.goal::before{content:"🎯 GOAL";color:var(--ac);font-weight:600;display:block;
+  font-family:"DM Mono",monospace;font-size:10px;letter-spacing:1px;margin-bottom:4px;}
+.note{background:var(--bg2);border-left:3px solid var(--t3);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+.warn{background:rgba(255,92,92,.06);border-left:3px solid var(--red);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+.tip{background:rgba(76,224,160,.06);border-left:3px solid var(--grn);
+  padding:10px 14px;margin:14px 0;font-size:13px;color:var(--t2);}
+.tip::before{content:"💡 TIP";color:var(--grn);font-weight:600;display:block;
+  font-family:"DM Mono",monospace;font-size:10px;letter-spacing:1px;margin-bottom:4px;}
+.warn::before{content:"⚠ WATCH OUT";color:var(--red);font-weight:600;display:block;
+  font-family:"DM Mono",monospace;font-size:10px;letter-spacing:1px;margin-bottom:4px;}
+
+.steps{counter-reset:s;list-style:none;padding-left:0;}
+.steps>li{counter-increment:s;position:relative;padding-left:38px;margin-bottom:10px;}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:1px;
+  width:24px;height:24px;border-radius:50%;background:var(--bg3);color:var(--ac);
+  font-family:"DM Mono",monospace;font-size:11px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;border:1px solid var(--bd);}
+
+table{border-collapse:collapse;margin:12px 0;font-size:13px;width:100%;}
+th,td{border:1px solid var(--bd);padding:6px 10px;text-align:left;vertical-align:top;}
+th{background:var(--bg2);color:var(--ac2);font-weight:500;font-size:12px;}
+
+.diagram{background:var(--bg2);border:1px solid var(--bd);border-radius:4px;
+  padding:14px 18px;font-family:"DM Mono",monospace;font-size:11px;
+  color:var(--t2);white-space:pre;line-height:1.4;overflow-x:auto;margin:14px 0;}
+
+.spec{background:var(--bg2);border-radius:4px;padding:8px 14px;margin:10px 0;
+  font-family:"DM Mono",monospace;font-size:11px;color:var(--t2);}
+.spec b{color:var(--ylw);}
+
+.checklist{list-style:none;padding-left:0;}
+.checklist li{padding-left:24px;position:relative;margin:5px 0;}
+.checklist li::before{content:"☐";position:absolute;left:0;color:var(--ac);font-size:14px;}
+
+a.anchor{color:var(--ac2);text-decoration:none;}
+a.anchor:hover{text-decoration:underline;}
+
+footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
+  color:var(--t4);font-size:11px;}
+
+@media (max-width:760px){
+  body{grid-template-columns:1fr;}
+  nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--bd);}
+  main{padding:20px 18px 60px;}
+}
+</style>
+</head>
+<body>
+
+<nav>
+<h1>くりまんじゅう</h1>
+<div class="nav-sub">forge3d チュートリアル</div>
+<ol id="toc">
+  <li><a href="#prep">0. 準備</a></li>
+  <li><a href="#body">1. 頭と胴体</a></li>
+  <li><a href="#ears">2. 耳 (左右)</a></li>
+  <li><a href="#limbs">3. 腕と脚</a></li>
+  <li><a href="#tail">4. 尻尾</a></li>
+  <li><a href="#shape">5. シルエット調整</a></li>
+  <li><a href="#cleanup">6. クリーンアップ</a></li>
+  <li><a href="#uv">7. UV 展開</a></li>
+  <li><a href="#face">8. 顔を描く</a></li>
+  <li><a href="#rig">9. ボーン入れ</a></li>
+  <li><a href="#weight">10. ウェイト</a></li>
+  <li><a href="#anim">11. ポーズ確認</a></li>
+  <li><a href="#export">12. GLB エクスポート</a></li>
+  <li><a href="#integrate">13. reign に持っていく</a></li>
+  <li><a href="#cheatsheet">付録: キー早見表</a></li>
+</ol>
+<a class="back" href="MANUAL.html">← 一般マニュアルへ</a>
+</nav>
+
+<main>
+
+<h1 class="t">くりまんじゅうを Forge3D で作る</h1>
+<div class="lead">
+Blender を経由せずに forge3d だけで 1 体のキャラクターを完成させるための実践ガイド。
+くりまんじゅう（chiikawa-reign の主人公キャラ）の構造を例にしてるが、
+丸いシルエットのキャラなら手順をそのまま流用できる。<br>
+<small>制作時間目安: 90〜120 分（初回）／30〜45 分（2 回目以降）</small>
+</div>
+
+<!-- =================================================================== -->
+<section id="prep">
+<h2><span class="num">0</span> 準備</h2>
+
+<div class="goal">forge3d を立ち上げて、これから作る形のイメージを掴む。</div>
+
+<h3>0.1 forge3d を開く</h3>
+<ol class="steps">
+  <li><code>npm run dev -w forge3d</code> で開発サーバー起動 (または公開 URL の forge3d を開く)</li>
+  <li>ブラウザで forge3d 画面を確認。3 カラム：左パネル / ビューポート / 右パネル</li>
+  <li>左パネル「Primitives」が見えてれば OK</li>
+</ol>
+
+<h3>0.2 完成形のイメージ</h3>
+<p>くりまんじゅうの形を分解すると：</p>
+<div class="diagram">
+        ╱─╲   ← 耳 ×2 (細長 ellipsoid)
+       ╱   ╲
+      │ 頭  │  ← 横長 ellipsoid (0.6 × 0.5 × 0.5)
+       ╲___╱
+        │ │   ← 胴体 (半球、頭の下に)
+        │ │   ┐ ← 尻尾 (小さい ellipsoid)
+       ─┴─┴─
+       │   │  ← 腕 ×2 (細い cylinder、体側面から)
+       │   │
+       ┴   ┴  ← 脚 ×2 (短めの cylinder、体底面から)
+</div>
+<p>これを順番に組み立てる。基本は「プリミティブで配置 → 形を整える → 左右対称は Mirror Modifier」。</p>
+
+<h3>0.3 単位と尺度</h3>
+<table>
+  <tr><th>パーツ</th><th>直径 / 高さ</th></tr>
+  <tr><td>頭</td><td>0.6 × 0.5 × 0.5</td></tr>
+  <tr><td>胴体</td><td>0.5 × 0.6 × 0.4 (半球)</td></tr>
+  <tr><td>耳</td><td>0.08 × 0.15 × 0.06</td></tr>
+  <tr><td>尻尾</td><td>0.05 × 0.09 × 0.06</td></tr>
+  <tr><td>腕</td><td>高さ 0.20、太さ 0.03</td></tr>
+  <tr><td>脚</td><td>高さ 0.16、太さ 0.03</td></tr>
+</table>
+<p>全体で 1m 弱（頭頂〜足先）に収まる。chiikawa-reign の MovementSystem がこのスケール前提。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="body">
+<h2><span class="num">1</span> 頭と胴体</h2>
+
+<div class="goal">2 つの sphere を配置して、扁平させて、頭と胴体の基本形を作る。</div>
+
+<h3>1.1 頭を作る</h3>
+<ol class="steps">
+  <li>左パネル「Primitives」→ <strong>Sphere</strong> をクリック</li>
+  <li>原点に sphere（直径 1.0）が生成される。これが「頭」候補</li>
+  <li>右パネル <strong>Transform</strong> タブで以下を設定：
+    <div class="spec">Position: <b>0, 0.46, 0</b> ／ Scale: <b>0.6, 0.5, 0.5</b></div>
+    <p>頭がやや横長の楕円体になり、地面から少し浮いた位置に配置される。</p>
+  </li>
+  <li>右パネル「Material」タブで色を変更：
+    <ul>
+      <li>Albedo Color: <code>#FFEAC7</code> (くりまんじゅう色 = 薄い肌色)</li>
+      <li>Metallic: 0、Roughness: 1</li>
+    </ul>
+  </li>
+  <li>右パネル「Properties」のメッシュ名を <strong>head</strong> に変更</li>
+</ol>
+
+<h3>1.2 胴体を作る</h3>
+<ol class="steps">
+  <li>もう一度 <strong>Sphere</strong> → 新しい sphere が原点に生成</li>
+  <li>Transform で：
+    <div class="spec">Position: <b>0, 0.06, 0</b> ／ Scale: <b>0.5, 0.6, 0.4</b></div>
+  </li>
+  <li>同じ色のマテリアルを設定（Material タブで色を pick、あるいはマテリアルを使い回す）</li>
+  <li>名前を <strong>torso</strong> に</li>
+</ol>
+
+<h3>1.3 胴体を半球にする</h3>
+<p>くりまんじゅうの胴体は「お饅頭の下半分」のような半球形。Edit Mode で上半分を削る：</p>
+<ol class="steps">
+  <li>torso を選択した状態で <kbd>Tab</kbd> → Edit Mode に入る</li>
+  <li><kbd>3</kbd> で Face モードに切り替え</li>
+  <li>カメラを上から見下ろす視点に（<kbd>Numpad 7</kbd>）</li>
+  <li>Box Select <kbd>B</kbd> で上半分の面を矩形選択</li>
+  <li><kbd>X</kbd> で削除（Delete Faces）</li>
+  <li><kbd>Tab</kbd> で Object Mode に戻る</li>
+</ol>
+<div class="tip">Edit Mode に入ると右パネルが Edit タブに自動で切り替わる。
+モード切替に迷ったらこの色（V/E/F ボタンのハイライト）を見ると現在の選択モードが分かる。</div>
+
+<div class="warn">Box Select で「上半分だけ」選びたいのに胴体の裏側まで透けて選んでしまう場合、
+カメラを真上ではなく斜め上にして、裏の面が見えない角度から選ぶと正確。
+あるいは 1 面ずつクリックで個別選択もアリ。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="ears">
+<h2><span class="num">2</span> 耳 (左右)</h2>
+
+<div class="goal">細長い ellipsoid を頭に取り付けて、Mirror Modifier で左右対称にする。</div>
+
+<h3>2.1 片耳を作る</h3>
+<ol class="steps">
+  <li><strong>Sphere</strong> を追加</li>
+  <li>Transform：
+    <div class="spec">Position: <b>0.15, 0.7, -0.05</b><br>
+    Rotation: <b>0, 0, 60°</b> (= π/3)<br>
+    Scale: <b>0.08, 0.15, 0.06</b></div>
+  </li>
+  <li>名前 <strong>ear_R</strong>（右耳）</li>
+</ol>
+
+<h3>2.2 もう片耳は Mirror Modifier で</h3>
+<p>左耳を別途作るのではなく、Mirror Modifier で右耳を反転コピーする。手動で 2 個作ると左右ズレが起きやすい：</p>
+<ol class="steps">
+  <li>ear_R を選択した状態で右パネル Transform タブ → 「Modifiers」セクション</li>
+  <li>「+ Mirror」をクリック</li>
+  <li>Axis: <strong>X</strong>、Merge: off</li>
+  <li>左耳が即座に出現する（モディファイア = 非破壊なので元データはそのまま）</li>
+</ol>
+
+<div class="note">ear_R の Position の X 座標は <b>正の値</b>（0.15）。Mirror で X 軸反転されると -0.15 側に複製される。
+これでくりまんじゅうの片側だけを動かす（後で耳をピクピクさせたい等）ことも可能。</div>
+
+<div class="warn">Mirror で「お腹に向かって耳が裏返って入り込む」場合、Axis 設定がズレてる可能性。
+くりまんじゅうの左右対称軸は <b>X</b>。Y/Z の Mirror は前後・上下対称になるので別物。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="limbs">
+<h2><span class="num">3</span> 腕と脚</h2>
+
+<div class="goal">細い cylinder を 4 本作る。Mirror Modifier で左右をペアに。</div>
+
+<h3>3.1 腕</h3>
+<ol class="steps">
+  <li><strong>Cylinder</strong> → 原点に円柱が出る</li>
+  <li>Transform：
+    <div class="spec">Position: <b>0.20, 0.20, 0</b><br>
+    Rotation: <b>0, 0, 36°</b> (= π/5、腕を少し前に振った角度)<br>
+    Scale: <b>0.03, 0.10, 0.03</b></div>
+    <p>※ Cylinder の高さは scale.y × 2 になる仕様、Cylinder のデフォルト高さ = 1。
+    つまり scale.y = 0.10 で実高さ = 0.20。</p>
+  </li>
+  <li>名前 <strong>arm_R</strong></li>
+  <li>Mirror Modifier (Axis: X) を追加 → 左腕が自動生成</li>
+</ol>
+
+<h3>3.2 脚</h3>
+<ol class="steps">
+  <li><strong>Cylinder</strong></li>
+  <li>Transform：
+    <div class="spec">Position: <b>0.08, -0.10, 0</b><br>
+    Rotation: <b>0, 0, 0</b><br>
+    Scale: <b>0.03, 0.08, 0.03</b></div>
+  </li>
+  <li>名前 <strong>leg_R</strong></li>
+  <li>Mirror Modifier (Axis: X)</li>
+</ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="tail">
+<h2><span class="num">4</span> 尻尾</h2>
+
+<div class="goal">小さな ellipsoid を 1 個、胴体の後ろに取り付ける。</div>
+<ol class="steps">
+  <li><strong>Sphere</strong></li>
+  <li>Transform：
+    <div class="spec">Position: <b>0, 0.10, -0.25</b><br>
+    Scale: <b>0.05, 0.09, 0.06</b></div>
+  </li>
+  <li>名前 <strong>tail</strong></li>
+</ol>
+<p>尻尾は対称じゃないので Mirror Modifier 不要。1 個きり。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="shape">
+<h2><span class="num">5</span> シルエット調整</h2>
+
+<div class="goal">「饅頭らしさ」「ぷにっと感」が出るように頭と胴体を整える。Sculpt と Edit Mode の合わせ技。</div>
+
+<h3>5.1 頭を「お饅頭」にする — Sculpt</h3>
+<ol class="steps">
+  <li>head を選択</li>
+  <li><kbd>D</kbd> で Sculpt ツールに切替</li>
+  <li>右パネルのブラシ設定：
+    <ul>
+      <li>Radius: 0.15</li>
+      <li>Strength: 0.05</li>
+      <li>Falloff: 2</li>
+    </ul>
+  </li>
+  <li>頭頂部を <strong>Pull</strong> ブラシで少し引っ込めて「ふっくら平たい」感じに</li>
+  <li>頬の側面を <strong>Inflate</strong> でほんのり膨らませる</li>
+</ol>
+<div class="tip">Sculpt は元に戻せる：ブラシ 1 ストロークごとに <kbd>Ctrl+Z</kbd> で巻き戻る。
+やりすぎたら戻して再開。</div>
+
+<h3>5.2 胴体下部を丸める — Edit Mode で Loop Cut + 移動</h3>
+<p>胴体の底面を少し丸める：</p>
+<ol class="steps">
+  <li>torso を選択 → <kbd>Tab</kbd></li>
+  <li><kbd>2</kbd> で Edge モード</li>
+  <li>胴体の下半分にある水平な辺を 1 本クリック</li>
+  <li><kbd>Ctrl+R</kbd> → Loop Cut → 自動で水平ループが追加される（中点が選択状態に切替）</li>
+  <li>追加されたループ頂点を Gizmo で少し内側 (Y 方向に -0.02 程度) に動かす</li>
+  <li><kbd>Tab</kbd> で Object Mode</li>
+</ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="cleanup">
+<h2><span class="num">6</span> クリーンアップ</h2>
+
+<div class="goal">UV 展開とリギングの前に、メッシュをクリーンな状態に整える。</div>
+
+<h3>6.1 法線をきれいに</h3>
+<p>各メッシュごとに：</p>
+<ol class="steps">
+  <li>メッシュを選択</li>
+  <li>右パネル「Mesh Tools」→ <strong>Recalc Normals</strong></li>
+</ol>
+
+<h3>6.2 隣接頂点をマージ (オプション)</h3>
+<p>Sculpt で頂点が非常に近接してしまった箇所がある場合：</p>
+<ol class="steps">
+  <li>Mesh Tools → <strong>Weld Vertices</strong> (許容値はデフォルトの 0.001)</li>
+</ol>
+<div class="note">Weld 後は頂点数が減るので、後の Weight Paint に影響する。
+リギングの後で weld するとウェイトが乱れるので、必ずリギング前に。</div>
+
+<h3>6.3 メッシュ統合の検討</h3>
+<p>くりまんじゅう本体（頭 / 胴体 / 耳 ×2 / 腕 ×2 / 脚 ×2 / 尻尾 = 計 8〜9 メッシュ）を 1 メッシュに統合するか別個に保つかの選択：</p>
+<table>
+  <tr><th>方針</th><th>メリット</th><th>デメリット</th></tr>
+  <tr><td>別個に保つ</td><td>各パーツの色や材質を個別設定可。動的に隠せる</td><td>リギング時に skeleton が各メッシュに別々に attach 必要</td></tr>
+  <tr><td>統合する</td><td>1 つの skeleton で全身を skinning できる。GLB エクスポートが綺麗</td><td>1 つのマテリアル前提。後で色を変えづらい</td></tr>
+</table>
+<p>chiikawa-reign 用には <strong>統合方針</strong>を推奨。GLB 内で 1 メッシュとして扱える。</p>
+
+<h3>6.4 統合する場合</h3>
+<ol class="steps">
+  <li>head, torso, ear_R, arm_R, leg_R, tail を全部 <kbd>Ctrl+クリック</kbd>で複数選択</li>
+  <li>Mesh Tools → <strong>Merge Meshes</strong>（または右クリック → Join）</li>
+  <li>統合された 1 メッシュが残る、名前を <strong>kurimanjuu</strong> に</li>
+</ol>
+<div class="warn">Merge する前に Mirror Modifier の Apply（確定）が必要。Modifier は非破壊なので、
+Apply しないと Mirror で生成された左側がマージ後に消える。Modifier タブで「Apply」ボタンを各 Modifier に。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="uv">
+<h2><span class="num">7</span> UV 展開</h2>
+
+<div class="goal">テクスチャを貼るための 2D UV 座標を生成する。顔を描く前にこれをやる。</div>
+
+<h3>7.1 シーム指定 (任意)</h3>
+<p>シームを指定しなくても Smart UV Project は自動で「面の法線」でクラスタリングしてくれる。
+ただし、顔の前面を 1 つの島にしたい場合は明示的にシームを切るのがおすすめ：</p>
+<ol class="steps">
+  <li>kurimanjuu を選択 → <kbd>Tab</kbd></li>
+  <li><kbd>2</kbd> で Edge モード</li>
+  <li>頭の側面〜後頭部にぐるりと一周する辺を選択（顔と後頭部の境目）</li>
+  <li><kbd>Shift+S</kbd> または右パネル「Mark Seam」</li>
+  <li>選択辺が<span style="color:var(--red)">赤色</span>になる</li>
+</ol>
+
+<h3>7.2 UV 展開実行</h3>
+<ol class="steps">
+  <li>Edit Mode のまま、右パネル「UV Unwrap」→ <strong>Smart UV Project</strong>（または <kbd>U</kbd>）</li>
+  <li>ステータスバーに「Unwrap: NNN verts, NNN faces」と表示されれば成功</li>
+</ol>
+
+<div class="warn">UV 展開は<strong>頂点数を増やす</strong>。リギング後だと weight が破損するので、
+必ずリギング前にやる。エラーメッセージが「mesh has skeleton — remove rigging first」なら、
+すでに skeleton が割り当てられている。</div>
+
+<div class="note">展開結果の 2D ビューはまだ無いので、ペイント時に「あ、ここの UV が伸びてる」と
+気付いてから手直しする流れ。Phase 2 で 2D UV エディタを実装予定。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="face">
+<h2><span class="num">8</span> 顔を描く</h2>
+
+<div class="goal">UV 展開済みのメッシュにテクスチャを直接ペイントして、目・口・頬を描く。</div>
+
+<h3>8.1 ペイントモードに入る</h3>
+<ol class="steps">
+  <li><kbd>Tab</kbd> で Object Mode に戻る (Edit Mode のままだと Paint が使えない)</li>
+  <li>kurimanjuu を選択した状態で <kbd>P</kbd> で Paint ツール</li>
+  <li>右パネルの Paint タブで設定：
+    <ul>
+      <li>Color: <code>#000000</code> (目と口は黒)</li>
+      <li>Size: 8</li>
+      <li>Opacity: 1.0</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>8.2 目を描く</h3>
+<ol class="steps">
+  <li>顔の中央付近（カメラ位置 = 正面ビュー <kbd>Numpad 1</kbd>）にメッシュを向ける</li>
+  <li>右目の位置 (x ≈ +0.10, y ≈ 0.51) に小さなドットをクリックで描く</li>
+  <li>左目 (x ≈ -0.10) も同様に</li>
+  <li>離れた 2 つのドット = 黒い豆みたいな目になる</li>
+</ol>
+
+<h3>8.3 口</h3>
+<ol class="steps">
+  <li>Color はそのまま黒</li>
+  <li>Size を 4 ぐらいに下げる</li>
+  <li>目の下、顔の中央に小さな縦線または「く」の字を描く</li>
+</ol>
+
+<h3>8.4 頬を描く</h3>
+<ol class="steps">
+  <li>Color: <code>#FFA8A8</code> (ピンクっぽい色)</li>
+  <li>Size: 12、Opacity: 0.5</li>
+  <li>左右の頬の位置 (目の真下、x ≈ ±0.15) にやわらかい円を描く</li>
+</ol>
+
+<div class="tip">UV が変な伸び方をして塗れない / 違う場所に描けてしまう場合、手順 7 (UV 展開) に戻って、
+別のシーム指定で再展開してみる。
+何度でも展開しなおせるので試行錯誤 OK。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="rig">
+<h2><span class="num">9</span> ボーン入れ (リギング)</h2>
+
+<div class="goal">アニメーションのためのスケルトンを組む。くりまんじゅうは骨が少なめ。</div>
+
+<h3>9.1 必要なボーン構成</h3>
+<div class="diagram">
+root (脚の付け根あたり)
+├── spine (体の中心、腰〜首の手前)
+│   ├── neck → head_bone (頭部の中)
+│   ├── arm_L_upper → arm_L_lower → hand_L
+│   ├── arm_R_upper → arm_R_lower → hand_R
+│   └── tail_bone (尻尾の中)
+├── leg_L_upper → leg_L_lower → foot_L
+└── leg_R_upper → leg_R_lower → foot_R
+</div>
+<p>計 15 本程度。最初は腕と脚それぞれ 1 本ずつでも OK（アニメに必要になったら細分化）。</p>
+
+<h3>9.2 スケルトン作成</h3>
+<ol class="steps">
+  <li><kbd>B</kbd> で Bone ツール</li>
+  <li>右パネル Bone タブの「+ New Skeleton」</li>
+  <li>右パネル「Display」で <strong>X-Ray</strong> ON、<strong>Bone Size</strong> 1.5〜2.0 ぐらいに調整
+    （ボーンがメッシュ内側にあっても見えるように、かつ大きすぎず）</li>
+</ol>
+
+<h3>9.3 ボーンを配置</h3>
+<ol class="steps">
+  <li>カメラを正面ビュー <kbd>Numpad 1</kbd> に</li>
+  <li>体の中心、地面ぎりぎりの位置をクリック → root ボーン</li>
+  <li>root が選択された状態で、上方 (胴体の中央) をクリック → spine (root の子として作成)</li>
+  <li>spine を選択した状態で頭の中心をクリック → neck → さらに上で head_bone</li>
+  <li>spine 選択 → 右肩あたりをクリック → arm_R_upper → 肘 → 手で順次</li>
+  <li>同様に脚側も</li>
+</ol>
+<div class="note">ボーンを作る時に「親を選択した状態で次の位置をクリック」=「親子付きで作成」になる。
+親を別のに変えたいときは別のボーンを選び直してからクリック。</div>
+
+<h3>9.4 メッシュにアサイン</h3>
+<ol class="steps">
+  <li>kurimanjuu メッシュを選択（Object Mode）</li>
+  <li>右パネル「Assign to Mesh」</li>
+  <li>skeleton と mesh の関連付け完了</li>
+</ol>
+</section>
+
+<!-- =================================================================== -->
+<section id="weight">
+<h2><span class="num">10</span> ウェイト塗り</h2>
+
+<div class="goal">各ボーンが頂点をどれだけ動かすかを決める。</div>
+
+<h3>10.1 Weight Paint モードへ</h3>
+<ol class="steps">
+  <li>kurimanjuu を選択 (Object Mode)</li>
+  <li><kbd>W</kbd> で Weight Paint ツール</li>
+  <li>メッシュがグレースケール表示になる</li>
+</ol>
+
+<h3>10.2 ボーンを選んで塗る</h3>
+<ol class="steps">
+  <li>spine ボーンをクリックで選択 (ボーンビジュアルが見える状態で)</li>
+  <li>右パネル「Weight Paint」設定:
+    <ul>
+      <li>Radius: 0.10、Strength: 0.5、Mode: Add</li>
+    </ul>
+  </li>
+  <li>胴体部分のメッシュをドラッグ → 明るくなる箇所 = spine の影響度高い</li>
+  <li>同様に neck → 首あたり、head_bone → 頭、arm 各ボーン → 腕</li>
+</ol>
+
+<h3>10.3 ウェイトのコツ</h3>
+<ul>
+  <li><strong>関節部分はグラデーション</strong>: 肘なら upper と lower で半々ぐらい</li>
+  <li><strong>全頂点が必ずどれか 1 つ以上のボーンに 100% 影響</strong>: 漏れがあると変形時にその頂点が原点に固定される</li>
+  <li><strong>Mode 切替</strong>: Add で塗る / Subtract (Ctrl) で削る / Smooth (Shift) でぼかす</li>
+</ul>
+
+<div class="tip">塗り忘れチェック: 全ボーンを順に選んで「このボーンに反応する頂点」を確認。
+どこか明るい箇所が無い頂点があれば塗り忘れ。</div>
+</section>
+
+<!-- =================================================================== -->
+<section id="anim">
+<h2><span class="num">11</span> ポーズ確認</h2>
+
+<div class="goal">作ったリグが正しく動くか、Pose Mode で簡単な姿勢を作って確認。</div>
+
+<ol class="steps">
+  <li>右パネル Bone タブ → モード切替で <strong>Pose</strong> を選択</li>
+  <li>arm_R_upper をクリックで選択</li>
+  <li>Rotation Gizmo (3 軸の輪っか) が表示される → 各軸を回してみる</li>
+  <li>腕が肩を支点に動けば OK。胴体や頭まで一緒に動いてしまったら、ウェイトの影響範囲を見直す</li>
+  <li>各ボーンを動かして、メッシュが想定通りに変形するかチェック</li>
+</ol>
+
+<div class="warn">変形が「グニャっと崩れる」「変な方向に裂ける」場合は Weight Paint の見直し。
+特に隣接する 2 ボーンの境目で重みが急に切り替わると崩れる。Smooth で滑らかに繋ぐ。</div>
+
+<p>ポーズの状態を一旦元に戻す: Edit モードに戻して再選択 (rest pose に戻る)。または各ボーンの rotation を 0 にリセット。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="export">
+<h2><span class="num">12</span> GLB エクスポート</h2>
+
+<div class="goal">完成したくりまんじゅうを GLB ファイルとして書き出す。</div>
+
+<ol class="steps">
+  <li>kurimanjuu メッシュ (skeleton 込み) を選択</li>
+  <li>左サイドのモバイル時は Export ボタン、デスクトップではメニュー「File → Export → GLB」</li>
+  <li>保存場所とファイル名: <code>kurimanju.glb</code></li>
+  <li>ダウンロードが始まる</li>
+</ol>
+
+<div class="tip">GLB は単一ファイルで mesh / material / texture / skeleton / animation すべて梱包。
+別途 png や json は要らない。</div>
+
+<h3>12.1 エクスポート後の確認</h3>
+<p>外部の GLB ビューア (例: <code>https://gltf-viewer.donmccurdy.com</code>) にドロップして、
+形と色とアニメ (もしあれば) が想定通りに見えるかチェック。
+forge3d 内で見えてた状態と一致してれば OK。</p>
+</section>
+
+<!-- =================================================================== -->
+<section id="integrate">
+<h2><span class="num">13</span> chiikawa-reign に持っていく</h2>
+
+<div class="goal">エクスポートした GLB を実際のゲームで使う。</div>
+
+<ol class="steps">
+  <li><code>kurimanju.glb</code> を <code>chiikawa-reign/src/assets/models/characters/</code> に上書きコピー</li>
+  <li><code>chiikawa-reign</code> 側で <code>npm run dev</code></li>
+  <li>くりまんじゅうが新しいメッシュで表示される</li>
+</ol>
+
+<h3>13.1 既存メッシュとの差分確認</h3>
+<p>差し替え後、以下を確認：</p>
+<ul class="checklist">
+  <li>キャラがちゃんと立っている (床にめり込まない、宙に浮かない)</li>
+  <li>移動アニメ (歩く・走る・ジャンプ) が動く</li>
+  <li>ボーン名が一致してる場合は既存アニメがそのまま流れる</li>
+</ul>
+
+<div class="warn">ボーン名や階層が違うと既存の `AnimationGroup` がターゲット解決できず、
+キャラがフリーズしたように見える。chiikawa-reign の <code>character-animation.ts</code> で
+期待してるボーン名 (root, spine, head_bone, arm_L_upper, hand_R, ...) と一致させる必要あり。
+不一致なら最初に <code>kurimanju.ts</code> の procedural バージョンのボーン名を参考に修正。</div>
+
+<h3>13.2 リギング名のリファレンス</h3>
+<p>chiikawa-reign が期待する標準ボーン名:</p>
+<table>
+  <tr><th>ボーン名</th><th>位置</th></tr>
+  <tr><td>root</td><td>キャラ原点 (脚の付け根)</td></tr>
+  <tr><td>spine</td><td>胴体の中心</td></tr>
+  <tr><td>neck</td><td>首</td></tr>
+  <tr><td>head_bone</td><td>頭の中心</td></tr>
+  <tr><td>arm_L_upper / arm_R_upper</td><td>肩</td></tr>
+  <tr><td>arm_L_lower / arm_R_lower</td><td>肘</td></tr>
+  <tr><td>hand_L / hand_R</td><td>手</td></tr>
+  <tr><td>leg_L_upper / leg_R_upper</td><td>太もも</td></tr>
+  <tr><td>leg_L_lower / leg_R_lower</td><td>膝</td></tr>
+  <tr><td>foot_L / foot_R</td><td>足首</td></tr>
+  <tr><td>tail_bone</td><td>尻尾</td></tr>
+</table>
+</section>
+
+<!-- =================================================================== -->
+<section id="cheatsheet">
+<h2><span class="num">★</span> 付録: キー早見表</h2>
+
+<h3>モデリング全般</h3>
+<table>
+  <tr><th>キー</th><th>動作</th></tr>
+  <tr><td>G / R / S</td><td>Move / Rotate / Scale Gizmo</td></tr>
+  <tr><td>Tab</td><td>Object ↔ Edit Mode</td></tr>
+  <tr><td>F</td><td>選択メッシュへフォーカス</td></tr>
+  <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
+  <tr><td>Ctrl+D</td><td>複製</td></tr>
+  <tr><td>Numpad 1 / 3 / 7</td><td>前 / 右 / 上ビュー</td></tr>
+</table>
+
+<h3>Edit Mode</h3>
+<table>
+  <tr><th>キー</th><th>動作</th></tr>
+  <tr><td>1 / 2 / 3</td><td>Vertex / Edge / Face</td></tr>
+  <tr><td>E</td><td>Extrude (押し出し)</td></tr>
+  <tr><td>I</td><td>Inset (内側オフセット)</td></tr>
+  <tr><td>Ctrl+B</td><td>Bevel (面取り)</td></tr>
+  <tr><td>Ctrl+R</td><td>Loop Cut</td></tr>
+  <tr><td>K</td><td>Knife (2 頂点直結)</td></tr>
+  <tr><td>Shift+S</td><td>Mark Seam</td></tr>
+  <tr><td>U</td><td>Smart UV Project</td></tr>
+  <tr><td>X / Del</td><td>削除</td></tr>
+</table>
+
+<h3>ツール切替</h3>
+<table>
+  <tr><th>キー</th><th>ツール</th></tr>
+  <tr><td>V</td><td>Select</td></tr>
+  <tr><td>D</td><td>Sculpt</td></tr>
+  <tr><td>P</td><td>Paint</td></tr>
+  <tr><td>B</td><td>Bone</td></tr>
+  <tr><td>W</td><td>Weight Paint</td></tr>
+  <tr><td>A</td><td>Anim</td></tr>
+</table>
+
+<p>詳細は <a class="anchor" href="MANUAL.html">MANUAL.html</a> 参照。</p>
+</section>
+
+<footer>
+チュートリアル更新日: 2026-05-15<br>
+forge3d の機能が変わったとき (新オペレータ追加、ボーン名規約変更等)、
+このファイルも一緒に更新する。詳細は <code>forge3d/CLAUDE.md</code> Documentation Sync Rule。
+</footer>
+
+</main>
+
+<script>
+const links = document.querySelectorAll('nav a[href^="#"]');
+const sections = document.querySelectorAll('section[id]');
+function update(){
+  const y = window.scrollY + 100;
+  let cur = sections[0].id;
+  sections.forEach(s => { if (s.offsetTop <= y) cur = s.id; });
+  links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + cur));
+}
+window.addEventListener('scroll', update);
+update();
+</script>
+
+</body>
+</html>

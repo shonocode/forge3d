@@ -47,9 +47,10 @@ src/
 
 ## Documentation Sync Rule
 
-`MANUAL.html` is the user-facing operations manual (Japanese). **It MUST be
-updated in the same commit whenever any of the following change**:
+Two user-facing HTML documents live alongside the code. **Both MUST be updated
+in the same commit whenever the underlying code changes**:
 
+### `MANUAL.html` — reference manual (Japanese)
 - Keybindings (add / remove / repurpose) → update §14 ショートカット早見表
   and the affected feature section
 - New features or operators → add to the appropriate section, or create a new
@@ -60,12 +61,22 @@ updated in the same commit whenever any of the following change**:
   and the affected feature section
 - New domain terminology → add to §15 用語解説
 
-The manual is the single source of truth for what's "supposed to work" from a
-user's perspective. If code says one thing and MANUAL.html says another,
-users will hit confused dead-ends. Keep them in lockstep.
+### `TUTORIAL-KURIMANJU.html` — step-by-step character build guide
+- Keybindings used in the tutorial change → update the steps that reference them
+- An operator's parameter / default changes (e.g. Bevel width range) → update
+  any step that suggests specific values
+- Workflow order changes (e.g. UV unwrap must now happen before X) → update
+  the affected step's prerequisites
+- Bone naming convention for chiikawa-reign integration changes → update §13.2
+- New essential operator that should be in the workflow → fold it into the
+  appropriate step (e.g. Phase 8's UV editor → add to §7 UV 展開)
 
-The file lives at `forge3d/MANUAL.html` — open directly in a browser, no
-server needed.
+Both docs are the single source of truth for what's "supposed to work" from
+a user's perspective. If code says one thing and the manual / tutorial says
+another, users hit confused dead-ends. Keep them in lockstep.
+
+Files live at `forge3d/MANUAL.html` and `forge3d/TUTORIAL-KURIMANJU.html` —
+open directly in a browser, no server needed.
 
 ## Testing
 
