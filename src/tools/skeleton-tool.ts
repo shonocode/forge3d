@@ -11,7 +11,10 @@ import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import { state, status } from "../state";
-import type { BoneData, SkeletonData } from "../state";
+import type { BoneData, SkeletonData, IKConstraint } from "../state";
+import type { UndoCommand } from "../undo";
+import { solveFabrik } from "./ik-solver";
+import { reflectPosition, mirrorBoneName, type MirrorAxis } from "./bone-mirror";
 
 const BONE_VISUAL_PREFIX = "bone_visual_";
 const HIERARCHY_LINES_NAME = "bone_hierarchy_lines";
@@ -159,7 +162,7 @@ export function addBoneAtPoint(worldPos: Vector3, parentBoneId: string | null): 
   return boneData;
 }
 
-function getBoneWorldPosition(boneData: BoneData): Vector3 {
+export function getBoneWorldPosition(boneData: BoneData): Vector3 {
   if (boneData.visual) {
     return boneData.visual.position.clone();
   }
@@ -458,6 +461,281 @@ function updateChildVisuals(parentId: string, skelData: SkeletonData): void {
     }
     updateChildVisuals(child.id, skelData);
   }
+}
+
+// ── Inverse Kinematics ──
+
+/**
+ * Walk up the parent chain from `endBoneId`, collecting up to `chainLength`
+ * bones. Returned root-first (so index 0 is the chain's anchor / base and the
+ * last entry is the end-effector bone). The walk stops early at a root bone.
+ */
+function collectIKChain(
+  endBoneId: string,
+  chainLength: number,
+  skelData: SkeletonData
+): BoneData[] {
+  const chain: BoneData[] = [];
+  let cur: BoneData | null = skelData.bones.find((b) => b.id === endBoneId) ?? null;
+  while (cur && chain.length < chainLength) {
+    chain.unshift(cur);
+    const parentId: string | null = cur.parentId;
+    cur = parentId ? (skelData.bones.find((b) => b.id === parentId) ?? null) : null;
+  }
+  return chain;
+}
+
+/**
+ * Solve the IK chain ending at `endBoneId` so its tip reaches `target`,
+ * preserving bone lengths (FABRIK), and write the result onto the actual
+ * bone matrices. The chain's base bone is held fixed. **No undo entry** —
+ * this is the per-frame / interactive core, safe to call from a render hook
+ * or animation playback. Use {@link solveIKForBone} for the undo-able,
+ * button-triggered variant.
+ *
+ * The chain length comes from the end bone's `ikConstraint.chainLength`
+ * (clamped to ≥2). The model uses translation-only local matrices, so
+ * absolute = parent_absolute + local exactly reproduces the solved joint
+ * positions; bone visuals (and any branches off the chain) are then cascaded
+ * from the recomputed absolute transforms.
+ *
+ * @returns the solved chain (root-first) and whether the tip reached the
+ *   target, or `null` when there is no usable ≥2-bone chain.
+ */
+export function applyIKChain(
+  endBoneId: string,
+  target: Vector3
+): { chain: BoneData[]; reached: boolean } | null {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return null;
+
+  const endBone = skelData.bones.find((b) => b.id === endBoneId);
+  if (!endBone) return null;
+
+  const requested = endBone.ikConstraint?.chainLength ?? 2;
+  const chain = collectIKChain(endBoneId, Math.max(2, requested), skelData);
+  if (chain.length < 2) return null;
+
+  const joints = chain.map((b) => getBoneWorldPosition(b));
+  const ik = endBone.ikConstraint;
+  const pole =
+    ik?.poleEnabled
+      ? new Vector3(ik.poleX ?? 0, ik.poleY ?? 0, ik.poleZ ?? 0)
+      : undefined;
+  const result = solveFabrik(joints, target, {
+    tolerance: 1e-3,
+    maxIterations: 16,
+    pole,
+    maxBendDeg: ik?.maxBendDeg,
+  });
+
+  // Base bone (index 0) held fixed; rewrite each subsequent bone's local
+  // translation from the solved world positions.
+  for (let i = 1; i < chain.length; i++) {
+    const rel = result.positions[i]!.subtract(result.positions[i - 1]!);
+    chain[i]!.bone.getLocalMatrix().copyFrom(Matrix.Translation(rel.x, rel.y, rel.z));
+    chain[i]!.bone.markAsDirty();
+  }
+  skelData.skeleton.computeAbsoluteTransforms();
+  // Cascade visuals from the base outward — descendants (chain + branches)
+  // read their refreshed absolute transforms.
+  updateChildVisuals(chain[0]!.id, skelData);
+  updateHierarchyVisualization(skelData);
+
+  return { chain, reached: result.reached };
+}
+
+/**
+ * Undo-able, one-shot IK solve for the bone tool — wraps {@link applyIKChain}
+ * with a snapshot of the chain's local matrices so a single "Solve IK" entry
+ * lands on the history stack.
+ *
+ * @returns `true` when the tip reached the target within tolerance.
+ */
+export function solveIKForBone(endBoneId: string, target: Vector3): boolean {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return false;
+
+  const endBone = skelData.bones.find((b) => b.id === endBoneId);
+  if (!endBone) return false;
+
+  const chain = collectIKChain(
+    endBoneId,
+    Math.max(2, endBone.ikConstraint?.chainLength ?? 2),
+    skelData
+  );
+  if (chain.length < 2) {
+    status("⚠ IK needs a chain of at least 2 bones");
+    return false;
+  }
+
+  // Snapshot chain local matrices for undo before mutating.
+  const before = chain.map((b) => b.bone.getLocalMatrix().clone());
+
+  const result = applyIKChain(endBoneId, target);
+  if (!result) return false;
+
+  const after = chain.map((b) => b.bone.getLocalMatrix().clone());
+
+  const restore = (mats: Matrix[]) => {
+    for (let i = 0; i < chain.length; i++) {
+      chain[i]!.bone.getLocalMatrix().copyFrom(mats[i]!);
+      chain[i]!.bone.markAsDirty();
+    }
+    skelData.skeleton.computeAbsoluteTransforms();
+    updateChildVisuals(chain[0]!.id, skelData);
+    updateHierarchyVisualization(skelData);
+  };
+
+  state.history.push({
+    label: "Solve IK",
+    undo() { restore(before); },
+    redo() { restore(after); },
+  });
+
+  status(result.reached ? "IK solved" : "IK target out of reach");
+  return result.reached;
+}
+
+/**
+ * Suggest a pole position for the IK chain ending at `endBoneId`: the current
+ * mid-joint, pushed outward from the root→tip axis so it unambiguously marks
+ * the present bend direction. Used by the "Snap to Bend" button so enabling a
+ * pole keeps (and slightly exaggerates) the current elbow/knee direction
+ * rather than snapping the bend somewhere arbitrary.
+ *
+ * @returns a world position, or `null` when there's no active/usable chain.
+ */
+export function getIKPoleSuggestion(endBoneId: string): Vector3 | null {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return null;
+  const endBone = skelData.bones.find((b) => b.id === endBoneId);
+  if (!endBone) return null;
+
+  const chain = collectIKChain(
+    endBoneId,
+    Math.max(3, endBone.ikConstraint?.chainLength ?? 2),
+    skelData
+  );
+  const joints = chain.map((b) => getBoneWorldPosition(b));
+  if (joints.length < 3) {
+    // No middle joint to steer — offer a point just in front of the tip.
+    return getBoneWorldPosition(endBone).add(new Vector3(0, 0, 1));
+  }
+
+  const root = joints[0]!;
+  const tip = joints[joints.length - 1]!;
+  const mid = joints[Math.floor((joints.length - 1) / 2)]!;
+
+  const axis = tip.subtract(root);
+  const len = axis.length();
+  if (len < 1e-6) return mid.add(new Vector3(0, 0, 1));
+  axis.scaleInPlace(1 / len);
+
+  const v = mid.subtract(root);
+  const along = Vector3.Dot(v, axis);
+  const perp = v.subtract(axis.scale(along));
+  const perpLen = perp.length();
+  const dir = perpLen > 1e-6 ? perp.scale(1 / perpLen) : new Vector3(0, 0, 1);
+
+  const reach = Vector3.Distance(root, tip);
+  return mid.add(dir.scale(Math.max(0.5, reach)));
+}
+
+// ── Bone mirroring ──
+
+/** Mirror a bone's IK config across `axis` so the copy targets the other side. */
+function mirrorIKConstraint(ik: IKConstraint, axis: MirrorAxis): IKConstraint {
+  const m: IKConstraint = { ...ik };
+  if (axis === "x") {
+    m.targetX = -ik.targetX;
+    if (m.poleX != null) m.poleX = -m.poleX;
+  } else if (axis === "y") {
+    m.targetY = -ik.targetY;
+    if (m.poleY != null) m.poleY = -m.poleY;
+  } else {
+    m.targetZ = -ik.targetZ;
+    if (m.poleZ != null) m.poleZ = -m.poleZ;
+  }
+  return m;
+}
+
+/**
+ * Mirror the bone `rootBoneId` and its whole subtree across the plane
+ * perpendicular to `axis` (default `x` — the usual left↔right rig mirror).
+ * New bones get reflected positions and side-swapped names
+ * (see {@link mirrorBoneName}); a bone whose parent is outside the mirrored
+ * set re-attaches to that shared parent (e.g. an arm mirrored under the spine).
+ *
+ * All the new bones land under a single "Mirror Bones" undo entry.
+ *
+ * @returns the freshly created bones (root-first), or `[]` on failure.
+ */
+export function mirrorBoneChain(rootBoneId: string, axis: MirrorAxis = "x"): BoneData[] {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return [];
+  if (!skelData.bones.some((b) => b.id === rootBoneId)) return [];
+
+  // BFS the subtree so parents are always created before their children.
+  const order: string[] = [];
+  const seen = new Set<string>([rootBoneId]);
+  const queue: string[] = [rootBoneId];
+  while (queue.length) {
+    const id = queue.shift()!;
+    order.push(id);
+    for (const b of skelData.bones) {
+      if (b.parentId === id && !seen.has(b.id)) {
+        seen.add(b.id);
+        queue.push(b.id);
+      }
+    }
+  }
+
+  const idMap = new Map<string, string>();
+  const created: BoneData[] = [];
+  let pushed = 0;
+
+  for (const origId of order) {
+    const orig = skelData.bones.find((b) => b.id === origId);
+    if (!orig) continue;
+
+    const worldPos = reflectPosition(getBoneWorldPosition(orig), axis);
+    // Mirrored parent if it's in the set, otherwise share the original parent.
+    let newParentId: string | null = orig.parentId;
+    if (orig.parentId && seen.has(orig.parentId)) {
+      newParentId = idMap.get(orig.parentId) ?? orig.parentId;
+    }
+
+    const nb = addBoneAtPoint(worldPos, newParentId);
+    if (!nb) continue;
+    pushed++;
+    renameBone(nb.id, mirrorBoneName(orig.name));
+    if (orig.ikConstraint) nb.ikConstraint = mirrorIKConstraint(orig.ikConstraint, axis);
+    idMap.set(origId, nb.id);
+    created.push(nb);
+  }
+
+  if (created.length === 0) return [];
+
+  // Fold the per-bone "Add Bone" entries into one compound "Mirror Bones".
+  const subCommands: UndoCommand[] = [];
+  for (let i = 0; i < pushed; i++) {
+    const c = state.history.popUndo();
+    if (c) subCommands.unshift(c); // back into creation order
+  }
+  state.history.push({
+    label: "Mirror Bones",
+    undo() {
+      for (let i = subCommands.length - 1; i >= 0; i--) subCommands[i]!.undo();
+    },
+    redo() {
+      for (const c of subCommands) c.redo();
+    },
+  });
+
+  selectBone(created[0]!.id);
+  status("Mirrored " + created.length + " bone(s)");
+  return created;
 }
 
 // ── Bone deletion ──

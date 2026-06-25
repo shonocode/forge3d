@@ -180,6 +180,9 @@
       </div>
       <div class="pg">
         <div class="pgt">Actions</div>
+        <button class="abtn pri" id="btnAutoWeight" title="Automatically bind all vertices to the nearest bones (replaces existing weights)">⚡ Auto Weights</button>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="Bind along the mesh surface instead of straight-line distance — prevents weight bleed between nearby-but-disconnected parts (e.g. arm↔torso)">Geodesic (surface)</span>
+          <input type="checkbox" id="autoWeightGeodesic" aria-label="Geodesic auto-weight" checked style="margin-left:auto"></div>
         <button class="abtn" id="btnInitWeight">Init Weight Data</button>
         <button class="abtn" id="btnToggleOverlay">Show/Hide Overlay</button>
       </div>
@@ -287,6 +290,7 @@
       <div class="pg">
         <div class="pgt">Selected Bone</div>
         <div id="boneProps"><div class="empty">ボーンを選択</div></div>
+        <button class="abtn" id="btnMirrorBone" title="Mirror the selected bone and its children across X=0 (left↔right), swapping _L/_R names">⇄ Mirror Bone (X)</button>
         <button class="abtn dan" id="btnDelBone">Delete Bone</button>
       </div>
       <div class="pg">
@@ -303,6 +307,19 @@
           <input type="number" step="0.1" id="ikTargetY" aria-label="IK target Y" style="flex:1;font-size:10px" value="0"></div>
         <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Z</label>
           <input type="number" step="0.1" id="ikTargetZ" aria-label="IK target Z" style="flex:1;font-size:10px" value="0"></div>
+        <div class="pr" style="margin-top:6px"><span class="pl" style="font-size:10px;color:var(--t3)" title="Steer which way the chain bends (elbow/knee direction)">Pole (bend dir)</span>
+          <input type="checkbox" id="ikPoleEnabled" aria-label="IK pole enabled" style="margin-left:auto"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Pole Target</span>
+          <button class="abtn" id="btnIkSnapPole" style="margin-left:auto;font-size:10px;padding:2px 8px" title="Place the pole at the current mid-joint, pushed outward">Snap to Bend</button></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">X</label>
+          <input type="number" step="0.1" id="ikPoleX" aria-label="IK pole X" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Y</label>
+          <input type="number" step="0.1" id="ikPoleY" aria-label="IK pole Y" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Z</label>
+          <input type="number" step="0.1" id="ikPoleZ" aria-label="IK pole Z" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px;margin-top:4px"><label style="font-size:9px;flex:1" title="Max bend per joint in degrees (0 = no limit). Prevents sharp kinks / hyperextension.">Max Bend °</label>
+          <input type="number" step="5" min="0" max="180" id="ikMaxBend" aria-label="IK max bend degrees" style="width:56px;font-size:10px" value="0"></div>
+        <button class="abtn pri" id="btnSolveIK" style="margin-top:6px" title="Solve the chain once toward the target (undo-able). When 'Enable IK' is on the chain also solves live every frame.">Solve IK Now</button>
       </div>
     </div>
     <div class="tbody" id="tb-edit"></div>

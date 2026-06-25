@@ -132,6 +132,13 @@ export interface IKConstraint {
   targetX: number;
   targetY: number;
   targetZ: number;
+  /** When true, the chain's bend is steered toward the pole position below. */
+  poleEnabled?: boolean;
+  poleX?: number;
+  poleY?: number;
+  poleZ?: number;
+  /** Max per-joint bend in degrees (0 / undefined = unconstrained). */
+  maxBendDeg?: number;
 }
 
 export interface BoneTrack {

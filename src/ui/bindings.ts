@@ -2,8 +2,10 @@ import { state, E, isMobile, status } from "../state";
 import { addMorph, captureMorph } from "../tools/morph";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { clearPaintTexture } from "../tools/texture-paint";
-import { createSkeleton, assignSkeletonToMesh, deleteBone } from "../tools/skeleton-tool";
-import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData } from "../tools/weight-paint";
+import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion } from "../tools/skeleton-tool";
+import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData, refreshWeightOverlay } from "../tools/weight-paint";
+import { applyAutoWeights } from "../tools/auto-weights";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
   createClip, getActiveClip, deleteClip,
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
@@ -121,6 +123,14 @@ export function bindActionButtons(): void {
   E("btnAssignSkel").addEventListener("click", () => {
     const m = lastSelected();
     if (m) assignSkeletonToMesh(m);
+  });
+  E("btnMirrorBone").addEventListener("click", () => {
+    if (!state.selectedBoneId) {
+      status("⚠ Select the bone to mirror first");
+      return;
+    }
+    mirrorBoneChain(state.selectedBoneId, "x");
+    updateBoneUI();
   });
   E("btnDelBone").addEventListener("click", () => {
     if (state.selectedBoneId) {
@@ -315,6 +325,59 @@ export function bindActionButtons(): void {
   wireIkTargetField("ikTargetY", "Y");
   wireIkTargetField("ikTargetZ", "Z");
 
+  // Pole vector — steers which way the chain bends (elbow/knee direction).
+  E("ikPoleEnabled").addEventListener("change", function () {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.ikConstraint) return;
+    bd.ikConstraint.poleEnabled = (this as HTMLInputElement).checked;
+  });
+  const wireIkPoleField = (id: "ikPoleX" | "ikPoleY" | "ikPoleZ", axis: "X" | "Y" | "Z"): void => {
+    E(id).addEventListener("input", function () {
+      const v = +(this as HTMLInputElement).value;
+      if (Number.isNaN(v)) return;
+      if (!state.selectedBoneId) return;
+      const bd = findBoneById(state.selectedBoneId);
+      if (!bd?.ikConstraint) return;
+      bd.ikConstraint[`pole${axis}` as "poleX" | "poleY" | "poleZ"] = v;
+    });
+  };
+  wireIkPoleField("ikPoleX", "X");
+  wireIkPoleField("ikPoleY", "Y");
+  wireIkPoleField("ikPoleZ", "Z");
+
+  // Max bend per joint (degrees; 0 = unconstrained).
+  E("ikMaxBend").addEventListener("input", function () {
+    const v = +(this as HTMLInputElement).value;
+    if (Number.isNaN(v)) return;
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.ikConstraint) return;
+    bd.ikConstraint.maxBendDeg = Math.max(0, Math.min(180, v));
+  });
+
+  // "Snap to Bend" — drop the pole at the current mid-joint (pushed outward)
+  // so enabling the pole preserves the present bend direction.
+  E("btnIkSnapPole").addEventListener("click", () => {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.ikConstraint) {
+      status("⚠ Enable IK and select a bone first");
+      return;
+    }
+    const p = getIKPoleSuggestion(state.selectedBoneId);
+    if (!p) return;
+    bd.ikConstraint.poleEnabled = true;
+    bd.ikConstraint.poleX = p.x;
+    bd.ikConstraint.poleY = p.y;
+    bd.ikConstraint.poleZ = p.z;
+    (E("ikPoleEnabled") as HTMLInputElement).checked = true;
+    (E("ikPoleX") as HTMLInputElement).value = p.x.toFixed(3);
+    (E("ikPoleY") as HTMLInputElement).value = p.y.toFixed(3);
+    (E("ikPoleZ") as HTMLInputElement).value = p.z.toFixed(3);
+    status("IK pole snapped to bend");
+  });
+
   // "Snap to Bone" — convenience: drop the IK target onto the currently
   // selected bone's tip so enabling IK doesn't yank the chain to the
   // origin. Without this the default (0,0,0) target makes IK feel
@@ -335,6 +398,22 @@ export function bindActionButtons(): void {
     (E("ikTargetZ") as HTMLInputElement).value = p.z.toFixed(3);
     updateIkTargetMarker();
     status("IK target snapped to bone");
+  });
+
+  // "Solve IK Now" — one-shot, undo-able solve toward the selected bone's
+  // target. Works whether or not the live per-frame constraint is enabled.
+  E("btnSolveIK").addEventListener("click", () => {
+    if (!state.selectedBoneId) {
+      status("⚠ Select the chain's tip bone first");
+      return;
+    }
+    const bd = findBoneById(state.selectedBoneId);
+    const ik = bd?.ikConstraint;
+    if (!ik) {
+      status("⚠ Enable IK on this bone first");
+      return;
+    }
+    solveIKForBone(state.selectedBoneId, new Vector3(ik.targetX, ik.targetY, ik.targetZ));
   });
 
   // Map editor controls
@@ -403,6 +482,18 @@ export function bindActionButtons(): void {
   E("snapSclVal").addEventListener("change", function () {
     state.snapConfig.scaleIncrement = Math.max(0.01, +(this as HTMLInputElement).value || 0.25);
     applySnapToGizmos(); saveSnap();
+  });
+
+  E("btnAutoWeight").addEventListener("click", () => {
+    const m = lastSelected();
+    if (!m) {
+      status("⚠ Select the skinned mesh first");
+      return;
+    }
+    const geodesic = (E("autoWeightGeodesic") as HTMLInputElement).checked;
+    applyAutoWeights(m, { geodesic });
+    updateWeightInfo();
+    if (state.weightOverlayActive) refreshWeightOverlay();
   });
 
   E("btnInitWeight").addEventListener("click", () => {

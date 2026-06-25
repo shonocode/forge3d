@@ -8,7 +8,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
-import { getActiveSkeleton, findBoneById, updateHierarchyVisualization } from "./skeleton-tool";
+import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain } from "./skeleton-tool";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
 import { evaluateBezierSegment } from "./bezier";
@@ -481,68 +481,24 @@ export function getKeyframeEasing(): EasingType {
   return kf?.easing ?? "linear";
 }
 
-// ── Simple 2-Bone IK (FABRIK) ──
+// ── IK constraint evaluation (per-frame) ──
 
+/**
+ * Evaluate the IK constraint on `boneId` for this frame. Delegates to the
+ * shared FABRIK core in skeleton-tool, which writes the solved pose onto the
+ * actual bone matrices (so the skinned mesh deforms) and cascades visuals —
+ * not just the gizmo spheres. No-op unless the bone has IK enabled.
+ *
+ * No undo is pushed: this runs from the render hook and animation playback
+ * where per-frame history churn is unwanted. The interactive, undo-able solve
+ * lives in `skeleton-tool.solveIKForBone`.
+ */
 export function solveIK(boneId: string): void {
-  const skelData = getActiveSkeleton();
-  if (!skelData) return;
-  const bd = skelData.bones.find((b) => b.id === boneId);
-  if (!bd?.ikConstraint?.enabled) return;
-
-  const chainLen = bd.ikConstraint.chainLength;
-  const target = new Vector3(bd.ikConstraint.targetX, bd.ikConstraint.targetY, bd.ikConstraint.targetZ);
-
-  // Collect chain from tip to root
-  const chain: typeof skelData.bones[0][] = [];
-  let cur: typeof skelData.bones[0] | undefined = bd;
-  for (let i = 0; i <= chainLen && cur; i++) {
-    chain.push(cur);
-    cur = cur.parentId ? skelData.bones.find((b) => b.id === cur!.parentId) : undefined;
-  }
-  if (chain.length < 2) return;
-
-  const mesh = skelData.assignedMesh;
-  if (!mesh) {
-    status("\u26a0 Skeleton not assigned to mesh");
-    return;
-  }
-  // Get joint positions
-  const positions = chain.map((b) => b.bone.getAbsolutePosition(mesh).clone());
-
-  // FABRIK iterations
-  for (let iter = 0; iter < 10; iter++) {
-    // Forward reaching (from tip to root)
-    positions[0]!.copyFrom(target);
-    for (let i = 1; i < positions.length; i++) {
-      const segLen = Vector3.Distance(positions[i - 1]!, positions[i]!);
-      if (segLen < 0.0001) continue;
-      const dir = positions[i]!.subtract(positions[i - 1]!).normalize();
-      const boneLen = chain[i - 1]!.bone.length || Vector3.Distance(
-        chain[i - 1]!.bone.getAbsolutePosition(mesh),
-        chain[i]!.bone.getAbsolutePosition(mesh)
-      );
-      positions[i]!.copyFrom(positions[i - 1]!.add(dir.scale(boneLen)));
-    }
-
-    // Backward reaching (from root to tip)
-    const rootPos = chain[chain.length - 1]!.bone.getAbsolutePosition(mesh);
-    positions[positions.length - 1]!.copyFrom(rootPos);
-    for (let i = positions.length - 2; i >= 0; i--) {
-      const segLen = Vector3.Distance(positions[i]!, positions[i + 1]!);
-      if (segLen < 0.0001) continue;
-      const dir = positions[i]!.subtract(positions[i + 1]!).normalize();
-      const boneLen = chain[i]!.bone.length || Vector3.Distance(
-        chain[i]!.bone.getAbsolutePosition(mesh),
-        chain.length > i + 1 ? chain[i + 1]!.bone.getAbsolutePosition(mesh) : chain[i]!.bone.getAbsolutePosition(mesh)
-      );
-      positions[i]!.copyFrom(positions[i + 1]!.add(dir.scale(boneLen)));
-    }
-  }
-
-  // Apply positions back to bone visuals
-  for (let i = 0; i < chain.length; i++) {
-    if (chain[i]!.visual) chain[i]!.visual!.position.copyFrom(positions[i]!);
-  }
+  const bd = findBoneById(boneId);
+  const ik = bd?.ikConstraint;
+  if (!ik?.enabled) return;
+  const target = new Vector3(ik.targetX, ik.targetY, ik.targetZ);
+  applyIKChain(boneId, target);
 }
 
 /**

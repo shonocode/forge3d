@@ -18,6 +18,7 @@ import { getBoundingDimensions } from "../tools/measure";
 import type { Modifier } from "../state";
 import { refreshWeightOverlay, hasWeightData } from "../tools/weight-paint";
 import { getActiveClip, getKeyframeEasing, stopPreview, syncBoneVisuals } from "../tools/animation-tool";
+import { renderProceduralControls } from "./procedural-panel";
 import { drawGraphEditor } from "../tools/graph-editor";
 import { drawDopesheet } from "../tools/dopesheet";
 import type { Observer } from "@babylonjs/core/Misc/observable";
@@ -364,6 +365,7 @@ export function updateMaterial(): void {
     <div class="pg"><div class="pgt">Textures</div>
       <div id="texSlots"></div>
     </div>
+    <div class="pg" id="procPanel"></div>
     <div class="pg"><div class="pgt">Display</div>
       <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Wireframe</span>
         <input type="checkbox" ${mt.wireframe ? "checked" : ""} id="matWire" aria-label="Wireframe" style="margin-left:auto"></div>
@@ -540,6 +542,10 @@ export function updateMaterial(): void {
     }
     slotsEl.appendChild(row);
   }
+
+  // Procedural material section.
+  const procEl = el.querySelector<HTMLElement>("#procPanel");
+  if (procEl) renderProceduralControls(procEl, m);
 }
 
 function setColor(hex: string): void {
@@ -601,6 +607,12 @@ function updateIKInspector(): void {
     : null;
   const ik = bd?.ikConstraint;
 
+  const poleEl = document.getElementById("ikPoleEnabled") as HTMLInputElement | null;
+  const pxEl = document.getElementById("ikPoleX") as HTMLInputElement | null;
+  const pyEl = document.getElementById("ikPoleY") as HTMLInputElement | null;
+  const pzEl = document.getElementById("ikPoleZ") as HTMLInputElement | null;
+  const bendEl = document.getElementById("ikMaxBend") as HTMLInputElement | null;
+
   if (ik?.enabled) {
     enabledEl.checked = true;
     chainEl.value = String(ik.chainLength);
@@ -608,9 +620,15 @@ function updateIKInspector(): void {
     tx.value = ik.targetX.toFixed(3);
     ty.value = ik.targetY.toFixed(3);
     tz.value = ik.targetZ.toFixed(3);
+    if (poleEl) poleEl.checked = ik.poleEnabled ?? false;
+    if (pxEl) pxEl.value = (ik.poleX ?? 0).toFixed(3);
+    if (pyEl) pyEl.value = (ik.poleY ?? 0).toFixed(3);
+    if (pzEl) pzEl.value = (ik.poleZ ?? 0).toFixed(3);
+    if (bendEl) bendEl.value = String(ik.maxBendDeg ?? 0);
   } else {
     enabledEl.checked = false;
-    // Leave chainLen/target inputs at last value — they're irrelevant
+    if (poleEl) poleEl.checked = false;
+    // Leave chainLen/target/pole inputs at last value — they're irrelevant
     // when IK is off and clearing them would lose the user's defaults
     // for the next time they enable IK.
   }

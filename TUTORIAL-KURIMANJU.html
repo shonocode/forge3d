@@ -498,13 +498,23 @@ root (脚の付け根あたり)
   <li>体の中心、地面ぎりぎりの位置をクリック → root ボーン</li>
   <li>root が選択された状態で、上方 (胴体の中央) をクリック → spine (root の子として作成)</li>
   <li>spine を選択した状態で頭の中心をクリック → neck → さらに上で head_bone</li>
-  <li>spine 選択 → 右肩あたりをクリック → arm_R_upper → 肘 → 手で順次</li>
-  <li>同様に脚側も</li>
+  <li>spine 選択 → 右肩あたりをクリック → arm_R_upper → 肘 → 手で順次（<strong>右側だけ</strong>でOK）</li>
+  <li>脚も右側だけ作る</li>
 </ol>
 <div class="note">ボーンを作る時に「親を選択した状態で次の位置をクリック」=「親子付きで作成」になる。
 親を別のに変えたいときは別のボーンを選び直してからクリック。</div>
 
-<h3>9.4 メッシュにアサイン</h3>
+<h3>9.4 左側はミラーで一発生成</h3>
+<ol class="steps">
+  <li>右腕の根元（arm_R_upper）を選択</li>
+  <li>右パネル「Selected Bone」の <strong>⇄ Mirror Bone (X)</strong> を押す</li>
+  <li>arm_R_upper → arm_L_upper として左腕一式が反転生成される（名前の _R が _L にスワップ）</li>
+  <li>右脚の根元でも同様にミラー</li>
+</ol>
+<div class="tip">背骨（spine）など中心軸上のボーンはミラー不要。腕・脚など左右対になるものだけ右で作って
+ミラーすれば、左右対称が保証されて手早い。子ボーン（肘・手など）も一緒にミラーされる。</div>
+
+<h3>9.5 メッシュにアサイン</h3>
 <ol class="steps">
   <li>kurimanjuu メッシュを選択（Object Mode）</li>
   <li>右パネル「Assign to Mesh」</li>
@@ -518,14 +528,24 @@ root (脚の付け根あたり)
 
 <div class="goal">各ボーンが頂点をどれだけ動かすかを決める。</div>
 
-<h3>10.1 Weight Paint モードへ</h3>
+<h3>10.1 まず Auto Weights で下地を作る</h3>
 <ol class="steps">
+  <li>Bone タブで「Assign to Mesh」がまだなら先に実行（スケルトンをメッシュに割当）</li>
   <li>kurimanjuu を選択 (Object Mode)</li>
-  <li><kbd>W</kbd> で Weight Paint ツール</li>
-  <li>メッシュがグレースケール表示になる</li>
+  <li><kbd>W</kbd> で Weight Paint ツール → 右パネル「Weight Paint」の <strong>⚡ Auto Weights</strong> を押す</li>
+  <li>全頂点が最寄りボーンへ自動バインドされる。これだけで大まかな変形は成立する</li>
+</ol>
+<div class="tip">くりまんじゅうは骨が少ないので Auto Weights だけでもかなり綺麗に決まる。
+以降の手塗りは「気になる箇所の手直し」と考えてよい。Auto Weights は既存ウェイトを上書きするので、
+手塗りを始めた後にもう一度押すとリセットされる点に注意。</div>
+
+<h3>10.2 Weight Paint モードで確認</h3>
+<ol class="steps">
+  <li><kbd>W</kbd> で Weight Paint ツール（既に入っていれば OK）</li>
+  <li>Show/Hide Overlay でヒートマップ表示にして、ボーンごとの影響範囲を確認</li>
 </ol>
 
-<h3>10.2 ボーンを選んで塗る</h3>
+<h3>10.3 ボーンを選んで手直し</h3>
 <ol class="steps">
   <li>spine ボーンをクリックで選択 (ボーンビジュアルが見える状態で)</li>
   <li>右パネル「Weight Paint」設定:
@@ -537,7 +557,7 @@ root (脚の付け根あたり)
   <li>同様に neck → 首あたり、head_bone → 頭、arm 各ボーン → 腕</li>
 </ol>
 
-<h3>10.3 ウェイトのコツ</h3>
+<h3>10.4 ウェイトのコツ</h3>
 <ul>
   <li><strong>関節部分はグラデーション</strong>: 肘なら upper と lower で半々ぐらい</li>
   <li><strong>全頂点が必ずどれか 1 つ以上のボーンに 100% 影響</strong>: 漏れがあると変形時にその頂点が原点に固定される</li>
@@ -566,6 +586,12 @@ root (脚の付け根あたり)
 特に隣接する 2 ボーンの境目で重みが急に切り替わると崩れる。Smooth で滑らかに繋ぐ。</div>
 
 <p>ポーズの状態を一旦元に戻す: Edit モードに戻して再選択 (rest pose に戻る)。または各ボーンの rotation を 0 にリセット。</p>
+
+<div class="tip">腕や足を「手先の位置」で直感的に動かしたいときは IK が便利
+（マニュアル §7.6）。先端ボーン（hand_R 等）を選んで Bone タブの「IK Constraint」で
+Enable IK → Chain Length 2 → Snap to Bone してから Target を動かすと、肘・肩が自動で曲がる。
+肘が裏返るときは <strong>Pole (bend dir)</strong> を ON にして <strong>Snap to Bend</strong> →
+Pole 座標で曲がる向きを固定する。くりまんじゅう程度の単純リグなら必須ではないが、ポーズ付けが一気に楽になる。</div>
 </section>
 
 <!-- =================================================================== -->
