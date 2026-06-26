@@ -2,6 +2,7 @@ import { state, E, isMobile, status } from "../state";
 import { addMorph, captureMorph } from "../tools/morph";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { clearPaintTexture } from "../tools/texture-paint";
+import { clearSculptMask } from "../tools/sculpt";
 import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion } from "../tools/skeleton-tool";
 import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData, refreshWeightOverlay } from "../tools/weight-paint";
 import { applyAutoWeights } from "../tools/auto-weights";
@@ -100,6 +101,17 @@ export function bindActionButtons(): void {
   bindSlider("brushSize", "bsV", (v) => { state.sculptConfig.radius = v; });
   bindSlider("brushStr", "btV", (v) => { state.sculptConfig.strength = v; });
   bindSlider("brushFall", "bfV", (v) => { state.sculptConfig.falloff = v; });
+
+  // Sculpt symmetry / dyntopo / mask
+  E("symX").addEventListener("change", function () { state.sculptConfig.symX = (this as HTMLInputElement).checked; });
+  E("symY").addEventListener("change", function () { state.sculptConfig.symY = (this as HTMLInputElement).checked; });
+  E("symZ").addEventListener("change", function () { state.sculptConfig.symZ = (this as HTMLInputElement).checked; });
+  E("dyntopo").addEventListener("change", function () { state.sculptConfig.dyntopo = (this as HTMLInputElement).checked; });
+  bindSlider("dyntopoDetail", "dtV", (v) => { state.sculptConfig.detail = v; }, (v) => v.toFixed(2));
+  E("btnClearMask").addEventListener("click", () => {
+    const m = lastSelected();
+    if (m) clearSculptMask(m);
+  });
 
   // Paint controls
   E("paintColor").addEventListener("input", function () {

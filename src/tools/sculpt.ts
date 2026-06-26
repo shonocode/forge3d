@@ -2,9 +2,13 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
 import type { BrushId } from "../state";
+import { refineWithinRadii, remapAttribute } from "./dyntopo";
+import { symmetricCenters } from "./sculpt-symmetry";
+import { createMask, paintMask } from "./sculpt-mask";
 
 export const BRUSHES = [
   { id: "push" as BrushId, label: "↑ Push（盛り上げ）" },
@@ -13,6 +17,7 @@ export const BRUSHES = [
   { id: "flatten" as BrushId, label: "— Flatten（平坦化）" },
   { id: "pinch" as BrushId, label: "⊕ Pinch（つまむ）" },
   { id: "inflate" as BrushId, label: "◇ Inflate（膨張）" },
+  { id: "mask" as BrushId, label: "▦ Mask（保護を塗る）" },
 ];
 
 export function setBrush(b: BrushId): void {
@@ -106,9 +111,6 @@ function queryRadius(
 
 export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
   if (!mesh || !pick.hit) return;
-  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
-  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
-  if (!pos || !nor) return;
 
   const hitW = pick.pickedPoint;
   if (!hitW) return;
@@ -118,25 +120,97 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
   } catch { return; }
   const hitL = Vector3.TransformCoordinates(hitW, inv);
 
-  const { radius: R, strength: S, falloff: F } = state.sculptConfig;
+  const cfg = state.sculptConfig;
+  const { radius: R, strength: S, falloff: F } = cfg;
   const ctrlDown = state.keysDown.has("Control") || state.keysDown.has("Meta") || state.touchModifiers.ctrl;
   const shiftDown = state.keysDown.has("Shift") || state.touchModifiers.shift;
-  const brush: BrushId = shiftDown ? "smooth" : state.sculptConfig.brush;
+  const brush: BrushId = shiftDown ? "smooth" : cfg.brush;
   const dir = ctrlDown ? -1 : 1;
 
-  let avgC: (({ x: number; y: number; z: number }) | undefined)[] | null = null;
-  if (brush === "smooth") avgC = smoothAvg(pos, hitL, R);
+  // Expand the dab into symmetric centers (object-local mirror planes).
+  const centers = symmetricCenters(hitL.x, hitL.y, hitL.z, { x: cfg.symX, y: cfg.symY, z: cfg.symZ });
 
-  // Use spatial query for fast radius lookup
-  const inRadius = queryRadius(pos, hitL.x, hitL.y, hitL.z, R);
+  // Mask brush paints protection instead of deforming geometry.
+  if (brush === "mask") {
+    const posM = mesh.getVerticesData(VertexBuffer.PositionKind);
+    if (!posM) return;
+    const mask = getOrCreateMask(mesh, posM.length / 3);
+    if (paintMask(mask, posM, centers, R, Math.max(S * 6, 0.05), F, ctrlDown)) {
+      refreshMaskVisual(mesh);
+    }
+    return;
+  }
+
+  let pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  let nor = mesh.getVerticesData(VertexBuffer.NormalKind);
+  if (!pos || !nor) return;
+  let indices = mesh.getIndices();
+  if (!indices) return;
+  let mask = state.sculptMaskMap.get(mesh.uniqueId) ?? null;
+  let topologyChanged = false;
+
+  // Dyntopo: subdivide long edges under the brush before deforming, so there are
+  // fresh vertices to push. Mask + UVs are carried through the topology change.
+  // Skipped on skinned meshes — rebuilding geometry would drop bone weights.
+  if (cfg.dyntopo && mesh.isVerticesDataPresent(VertexBuffer.MatricesWeightsKind)) {
+    status("Dyntopo unavailable on skinned meshes — sculpt before rigging");
+  } else if (cfg.dyntopo) {
+    const res = refineWithinRadii(pos, indices, centers, R, cfg.detail);
+    if (res.changed) {
+      const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+      const newNor = new Float32Array(res.positions.length);
+      VertexData.ComputeNormals(res.positions, res.indices, newNor);
+      const vd = new VertexData();
+      vd.positions = res.positions;
+      vd.indices = res.indices as unknown as number[];
+      vd.normals = newNor;
+      if (uvs) vd.uvs = remapAttribute(uvs, res.parents, 2);
+      vd.applyToMesh(mesh as Mesh, true);
+      if (mask) {
+        mask = remapAttribute(mask, res.parents, 1);
+        state.sculptMaskMap.set(mesh.uniqueId, mask);
+      }
+      pos = res.positions as unknown as number[];
+      nor = newNor as unknown as number[];
+      indices = res.indices as unknown as number[];
+      topologyChanged = true;
+    }
+  }
+
+  for (const c of centers) {
+    deformPass(pos, nor, brush, c[0], c[1], c[2], dir, S, R, F, mask);
+  }
+
+  mesh.updateVerticesData(VertexBuffer.PositionKind, pos);
+  VertexData.ComputeNormals(pos, indices, nor);
+  mesh.updateVerticesData(VertexBuffer.NormalKind, nor);
+  if (topologyChanged) refreshMaskVisual(mesh);
+}
+
+/** Apply one brush dab around a single center, mutating `pos`. Mask scales per-vertex strength. */
+function deformPass(
+  pos: Float32Array | number[],
+  nor: Float32Array | number[],
+  brush: BrushId,
+  cx: number, cy: number, cz: number,
+  dir: number, S: number, R: number, F: number,
+  mask: Float32Array | null,
+): void {
+  let avgC: (({ x: number; y: number; z: number }) | undefined)[] | null = null;
+  if (brush === "smooth") avgC = smoothAvg(pos, new Vector3(cx, cy, cz), R);
+
+  const inRadius = queryRadius(pos, cx, cy, cz, R);
   for (const i of inRadius) {
-    const dx = pos[i]! - hitL.x;
-    const dy = pos[i + 1]! - hitL.y;
-    const dz = pos[i + 2]! - hitL.z;
+    const dx = pos[i]! - cx;
+    const dy = pos[i + 1]! - cy;
+    const dz = pos[i + 2]! - cz;
     const d2 = dx * dx + dy * dy + dz * dz;
     const dist = Math.sqrt(d2);
     const fall = Math.pow(1 - dist / R, F);
-    const str = fall * S;
+    const vi = i / 3;
+    const maskFactor = mask ? 1 - mask[vi]! : 1;
+    if (maskFactor <= 0) continue;
+    const str = fall * S * maskFactor;
     const nx = nor[i]!;
     const ny = nor[i + 1]!;
     const nz = nor[i + 2]!;
@@ -153,7 +227,6 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
         pos[i + 2] = pos[i + 2]! - nz * str * dir;
         break;
       case "smooth": {
-        const vi = i / 3;
         if (avgC && avgC[vi]) {
           const a = avgC[vi]!;
           const smoothFactor = Math.min(str * 3, 0.9);
@@ -164,10 +237,7 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
         break;
       }
       case "flatten": {
-        const dot =
-          (pos[i]! - hitL.x) * nx +
-          (pos[i + 1]! - hitL.y) * ny +
-          (pos[i + 2]! - hitL.z) * nz;
+        const dot = dx * nx + dy * ny + dz * nz;
         pos[i] = pos[i]! - nx * dot * str * 2;
         pos[i + 1] = pos[i + 1]! - ny * dot * str * 2;
         pos[i + 2] = pos[i + 2]! - nz * dot * str * 2;
@@ -185,12 +255,86 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
         break;
     }
   }
-  mesh.updateVerticesData(VertexBuffer.PositionKind, pos);
-  const idx = mesh.getIndices();
-  if (idx) {
-    VertexData.ComputeNormals(pos, idx, nor);
-    mesh.updateVerticesData(VertexBuffer.NormalKind, nor);
+}
+
+function getOrCreateMask(mesh: AbstractMesh, vertexCount: number): Float32Array {
+  let mask = state.sculptMaskMap.get(mesh.uniqueId);
+  if (!mask || mask.length !== vertexCount) {
+    mask = createMask(vertexCount);
+    state.sculptMaskMap.set(mesh.uniqueId, mask);
   }
+  return mask;
+}
+
+/**
+ * Reflect the mask into vertex colors so masked regions read as darkened on the
+ * mesh (vertex color multiplies the material). Unmasked → white (no tint).
+ */
+export function refreshMaskVisual(mesh: AbstractMesh): void {
+  const mask = state.sculptMaskMap.get(mesh.uniqueId);
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!pos) return;
+  const n = pos.length / 3;
+  const colors = new Float32Array(n * 4);
+  for (let v = 0; v < n; v++) {
+    const m = mask ? mask[v]! : 0;
+    const c = 1 - m * 0.7; // masked vertices darken toward 0.3
+    colors[v * 4] = c;
+    colors[v * 4 + 1] = c;
+    colors[v * 4 + 2] = c;
+    colors[v * 4 + 3] = 1;
+  }
+  if (mesh.isVerticesDataPresent(VertexBuffer.ColorKind)) {
+    mesh.updateVerticesData(VertexBuffer.ColorKind, colors);
+  } else {
+    (mesh as Mesh).setVerticesData(VertexBuffer.ColorKind, colors, true);
+  }
+}
+
+/** Clear the sculpt mask for a mesh and reset its vertex-color tint. */
+export function clearSculptMask(mesh: AbstractMesh): void {
+  state.sculptMaskMap.delete(mesh.uniqueId);
+  refreshMaskVisual(mesh);
+  status("Mask cleared");
+}
+
+/** Snapshot of a mesh's full geometry + mask, for per-stroke (topology-aware) undo. */
+export interface GeoSnapshot {
+  positions: Float32Array;
+  indices: Uint32Array;
+  normals: Float32Array | null;
+  uvs: Float32Array | null;
+  mask: Float32Array | null;
+}
+
+/** Capture the current geometry + mask of a mesh. Returns null if positions are missing. */
+export function captureGeometry(mesh: AbstractMesh): GeoSnapshot | null {
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (!pos) return null;
+  const idx = mesh.getIndices();
+  const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+  const mask = state.sculptMaskMap.get(mesh.uniqueId) ?? null;
+  return {
+    positions: new Float32Array(pos),
+    indices: idx ? new Uint32Array(idx) : new Uint32Array(0),
+    normals: nor ? new Float32Array(nor) : null,
+    uvs: uvs ? new Float32Array(uvs) : null,
+    mask: mask ? new Float32Array(mask) : null,
+  };
+}
+
+/** Restore a mesh from a {@link GeoSnapshot}. Rebuilds geometry so topology changes undo cleanly. */
+export function restoreGeometry(mesh: AbstractMesh, snap: GeoSnapshot): void {
+  const vd = new VertexData();
+  vd.positions = new Float32Array(snap.positions);
+  vd.indices = Array.from(snap.indices);
+  if (snap.normals) vd.normals = new Float32Array(snap.normals);
+  if (snap.uvs) vd.uvs = new Float32Array(snap.uvs);
+  vd.applyToMesh(mesh as Mesh, true);
+  if (snap.mask) state.sculptMaskMap.set(mesh.uniqueId, new Float32Array(snap.mask));
+  else state.sculptMaskMap.delete(mesh.uniqueId);
+  refreshMaskVisual(mesh);
 }
 
 function smoothAvg(

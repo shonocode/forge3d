@@ -24,13 +24,21 @@ export interface EditSelection {
 export type ViewportMode = "solid" | "wire" | "matcap" | "textured";
 export type AnimLoopMode = "cycle" | "constant";
 export type WeightMode = "add" | "subtract" | "smooth";
-export type BrushId = "push" | "pull" | "smooth" | "flatten" | "pinch" | "inflate";
+export type BrushId = "push" | "pull" | "smooth" | "flatten" | "pinch" | "inflate" | "mask";
 
 export interface SculptConfig {
   radius: number;
   strength: number;
   falloff: number;
   brush: BrushId;
+  /** Dyntopo: adaptively subdivide long edges under the brush. */
+  dyntopo: boolean;
+  /** Dyntopo target edge length (world units); edges shorter than this are left alone. */
+  detail: number;
+  /** Mirror the brush across the object-local X / Y / Z planes. */
+  symX: boolean;
+  symY: boolean;
+  symZ: boolean;
 }
 
 export interface PaintConfig {
@@ -253,9 +261,11 @@ export const state = {
   painting: false,
   keysDown: new Set<string>(),
   morphMap: new Map<number, MorphData>(),
-  sculptConfig: { radius: 0.5, strength: 0.05, falloff: 2, brush: "push" } as SculptConfig,
+  sculptConfig: { radius: 0.5, strength: 0.05, falloff: 2, brush: "push", dyntopo: false, detail: 0.1, symX: false, symY: false, symZ: false } as SculptConfig,
   paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false } as PaintConfig,
   paintTextureMap: new Map<number, DynamicTexture>(),
+  /** Per-mesh sculpt mask: vertexUniqueId → per-vertex protection in [0,1]. */
+  sculptMaskMap: new Map<number, Float32Array>(),
 
   // Weight paint state
   weightPainting: false,

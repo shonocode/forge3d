@@ -1,7 +1,8 @@
 import { state, E, status, isMobile } from "./state";
 import type { ToolId } from "./state";
 import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selection";
-import { sculptAt } from "./tools/sculpt";
+import { sculptAt, captureGeometry, restoreGeometry } from "./tools/sculpt";
+import type { GeoSnapshot } from "./tools/sculpt";
 import { paintAt, hasUVs } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
@@ -283,7 +284,7 @@ export function initInput(): void {
   window.addEventListener("blur", () => state.keysDown.clear());
 
   // Undo snapshot state for brush strokes
-  let sculptSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
+  let sculptSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: GeoSnapshot } | null = null;
   let paintSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: ImageData; halfCanvas: OffscreenCanvas } | null = null;
   const SNAP_SIZE = 512; // Downscaled snapshot size (1/4 memory of 1024)
   let weightSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
@@ -303,10 +304,10 @@ export function initInput(): void {
 
     // Sculpt mode
     if (state.tool === "sculpt" && state.selectedMeshes.length) {
-      // Capture position snapshot for undo
+      // Capture full geometry + mask snapshot for topology-aware per-stroke undo
       const target = state.selectedMeshes[state.selectedMeshes.length - 1]!;
-      const posData = target.getVerticesData(VertexBuffer.PositionKind);
-      sculptSnapshot = posData ? { mesh: target, before: new Float32Array(posData) } : null;
+      const geo = captureGeometry(target);
+      sculptSnapshot = geo ? { mesh: target, before: geo } : null;
 
       state.sculpting = true;
       state.camera.detachControl();
@@ -524,17 +525,15 @@ export function initInput(): void {
       if (!state.cameraLocked) state.camera.attachControl(canvas, true);
     }
 
-    // Push sculpt undo
+    // Push sculpt undo (full geometry + mask — survives dyntopo topology changes)
     if (wasSculpting && sculptSnapshot) {
       const { mesh, before } = sculptSnapshot;
-      const after = mesh.getVerticesData(VertexBuffer.PositionKind);
+      const after = captureGeometry(mesh);
       if (after) {
-        const afterCopy = new Float32Array(after);
-        const beforeCopy = before;
         state.history.push({
           label: "Sculpt",
-          undo() { mesh.updateVerticesData(VertexBuffer.PositionKind, beforeCopy); },
-          redo() { mesh.updateVerticesData(VertexBuffer.PositionKind, afterCopy); },
+          undo() { restoreGeometry(mesh, before); },
+          redo() { restoreGeometry(mesh, after); },
         });
       }
       sculptSnapshot = null;

@@ -146,6 +146,21 @@
           <input type="range" min="0.5" max="4" step="0.1" value="2" id="brushFall" aria-label="Brush falloff"></div>
       </div>
       <div class="pg" id="brushBtns"></div>
+      <div class="pg">
+        <div class="pgt">Symmetry</div>
+        <div style="display:flex;gap:12px;font-size:12px;">
+          <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="symX"> X</label>
+          <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="symY"> Y</label>
+          <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="symZ"> Z</label>
+        </div>
+      </div>
+      <div class="pg">
+        <div class="pgt">Dyntopo</div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" id="dyntopo"> 適応的細分化（ストローク中に分割）</label>
+        <div class="sr"><label>Detail <span id="dtV">0.10</span></label>
+          <input type="range" min="0.02" max="0.5" step="0.01" value="0.1" id="dyntopoDetail" aria-label="Dyntopo detail size"></div>
+        <button class="abtn" id="btnClearMask" style="margin-top:6px;">▦ Clear Mask</button>
+      </div>
     </div>
     <div class="tbody" id="tb-paint">
       <div class="pg">
