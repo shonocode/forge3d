@@ -8,15 +8,15 @@ import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData, re
 import { applyAutoWeights } from "../tools/auto-weights";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
-  createClip, getActiveClip, deleteClip,
+  createClip, getActiveClip, deleteClip, setActiveClip,
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
   copyKeyframe, pasteKeyframe, setKeyframeEasing,
-  setPlaybackTickCallback, updateIkTargetMarker,
+  setPlaybackTickCallback, updateIkTargetMarker, notifyPoseEdited,
 } from "../tools/animation-tool";
 import { EASING_TYPES } from "../tools/easing";
 import type { EasingType } from "../tools/easing";
-import { findBoneById, selectBone as selectBoneFn } from "../tools/skeleton-tool";
+import { findBoneById, selectBone as selectBoneFn, setPoseEditedHandler } from "../tools/skeleton-tool";
 import { drawGraphEditor } from "../tools/graph-editor";
 import { drawDopesheet } from "../tools/dopesheet";
 import {
@@ -43,6 +43,22 @@ function bindSlider(inputId: string, displayId: string, setter: (v: number) => v
     setter(v);
     E(displayId).textContent = formatter ? formatter(v) : String(v);
   });
+}
+
+/** Sync the timeline sliders / loop select to the active clip (clip switch, create, delete). */
+function syncClipControls(): void {
+  const clip = getActiveClip();
+  if (!clip) return;
+  (E("animFps") as HTMLInputElement).value = String(clip.frameRate);
+  E("fpsV").textContent = String(clip.frameRate);
+  (E("animMaxFrames") as HTMLInputElement).value = String(clip.maxFrames);
+  E("mfV").textContent = String(clip.maxFrames);
+  E("afMax").textContent = String(clip.maxFrames);
+  const frameEl = E("animFrame") as HTMLInputElement;
+  frameEl.max = String(clip.maxFrames);
+  frameEl.value = String(state.currentFrame);
+  E("afV").textContent = String(state.currentFrame);
+  (E("animLoop") as HTMLSelectElement).value = clip.loopMode;
 }
 
 export function bindActionButtons(): void {
@@ -91,6 +107,14 @@ export function bindActionButtons(): void {
   E("btnLoad").addEventListener("click", async () => {
     const { loadModelFromFile } = await import("../export/gltf-exporter");
     void loadModelFromFile();
+  });
+  E("btnExportProj").addEventListener("click", async () => {
+    const { exportProject } = await import("../export/project-io");
+    void exportProject();
+  });
+  E("btnOpenProj").addEventListener("click", async () => {
+    const { openProjectDialog } = await import("../export/project-io");
+    openProjectDialog();
   });
   E("btnDup").addEventListener("click", duplicateSelected);
   E("btnDel").addEventListener("click", deleteSelected);
@@ -178,14 +202,28 @@ export function bindActionButtons(): void {
   }
 
   // Animation controls
+  // Auto-Key / dirty-pose hook (registered here to avoid an import cycle
+  // between skeleton-tool and animation-tool).
+  setPoseEditedHandler(notifyPoseEdited);
+  E("autoKey").addEventListener("change", function () {
+    state.autoKey = (this as HTMLInputElement).checked;
+    status("Auto-Key: " + (state.autoKey ? "ON" : "OFF"));
+  });
+  E("animClipSel").addEventListener("change", function () {
+    setActiveClip((this as HTMLSelectElement).value);
+    syncClipControls();
+    updateAnimUI();
+  });
   E("btnNewClip").addEventListener("click", () => {
     createClip();
+    syncClipControls();
     updateAnimUI();
   });
   E("btnDelClip").addEventListener("click", () => {
     const clip = getActiveClip();
     if (clip) {
       deleteClip(clip.id);
+      syncClipControls();
       updateAnimUI();
     }
   });

@@ -1,8 +1,9 @@
 import { state, E, status, isMobile } from "./state";
 import type { ToolId } from "./state";
 import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selection";
-import { sculptAt, captureGeometry, restoreGeometry } from "./tools/sculpt";
+import { sculptAt, captureGeometry, restoreGeometry, applySculptDelta } from "./tools/sculpt";
 import type { GeoSnapshot } from "./tools/sculpt";
+import { diffAttribute } from "./tools/sculpt-delta";
 import { paintAt, hasUVs } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
@@ -525,16 +526,42 @@ export function initInput(): void {
       if (!state.cameraLocked) state.camera.attachControl(canvas, true);
     }
 
-    // Push sculpt undo (full geometry + mask — survives dyntopo topology changes)
+    // Push sculpt undo. Topology-changing strokes (dyntopo split) need full
+    // geometry snapshots; plain deform/mask strokes retain only the changed
+    // vertices (sparse delta) — full before+after snapshots at 50 history
+    // entries were a realistic OOM vector on tablets.
     if (wasSculpting && sculptSnapshot) {
       const { mesh, before } = sculptSnapshot;
       const after = captureGeometry(mesh);
       if (after) {
-        state.history.push({
-          label: "Sculpt",
-          undo() { restoreGeometry(mesh, before); },
-          redo() { restoreGeometry(mesh, after); },
-        });
+        const topologyChanged =
+          before.positions.length !== after.positions.length ||
+          before.indices.length !== after.indices.length;
+        if (topologyChanged) {
+          state.history.push({
+            label: "Sculpt",
+            undo() { restoreGeometry(mesh, before); },
+            redo() { restoreGeometry(mesh, after); },
+          });
+        } else {
+          const posDelta = diffAttribute(before.positions, after.positions, 3);
+          const bothMasks = before.mask && after.mask;
+          const maskDelta = bothMasks ? diffAttribute(before.mask!, after.mask!, 1) : null;
+          // Mask created (or removed) mid-stroke → wholesale swap per side.
+          const maskSwapped = !bothMasks && before.mask !== after.mask;
+          const posChanged = !!posDelta && posDelta.indices.length > 0;
+          const maskChanged = (!!maskDelta && maskDelta.indices.length > 0) || maskSwapped;
+          if (posChanged || maskChanged) {
+            const undoMaskFull = maskSwapped ? before.mask : undefined;
+            const redoMaskFull = maskSwapped ? after.mask : undefined;
+            state.history.push({
+              label: "Sculpt",
+              undo() { applySculptDelta(mesh, posDelta, maskDelta, undoMaskFull, "before"); },
+              redo() { applySculptDelta(mesh, posDelta, maskDelta, redoMaskFull, "after"); },
+            });
+          }
+          // No-op stroke (nothing moved): push nothing.
+        }
       }
       sculptSnapshot = null;
     }

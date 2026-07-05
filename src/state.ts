@@ -267,6 +267,11 @@ export const state = {
   /** Per-mesh sculpt mask: vertexUniqueId → per-vertex protection in [0,1]. */
   sculptMaskMap: new Map<number, Float32Array>(),
 
+  /** Auto-Key: key the edited bone automatically after each pose edit. */
+  autoKey: true,
+  /** Set when a pose was edited without keying (warn before scrub discards it). */
+  poseDirty: false,
+
   // Weight paint state
   weightPainting: false,
   weightOverlayActive: false,

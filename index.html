@@ -215,6 +215,9 @@
       <div class="pg" id="importedAnimC"></div>
       <div class="pg">
         <div class="pgt">Clip</div>
+        <div class="pr" style="margin-bottom:4px"><span class="pl" style="font-size:10px;color:var(--t3)">Active</span>
+          <select id="animClipSel" aria-label="Active clip" style="flex:1;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 4px;font-size:10px;"></select>
+        </div>
         <div id="animClipInfo"><div class="empty">クリップを作成してアニメーション</div></div>
         <button class="abtn" id="btnNewClip" style="margin-top:6px">+ New Clip</button>
         <button class="abtn dan" id="btnDelClip">Delete Clip</button>
@@ -236,6 +239,7 @@
       </div>
       <div class="pg">
         <div class="pgt">Record</div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;margin-bottom:4px;"><input type="checkbox" id="autoKey" checked> 🔑 Auto-Key（ポーズ変更を自動キー）</label>
         <button class="abtn pri" id="btnRecordKF">⏺ Record Keyframe</button>
         <button class="abtn" id="btnRecordAll">⏺ Record All Bones</button>
         <button class="abtn dan" id="btnDeleteKF">✕ Delete Keyframe</button>
@@ -401,6 +405,9 @@
       </div>
       <button class="abtn" id="btnSave">💾 Save to Library</button>
       <button class="abtn" id="btnLoad">📂 Load Model</button>
+      <div class="pgt" style="margin-top:8px">Project (.forge3d)</div>
+      <button class="abtn" id="btnExportProj">📦 Export Project</button>
+      <button class="abtn" id="btnOpenProj">📂 Open Project</button>
       <button class="abtn" id="btnDup">⎘ Duplicate</button>
       <button class="abtn dan" id="btnDel">✕ Delete</button>
     </div>

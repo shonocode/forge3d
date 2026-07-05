@@ -9,6 +9,8 @@ import type { BrushId } from "../state";
 import { refineWithinRadii, remapAttribute } from "./dyntopo";
 import { symmetricCenters } from "./sculpt-symmetry";
 import { createMask, paintMask } from "./sculpt-mask";
+import { applyDelta } from "./sculpt-delta";
+import type { SparseDelta } from "./sculpt-delta";
 
 export const BRUSHES = [
   { id: "push" as BrushId, label: "↑ Push（盛り上げ）" },
@@ -322,6 +324,49 @@ export function captureGeometry(mesh: AbstractMesh): GeoSnapshot | null {
     uvs: uvs ? new Float32Array(uvs) : null,
     mask: mask ? new Float32Array(mask) : null,
   };
+}
+
+/**
+ * Apply one side of a sparse sculpt-stroke delta (undo/redo for strokes that
+ * did NOT change topology). Positions are patched in place and normals
+ * recomputed; the mask is either patched via its own delta or wholesale
+ * replaced when the stroke created it (`maskFull`: undefined = leave to
+ * delta, null = remove mask, array = set this mask).
+ */
+export function applySculptDelta(
+  mesh: AbstractMesh,
+  posDelta: SparseDelta | null,
+  maskDelta: SparseDelta | null,
+  maskFull: Float32Array | null | undefined,
+  side: "before" | "after",
+): void {
+  if (posDelta && posDelta.indices.length) {
+    const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+    if (pos) {
+      const posArr = pos instanceof Float32Array ? pos : new Float32Array(pos);
+      applyDelta(posArr, posDelta, side);
+      mesh.updateVerticesData(VertexBuffer.PositionKind, posArr);
+      const idx = mesh.getIndices();
+      const nor = mesh.getVerticesData(VertexBuffer.NormalKind);
+      if (idx && nor) {
+        const norArr = nor instanceof Float32Array ? nor : new Float32Array(nor);
+        VertexData.ComputeNormals(posArr, idx, norArr);
+        mesh.updateVerticesData(VertexBuffer.NormalKind, norArr);
+      }
+    }
+  }
+
+  if (maskFull !== undefined) {
+    if (maskFull) state.sculptMaskMap.set(mesh.uniqueId, new Float32Array(maskFull));
+    else state.sculptMaskMap.delete(mesh.uniqueId);
+    refreshMaskVisual(mesh);
+  } else if (maskDelta && maskDelta.indices.length) {
+    const mask = state.sculptMaskMap.get(mesh.uniqueId);
+    if (mask) {
+      applyDelta(mask, maskDelta, side);
+      refreshMaskVisual(mesh);
+    }
+  }
 }
 
 /** Restore a mesh from a {@link GeoSnapshot}. Rebuilds geometry so topology changes undo cleanly. */

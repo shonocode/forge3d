@@ -55,6 +55,19 @@ export function deleteClip(clipId: string): void {
   status("Clip deleted");
 }
 
+/**
+ * Switch the active clip (clip selector UI). Stops any running preview,
+ * clamps the playhead into the new clip's range, and applies its pose.
+ */
+export function setActiveClip(clipId: string): void {
+  const clip = state.animClips.find((c) => c.id === clipId);
+  if (!clip || state.activeClipId === clipId) return;
+  stopPreview();
+  state.activeClipId = clipId;
+  scrubToFrame(Math.min(state.currentFrame, clip.maxFrames));
+  status("Clip: " + clip.name);
+}
+
 /** Insert or replace a keyframe in a track, maintaining sort order by frame. */
 function upsertKeyframe(track: BoneTrack, kf: KeyframeData): void {
   const existIdx = track.keyframes.findIndex((k) => k.frame === kf.frame);
@@ -85,8 +98,116 @@ function getBonePose(boneId: string): { rotation: { x: number; y: number; z: num
   };
 }
 
+// ── Undoable keyframe capture ──
+
+function cloneKf(kf: KeyframeData): KeyframeData {
+  const out: KeyframeData = {
+    frame: kf.frame,
+    rotation: { ...kf.rotation },
+    position: { ...kf.position },
+  };
+  if (kf.easing !== undefined) out.easing = kf.easing;
+  if (kf.tangents) out.tangents = structuredClone(kf.tangents);
+  return out;
+}
+
+interface CaptureRecord {
+  boneId: string;
+  boneName: string;
+  trackExisted: boolean;
+  prevKf: KeyframeData | null;
+  afterKf: KeyframeData;
+}
+
+/** Record the bone's current pose as a keyframe; returns undo bookkeeping. */
+function recordBoneKeyframe(
+  clip: AnimClipData,
+  boneId: string,
+  boneName: string,
+  frame: number,
+): CaptureRecord | null {
+  const pose = getBonePose(boneId);
+  if (!pose) return null;
+  let track = clip.tracks.find((t) => t.boneId === boneId);
+  const trackExisted = !!track;
+  const existing = track?.keyframes.find((k) => k.frame === frame) ?? null;
+  const prevKf = existing ? cloneKf(existing) : null;
+  const kf: KeyframeData = { frame, rotation: pose.rotation, position: pose.position };
+  if (!track) {
+    track = { boneId, boneName, keyframes: [] };
+    clip.tracks.push(track);
+  }
+  upsertKeyframe(track, kf);
+  return { boneId, boneName, trackExisted, prevKf, afterKf: cloneKf(kf) };
+}
+
+/** Push a single history entry that reverses/replays a set of capture records. */
+function pushCaptureUndo(
+  label: string,
+  clip: AnimClipData,
+  frame: number,
+  records: CaptureRecord[],
+): void {
+  if (!records.length) return;
+  state.history.push({
+    label,
+    undo() {
+      for (const r of records) {
+        const ti = clip.tracks.findIndex((t) => t.boneId === r.boneId);
+        if (ti === -1) continue;
+        const track = clip.tracks[ti]!;
+        if (!r.trackExisted) {
+          clip.tracks.splice(ti, 1);
+          continue;
+        }
+        const ki = track.keyframes.findIndex((k) => k.frame === frame);
+        if (r.prevKf) {
+          if (ki !== -1) track.keyframes[ki] = cloneKf(r.prevKf);
+          else upsertKeyframe(track, cloneKf(r.prevKf));
+        } else if (ki !== -1) {
+          track.keyframes.splice(ki, 1);
+        }
+      }
+      scrubToFrame(state.currentFrame);
+    },
+    redo() {
+      for (const r of records) {
+        let track = clip.tracks.find((t) => t.boneId === r.boneId);
+        if (!track) {
+          track = { boneId: r.boneId, boneName: r.boneName, keyframes: [] };
+          clip.tracks.push(track);
+        }
+        upsertKeyframe(track, cloneKf(r.afterKf));
+      }
+      scrubToFrame(state.currentFrame);
+    },
+  });
+}
+
+/**
+ * Called after a pose edit (rotation gizmo drag end in Pose Mode). With
+ * Auto-Key on and an active clip, the edited bone is keyed immediately
+ * (undoable). Otherwise the pose is flagged dirty so the next scrub can warn
+ * that the unkeyed pose is being discarded.
+ */
+export function notifyPoseEdited(boneId: string): void {
+  const clip = getActiveClip();
+  if (state.autoKey && clip) {
+    const bd = findBoneById(boneId);
+    if (!bd) return;
+    const rec = recordBoneKeyframe(clip, boneId, bd.name, state.currentFrame);
+    if (rec) {
+      pushCaptureUndo("Auto-Key", clip, state.currentFrame, [rec]);
+      status("Auto-Key: " + bd.name + " @ " + state.currentFrame);
+    }
+  } else {
+    state.poseDirty = true;
+  }
+}
+
 /**
  * Capture keyframe for the currently selected bone at the current frame.
+ * Undoable.
  */
 export function captureKeyframe(): void {
   const clip = getActiveClip();
@@ -106,23 +227,10 @@ export function captureKeyframe(): void {
   const bd = findBoneById(state.selectedBoneId);
   if (!bd) return;
 
-  const pose = getBonePose(state.selectedBoneId);
-  if (!pose) return;
-
-  const kf: KeyframeData = {
-    frame: state.currentFrame,
-    rotation: pose.rotation,
-    position: pose.position,
-  };
-
-  // Find or create track for this bone
-  let track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
-  if (!track) {
-    track = { boneId: state.selectedBoneId, boneName: bd.name, keyframes: [] };
-    clip.tracks.push(track);
-  }
-
-  upsertKeyframe(track, kf);
+  const rec = recordBoneKeyframe(clip, bd.id, bd.name, state.currentFrame);
+  if (!rec) return;
+  pushCaptureUndo("Record Key", clip, state.currentFrame, [rec]);
+  state.poseDirty = false;
 
   status("Keyframe recorded: " + bd.name + " @ frame " + state.currentFrame);
 }
@@ -143,24 +251,13 @@ export function captureAllKeyframes(): void {
     return;
   }
 
+  const records: CaptureRecord[] = [];
   for (const bd of skelData.bones) {
-    const pose = getBonePose(bd.id);
-    if (!pose) continue;
-
-    const kf: KeyframeData = {
-      frame: state.currentFrame,
-      rotation: pose.rotation,
-      position: pose.position,
-    };
-
-    let track = clip.tracks.find((t) => t.boneId === bd.id);
-    if (!track) {
-      track = { boneId: bd.id, boneName: bd.name, keyframes: [] };
-      clip.tracks.push(track);
-    }
-
-    upsertKeyframe(track, kf);
+    const rec = recordBoneKeyframe(clip, bd.id, bd.name, state.currentFrame);
+    if (rec) records.push(rec);
   }
+  pushCaptureUndo("Record All Keys", clip, state.currentFrame, records);
+  state.poseDirty = false;
 
   status("All keyframes recorded @ frame " + state.currentFrame);
 }
@@ -201,6 +298,13 @@ export function scrubToFrame(frame: number): void {
   state.currentFrame = frame;
 
   if (!clip) return;
+
+  // Unkeyed pose edits are about to be overwritten by the clip pose — warn
+  // once so the user knows to Record (or turn Auto-Key on) next time.
+  if (state.poseDirty && clip.tracks.length) {
+    status("⚠ 未キーのポーズをスクラブで破棄 — Record するか Auto-Key を ON に");
+  }
+  state.poseDirty = false;
 
   const skelData = getActiveSkeleton();
   if (!skelData) return;

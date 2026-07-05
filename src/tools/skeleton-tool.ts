@@ -274,6 +274,18 @@ let _hierarchyLineCount = 0;
 
 // ── Gizmo drag observer tracking ──
 
+/**
+ * Pose-edit notification hook. Set via {@link setPoseEditedHandler} (from UI
+ * init) instead of importing animation-tool directly — animation-tool already
+ * imports this module, and a static import back would create a cycle.
+ */
+let _poseEditedHandler: ((boneId: string) => void) | null = null;
+
+/** Register the callback fired after a Pose Mode rotation drag ends. */
+export function setPoseEditedHandler(fn: (boneId: string) => void): void {
+  _poseEditedHandler = fn;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _posDragEndObserver: Observer<any> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -351,6 +363,9 @@ export function selectBone(boneId: string): void {
       if (rotGizmo) {
         _rotDragEndObserver = rotGizmo.onDragEndObservable.add(() => {
           syncBoneRotationFromVisual(boneData, skelData);
+          // Auto-Key / dirty-pose tracking (wired in bindings to avoid an
+          // import cycle with animation-tool).
+          _poseEditedHandler?.(boneData.id);
         });
       }
     } else {

@@ -743,6 +743,20 @@ export function updateAnimUI(): void {
 }
 
 function updateAnimClipInfo(): void {
+  // Clip selector — one option per authored clip, active one selected.
+  const sel = document.getElementById("animClipSel") as HTMLSelectElement | null;
+  if (sel) {
+    sel.innerHTML = "";
+    for (const c of state.animClips) {
+      const opt = document.createElement("option");
+      opt.value = c.id;
+      opt.textContent = c.name;
+      if (c.id === state.activeClipId) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.disabled = state.animClips.length === 0;
+  }
+
   const el = E("animClipInfo");
   const clip = getActiveClip();
   if (!clip) {

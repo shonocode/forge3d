@@ -86,6 +86,32 @@ export async function exportGLB(): Promise<void> {
 }
 
 /**
+ * Serialize the current scene to GLB bytes (shared by Save-to-Library and
+ * the .forge3d project exporter). Handles the skeleton export rig lifecycle.
+ * Returns null when the scene has no meshes or the exporter yields no file.
+ */
+export async function serializeSceneToGlb(): Promise<ArrayBuffer | null> {
+  if (!state.allMeshes.length) return null;
+  const skelData = getActiveSkeleton();
+  let rig: ExportRig | null = null;
+  try {
+    if (skelData && skelData.bones.length > 0) {
+      rig = prepareExportRig(skelData, state.scene);
+    }
+    const result = await GLTF2Export.GLBAsync(state.scene, "model", {
+      shouldExportNode,
+      shouldExportAnimation: () => true,
+      animationSampleRate: 30,
+    });
+    const glbFile = result.glTFFiles["model.glb"];
+    if (!glbFile) return null;
+    return await (glbFile as Blob).arrayBuffer();
+  } finally {
+    if (skelData && rig) disposeExportRig(skelData, rig);
+  }
+}
+
+/**
  * Save current scene to the model library (OPFS + metadata).
  */
 export async function saveToLibrary(): Promise<void> {

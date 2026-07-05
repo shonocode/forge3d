@@ -411,9 +411,10 @@ Apply しないと Mirror で生成された左側がマージ後に消える。
   <li>ステータスバーに「Unwrap: NNN verts, NNN faces」と表示されれば成功</li>
 </ol>
 
-<div class="warn">UV 展開は<strong>頂点数を増やす</strong>。リギング後だと weight が破損するので、
-必ずリギング前にやる。エラーメッセージが「mesh has skeleton — remove rigging first」なら、
-すでに skeleton が割り当てられている。</div>
+<div class="warn">UV 展開は<strong>頂点数を増やす</strong>。リギング済みでもボーンウェイトは
+自動で引き継がれるようになったが、頂点が増えるぶんウェイトの塗り直し確認は少なく済ませたいので、
+<strong>リギング前に展開しておくのが引き続きおすすめ</strong>。Morph Target 付きは展開不可
+（モーフ作成前に展開すること）。</div>
 
 <div class="note">展開結果の 2D ビューはまだ無いので、ペイント時に「あ、ここの UV が伸びてる」と
 気付いてから手直しする流れ。Phase 2 で 2D UV エディタを実装予定。</div>

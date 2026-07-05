@@ -20,9 +20,10 @@ import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, isSeam, type EditMesh
  * this back to the Babylon mesh and rebuilds the EditMesh half-edges.
  *
  * V1 limitations:
- *  - Skin weights / morph targets are **lost** (vertex buffer is rebuilt).
- *    Callers must guard against running this on rigged meshes or accept the
- *    reset.
+ *  - Morph targets are **lost** (vertex buffer is rebuilt). Callers must guard
+ *    against running this on morphed meshes or accept the reset. Skin weights
+ *    survive: `sourceVerts` maps each rebuilt vertex to its original vertex so
+ *    the caller can carry the weight buffers across.
  *  - Packing is greedy grid, not rect-pack. Sparse islands waste UV space.
  */
 
@@ -30,6 +31,8 @@ export interface UnwrapResult {
   positions: Float32Array;
   indices: number[];
   uvs: Float32Array;
+  /** Original vertex index each rebuilt vertex was split from (per-vertex attribute carry-over). */
+  sourceVerts: number[];
 }
 
 export interface UnwrapOptions {
@@ -233,6 +236,7 @@ function assembleSplit(
   const positions: number[] = [];
   const indices: number[] = [];
   const uvs: number[] = [];
+  const sourceVerts: number[] = [];
 
   for (const island of islands) {
     for (const f of island.faces) {
@@ -243,6 +247,7 @@ function assembleSplit(
         const v = verts[i]!;
         positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
         uvs.push(fUV[i * 2]!, fUV[i * 2 + 1]!);
+        sourceVerts.push(v);
       }
       indices.push(base, base + 1, base + 2);
     }
@@ -252,6 +257,7 @@ function assembleSplit(
     positions: new Float32Array(positions),
     indices,
     uvs: new Float32Array(uvs),
+    sourceVerts,
   };
 }
 

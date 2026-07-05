@@ -321,18 +321,15 @@ export function markSeamSelection(): void {
  * the new UVs (vertex count grows: each face becomes 3 unique verts in V1),
  * and re-enter Edit Mode on the rebuilt geometry.
  *
- * Warns and aborts if the source mesh has skeleton or morph data — those
- * would be invalidated by the vertex buffer rewrite. The user has to bake or
- * remove them first.
+ * Skin weights survive the rebuild: each rebuilt vertex knows its source
+ * vertex (`UnwrapResult.sourceVerts`), so MatricesIndices/Weights are copied
+ * across. Morph targets still abort — their per-target position buffers
+ * cannot survive a vertex-count change.
  */
 export function unwrapMesh(): void {
   const em = state.editMesh;
   if (!em || !currentOverlay || !currentGizmo) return;
   const mesh = em.source;
-  if (mesh.skeleton) {
-    status("⚠ Unwrap: mesh has skeleton — remove rigging first (UV unwrap rebuilds verts)");
-    return;
-  }
   if (mesh.morphTargetManager) {
     status("⚠ Unwrap: mesh has morph targets — clear them first");
     return;
@@ -344,10 +341,30 @@ export function unwrapMesh(): void {
   const beforeIdx: number[] = Array.from(beforeIdxRaw);
   const beforeUV = mesh.getVerticesData(VertexBuffer.UVKind);
   const beforeUVCopy = beforeUV ? new Float32Array(beforeUV) : null;
+  const beforeMIRaw = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind);
+  const beforeMWRaw = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
+  const beforeMI = beforeMIRaw ? new Float32Array(beforeMIRaw) : null;
+  const beforeMW = beforeMWRaw ? new Float32Array(beforeMWRaw) : null;
   const beforeSel = new Set(state.editSelection.indices);
   const beforeMode = state.editSelection.mode;
 
   const result = smartUVProject(em);
+
+  // Carry skin weights across the rebuild: copy each source vert's 4 influences.
+  let afterMI: Float32Array | null = null;
+  let afterMW: Float32Array | null = null;
+  if (beforeMI && beforeMW) {
+    const n = result.sourceVerts.length;
+    afterMI = new Float32Array(n * 4);
+    afterMW = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const src = result.sourceVerts[i]! * 4;
+      for (let k = 0; k < 4; k++) {
+        afterMI[i * 4 + k] = beforeMI[src + k]!;
+        afterMW[i * 4 + k] = beforeMW[src + k]!;
+      }
+    }
+  }
 
   // Apply to Babylon mesh.
   const vd = new VertexData();
@@ -357,6 +374,10 @@ export function unwrapMesh(): void {
   const normals = new Float32Array(result.positions.length);
   VertexData.ComputeNormals(result.positions, result.indices, normals);
   vd.normals = normals;
+  if (afterMI && afterMW) {
+    vd.matricesIndices = afterMI;
+    vd.matricesWeights = afterMW;
+  }
   vd.applyToMesh(mesh, true);
 
   // Rebuild EditMesh + overlay.
@@ -379,6 +400,10 @@ export function unwrapMesh(): void {
       vd2.positions = new Float32Array(beforePos);
       vd2.indices = beforeIdx.slice();
       if (beforeUVCopy) vd2.uvs = new Float32Array(beforeUVCopy);
+      if (beforeMI && beforeMW) {
+        vd2.matricesIndices = new Float32Array(beforeMI);
+        vd2.matricesWeights = new Float32Array(beforeMW);
+      }
       const n2 = new Float32Array(beforePos.length);
       VertexData.ComputeNormals(beforePos, beforeIdx, n2);
       vd2.normals = n2;
@@ -396,6 +421,10 @@ export function unwrapMesh(): void {
       vd2.positions = new Float32Array(afterPos);
       vd2.indices = afterIdx.slice();
       vd2.uvs = new Float32Array(afterUV);
+      if (afterMI && afterMW) {
+        vd2.matricesIndices = new Float32Array(afterMI);
+        vd2.matricesWeights = new Float32Array(afterMW);
+      }
       const n2 = new Float32Array(afterPos.length);
       VertexData.ComputeNormals(afterPos, afterIdx, n2);
       vd2.normals = n2;
