@@ -18,7 +18,7 @@ import {
   float32ToBase64,
   base64ToFloat32,
 } from "./project-format";
-import type { ProjectSidecar, ProjectMeshEntry } from "./project-format";
+import type { ProjectSidecar, ProjectMeshEntry, ProjectBoneConstraintEntry } from "./project-format";
 import { serializeSceneToGlb, loadFileDirectly } from "./gltf-exporter";
 import { serializeGraph, deserializeGraph } from "../materials/graph-io";
 import {
@@ -76,6 +76,19 @@ function collectSidecar(): ProjectSidecar {
     }
   }
   if (Object.keys(boneRolls).length) sidecar.boneRolls = boneRolls;
+
+  // Bone constraints (Limit Rotation / Aim) — also outside glTF's model.
+  const boneConstraints: Record<string, ProjectBoneConstraintEntry> = {};
+  for (const [, skel] of state.skeletonMap) {
+    for (const bd of skel.bones) {
+      if (!bd.limitRotation && !bd.aimConstraint) continue;
+      const entry: ProjectBoneConstraintEntry = {};
+      if (bd.limitRotation) entry.limitRotation = { ...bd.limitRotation };
+      if (bd.aimConstraint) entry.aim = { ...bd.aimConstraint };
+      boneConstraints[bd.name] = entry;
+    }
+  }
+  if (Object.keys(boneConstraints).length) sidecar.boneConstraints = boneConstraints;
 
   return sidecar;
 }
@@ -183,6 +196,18 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
       for (const bd of skel.bones) {
         const roll = sidecar.boneRolls[bd.name];
         if (typeof roll === "number" && roll !== 0) bd.roll = roll;
+      }
+    }
+  }
+
+  // Bone constraints (Limit Rotation / Aim), matched by name like rolls.
+  if (sidecar.boneConstraints) {
+    for (const [, skel] of state.skeletonMap) {
+      for (const bd of skel.bones) {
+        const entry = sidecar.boneConstraints[bd.name];
+        if (!entry) continue;
+        if (entry.limitRotation) bd.limitRotation = { ...entry.limitRotation };
+        if (entry.aim) bd.aimConstraint = { ...entry.aim };
       }
     }
   }

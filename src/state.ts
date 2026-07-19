@@ -73,6 +73,16 @@ export interface BoneData {
    * 0 (the V1 default frame), so pre-roll rigs behave exactly as before.
    */
   roll?: number;
+  /**
+   * Per-axis local-rotation clamp, enforced every frame after IK (Blender's
+   * "Limit Rotation"). Absent = unconstrained.
+   */
+  limitRotation?: import("./tools/bone-constraints").LimitRotationConstraint;
+  /**
+   * Keeps the bone's +Y (roll-twisted) axis pointed at a world target,
+   * enforced every frame after IK (Blender's "Damped Track"). Absent = off.
+   */
+  aimConstraint?: import("./tools/bone-constraints").AimConstraint;
 }
 
 /** Local-pose snapshot for Copy/Paste Pose (rotation euler + translation). */

@@ -50,6 +50,18 @@ export interface ProjectSidecar {
    * are stored; absent for pre-F-M6 projects (all rolls 0).
    */
   boneRolls?: Record<string, number>;
+  /**
+   * Per-bone Limit Rotation / Aim constraints, keyed by bone name — like
+   * roll, glTF has no constraint concept. Only bones with at least one
+   * constraint are stored; absent for projects that pre-date constraints.
+   */
+  boneConstraints?: Record<string, ProjectBoneConstraintEntry>;
+}
+
+/** One bone's constraint payload inside {@link ProjectSidecar.boneConstraints}. */
+export interface ProjectBoneConstraintEntry {
+  limitRotation?: import("../tools/bone-constraints").LimitRotationConstraint;
+  aim?: import("../tools/bone-constraints").AimConstraint;
 }
 
 // ── base64 helpers (chunked to stay under argument limits) ────────────────
@@ -141,6 +153,32 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
     }
     for (const v of Object.values(s.boneRolls)) {
       if (typeof v !== "number") throw new Error("Sidecar: boneRolls values must be numbers");
+    }
+  }
+  if (s.boneConstraints !== undefined) {
+    if (typeof s.boneConstraints !== "object" || s.boneConstraints === null || Array.isArray(s.boneConstraints)) {
+      throw new Error("Sidecar: boneConstraints must be an object");
+    }
+    for (const v of Object.values(s.boneConstraints)) {
+      if (typeof v !== "object" || v === null) {
+        throw new Error("Sidecar: each boneConstraints entry must be an object");
+      }
+      const entry = v as { limitRotation?: unknown; aim?: unknown };
+      if (entry.limitRotation !== undefined) {
+        const lr = entry.limitRotation as { enabled?: unknown };
+        if (typeof lr !== "object" || lr === null || typeof lr.enabled !== "boolean") {
+          throw new Error("Sidecar: limitRotation needs a boolean enabled");
+        }
+      }
+      if (entry.aim !== undefined) {
+        const aim = entry.aim as { enabled?: unknown; targetX?: unknown; targetY?: unknown; targetZ?: unknown };
+        if (
+          typeof aim !== "object" || aim === null || typeof aim.enabled !== "boolean" ||
+          typeof aim.targetX !== "number" || typeof aim.targetY !== "number" || typeof aim.targetZ !== "number"
+        ) {
+          throw new Error("Sidecar: aim needs enabled + numeric targetX/Y/Z");
+        }
+      }
     }
   }
   return raw as ProjectSidecar;

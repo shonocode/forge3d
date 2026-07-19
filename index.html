@@ -354,6 +354,33 @@
           <input type="number" step="5" min="0" max="180" id="ikMaxBend" aria-label="IK max bend degrees" style="width:56px;font-size:10px" value="0"></div>
         <button class="abtn pri" id="btnSolveIK" style="margin-top:6px" title="Solve the chain once toward the target (undo-able). When 'Enable IK' is on the chain also solves live every frame.">Solve IK Now</button>
       </div>
+      <div class="pg">
+        <div class="pgt">Bone Constraints</div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="ボーンの +Y 軸（Roll 反映）をターゲットへ向け続ける（Blender の Damped Track 相当）。IK 適用後に毎フレーム適用">Aim (注視)</span>
+          <input type="checkbox" id="aimEnabled" aria-label="Aim constraint enabled" style="margin-left:auto"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Aim Target</span>
+          <button class="abtn" id="btnAimSnapTarget" style="margin-left:auto;font-size:10px;padding:2px 8px" title="ターゲットを現在のボーン方向の先へスナップ（有効化してもポーズが跳ばない）">Snap Ahead</button></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">X</label>
+          <input type="number" step="0.1" id="aimTargetX" aria-label="Aim target X" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Y</label>
+          <input type="number" step="0.1" id="aimTargetY" aria-label="Aim target Y" style="flex:1;font-size:10px" value="0"></div>
+        <div class="sr" style="display:flex;gap:4px"><label style="font-size:9px;width:14px">Z</label>
+          <input type="number" step="0.1" id="aimTargetZ" aria-label="Aim target Z" style="flex:1;font-size:10px" value="0"></div>
+        <div class="pr" style="margin-top:6px"><span class="pl" style="font-size:10px;color:var(--t3)" title="ローカル回転を軸ごとに min/max（度）へクランプ（Blender の Limit Rotation 相当）。IK・Aim の結果にも適用">Limit Rotation</span>
+          <input type="checkbox" id="limRotEnabled" aria-label="Limit rotation enabled" style="margin-left:auto"></div>
+        <div class="sr" style="display:flex;gap:4px;align-items:center">
+          <input type="checkbox" id="limX" aria-label="Limit X axis"><label style="font-size:9px;width:10px">X</label>
+          <input type="number" step="5" id="limXMin" aria-label="X min degrees" placeholder="min°" style="flex:1;font-size:10px" value="-180">
+          <input type="number" step="5" id="limXMax" aria-label="X max degrees" placeholder="max°" style="flex:1;font-size:10px" value="180"></div>
+        <div class="sr" style="display:flex;gap:4px;align-items:center">
+          <input type="checkbox" id="limY" aria-label="Limit Y axis"><label style="font-size:9px;width:10px">Y</label>
+          <input type="number" step="5" id="limYMin" aria-label="Y min degrees" placeholder="min°" style="flex:1;font-size:10px" value="-180">
+          <input type="number" step="5" id="limYMax" aria-label="Y max degrees" placeholder="max°" style="flex:1;font-size:10px" value="180"></div>
+        <div class="sr" style="display:flex;gap:4px;align-items:center">
+          <input type="checkbox" id="limZ" aria-label="Limit Z axis"><label style="font-size:9px;width:10px">Z</label>
+          <input type="number" step="5" id="limZMin" aria-label="Z min degrees" placeholder="min°" style="flex:1;font-size:10px" value="-180">
+          <input type="number" step="5" id="limZMax" aria-label="Z max degrees" placeholder="max°" style="flex:1;font-size:10px" value="180"></div>
+      </div>
     </div>
     <div class="tbody" id="tb-edit"></div>
     <div class="tbody" id="tb-map">

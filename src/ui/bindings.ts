@@ -3,7 +3,7 @@ import { addMorph, captureMorph } from "../tools/morph";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { clearPaintTexture } from "../tools/texture-paint";
 import { clearSculptMask } from "../tools/sculpt";
-import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion, copyBonePose, pasteBonePose, refreshPoseGizmoOrientation } from "../tools/skeleton-tool";
+import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion, getAimTargetSuggestion, copyBonePose, pasteBonePose, refreshPoseGizmoOrientation } from "../tools/skeleton-tool";
 import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData, refreshWeightOverlay } from "../tools/weight-paint";
 import { applyAutoWeights } from "../tools/auto-weights";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -18,6 +18,7 @@ import {
 import { EASING_TYPES } from "../tools/easing";
 import type { EasingType } from "../tools/easing";
 import { findBoneById, selectBone as selectBoneFn, setPoseEditedHandler } from "../tools/skeleton-tool";
+import type { LimitRotationConstraint } from "../tools/bone-constraints";
 import { drawGraphEditor } from "../tools/graph-editor";
 import { drawDopesheet } from "../tools/dopesheet";
 import {
@@ -513,6 +514,105 @@ export function bindActionButtons(): void {
     }
     solveIKForBone(state.selectedBoneId, new Vector3(ik.targetX, ik.targetY, ik.targetZ));
   });
+
+  // ── Bone constraint controls (Aim / Limit Rotation) ──
+  // Same write-through pattern as the IK fields: no undo entries — the
+  // constraint definition is config, not a pose edit; enforcement runs in
+  // the per-frame hook (skeleton-tool.applyAllBoneConstraints).
+
+  const setAimInputs = (x: number, y: number, z: number): void => {
+    (E("aimTargetX") as HTMLInputElement).value = x.toFixed(3);
+    (E("aimTargetY") as HTMLInputElement).value = y.toFixed(3);
+    (E("aimTargetZ") as HTMLInputElement).value = z.toFixed(3);
+  };
+
+  E("aimEnabled").addEventListener("change", function () {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd) return;
+    if ((this as HTMLInputElement).checked) {
+      // Default the target to a point along the bone's current direction so
+      // enabling Aim doesn't snap the pose (same reasoning as IK's default).
+      const p = getAimTargetSuggestion(bd.id);
+      bd.aimConstraint = {
+        enabled: true,
+        targetX: p?.x ?? 0,
+        targetY: p?.y ?? 0,
+        targetZ: p?.z ?? 0,
+      };
+      setAimInputs(bd.aimConstraint.targetX, bd.aimConstraint.targetY, bd.aimConstraint.targetZ);
+    } else {
+      bd.aimConstraint = undefined;
+    }
+  });
+  const wireAimTargetField = (id: "aimTargetX" | "aimTargetY" | "aimTargetZ", axis: "X" | "Y" | "Z"): void => {
+    E(id).addEventListener("input", function () {
+      const v = +(this as HTMLInputElement).value;
+      if (Number.isNaN(v)) return;
+      if (!state.selectedBoneId) return;
+      const bd = findBoneById(state.selectedBoneId);
+      if (!bd?.aimConstraint) return;
+      bd.aimConstraint[`target${axis}` as "targetX" | "targetY" | "targetZ"] = v;
+    });
+  };
+  wireAimTargetField("aimTargetX", "X");
+  wireAimTargetField("aimTargetY", "Y");
+  wireAimTargetField("aimTargetZ", "Z");
+  E("btnAimSnapTarget").addEventListener("click", () => {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.aimConstraint) {
+      status("⚠ Aim を有効化してボーンを選択");
+      return;
+    }
+    const p = getAimTargetSuggestion(bd.id);
+    if (!p) return;
+    bd.aimConstraint.targetX = p.x;
+    bd.aimConstraint.targetY = p.y;
+    bd.aimConstraint.targetZ = p.z;
+    setAimInputs(p.x, p.y, p.z);
+    status("Aim target snapped ahead");
+  });
+
+  // Limit Rotation — the 3 axis checkboxes + 6 min/max fields rebuild the
+  // whole constraint from the inputs on any edit (cheap, and keeps a single
+  // source of truth for what the panel shows).
+  const readLimitInputs = (): LimitRotationConstraint => {
+    const num = (id: string): number => {
+      const v = +(E(id) as HTMLInputElement).value;
+      return Number.isNaN(v) ? 0 : v;
+    };
+    return {
+      enabled: true,
+      limitX: (E("limX") as HTMLInputElement).checked,
+      minXDeg: num("limXMin"),
+      maxXDeg: num("limXMax"),
+      limitY: (E("limY") as HTMLInputElement).checked,
+      minYDeg: num("limYMin"),
+      maxYDeg: num("limYMax"),
+      limitZ: (E("limZ") as HTMLInputElement).checked,
+      minZDeg: num("limZMin"),
+      maxZDeg: num("limZMax"),
+    };
+  };
+  const syncLimitFromInputs = (): void => {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd?.limitRotation) return;
+    bd.limitRotation = readLimitInputs();
+  };
+  E("limRotEnabled").addEventListener("change", function () {
+    if (!state.selectedBoneId) return;
+    const bd = findBoneById(state.selectedBoneId);
+    if (!bd) return;
+    bd.limitRotation = (this as HTMLInputElement).checked ? readLimitInputs() : undefined;
+  });
+  for (const id of ["limX", "limY", "limZ"]) {
+    E(id).addEventListener("change", syncLimitFromInputs);
+  }
+  for (const id of ["limXMin", "limXMax", "limYMin", "limYMax", "limZMin", "limZMax"]) {
+    E(id).addEventListener("input", syncLimitFromInputs);
+  }
 
   // Map editor controls
   E("btnRefreshLib").addEventListener("click", () => {

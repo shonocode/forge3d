@@ -28,6 +28,7 @@ import {
   chainLocalTranslations,
   BONE_PRIMARY_AXIS,
 } from "./bone-orientation";
+import { clampEulerRotation, aimLocalRotation } from "./bone-constraints";
 
 const BONE_VISUAL_PREFIX = "bone_visual_";
 const HIERARCHY_LINES_NAME = "bone_hierarchy_lines";
@@ -794,7 +795,188 @@ export function getIKPoleSuggestion(endBoneId: string): Vector3 | null {
   return mid.add(dir.scale(Math.max(0.5, reach)));
 }
 
+/**
+ * Suggested Aim-constraint target for a bone: a point along its *current*
+ * direction (its first child's position, else ahead of it away from the
+ * parent, else straight up). Enabling Aim with this target leaves the pose
+ * exactly where it is — mirroring the IK "Snap to Bone" affordance.
+ */
+export function getAimTargetSuggestion(boneId: string): Vector3 | null {
+  const skelData = getActiveSkeleton();
+  if (!skelData) return null;
+  const bd = skelData.bones.find((b) => b.id === boneId);
+  if (!bd) return null;
+
+  const head = getBoneWorldPosition(bd);
+  const child = skelData.bones.find((b) => b.parentId === bd.id);
+  if (child) return getBoneWorldPosition(child);
+
+  if (bd.parentId) {
+    const parent = skelData.bones.find((b) => b.id === bd.parentId);
+    if (parent) {
+      const parentPos = getBoneWorldPosition(parent);
+      const dir = boneDirection(parentPos, head);
+      const len = Math.max(0.5, Vector3.Distance(parentPos, head));
+      return head.add(dir.scale(len));
+    }
+  }
+  return head.add(new Vector3(0, 1, 0));
+}
+
+// ── Bone constraints (Limit Rotation / Aim) ──
+
+/** Depth of a bone in the hierarchy — used to order constraint evaluation. */
+function boneDepth(bd: BoneData, skelData: SkeletonData): number {
+  let depth = 0;
+  let cur: BoneData | undefined = bd;
+  while (cur?.parentId) {
+    depth++;
+    cur = skelData.bones.find((b) => b.id === cur!.parentId);
+  }
+  return depth;
+}
+
+/**
+ * Enforce every bone's Limit Rotation / Aim constraints on one skeleton.
+ * Per bone, Aim runs first (it *sets* the local rotation toward the target),
+ * then Limit Rotation clamps the result — the fixed V1 stack order. Bones
+ * evaluate parents-before-children so a constrained parent's corrected frame
+ * feeds its children's evaluation in the same pass.
+ *
+ * Local translation/scale are preserved; nothing is written (and no visuals
+ * refresh) when every constrained bone is already satisfied, so the
+ * per-frame cost for a satisfied — or unconstrained — rig is a scan.
+ * No undo entries: like the IK render hook, this runs continuously.
+ *
+ * @returns `true` when any bone's rotation was corrected.
+ */
+export function applyConstraintsToSkeleton(skelData: SkeletonData): boolean {
+  const constrained = skelData.bones.filter(
+    (b) => b.aimConstraint?.enabled || b.limitRotation?.enabled
+  );
+  if (constrained.length === 0) return false;
+
+  skelData.skeleton.computeAbsoluteTransforms();
+  constrained.sort((a, b) => boneDepth(a, skelData) - boneDepth(b, skelData));
+
+  let changedAny = false;
+  let absDirty = false;
+
+  for (const bd of constrained) {
+    // A corrected ancestor invalidates cached absolute transforms — refresh
+    // before reading this bone's parent frame / head position.
+    if (absDirty) {
+      skelData.skeleton.computeAbsoluteTransforms();
+      absDirty = false;
+    }
+
+    const localMat = bd.bone.getLocalMatrix();
+    localMat.decompose(_decompScale, _decompRot, _decompPos);
+    const scale = _decompScale.clone();
+    const translation = _decompPos.clone();
+    let rotation = _decompRot.clone();
+    let boneChanged = false;
+
+    const aim = bd.aimConstraint;
+    if (aim?.enabled) {
+      const abs = bd.bone.getAbsoluteTransform();
+      const head = new Vector3(abs.m[12]!, abs.m[13]!, abs.m[14]!);
+      const aimed = aimLocalRotation(
+        getParentAbsoluteRotation(bd, skelData),
+        head,
+        new Vector3(aim.targetX, aim.targetY, aim.targetZ),
+        bd.roll ?? 0
+      );
+      // Skip the rewrite when already aimed (|dot| ≈ 1 ⇔ same rotation).
+      if (aimed && Math.abs(Quaternion.Dot(aimed, rotation)) < 1 - 1e-10) {
+        rotation = aimed;
+        boneChanged = true;
+      }
+    }
+
+    const limit = bd.limitRotation;
+    if (limit?.enabled) {
+      const euler = rotation.toEulerAngles();
+      const clamped = clampEulerRotation({ x: euler.x, y: euler.y, z: euler.z }, limit);
+      if (clamped.changed) {
+        rotation = Quaternion.FromEulerAngles(
+          clamped.rotation.x,
+          clamped.rotation.y,
+          clamped.rotation.z
+        );
+        boneChanged = true;
+      }
+    }
+
+    if (boneChanged) {
+      localMat.copyFrom(Matrix.Compose(scale, rotation, translation));
+      bd.bone.markAsDirty();
+      changedAny = true;
+      absDirty = true;
+    }
+  }
+
+  if (changedAny) {
+    skelData.skeleton.computeAbsoluteTransforms();
+    for (const bd of skelData.bones) {
+      if (!bd.visual) continue;
+      const abs = bd.bone.getAbsoluteTransform();
+      bd.visual.position.set(abs.m[12]!, abs.m[13]!, abs.m[14]!);
+    }
+    updateHierarchyVisualization(skelData);
+    refreshPoseGizmoOrientation();
+  }
+  return changedAny;
+}
+
+/**
+ * Run {@link applyConstraintsToSkeleton} on every skeleton. Called from the
+ * per-frame render hook right after the IK pass (see
+ * `animation-tool.installIkRenderHook`), so constraints correct both manual
+ * posing and IK output.
+ */
+export function applyAllBoneConstraints(): void {
+  for (const [, skelData] of state.skeletonMap) {
+    applyConstraintsToSkeleton(skelData);
+  }
+}
+
 // ── Bone mirroring ──
+
+/**
+ * Mirror a Limit Rotation constraint across `axis` using the same euler
+ * reflection rule as `mirrorPoseRotation`: components perpendicular to the
+ * mirror axis negate, so their `[min, max]` interval becomes `[-max, -min]`.
+ */
+function mirrorLimitRotation(
+  c: import("./bone-constraints").LimitRotationConstraint,
+  axis: MirrorAxis
+): import("./bone-constraints").LimitRotationConstraint {
+  const m = { ...c };
+  const flip = (minKey: "minXDeg" | "minYDeg" | "minZDeg", maxKey: "maxXDeg" | "maxYDeg" | "maxZDeg") => {
+    const lo = m[minKey] ?? 0;
+    const hi = m[maxKey] ?? 0;
+    m[minKey] = -hi;
+    m[maxKey] = -lo;
+  };
+  if (axis !== "x") flip("minXDeg", "maxXDeg");
+  if (axis !== "y") flip("minYDeg", "maxYDeg");
+  if (axis !== "z") flip("minZDeg", "maxZDeg");
+  return m;
+}
+
+/** Mirror an Aim constraint's world target across `axis`. */
+function mirrorAimConstraint(
+  c: import("./bone-constraints").AimConstraint,
+  axis: MirrorAxis
+): import("./bone-constraints").AimConstraint {
+  return {
+    ...c,
+    targetX: axis === "x" ? -c.targetX : c.targetX,
+    targetY: axis === "y" ? -c.targetY : c.targetY,
+    targetZ: axis === "z" ? -c.targetZ : c.targetZ,
+  };
+}
 
 /** Mirror a bone's IK config across `axis` so the copy targets the other side. */
 function mirrorIKConstraint(ik: IKConstraint, axis: MirrorAxis): IKConstraint {
@@ -863,6 +1045,11 @@ export function mirrorBoneChain(rootBoneId: string, axis: MirrorAxis = "x"): Bon
     pushed++;
     renameBone(nb.id, mirrorBoneName(orig.name));
     if (orig.ikConstraint) nb.ikConstraint = mirrorIKConstraint(orig.ikConstraint, axis);
+    if (orig.limitRotation) nb.limitRotation = mirrorLimitRotation(orig.limitRotation, axis);
+    if (orig.aimConstraint) nb.aimConstraint = mirrorAimConstraint(orig.aimConstraint, axis);
+    // Reflection inverts handedness, so the twist reverses (Blender's
+    // Symmetrize negates roll the same way).
+    if (orig.roll != null) nb.roll = -orig.roll;
     idMap.set(origId, nb.id);
     created.push(nb);
   }

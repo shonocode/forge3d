@@ -601,6 +601,7 @@ export function updateBoneUI(): void {
   updateBoneHierarchy();
   updateBoneProperties();
   updateIKInspector();
+  updateConstraintInspector();
   refreshWeightOverlay();
   // Weight tab's bone-slot list follows the same `selectedBoneId`, so
   // sync it here too. updateWeightInfo() also re-renders the slot
@@ -657,6 +658,56 @@ function updateIKInspector(): void {
     // when IK is off and clearing them would lose the user's defaults
     // for the next time they enable IK.
   }
+}
+
+/**
+ * Reflect the selected bone's Aim / Limit Rotation constraints into the
+ * Bone Constraints panel so changing selection shows the right values —
+ * same contract as {@link updateIKInspector}.
+ */
+function updateConstraintInspector(): void {
+  const aimEl = document.getElementById("aimEnabled") as HTMLInputElement | null;
+  const limEl = document.getElementById("limRotEnabled") as HTMLInputElement | null;
+  if (!aimEl || !limEl) return;
+
+  const skelData = getActiveSkeleton();
+  const bd = skelData && state.selectedBoneId
+    ? skelData.bones.find((b) => b.id === state.selectedBoneId)
+    : null;
+
+  const setNum = (id: string, v: number, digits = 3): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) el.value = v.toFixed(digits);
+  };
+  const setChecked = (id: string, v: boolean): void => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) el.checked = v;
+  };
+
+  const aim = bd?.aimConstraint;
+  aimEl.checked = aim?.enabled ?? false;
+  if (aim?.enabled) {
+    setNum("aimTargetX", aim.targetX);
+    setNum("aimTargetY", aim.targetY);
+    setNum("aimTargetZ", aim.targetZ);
+  }
+
+  const lim = bd?.limitRotation;
+  limEl.checked = lim?.enabled ?? false;
+  if (lim?.enabled) {
+    setChecked("limX", lim.limitX ?? false);
+    setNum("limXMin", lim.minXDeg ?? 0, 0);
+    setNum("limXMax", lim.maxXDeg ?? 0, 0);
+    setChecked("limY", lim.limitY ?? false);
+    setNum("limYMin", lim.minYDeg ?? 0, 0);
+    setNum("limYMax", lim.maxYDeg ?? 0, 0);
+    setChecked("limZ", lim.limitZ ?? false);
+    setNum("limZMin", lim.minZDeg ?? 0, 0);
+    setNum("limZMax", lim.maxZDeg ?? 0, 0);
+  }
+  // When the constraint is off the inputs keep their last values — same
+  // rationale as the IK inspector: they're the user's defaults for the next
+  // enable, and clearing them would be lossy.
 }
 
 function updateSkeletonInfo(): void {

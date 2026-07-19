@@ -102,3 +102,42 @@ describe("boneRolls sidecar field", () => {
     expect(() => validateSidecar({ ...SIDECAR, boneRolls: { spine: "12" } })).toThrow(/boneRolls/);
   });
 });
+
+describe("boneConstraints sidecar field", () => {
+  const CONSTRAINTS = {
+    arm_L: {
+      limitRotation: { enabled: true, limitX: true, minXDeg: -45, maxXDeg: 45 },
+      aim: { enabled: true, targetX: 1, targetY: 2, targetZ: 3 },
+    },
+    head: {
+      aim: { enabled: true, targetX: 0, targetY: 1.5, targetZ: 0.5 },
+    },
+  };
+
+  it("round-trips constraints through pack/unpack", () => {
+    const withConstraints: ProjectSidecar = { ...SIDECAR, boneConstraints: CONSTRAINTS };
+    const packed = packProject(withConstraints, new Uint8Array([1, 2, 3]));
+    const { sidecar } = unpackProject(packed);
+    expect(sidecar.boneConstraints).toEqual(CONSTRAINTS);
+  });
+
+  it("accepts a sidecar without boneConstraints (older projects)", () => {
+    expect(() => validateSidecar(SIDECAR)).not.toThrow();
+  });
+
+  it("rejects non-object boneConstraints", () => {
+    expect(() => validateSidecar({ ...SIDECAR, boneConstraints: [1] })).toThrow(/boneConstraints/);
+  });
+
+  it("rejects a limitRotation without a boolean enabled", () => {
+    expect(() =>
+      validateSidecar({ ...SIDECAR, boneConstraints: { arm: { limitRotation: { enabled: "yes" } } } })
+    ).toThrow(/limitRotation/);
+  });
+
+  it("rejects an aim with missing / non-numeric targets", () => {
+    expect(() =>
+      validateSidecar({ ...SIDECAR, boneConstraints: { arm: { aim: { enabled: true, targetX: 1 } } } })
+    ).toThrow(/aim/);
+  });
+});
