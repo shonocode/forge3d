@@ -12,7 +12,7 @@ import { escapeHtml } from "./escape";
 import { selectBone, getActiveSkeleton, syncBoneFromVisual } from "../tools/skeleton-tool";
 import { getRootMeshes, getChildren } from "../tools/parenting";
 import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
-import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer } from "../tools/layers";
+import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer, isLayerEffectivelyVisible, createLayer } from "../tools/layers";
 import { removeLight, updateLightParam, selectLight } from "../tools/lighting";
 import { getBoundingDimensions } from "../tools/measure";
 import type { Modifier } from "../state";
@@ -1087,12 +1087,20 @@ function updateBoneSlotList(): void {
 export function updateLayerUI(): void {
   const el = E("layerList");
   el.innerHTML = "";
-  for (const layer of state.layers) {
+  // Collections: render as a tree (roots first, children indented, DFS).
+  const roots = state.layers.filter((l) => !l.parentId || !state.layers.some((p) => p.id === l.parentId));
+  for (const root of roots) renderLayerRow(el, root, 0);
+}
+
+function renderLayerRow(el: HTMLElement, layer: import("../state").LayerData, depth: number): void {
+  {
     const count = getMeshesOnLayer(layer.id).length;
     const isActive = layer.id === state.activeLayerId;
+    const effVisible = isLayerEffectivelyVisible(layer.id);
     const row = document.createElement("div");
     row.className = "sitem" + (isActive ? " sel" : "");
-    row.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;";
+    row.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;padding-left:" + (4 + depth * 14) + "px;";
+    if (!effVisible) row.style.opacity = "0.5";
 
     // Visibility toggle
     const eyeBtn = document.createElement("button");
@@ -1118,6 +1126,18 @@ export function updateLayerUI(): void {
     countSpan.textContent = String(count);
     row.appendChild(countSpan);
 
+    // Sub-collection button
+    const subBtn = document.createElement("button");
+    subBtn.textContent = "+";
+    subBtn.title = "\u30b5\u30d6\u30b3\u30ec\u30af\u30b7\u30e7\u30f3\u3092\u4f5c\u6210";
+    subBtn.style.cssText = "background:none;border:1px solid var(--bg3);border-radius:3px;color:var(--t3);cursor:pointer;font-size:9px;padding:0 4px;";
+    subBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      createLayer(undefined, layer.id);
+      updateLayerUI();
+    });
+    row.appendChild(subBtn);
+
     // Delete button (only if more than 1 layer)
     if (state.layers.length > 1) {
       const delBtn = document.createElement("button");
@@ -1139,6 +1159,10 @@ export function updateLayerUI(): void {
     });
 
     el.appendChild(row);
+  }
+
+  for (const child of state.layers.filter((l) => l.parentId === layer.id)) {
+    renderLayerRow(el, child, depth + 1);
   }
 }
 

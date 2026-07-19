@@ -41,7 +41,8 @@ export interface ProjectSidecar {
   format: "forge3d-project";
   version: number;
   meshes: ProjectMeshEntry[];
-  layers: Array<{ name: string; visible: boolean }>;
+  /** `parent` = parent layer's name (collections nest); absent = root. */
+  layers: Array<{ name: string; visible: boolean; parent?: string }>;
   activeLayerName?: string;
 }
 

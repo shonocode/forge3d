@@ -60,7 +60,10 @@ function collectSidecar(): ProjectSidecar {
     format: "forge3d-project",
     version: 1,
     meshes,
-    layers: state.layers.map((l) => ({ name: l.name, visible: l.visible })),
+    layers: state.layers.map((l) => {
+      const parentName = l.parentId ? state.layers.find((p) => p.id === l.parentId)?.name : undefined;
+      return { name: l.name, visible: l.visible, ...(parentName ? { parent: parentName } : {}) };
+    }),
   };
   const activeLayerName = layerNameById.get(state.activeLayerId);
   if (activeLayerName) sidecar.activeLayerName = activeLayerName;
@@ -104,6 +107,7 @@ export async function exportProject(): Promise<void> {
 /** Re-attach sidecar data to freshly imported meshes (matched by name). */
 function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void {
   // Layers: reuse an existing layer with the same name, create the rest.
+  // Two passes so parents can be referenced regardless of array order.
   const layerIdByName = new Map(state.layers.map((l) => [l.name, l.id]));
   for (const l of sidecar.layers) {
     let id = layerIdByName.get(l.name);
@@ -113,6 +117,13 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     }
     const layer = state.layers.find((x) => x.id === id);
     if (layer && layer.visible !== l.visible) toggleLayerVisibility(id);
+  }
+  for (const l of sidecar.layers) {
+    if (!l.parent) continue;
+    const id = layerIdByName.get(l.name);
+    const pid = layerIdByName.get(l.parent);
+    const layer = id ? state.layers.find((x) => x.id === id) : undefined;
+    if (layer && pid && pid !== id) layer.parentId = pid;
   }
 
   for (const entry of sidecar.meshes) {

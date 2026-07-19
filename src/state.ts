@@ -268,6 +268,8 @@ export interface LayerData {
   id: string;
   name: string;
   visible: boolean;
+  /** Parent layer id — layers nest like Blender collections. Absent/null = root. */
+  parentId?: string | null;
 }
 
 /** Global editor state — single source of truth */
