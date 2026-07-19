@@ -10,6 +10,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import {
   createClip, getActiveClip, deleteClip, setActiveClip,
   captureKeyframe, captureAllKeyframes, deleteKeyframe,
+  captureMorphKeyframes, deleteMorphKeys,
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
   copyKeyframe, pasteKeyframe, setKeyframeEasing,
   setPlaybackTickCallback, updateIkTargetMarker, notifyPoseEdited,
@@ -259,8 +260,16 @@ export function bindActionButtons(): void {
     captureAllKeyframes();
     updateAnimUI();
   });
+  E("btnRecordMorphs").addEventListener("click", () => {
+    captureMorphKeyframes();
+    updateAnimUI();
+  });
   E("btnDeleteKF").addEventListener("click", () => {
     deleteKeyframe();
+    updateAnimUI();
+  });
+  E("btnDeleteMorphKF").addEventListener("click", () => {
+    deleteMorphKeys();
     updateAnimUI();
   });
   E("btnPlayAnim").addEventListener("click", () => playPreview());

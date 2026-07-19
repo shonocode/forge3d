@@ -51,16 +51,18 @@ const _scratchPos = new Vector3();
  * future feature reorders bones, sort topologically before linking.
  */
 export function prepareExportRig(
-  skelData: SkeletonData,
+  skelData: SkeletonData | null,
   scene: Scene,
 ): ExportRig {
   const transformNodes: TransformNode[] = [];
   const tnByBoneId = new Map<string, TransformNode>();
 
   // Refresh absolute transforms so we link with the current resting pose.
-  skelData.skeleton.computeAbsoluteTransforms();
+  // skelData may be null for morph-only scenes — clips still export their
+  // morph influence animations below.
+  skelData?.skeleton.computeAbsoluteTransforms();
 
-  for (const bd of skelData.bones) {
+  for (const bd of skelData?.bones ?? []) {
     const tn = new TransformNode("boneTN_" + bd.id, scene);
 
     // Decompose the bone's local matrix into the TransformNode so the
@@ -75,7 +77,7 @@ export function prepareExportRig(
     if (bd.parentId) {
       const parentTn = tnByBoneId.get(bd.parentId);
       if (parentTn) tn.parent = parentTn;
-    } else if (skelData.assignedMesh) {
+    } else if (skelData?.assignedMesh) {
       // Root bones hang under the skinned mesh so the GLTF exporter walks
       // the rig from a known scene root.
       tn.parent = skelData.assignedMesh;
@@ -100,10 +102,10 @@ export function prepareExportRig(
  * Safe to call even if `prepareExportRig` threw partway through.
  */
 export function disposeExportRig(
-  skelData: SkeletonData,
+  skelData: SkeletonData | null,
   rig: ExportRig,
 ): void {
-  for (const bd of skelData.bones) {
+  for (const bd of skelData?.bones ?? []) {
     bd.bone.linkTransformNode(null);
   }
   for (const group of rig.animationGroups) {
@@ -166,6 +168,27 @@ function buildClipAnimationGroup(
     group.addTargetedAnimation(rotAnim, tn);
 
     added += 2;
+  }
+
+  // Morph (blend-shape) tracks — animate MorphTarget.influence directly.
+  // Babylon's glTF exporter turns these into standard glTF morph-weight
+  // animation channels, so facial animation survives the round trip.
+  for (const track of clip.morphTracks ?? []) {
+    if (track.keyframes.length === 0) continue;
+    const morph = state.morphMap.get(track.meshUniqueId);
+    const target = morph?.targets[track.targetIndex];
+    if (!target) continue;
+
+    const infAnim = new Animation(
+      track.targetName + "_influence",
+      "influence",
+      clip.frameRate,
+      Animation.ANIMATIONTYPE_FLOAT,
+      loopMode,
+    );
+    infAnim.setKeys(track.keyframes.map((kf) => ({ frame: kf.frame, value: kf.value })));
+    group.addTargetedAnimation(infAnim, target);
+    added += 1;
   }
 
   if (added === 0) {

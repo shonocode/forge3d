@@ -55,9 +55,9 @@ export async function exportGLB(): Promise<void> {
   try {
     showLoading("Exporting GLB...");
     status("Exporting GLB...");
-    if (skelData && skelData.bones.length > 0) {
-      rig = prepareExportRig(skelData, state.scene);
-    }
+    // Rig is prepared even without a skeleton — clips still need their
+    // morph-influence AnimationGroups synthesized for export.
+    rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, name, {
       shouldExportNode,
       shouldExportAnimation: () => true,
@@ -80,7 +80,7 @@ export async function exportGLB(): Promise<void> {
     console.error("GLB export error:", e);
     status("⚠ Export エラー: " + (e as Error).message);
   } finally {
-    if (skelData && rig) disposeExportRig(skelData, rig);
+    if (rig) disposeExportRig(skelData && skelData.bones.length > 0 ? skelData : null, rig);
     hideLoading();
   }
 }
@@ -95,9 +95,9 @@ export async function serializeSceneToGlb(): Promise<ArrayBuffer | null> {
   const skelData = getActiveSkeleton();
   let rig: ExportRig | null = null;
   try {
-    if (skelData && skelData.bones.length > 0) {
-      rig = prepareExportRig(skelData, state.scene);
-    }
+    // Rig is prepared even without a skeleton — clips still need their
+    // morph-influence AnimationGroups synthesized for export.
+    rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, "model", {
       shouldExportNode,
       shouldExportAnimation: () => true,
@@ -107,7 +107,7 @@ export async function serializeSceneToGlb(): Promise<ArrayBuffer | null> {
     if (!glbFile) return null;
     return await (glbFile as Blob).arrayBuffer();
   } finally {
-    if (skelData && rig) disposeExportRig(skelData, rig);
+    if (rig) disposeExportRig(skelData && skelData.bones.length > 0 ? skelData : null, rig);
   }
 }
 
@@ -124,9 +124,9 @@ export async function saveToLibrary(): Promise<void> {
   try {
     showLoading("Saving...");
     status("Saving...");
-    if (skelData && skelData.bones.length > 0) {
-      rig = prepareExportRig(skelData, state.scene);
-    }
+    // Rig is prepared even without a skeleton — clips still need their
+    // morph-influence AnimationGroups synthesized for export.
+    rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, "model", {
       shouldExportNode,
       shouldExportAnimation: () => true,
@@ -171,7 +171,7 @@ export async function saveToLibrary(): Promise<void> {
     console.error("Save error:", e);
     status("⚠ Save エラー: " + (e as Error).message);
   } finally {
-    if (skelData && rig) disposeExportRig(skelData, rig);
+    if (rig) disposeExportRig(skelData && skelData.bones.length > 0 ? skelData : null, rig);
     hideLoading();
   }
 }

@@ -103,6 +103,12 @@ export function updateMorphUI(): void {
         Number(inp.value)
       );
     });
+    // Auto-Key: commit a morph keyframe once the drag settles ("change"
+    // fires on release, not per-tick like "input").
+    inp.addEventListener("change", async () => {
+      const { notifyMorphEdited } = await import("./animation-tool");
+      notifyMorphEdited(Number(inp.dataset.uid), Number(inp.dataset.idx));
+    });
   });
 
   // Attach delete button event listeners

@@ -54,8 +54,14 @@ let _ctx: CanvasRenderingContext2D | null = null;
 let _info: HTMLElement | null = null;
 
 /** Cached row metadata from the last render — needed for hit-testing
- *  in the click handler. Rebuilt every `drawDopesheet`. */
-interface RowHit { boneId: string; y0: number; y1: number; }
+ *  in the click handler. Rebuilt every `drawDopesheet`. Bone rows carry a
+ *  boneId; morph rows carry the track reference instead. */
+interface RowHit {
+  boneId: string | null;
+  morphTrack: import("../state").MorphTrack | null;
+  y0: number;
+  y1: number;
+}
 let _rowHits: RowHit[] = [];
 
 /**
@@ -101,13 +107,15 @@ export function drawDopesheet(): void {
   // without keyframes in this clip are still shown (so the user can
   // tell *which* bones haven't been keyed yet).
   const skel = getActiveSkeleton();
-  if (!skel || skel.bones.length === 0) {
+  const morphTracks = clip.morphTracks ?? [];
+  const boneRows = skel ? skel.bones : [];
+  if (boneRows.length === 0 && morphTracks.length === 0) {
     drawEmpty(ctx, w, h, "ボーンがありません");
     return;
   }
 
   const trackByBoneId = new Map(clip.tracks.map((t) => [t.boneId, t]));
-  const rows = skel.bones; // ordered as in the hierarchy
+  const rows = boneRows; // ordered as in the hierarchy
 
   const timelineX0 = LABEL_GUTTER;
   const timelineW = w - LABEL_GUTTER;
@@ -176,7 +184,39 @@ export function drawDopesheet(): void {
       }
     }
 
-    _rowHits.push({ boneId: bone.id, y0, y1 });
+    _rowHits.push({ boneId: bone.id, morphTrack: null, y0, y1 });
+  });
+
+  // Morph lanes — appended below the bone rows, teal to read as a
+  // different channel type at a glance.
+  morphTracks.forEach((track, mi) => {
+    const i = rows.length + mi;
+    const y0 = i * ROW_HEIGHT;
+    const yCenter = y0 + ROW_HEIGHT / 2;
+
+    if (i % 2 === 1) {
+      ctx.fillStyle = "rgba(255,255,255,0.03)";
+      ctx.fillRect(0, y0, w, ROW_HEIGHT);
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(2, y0, LABEL_GUTTER - 4, ROW_HEIGHT);
+    ctx.clip();
+    ctx.fillStyle = "rgba(80,220,200,0.9)";
+    ctx.textAlign = "left";
+    ctx.fillText("◆" + track.targetName, 4, yCenter);
+    ctx.restore();
+
+    ctx.fillStyle = "rgba(80,220,200,0.85)";
+    ctx.strokeStyle = "rgba(30,140,125,1)";
+    ctx.lineWidth = 1;
+    for (const kf of track.keyframes) {
+      const px = timelineX0 + (kf.frame / clip.maxFrames) * timelineW;
+      drawDiamond(ctx, px, yCenter);
+    }
+
+    _rowHits.push({ boneId: null, morphTrack: track, y0, y1: y0 + ROW_HEIGHT });
   });
 
   // Playhead — yellow, full-height. Matches the graph editor color so
@@ -190,8 +230,11 @@ export function drawDopesheet(): void {
   ctx.stroke();
 
   if (_info) {
-    const totalKeys = clip.tracks.reduce((n, t) => n + t.keyframes.length, 0);
-    _info.textContent = `${rows.length} bones · ${clip.tracks.length} tracks · ${totalKeys} keys · Frame ${state.currentFrame}/${clip.maxFrames}`;
+    const totalKeys =
+      clip.tracks.reduce((n, t) => n + t.keyframes.length, 0) +
+      morphTracks.reduce((n, t) => n + t.keyframes.length, 0);
+    const morphNote = morphTracks.length ? ` · ${morphTracks.length} morphs` : "";
+    _info.textContent = `${rows.length} bones${morphNote} · ${clip.tracks.length} tracks · ${totalKeys} keys · Frame ${state.currentFrame}/${clip.maxFrames}`;
   }
 }
 
@@ -237,29 +280,30 @@ function handleClick(e: MouseEvent): void {
   const timelineW = rect.width - LABEL_GUTTER;
 
   if (x < timelineX0) {
-    // Click in the label gutter — just select the bone.
-    selectBone(row.boneId);
+    // Click in the label gutter — select the bone (morph rows have no
+    // selection concept; the gutter click is a no-op for them).
+    if (row.boneId) selectBone(row.boneId);
     drawDopesheet();
     return;
   }
 
   // Click in the timeline area. If it lands within HIT_TOLERANCE of a
   // keyframe diamond, scrub to that exact frame; otherwise scrub to
-  // the pointed-at frame. Either way, also select the row's bone so
+  // the pointed-at frame. Bone rows also select the row's bone so
   // subsequent edits (graph editor / keyframe panel) reflect the
   // clicked context — saves a separate gutter click.
   const frameAtX = ((x - timelineX0) / timelineW) * clip.maxFrames;
-  selectBone(row.boneId);
+  if (row.boneId) selectBone(row.boneId);
 
-  const track = clip.tracks.find((t) => t.boneId === row.boneId);
+  const keyframes: Array<{ frame: number }> = row.morphTrack
+    ? row.morphTrack.keyframes
+    : clip.tracks.find((t) => t.boneId === row.boneId)?.keyframes ?? [];
   let snappedFrame = frameAtX;
-  if (track) {
-    for (const kf of track.keyframes) {
-      const keyPx = timelineX0 + (kf.frame / clip.maxFrames) * timelineW;
-      if (Math.abs(keyPx - x) <= HIT_TOLERANCE) {
-        snappedFrame = kf.frame;
-        break;
-      }
+  for (const kf of keyframes) {
+    const keyPx = timelineX0 + (kf.frame / clip.maxFrames) * timelineW;
+    if (Math.abs(keyPx - x) <= HIT_TOLERANCE) {
+      snappedFrame = kf.frame;
+      break;
     }
   }
   const clamped = Math.max(0, Math.min(clip.maxFrames, Math.round(snappedFrame)));

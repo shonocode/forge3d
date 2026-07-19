@@ -11,6 +11,8 @@ import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
 import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain } from "./skeleton-tool";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
+import { evalMorphTrack, upsertMorphKey, removeMorphKeyAt, findMorphTrack } from "./morph-track";
+import type { MorphKeyframe, MorphTrack } from "../state";
 import { evaluateBezierSegment } from "./bezier";
 import type { AnimChannel } from "../state";
 
@@ -306,6 +308,10 @@ export function scrubToFrame(frame: number): void {
   }
   state.poseDirty = false;
 
+  // Morph (blend-shape) influences — independent of the skeleton, so apply
+  // even when the scene has no bones.
+  applyMorphTracks(clip, frame);
+
   const skelData = getActiveSkeleton();
   if (!skelData) return;
 
@@ -328,6 +334,158 @@ export function scrubToFrame(frame: number): void {
   }
 
   syncBoneVisuals();
+}
+
+// ── Morph (blend-shape) animation ──
+
+/** Write each morph track's interpolated influence onto its live target. */
+function applyMorphTracks(clip: AnimClipData, frame: number): void {
+  const tracks = clip.morphTracks;
+  if (!tracks || tracks.length === 0) return;
+  for (const track of tracks) {
+    const morph = state.morphMap.get(track.meshUniqueId);
+    const target = morph?.targets[track.targetIndex];
+    if (!target) continue;
+    const v = evalMorphTrack(track, frame);
+    if (v !== null) target.influence = v;
+  }
+}
+
+interface MorphCaptureRecord {
+  track: MorphTrack;
+  trackExisted: boolean;
+  prevKf: MorphKeyframe | null;
+  afterKf: MorphKeyframe;
+}
+
+/**
+ * Record the current influences of ALL morph targets (every mesh that has
+ * morph data) as keyframes at the current frame. Undoable as one entry.
+ */
+export function captureMorphKeyframes(): void {
+  const clip = getActiveClip();
+  if (!clip) {
+    status("⚠ No active clip");
+    return;
+  }
+  if (!clip.morphTracks) clip.morphTracks = [];
+  const records: MorphCaptureRecord[] = [];
+
+  for (const mesh of state.allMeshes) {
+    const morph = state.morphMap.get(mesh.uniqueId);
+    if (!morph || morph.targets.length === 0) continue;
+    morph.targets.forEach((target, idx) => {
+      const rec = recordMorphKey(clip, mesh.uniqueId, mesh.name, idx, target.name, target.influence);
+      if (rec) records.push(rec);
+    });
+  }
+
+  if (!records.length) {
+    status("⚠ モーフターゲットがありません（Morph タブで作成）");
+    return;
+  }
+  pushMorphCaptureUndo("Record Morph Keys", clip, state.currentFrame, records);
+  status("Morph keys recorded @ frame " + state.currentFrame + " (" + records.length + " targets)");
+}
+
+/** Upsert one morph key and return undo bookkeeping. */
+function recordMorphKey(
+  clip: AnimClipData,
+  meshUniqueId: number,
+  meshName: string,
+  targetIndex: number,
+  targetName: string,
+  value: number,
+): MorphCaptureRecord | null {
+  if (!clip.morphTracks) clip.morphTracks = [];
+  let track = findMorphTrack(clip.morphTracks, meshUniqueId, targetIndex);
+  const trackExisted = !!track;
+  if (!track) {
+    track = { meshUniqueId, meshName, targetIndex, targetName, keyframes: [] };
+    clip.morphTracks.push(track);
+  }
+  const existing = track.keyframes.find((k) => k.frame === state.currentFrame) ?? null;
+  const prevKf = existing ? { ...existing } : null;
+  const kf: MorphKeyframe = { frame: state.currentFrame, value };
+  upsertMorphKey(track, kf);
+  return { track, trackExisted, prevKf, afterKf: { ...kf } };
+}
+
+function pushMorphCaptureUndo(
+  label: string,
+  clip: AnimClipData,
+  frame: number,
+  records: MorphCaptureRecord[],
+): void {
+  state.history.push({
+    label,
+    undo() {
+      for (const r of records) {
+        if (!r.trackExisted) {
+          const list = clip.morphTracks;
+          if (list) {
+            const i = list.indexOf(r.track);
+            if (i !== -1) list.splice(i, 1);
+          }
+          continue;
+        }
+        if (r.prevKf) upsertMorphKey(r.track, { ...r.prevKf });
+        else removeMorphKeyAt(r.track, frame);
+      }
+      scrubToFrame(state.currentFrame);
+    },
+    redo() {
+      const list = clip.morphTracks ?? (clip.morphTracks = []);
+      for (const r of records) {
+        if (!r.trackExisted && !list.includes(r.track)) list.push(r.track);
+        upsertMorphKey(r.track, { ...r.afterKf });
+      }
+      scrubToFrame(state.currentFrame);
+    },
+  });
+}
+
+/** Delete all morph keys at the current frame (undoable). */
+export function deleteMorphKeys(): void {
+  const clip = getActiveClip();
+  if (!clip || !clip.morphTracks || clip.morphTracks.length === 0) return;
+  const frame = state.currentFrame;
+  const removed: Array<{ track: MorphTrack; kf: MorphKeyframe }> = [];
+  for (const track of clip.morphTracks) {
+    const kf = removeMorphKeyAt(track, frame);
+    if (kf) removed.push({ track, kf });
+  }
+  if (!removed.length) return;
+  state.history.push({
+    label: "Delete Morph Keys",
+    undo() {
+      for (const r of removed) upsertMorphKey(r.track, { ...r.kf });
+      scrubToFrame(state.currentFrame);
+    },
+    redo() {
+      for (const r of removed) removeMorphKeyAt(r.track, frame);
+      scrubToFrame(state.currentFrame);
+    },
+  });
+  status("Morph keys deleted @ frame " + frame);
+}
+
+/**
+ * Auto-Key hook for morph slider edits (mirrors {@link notifyPoseEdited}).
+ * With Auto-Key on and an active clip, keys the edited target immediately.
+ */
+export function notifyMorphEdited(meshUniqueId: number, targetIndex: number): void {
+  const clip = getActiveClip();
+  if (!state.autoKey || !clip) return;
+  const mesh = state.allMeshes.find((m) => m.uniqueId === meshUniqueId);
+  const morph = state.morphMap.get(meshUniqueId);
+  const target = morph?.targets[targetIndex];
+  if (!mesh || !target) return;
+  const rec = recordMorphKey(clip, meshUniqueId, mesh.name, targetIndex, target.name, target.influence);
+  if (rec) {
+    pushMorphCaptureUndo("Auto-Key Morph", clip, state.currentFrame, [rec]);
+    status("Auto-Key: " + target.name + " @ " + state.currentFrame);
+  }
 }
 
 /**
@@ -480,7 +638,7 @@ export function setPlaybackTickCallback(cb: ((frame: number) => void) | null): v
 
 export function playPreview(): void {
   const clip = getActiveClip();
-  if (!clip || clip.tracks.length === 0) {
+  if (!clip || (clip.tracks.length === 0 && !(clip.morphTracks?.length))) {
     status("⚠ No keyframes to play");
     return;
   }

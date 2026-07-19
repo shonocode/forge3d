@@ -155,6 +155,24 @@ export interface BoneTrack {
   keyframes: KeyframeData[];
 }
 
+/** One influence keyframe on a morph target (facial/blend-shape animation). */
+export interface MorphKeyframe {
+  frame: number;
+  /** Morph target influence in [0, 1]. */
+  value: number;
+  easing?: import("./tools/easing").EasingType;
+}
+
+/** Influence animation for one morph target of one mesh. */
+export interface MorphTrack {
+  meshUniqueId: number;
+  /** Mesh name at record time (display + fallback re-association). */
+  meshName: string;
+  targetIndex: number;
+  targetName: string;
+  keyframes: MorphKeyframe[];
+}
+
 export interface AnimClipData {
   id: string;
   name: string;
@@ -162,6 +180,8 @@ export interface AnimClipData {
   maxFrames: number;
   loopMode: AnimLoopMode;
   tracks: BoneTrack[];
+  /** Absent on clips authored before morph animation support (= no morph keys). */
+  morphTracks?: MorphTrack[];
 }
 
 export interface MapInstance {
