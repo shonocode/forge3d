@@ -9,7 +9,7 @@ import { selectMesh, lastSelected } from "../tools/selection";
 import { deleteOne } from "../tools/actions";
 import { updateMorphUI } from "../tools/morph";
 import { escapeHtml } from "./escape";
-import { selectBone, getActiveSkeleton, syncBoneFromVisual } from "../tools/skeleton-tool";
+import { selectBone, getActiveSkeleton, syncBoneFromVisual, setBoneRollLive, commitBoneRoll } from "../tools/skeleton-tool";
 import { getRootMeshes, getChildren } from "../tools/parenting";
 import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
 import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer, isLayerEffectivelyVisible, createLayer } from "../tools/layers";
@@ -715,12 +715,15 @@ function updateBoneProperties(): void {
   const parentName = bd.parentId
     ? skelData.bones.find((b) => b.id === bd.parentId)?.name ?? "—"
     : "— (root)";
+  const rollDeg = ((bd.roll ?? 0) * 180) / Math.PI;
   el.innerHTML = `
     <div style="font-size:10px;color:var(--t2);line-height:1.6;">
       <div><span style="color:var(--t4)">Name:</span> ${escapeHtml(bd.name)}</div>
       <div><span style="color:var(--t4)">Parent:</span> ${escapeHtml(parentName)}</div>
     </div>
-    ${pos ? `<div class="pg" style="margin-top:4px"><div class="pgt">Position</div>${v3h("bonepos", pos)}</div>` : ""}`;
+    ${pos ? `<div class="pg" style="margin-top:4px"><div class="pgt">Position</div>${v3h("bonepos", pos)}</div>` : ""}
+    <div class="pr" style="margin-top:4px"><span class="pl" style="font-size:10px;color:var(--t3)" title="ボーン軸まわりのレスト方向ひねり（Blender の Roll 相当）。Pose の Local 軸ギズモの向きを制御">Roll°</span>
+      <input type="number" step="5" id="boneRollInp" aria-label="Bone roll (degrees)" style="margin-left:auto;width:64px;font-size:10px" value="${rollDeg.toFixed(1)}"></div>`;
 
   // Wire up the position inputs — typing a new value moves the bone
   // visual in world space, then `syncBoneFromVisual` rebuilds the local
@@ -736,6 +739,23 @@ function updateBoneProperties(): void {
         bd.visual.position[a] = v;
         syncBoneFromVisual(bd, skelData);
       });
+    });
+  }
+
+  // Roll input — live-update while typing/stepping (gizmo axes follow), one
+  // undo entry per edit gesture on commit (change event).
+  const rollInp = el.querySelector<HTMLInputElement>("#boneRollInp");
+  if (rollInp) {
+    let gestureStart: number | null = null;
+    rollInp.addEventListener("input", () => {
+      const deg = parseFloat(rollInp.value);
+      if (Number.isNaN(deg)) return;
+      if (gestureStart === null) gestureStart = bd.roll ?? 0;
+      setBoneRollLive(bd.id, (deg * Math.PI) / 180);
+    });
+    rollInp.addEventListener("change", () => {
+      if (gestureStart !== null) commitBoneRoll(bd.id, gestureStart);
+      gestureStart = null;
     });
   }
 }

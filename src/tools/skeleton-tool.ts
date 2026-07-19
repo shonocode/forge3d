@@ -14,7 +14,20 @@ import { state, status } from "../state";
 import type { BoneData, SkeletonData, IKConstraint } from "../state";
 import type { UndoCommand } from "../undo";
 import { solveFabrik } from "./ik-solver";
-import { reflectPosition, mirrorBoneName, type MirrorAxis } from "./bone-mirror";
+import {
+  reflectPosition,
+  mirrorBoneName,
+  mirrorPoseRotation,
+  mirrorLocalTranslation,
+  type MirrorAxis,
+} from "./bone-mirror";
+import {
+  boneDirection,
+  boneRestQuaternion,
+  worldToParentLocal,
+  chainLocalTranslations,
+  BONE_PRIMARY_AXIS,
+} from "./bone-orientation";
 
 const BONE_VISUAL_PREFIX = "bone_visual_";
 const HIERARCHY_LINES_NAME = "bone_hierarchy_lines";
@@ -92,6 +105,35 @@ export function findBoneById(boneId: string): BoneData | null {
   return skelData.bones.find((b) => b.id === boneId) ?? null;
 }
 
+// ── Local-space helpers (TRS-aware) ──
+
+const _decompScale = new Vector3();
+const _decompRot = new Quaternion();
+const _decompPos = new Vector3();
+
+/**
+ * A bone's absolute (skeleton-space) rotation, read from its absolute
+ * transform. Callers must ensure `computeAbsoluteTransforms` ran since the
+ * last matrix edit.
+ */
+function absoluteRotationOf(boneData: BoneData): Quaternion {
+  boneData.bone.getAbsoluteTransform().decompose(_decompScale, _decompRot, _decompPos);
+  return _decompRot.clone();
+}
+
+/**
+ * Parent bone's absolute rotation (identity for roots / missing parents).
+ * Rotation matters since F-M6: local translations are expressed in the
+ * parent's (possibly rotated) frame, no longer plain world-axis offsets.
+ */
+function getParentAbsoluteRotation(boneData: BoneData, skelData: SkeletonData): Quaternion {
+  if (boneData.parentId) {
+    const parent = skelData.bones.find((b) => b.id === boneData.parentId);
+    if (parent) return absoluteRotationOf(parent);
+  }
+  return Quaternion.Identity();
+}
+
 // ── Bone creation ──
 
 export function addBoneAtPoint(worldPos: Vector3, parentBoneId: string | null): BoneData | null {
@@ -111,9 +153,12 @@ export function addBoneAtPoint(worldPos: Vector3, parentBoneId: string | null): 
     const parentData = skelData.bones.find((b) => b.id === parentBoneId);
     if (parentData) {
       parentBone = parentData.bone;
-      // Compute relative position from parent's world position
+      // Express the offset in the parent's frame — identical to the old
+      // world-position subtraction while parents are unrotated, but correct
+      // when a rotated (posed / imported) parent is extended.
+      skelData.skeleton.computeAbsoluteTransforms();
       const parentWorld = getBoneWorldPosition(parentData);
-      const relative = worldPos.subtract(parentWorld);
+      const relative = worldToParentLocal(absoluteRotationOf(parentData), parentWorld, worldPos);
       localMatrix = Matrix.Translation(relative.x, relative.y, relative.z);
     } else {
       localMatrix = Matrix.Translation(worldPos.x, worldPos.y, worldPos.z);
@@ -291,6 +336,52 @@ let _posDragEndObserver: Observer<any> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _rotDragEndObserver: Observer<any> | null = null;
 
+/**
+ * Bone-axes orientation the visual's quaternion held when the rotation gizmo
+ * was (re-)armed. The drag-end bake diffs the visual's quaternion against
+ * this to get the world-space delta the gizmo applied — accumulating drags
+ * correctly instead of the V1 replace-with-delta behavior.
+ */
+let _attachedAxesQuat: Quaternion | null = null;
+
+/**
+ * Orientation of the bone's display/gizmo axes in world space: +Y along the
+ * bone's current direction (toward its first child, else away from its
+ * parent), twisted by the authored {@link BoneData.roll}. Recomputed from the
+ * *current* pose so the Pose-mode gizmo follows the bone while it animates.
+ * Isolated single bones fall back to the world frame (+Y up).
+ */
+export function getBoneAxesOrientation(boneData: BoneData, skelData: SkeletonData): Quaternion {
+  const head = getBoneWorldPosition(boneData);
+  let dir = BONE_PRIMARY_AXIS.clone();
+  const child = skelData.bones.find((b) => b.parentId === boneData.id);
+  if (child) {
+    dir = boneDirection(head, getBoneWorldPosition(child));
+  } else if (boneData.parentId) {
+    const parent = skelData.bones.find((b) => b.id === boneData.parentId);
+    if (parent) dir = boneDirection(getBoneWorldPosition(parent), head);
+  }
+  return boneRestQuaternion(dir, boneData.roll ?? 0);
+}
+
+/**
+ * Re-arm the Pose-mode rotation gizmo from the selected bone's current
+ * orientation. Call after anything that moves bones programmatically while
+ * the gizmo may be attached (scrub/playback, IK solve, pose paste, undo) —
+ * otherwise the next drag would bake against a stale reference and jump.
+ * Cheap no-op outside Pose Mode or with nothing selected.
+ */
+export function refreshPoseGizmoOrientation(): void {
+  if (state.boneEditMode !== "pose" || !state.selectedBoneId) return;
+  const skelData = getActiveSkeleton();
+  if (!skelData) return;
+  const bd = skelData.bones.find((b) => b.id === state.selectedBoneId);
+  if (!bd?.visual?.rotationQuaternion) return;
+  const axes = getBoneAxesOrientation(bd, skelData);
+  bd.visual.rotationQuaternion.copyFrom(axes);
+  _attachedAxesQuat = axes;
+}
+
 function cleanupDragObservers(): void {
   if (_posDragEndObserver) {
     try {
@@ -336,12 +427,11 @@ export function selectBone(boneId: string): void {
   boneData.visual.material = getSelectedBoneMaterial();
 
   // Attach gizmo — Edit Mode uses position, Pose Mode uses rotation.
-  // Rotation gizmo is "world axes" in this V1 (gizmo's default). Local-axis
-  // rotation would be more intuitive for pose work and is a future polish:
-  // set `rotGizmo.updateGizmoRotationToMatchAttachedMesh = true` once bone
-  // visuals carry a meaningful orientation (currently they're isotropic
-  // spheres so local vs world is visually indistinguishable mid-drag — only
-  // the final baked rotation differs).
+  // In Pose Mode the visual's quaternion is set to the bone's axes
+  // orientation (direction + roll); with `poseRotationSpace === "local"` the
+  // gizmo rings align to those axes (Blender-style), otherwise they stay
+  // world-aligned. Either way the drag-end bake diffs against
+  // `_attachedAxesQuat`, so both spaces share one code path.
   const gm = state.gizmoManager;
   try {
     const isPose = state.boneEditMode === "pose";
@@ -349,11 +439,19 @@ export function selectBone(boneId: string): void {
     gm.rotationGizmoEnabled = isPose;
     gm.scaleGizmoEnabled = false;
 
-    // Ensure the visual has a rotationQuaternion before the rotation gizmo
-    // attaches — without it the gizmo writes to mesh.rotation (Euler) which
-    // bypasses our quaternion read path in syncBoneRotationFromVisual.
-    if (isPose && !boneData.visual.rotationQuaternion) {
-      boneData.visual.rotationQuaternion = Quaternion.Identity();
+    if (isPose) {
+      // Seed the visual's quaternion with the bone-axes orientation BEFORE
+      // attaching, so the gizmo rings (in local mode) render aligned to the
+      // bone from the first frame.
+      const axes = getBoneAxesOrientation(boneData, skelData);
+      if (!boneData.visual.rotationQuaternion) {
+        boneData.visual.rotationQuaternion = axes.clone();
+      } else {
+        boneData.visual.rotationQuaternion.copyFrom(axes);
+      }
+      _attachedAxesQuat = axes;
+    } else {
+      _attachedAxesQuat = null;
     }
 
     gm.attachToMesh(boneData.visual);
@@ -361,6 +459,8 @@ export function selectBone(boneId: string): void {
     if (isPose) {
       const rotGizmo = gm.gizmos?.rotationGizmo;
       if (rotGizmo) {
+        rotGizmo.updateGizmoRotationToMatchAttachedMesh =
+          state.poseRotationSpace === "local";
         _rotDragEndObserver = rotGizmo.onDragEndObservable.add(() => {
           syncBoneRotationFromVisual(boneData, skelData);
           // Auto-Key / dirty-pose tracking (wired in bindings to avoid an
@@ -381,6 +481,7 @@ export function selectBone(boneId: string): void {
 
 export function deselectBone(): void {
   cleanupDragObservers();
+  _attachedAxesQuat = null;
   const skelData = getActiveSkeleton();
   if (skelData && state.selectedBoneId) {
     const prev = skelData.bones.find((b) => b.id === state.selectedBoneId);
@@ -397,17 +498,32 @@ export function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): 
 
   const worldPos = boneData.visual.position;
 
-  // Recalculate local matrix relative to parent
+  // Recalculate the local translation relative to the parent (in the
+  // parent's frame), preserving whatever rotation/scale the local matrix
+  // already carries — a position drag must not strip a posed or imported
+  // rotation.
+  const localMat = boneData.bone.getLocalMatrix();
+  localMat.decompose(_decompScale, _decompRot, _decompPos);
+  const keepScale = _decompScale.clone();
+  const keepRot = _decompRot.clone();
+
+  let relative: Vector3;
   if (boneData.parentId) {
     const parent = skelData.bones.find((b) => b.id === boneData.parentId);
     if (parent) {
-      const parentPos = getBoneWorldPosition(parent);
-      const relative = worldPos.subtract(parentPos);
-      boneData.bone.getLocalMatrix().copyFrom(Matrix.Translation(relative.x, relative.y, relative.z));
+      relative = worldToParentLocal(
+        absoluteRotationOf(parent),
+        getBoneWorldPosition(parent),
+        worldPos
+      );
+    } else {
+      relative = worldPos.clone();
     }
   } else {
-    boneData.bone.getLocalMatrix().copyFrom(Matrix.Translation(worldPos.x, worldPos.y, worldPos.z));
+    relative = worldPos.clone();
   }
+  localMat.copyFrom(Matrix.Compose(keepScale, keepRot, relative));
+  boneData.bone.markAsDirty();
 
   // Recompute absolute transforms and update child bone visuals
   skelData.skeleton.computeAbsoluteTransforms();
@@ -419,36 +535,43 @@ export function syncBoneFromVisual(boneData: BoneData, skelData: SkeletonData): 
 
 /**
  * Bake the gizmo-applied rotation on the bone's visual into the bone's
- * local matrix, then propagate to descendants and reset the visual's
- * quaternion to identity.
+ * local matrix, then propagate to descendants.
  *
- * The visual's quaternion is reset because:
- *   1. The rotation is now part of the bone's local transform — child
- *      visuals already reflect the new pose via `computeAbsoluteTransforms`.
- *   2. Leaving non-identity quaternion on the parent visual would
- *      compound on the next drag (gizmo would start from the current
- *      orientation, but the bone matrix is already rotated → double-apply).
+ * The visual's quaternion holds the bone-axes orientation that was seeded at
+ * attach time ({@link _attachedAxesQuat}) plus whatever the gizmo added this
+ * drag. Diffing the two yields the world-space delta, which is conjugated
+ * into the parent's frame and composed ON TOP of the current local rotation
+ * — so repeat drags accumulate (V1 replaced the rotation with the last
+ * drag's delta instead, silently discarding earlier posing).
  *
- * Translation in the local matrix is preserved by decomposing first.
- * Scale is preserved too, although bones almost always have unit scale.
+ * Local translation and scale are preserved by decomposing first. After the
+ * bake the gizmo is re-armed from the bone's fresh orientation so the next
+ * drag diffs against up-to-date axes.
  */
 export function syncBoneRotationFromVisual(boneData: BoneData, skelData: SkeletonData): void {
   if (!boneData.visual?.rotationQuaternion) return;
+  const start = _attachedAxesQuat;
+  if (!start) return; // rotation gizmo wasn't armed through Pose Mode
 
-  const newRotation = boneData.visual.rotationQuaternion.clone();
+  // World-space rotation the gizmo applied during this drag.
+  // (Babylon Quaternion.multiply is Hamilton order: q1.multiply(q2) applies
+  // q2 first, then q1.)
+  const delta = boneData.visual.rotationQuaternion.multiply(Quaternion.Inverse(start));
 
-  // Decompose current local matrix into translation, rotation, scale
-  // so we can swap in the new rotation without destroying position.
   const localMat = boneData.bone.getLocalMatrix();
   const curScale = new Vector3();
   const curRotation = new Quaternion();
   const curTranslation = new Vector3();
   localMat.decompose(curScale, curRotation, curTranslation);
 
-  // The gizmo applied a delta rotation on top of the visual's identity
-  // quaternion (we reset it on previous drag end), so `newRotation` IS
-  // the new rotation in world axes. Compose absolute (not multiplied)
-  // — visually identical to standard pose-tool behavior.
+  // newLocal = inv(P) ∘ Δ ∘ P ∘ local — the world delta conjugated into the
+  // parent's frame, accumulated onto the existing local rotation.
+  const parentRot = getParentAbsoluteRotation(boneData, skelData);
+  const newRotation = Quaternion.Inverse(parentRot)
+    .multiply(delta)
+    .multiply(parentRot)
+    .multiply(curRotation);
+
   const newLocal = Matrix.Compose(curScale, newRotation, curTranslation);
   boneData.bone.getLocalMatrix().copyFrom(newLocal);
   boneData.bone.markAsDirty();
@@ -459,9 +582,8 @@ export function syncBoneRotationFromVisual(boneData: BoneData, skelData: Skeleto
   skelData.skeleton.computeAbsoluteTransforms();
   updateChildVisuals(boneData.id, skelData);
 
-  // Bake done — clear the visual's rotation so the next gizmo drag
-  // starts from identity again. Without this, repeat drags compound.
-  boneData.visual.rotationQuaternion.copyFromFloats(0, 0, 0, 1);
+  // Re-arm the gizmo from the freshly-baked orientation.
+  refreshPoseGizmoOrientation();
 
   updateHierarchyVisualization(skelData);
 }
@@ -509,10 +631,12 @@ function collectIKChain(
  * button-triggered variant.
  *
  * The chain length comes from the end bone's `ikConstraint.chainLength`
- * (clamped to ≥2). The model uses translation-only local matrices, so
- * absolute = parent_absolute + local exactly reproduces the solved joint
- * positions; bone visuals (and any branches off the chain) are then cascaded
- * from the recomputed absolute transforms.
+ * (clamped to ≥2). FABRIK solves on joint *positions*; each chain bone's
+ * local rotation (pose twist, imported orientation) is preserved and the
+ * solved positions are re-expressed as local translations in each parent's
+ * — possibly rotated — frame via {@link chainLocalTranslations}. Bone
+ * visuals (and any branches off the chain) are then cascaded from the
+ * recomputed absolute transforms.
  *
  * @returns the solved chain (root-first) and whether the tip reached the
  *   target, or `null` when there is no usable ≥2-bone chain.
@@ -544,11 +668,22 @@ export function applyIKChain(
     maxBendDeg: ik?.maxBendDeg,
   });
 
-  // Base bone (index 0) held fixed; rewrite each subsequent bone's local
-  // translation from the solved world positions.
+  // Base bone (index 0) held fixed. Preserve every chain bone's local
+  // rotation/scale; rewrite only the translations, expressed in each
+  // parent's frame with rotations accumulated down the chain.
+  const localScales: Vector3[] = [];
+  const localRots: Quaternion[] = [];
+  for (const b of chain) {
+    b.bone.getLocalMatrix().decompose(_decompScale, _decompRot, _decompPos);
+    localScales.push(_decompScale.clone());
+    localRots.push(_decompRot.clone());
+  }
+  const baseAbsRot = absoluteRotationOf(chain[0]!);
+  const locals = chainLocalTranslations(result.positions, baseAbsRot, localRots);
   for (let i = 1; i < chain.length; i++) {
-    const rel = result.positions[i]!.subtract(result.positions[i - 1]!);
-    chain[i]!.bone.getLocalMatrix().copyFrom(Matrix.Translation(rel.x, rel.y, rel.z));
+    chain[i]!.bone.getLocalMatrix().copyFrom(
+      Matrix.Compose(localScales[i]!, localRots[i]!, locals[i - 1]!)
+    );
     chain[i]!.bone.markAsDirty();
   }
   skelData.skeleton.computeAbsoluteTransforms();
@@ -556,6 +691,7 @@ export function applyIKChain(
   // read their refreshed absolute transforms.
   updateChildVisuals(chain[0]!.id, skelData);
   updateHierarchyVisualization(skelData);
+  refreshPoseGizmoOrientation();
 
   return { chain, reached: result.reached };
 }
@@ -600,6 +736,7 @@ export function solveIKForBone(endBoneId: string, target: Vector3): boolean {
     skelData.skeleton.computeAbsoluteTransforms();
     updateChildVisuals(chain[0]!.id, skelData);
     updateHierarchyVisualization(skelData);
+    refreshPoseGizmoOrientation();
   };
 
   state.history.push({
@@ -945,6 +1082,143 @@ export function handleBonePointerDown(pick: PickingInfo): void {
   // Clicked on a mesh surface → add a bone at that point
   // If a bone is selected, make it the parent
   addBoneAtPoint(pick.pickedPoint, state.selectedBoneId);
+}
+
+// ── Bone roll ──
+
+/**
+ * Live-update a bone's roll (radians) while the UI input is being dragged /
+ * typed — updates the gizmo axes immediately, no history entry. Pair with
+ * {@link commitBoneRoll} on the gesture's end for a single undo step.
+ */
+export function setBoneRollLive(boneId: string, roll: number): void {
+  const bd = findBoneById(boneId);
+  if (!bd) return;
+  bd.roll = roll;
+  refreshPoseGizmoOrientation();
+}
+
+/**
+ * Push one "Bone Roll" undo entry mapping `fromRoll` → the bone's current
+ * roll. No-op when nothing actually changed over the gesture.
+ */
+export function commitBoneRoll(boneId: string, fromRoll: number): void {
+  const bd = findBoneById(boneId);
+  if (!bd) return;
+  const toRoll = bd.roll ?? 0;
+  if (toRoll === fromRoll) return;
+  state.history.push({
+    label: "Bone Roll",
+    undo() { bd.roll = fromRoll; refreshPoseGizmoOrientation(); },
+    redo() { bd.roll = toRoll; refreshPoseGizmoOrientation(); },
+  });
+}
+
+// ── Pose copy / paste ──
+
+/** Copy the bone's local pose (rotation + translation) to the clipboard. */
+export function copyBonePose(boneId: string): void {
+  const bd = findBoneById(boneId);
+  if (!bd) return;
+  bd.bone.getLocalMatrix().decompose(_decompScale, _decompRot, _decompPos);
+  const euler = _decompRot.toEulerAngles();
+  state.poseClipboard = {
+    boneName: bd.name,
+    rotation: { x: euler.x, y: euler.y, z: euler.z },
+    position: { x: _decompPos.x, y: _decompPos.y, z: _decompPos.z },
+  };
+  status("Pose copied: " + bd.name);
+}
+
+/**
+ * Write a local pose onto a bone (preserving its scale), cascade transforms
+ * and visuals, push a single undo entry, and fire the pose-edited hook so
+ * Auto-Key captures the change like a gizmo drag would.
+ */
+function applyPoseToBone(
+  bd: BoneData,
+  skelData: SkeletonData,
+  rotation: { x: number; y: number; z: number },
+  position: { x: number; y: number; z: number },
+  label: string
+): void {
+  const before = bd.bone.getLocalMatrix().clone();
+  bd.bone.getLocalMatrix().decompose(_decompScale, _decompRot, _decompPos);
+  const after = Matrix.Compose(
+    _decompScale.clone(),
+    Quaternion.FromEulerAngles(rotation.x, rotation.y, rotation.z),
+    new Vector3(position.x, position.y, position.z)
+  );
+
+  const write = (mat: Matrix) => {
+    bd.bone.getLocalMatrix().copyFrom(mat);
+    bd.bone.markAsDirty();
+    skelData.skeleton.computeAbsoluteTransforms();
+    // The bone's own position may have moved (translation pasted) — resync
+    // its visual as well as all descendants.
+    if (bd.visual) {
+      const abs = bd.bone.getAbsoluteTransform();
+      bd.visual.position.set(abs.m[12]!, abs.m[13]!, abs.m[14]!);
+    }
+    updateChildVisuals(bd.id, skelData);
+    updateHierarchyVisualization(skelData);
+    refreshPoseGizmoOrientation();
+  };
+
+  write(after);
+  state.history.push({
+    label,
+    undo() { write(before); },
+    redo() { write(after); },
+  });
+  _poseEditedHandler?.(bd.id);
+}
+
+/**
+ * Paste the clipboard pose. Without `mirrorAxis` the pose lands on the
+ * currently selected bone. With `mirrorAxis` the pose is mirrored across
+ * that axis and applied to the *counterpart* of the copied bone (resolved
+ * via {@link mirrorBoneName} — e.g. copy `arm_L`, paste-mirrored writes
+ * `arm_R`), which is the Blender "Paste Pose Flipped" flow.
+ *
+ * @returns `true` when a pose was applied.
+ */
+export function pasteBonePose(mirrorAxis?: MirrorAxis): boolean {
+  const clip = state.poseClipboard;
+  if (!clip) {
+    status("⚠ コピーしたポーズがありません");
+    return false;
+  }
+  const skelData = getActiveSkeleton();
+  if (!skelData) return false;
+
+  if (mirrorAxis) {
+    const targetName = mirrorBoneName(clip.boneName);
+    const target = skelData.bones.find((b) => b.name === targetName);
+    if (!target) {
+      status("⚠ 対側ボーンが見つかりません: " + targetName);
+      return false;
+    }
+    applyPoseToBone(
+      target,
+      skelData,
+      mirrorPoseRotation(clip.rotation, mirrorAxis),
+      mirrorLocalTranslation(clip.position, mirrorAxis),
+      "Paste Pose (Mirror)"
+    );
+    status("Pose pasted (mirrored) → " + targetName);
+    return true;
+  }
+
+  if (!state.selectedBoneId) {
+    status("⚠ ペースト先のボーンを選択");
+    return false;
+  }
+  const bd = skelData.bones.find((b) => b.id === state.selectedBoneId);
+  if (!bd) return false;
+  applyPoseToBone(bd, skelData, clip.rotation, clip.position, "Paste Pose");
+  status("Pose pasted → " + bd.name);
+  return true;
 }
 
 // ── Rename bone ──

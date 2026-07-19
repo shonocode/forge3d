@@ -44,6 +44,12 @@ export interface ProjectSidecar {
   /** `parent` = parent layer's name (collections nest); absent = root. */
   layers: Array<{ name: string; visible: boolean; parent?: string }>;
   activeLayerName?: string;
+  /**
+   * Bone rest-orientation rolls (radians), keyed by bone name — glTF has no
+   * per-joint roll concept, so the sidecar carries it. Only non-zero rolls
+   * are stored; absent for pre-F-M6 projects (all rolls 0).
+   */
+  boneRolls?: Record<string, number>;
 }
 
 // ── base64 helpers (chunked to stay under argument limits) ────────────────
@@ -127,6 +133,14 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
     const layer = l as { name?: unknown; visible?: unknown };
     if (typeof layer.name !== "string" || typeof layer.visible !== "boolean") {
       throw new Error("Sidecar: each layer needs name + visible");
+    }
+  }
+  if (s.boneRolls !== undefined) {
+    if (typeof s.boneRolls !== "object" || s.boneRolls === null || Array.isArray(s.boneRolls)) {
+      throw new Error("Sidecar: boneRolls must be an object");
+    }
+    for (const v of Object.values(s.boneRolls)) {
+      if (typeof v !== "number") throw new Error("Sidecar: boneRolls values must be numbers");
     }
   }
   return raw as ProjectSidecar;

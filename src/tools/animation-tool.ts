@@ -8,7 +8,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
-import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain } from "./skeleton-tool";
+import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain, refreshPoseGizmoOrientation } from "./skeleton-tool";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
 import { evalMorphTrack, upsertMorphKey, removeMorphKeyAt, findMorphTrack } from "./morph-track";
@@ -505,6 +505,9 @@ export function syncBoneVisuals(): void {
   }
   // Connector lines between bones — must follow each frame too.
   updateHierarchyVisualization(skelData);
+  // If the Pose rotation gizmo is attached, its baked-against reference is
+  // now stale (the clip just re-posed the bone) — re-arm it.
+  refreshPoseGizmoOrientation();
 }
 
 /**

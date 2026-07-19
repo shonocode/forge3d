@@ -583,7 +583,9 @@ root (脚の付け根あたり)
 <ol class="steps">
   <li>右パネル Bone タブ → モード切替で <strong>Pose</strong> を選択</li>
   <li>arm_R_upper をクリックで選択</li>
-  <li>Rotation Gizmo (3 軸の輪っか) が表示される → 各軸を回してみる</li>
+  <li>Rotation Gizmo (3 軸の輪っか) が表示される → 各軸を回してみる。
+    リングはデフォルトで<strong>ボーン自身の軸</strong>に沿う（Mode の「Local 軸回転」ON。
+    OFF にするとワールド軸。リングの捻り向きは Selected Bone の Roll° で調整可 — マニュアル §7.2.1 / §7.3.1）</li>
   <li>腕が肩を支点に動けば OK。胴体や頭まで一緒に動いてしまったら、ウェイトの影響範囲を見直す</li>
   <li>各ボーンを動かして、メッシュが想定通りに変形するかチェック</li>
 </ol>
@@ -592,6 +594,10 @@ root (脚の付け根あたり)
 特に隣接する 2 ボーンの境目で重みが急に切り替わると崩れる。Smooth で滑らかに繋ぐ。</div>
 
 <p>ポーズの状態を一旦元に戻す: Edit モードに戻して再選択 (rest pose に戻る)。または各ボーンの rotation を 0 にリセット。</p>
+
+<div class="tip">左右対称のポーズは片側だけ作れば OK。arm_L_upper をポーズ →
+<strong>📋 Copy</strong> → <strong>🪞 Mirror</strong> で、対側の arm_R_upper に
+左右反転したポーズが入る（マニュアル §7.2.2）。</div>
 
 <div class="tip">腕や足を「手先の位置」で直感的に動かしたいときは IK が便利
 （マニュアル §7.6）。先端ボーン（hand_R 等）を選んで Bone タブの「IK Constraint」で

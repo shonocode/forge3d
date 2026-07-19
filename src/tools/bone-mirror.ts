@@ -21,6 +21,40 @@ export function reflectPosition(p: Vector3, axis: MirrorAxis): Vector3 {
   );
 }
 
+/** Euler rotation triple (radians) as stored in keyframes / decomposed poses. */
+export interface EulerRotation { x: number; y: number; z: number }
+
+/**
+ * Mirror a local-pose rotation across the plane perpendicular to `axis`.
+ *
+ * Reflecting a rotation R by S gives S·R·S; for an axis-aligned reflection
+ * conjugating each single-axis factor keeps the angle about the mirror
+ * normal and negates the other two — and because conjugation distributes
+ * over the product, the same rule holds for the composed XYZ euler triple:
+ * X-mirror maps (x, y, z) → (x, −y, −z).
+ *
+ * Valid for poses expressed in mirror-symmetric parent frames (forge3d's
+ * default: identity rest orientation on both sides), which is exactly the
+ * paste-flipped use case.
+ */
+export function mirrorPoseRotation(rot: EulerRotation, axis: MirrorAxis): EulerRotation {
+  if (axis === "x") return { x: rot.x, y: -rot.y, z: -rot.z };
+  if (axis === "y") return { x: -rot.x, y: rot.y, z: -rot.z };
+  return { x: -rot.x, y: -rot.y, z: rot.z };
+}
+
+/**
+ * Mirror a parent-relative local translation across the plane perpendicular
+ * to `axis` — the component along the mirror normal flips sign.
+ */
+export function mirrorLocalTranslation(pos: EulerRotation, axis: MirrorAxis): EulerRotation {
+  return {
+    x: axis === "x" ? -pos.x : pos.x,
+    y: axis === "y" ? -pos.y : pos.y,
+    z: axis === "z" ? -pos.z : pos.z,
+  };
+}
+
 const WORD_FLIP: Record<string, string> = {
   Left: "Right",
   Right: "Left",

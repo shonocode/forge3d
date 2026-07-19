@@ -292,6 +292,13 @@
           <button class="abtn on" id="btnBoneModeEdit" style="flex:1;font-size:10px" title="Edit Mode: position gizmo, rest pose layout">Edit</button>
           <button class="abtn" id="btnBoneModePose" style="flex:1;font-size:10px" title="Pose Mode: rotation gizmo, keyframable poses">Pose</button>
         </div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="Pose の回転ギズモをボーンのローカル軸（ボーン方向 + Roll）に整列。OFF でワールド軸">Local 軸回転</span>
+          <input type="checkbox" checked id="poseLocalAxes" aria-label="Pose rotation in local bone axes" style="margin-left:auto"></div>
+        <div style="display:flex;gap:4px;margin-top:4px">
+          <button class="abtn" id="btnCopyPose" style="flex:1;font-size:10px" title="選択ボーンのローカルポーズ（回転+位置）をコピー">📋 Copy</button>
+          <button class="abtn" id="btnPastePose" style="flex:1;font-size:10px" title="コピーしたポーズを選択ボーンに貼り付け（undo 可）">📥 Paste</button>
+          <button class="abtn" id="btnPastePoseMirror" style="flex:1;font-size:10px" title="コピー元の対側ボーン（_L↔_R）へ X ミラーで貼り付け（Blender の Paste Pose Flipped 相当）">🪞 Mirror</button>
+        </div>
       </div>
       <div class="pg">
         <div class="pgt">Skeleton</div>

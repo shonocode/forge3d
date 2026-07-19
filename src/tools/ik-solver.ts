@@ -10,9 +10,12 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
  *
  * FABRIK (Forward And Backward Reaching Inverse Kinematics) is chosen over
  * CCD because it converges in fewer iterations for typical limb chains,
- * never introduces flips, and operates purely on joint *positions* — which
- * maps directly onto forge3d's translation-only bone model (bones are
- * positioned joints, segment lengths are implicit from parent→child offset).
+ * never introduces flips, and operates purely on joint *positions* — bones
+ * are positioned joints, segment lengths are implicit from parent→child
+ * offset. Since F-M6 bone local matrices may carry rotations (pose twist,
+ * roll, imported rigs); the integration in `skeleton-tool.applyIKChain`
+ * preserves those and re-expresses the solved positions in each parent's
+ * rotated frame (`bone-orientation.chainLocalTranslations`).
  */
 
 export interface FabrikOptions {

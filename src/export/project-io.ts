@@ -67,6 +67,16 @@ function collectSidecar(): ProjectSidecar {
   };
   const activeLayerName = layerNameById.get(state.activeLayerId);
   if (activeLayerName) sidecar.activeLayerName = activeLayerName;
+
+  // Bone rolls (rest-orientation twist) — glTF can't carry them.
+  const boneRolls: Record<string, number> = {};
+  for (const [, skel] of state.skeletonMap) {
+    for (const bd of skel.bones) {
+      if (bd.roll) boneRolls[bd.name] = bd.roll;
+    }
+  }
+  if (Object.keys(boneRolls).length) sidecar.boneRolls = boneRolls;
+
   return sidecar;
 }
 
@@ -166,6 +176,17 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     const lid = layerIdByName.get(sidecar.activeLayerName);
     if (lid) state.activeLayerId = lid;
   }
+
+  // Bone rolls back onto the freshly imported skeleton's bones (by name).
+  if (sidecar.boneRolls) {
+    for (const [, skel] of state.skeletonMap) {
+      for (const bd of skel.bones) {
+        const roll = sidecar.boneRolls[bd.name];
+        if (typeof roll === "number" && roll !== 0) bd.roll = roll;
+      }
+    }
+  }
+
   updateLayerUI();
   updateHierarchy();
 }

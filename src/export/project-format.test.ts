@@ -78,3 +78,27 @@ describe("validateSidecar", () => {
     expect(() => validateSidecar(bad)).toThrow();
   });
 });
+
+describe("boneRolls sidecar field", () => {
+  it("round-trips bone rolls through pack/unpack", () => {
+    const withRolls: ProjectSidecar = {
+      ...SIDECAR,
+      boneRolls: { arm_L: Math.PI / 4, arm_R: -Math.PI / 4 },
+    };
+    const packed = packProject(withRolls, new Uint8Array([1, 2, 3]));
+    const { sidecar } = unpackProject(packed);
+    expect(sidecar.boneRolls).toEqual(withRolls.boneRolls);
+  });
+
+  it("accepts a sidecar without boneRolls (pre-F-M6 projects)", () => {
+    expect(() => validateSidecar(SIDECAR)).not.toThrow();
+  });
+
+  it("rejects non-object boneRolls", () => {
+    expect(() => validateSidecar({ ...SIDECAR, boneRolls: [1, 2] })).toThrow(/boneRolls/);
+  });
+
+  it("rejects non-numeric roll values", () => {
+    expect(() => validateSidecar({ ...SIDECAR, boneRolls: { spine: "12" } })).toThrow(/boneRolls/);
+  });
+});

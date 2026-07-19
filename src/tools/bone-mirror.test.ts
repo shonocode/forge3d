@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { mirrorBoneName, reflectPosition } from "./bone-mirror";
+import { mirrorBoneName, reflectPosition, mirrorPoseRotation, mirrorLocalTranslation } from "./bone-mirror";
 
 describe("reflectPosition", () => {
   it("flips X for an x-axis mirror, leaving Y/Z", () => {
@@ -75,5 +75,35 @@ describe("mirrorBoneName", () => {
     for (const n of ["arm_L_upper", "hand_R", "foot.L", "LeftArm", "armL", "LArm", "armRUpper"]) {
       expect(mirrorBoneName(mirrorBoneName(n))).toBe(n);
     }
+  });
+});
+
+describe("mirrorPoseRotation", () => {
+  it("x-mirror keeps rx, negates ry/rz", () => {
+    const m = mirrorPoseRotation({ x: 0.3, y: 0.5, z: -0.7 }, "x");
+    expect(m).toEqual({ x: 0.3, y: -0.5, z: 0.7 });
+  });
+
+  it("y-mirror keeps ry, negates rx/rz", () => {
+    const m = mirrorPoseRotation({ x: 0.3, y: 0.5, z: -0.7 }, "y");
+    expect(m).toEqual({ x: -0.3, y: 0.5, z: 0.7 });
+  });
+
+  it("z-mirror keeps rz, negates rx/ry", () => {
+    const m = mirrorPoseRotation({ x: 0.3, y: 0.5, z: -0.7 }, "z");
+    expect(m).toEqual({ x: -0.3, y: -0.5, z: -0.7 });
+  });
+
+  it("is an involution (mirror twice = original)", () => {
+    const rot = { x: 0.1, y: -0.2, z: 0.3 };
+    expect(mirrorPoseRotation(mirrorPoseRotation(rot, "x"), "x")).toEqual(rot);
+  });
+});
+
+describe("mirrorLocalTranslation", () => {
+  it("negates only the mirror-normal component", () => {
+    expect(mirrorLocalTranslation({ x: 1, y: 2, z: 3 }, "x")).toEqual({ x: -1, y: 2, z: 3 });
+    expect(mirrorLocalTranslation({ x: 1, y: 2, z: 3 }, "y")).toEqual({ x: 1, y: -2, z: 3 });
+    expect(mirrorLocalTranslation({ x: 1, y: 2, z: 3 }, "z")).toEqual({ x: 1, y: 2, z: -3 });
   });
 });

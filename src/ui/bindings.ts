@@ -3,7 +3,7 @@ import { addMorph, captureMorph } from "../tools/morph";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { clearPaintTexture } from "../tools/texture-paint";
 import { clearSculptMask } from "../tools/sculpt";
-import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion } from "../tools/skeleton-tool";
+import { createSkeleton, assignSkeletonToMesh, deleteBone, solveIKForBone, mirrorBoneChain, getIKPoleSuggestion, copyBonePose, pasteBonePose, refreshPoseGizmoOrientation } from "../tools/skeleton-tool";
 import { initWeightData, showWeightOverlay, hideWeightOverlay, hasWeightData, refreshWeightOverlay } from "../tools/weight-paint";
 import { applyAutoWeights } from "../tools/auto-weights";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -321,6 +321,36 @@ export function bindActionButtons(): void {
   };
   E("btnBoneModeEdit").addEventListener("click", () => setBoneMode("edit"));
   E("btnBoneModePose").addEventListener("click", () => setBoneMode("pose"));
+
+  // Pose rotation space (local bone axes vs world). Applied live to the
+  // attached rotation gizmo; the bake path is space-agnostic so no
+  // re-selection is needed.
+  E("poseLocalAxes").addEventListener("change", function () {
+    state.poseRotationSpace = (this as HTMLInputElement).checked ? "local" : "world";
+    try {
+      const rotGizmo = state.gizmoManager.gizmos?.rotationGizmo;
+      if (rotGizmo) {
+        rotGizmo.updateGizmoRotationToMatchAttachedMesh = state.poseRotationSpace === "local";
+      }
+    } catch { /* gizmo may not exist yet */ }
+    refreshPoseGizmoOrientation();
+    status("Pose 回転軸: " + (state.poseRotationSpace === "local" ? "Local" : "World"));
+  });
+
+  // Pose copy / paste / mirrored paste (Blender's Copy Pose / Paste Flipped).
+  E("btnCopyPose").addEventListener("click", () => {
+    if (!state.selectedBoneId) {
+      status("⚠ コピーするボーンを選択");
+      return;
+    }
+    copyBonePose(state.selectedBoneId);
+  });
+  E("btnPastePose").addEventListener("click", () => {
+    if (pasteBonePose()) { updateAnimUI(); updateBoneUI(); }
+  });
+  E("btnPastePoseMirror").addEventListener("click", () => {
+    if (pasteBonePose("x")) { updateAnimUI(); updateBoneUI(); }
+  });
 
   // Bone display controls — size slider + X-ray toggle.
   // Async import keeps the bone-tool dependency outside the bindings critical

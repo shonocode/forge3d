@@ -67,6 +67,20 @@ export interface BoneData {
   parentId: string | null;
   visual: AbstractMesh | null;
   ikConstraint?: IKConstraint;
+  /**
+   * Rest-orientation twist (radians) about the bone's primary axis — the
+   * Blender "roll". Orients the Pose-mode local rotation gizmo; absent means
+   * 0 (the V1 default frame), so pre-roll rigs behave exactly as before.
+   */
+  roll?: number;
+}
+
+/** Local-pose snapshot for Copy/Paste Pose (rotation euler + translation). */
+export interface PoseClipboard {
+  /** Source bone's name — Paste Mirrored resolves the counterpart from it. */
+  boneName: string;
+  rotation: { x: number; y: number; z: number };
+  position: { x: number; y: number; z: number };
 }
 
 export interface SkeletonData {
@@ -318,6 +332,14 @@ export const state = {
    * Defaults to `"edit"` so first-time skeleton construction behaves as before.
    */
   boneEditMode: "edit" as "edit" | "pose",
+  /**
+   * Rotation-gizmo alignment in Pose Mode: `"local"` aligns the rings to the
+   * bone's own axes (+Y along the bone, twisted by its roll) — the industry
+   * default; `"world"` keeps the V1 world-aligned rings.
+   */
+  poseRotationSpace: "local" as "local" | "world",
+  /** Copy Pose clipboard (null until a pose is copied). */
+  poseClipboard: null as PoseClipboard | null,
 
   // Animation state
   animClips: [] as AnimClipData[],

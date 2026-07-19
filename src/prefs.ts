@@ -22,6 +22,7 @@ interface Prefs {
   autoKey: boolean;
   viewportMode?: string;
   envPreset?: string;
+  poseRotationSpace?: "local" | "world";
 }
 
 function collectPrefs(): Prefs {
@@ -32,6 +33,7 @@ function collectPrefs(): Prefs {
     paint: { ...state.paintConfig },
     weight: { ...state.weightConfig },
     autoKey: state.autoKey,
+    poseRotationSpace: state.poseRotationSpace,
     ...(shadeBtn?.dataset.mode ? { viewportMode: shadeBtn.dataset.mode } : {}),
     ...(envSel?.value ? { envPreset: envSel.value } : {}),
   };
@@ -42,6 +44,9 @@ function applyPrefs(p: Prefs): void {
   if (p.paint) Object.assign(state.paintConfig, p.paint);
   if (p.weight) Object.assign(state.weightConfig, p.weight);
   if (typeof p.autoKey === "boolean") state.autoKey = p.autoKey;
+  if (p.poseRotationSpace === "local" || p.poseRotationSpace === "world") {
+    state.poseRotationSpace = p.poseRotationSpace;
+  }
   if (p.viewportMode) {
     try {
       setViewportMode(p.viewportMode as ViewportMode);
@@ -98,6 +103,7 @@ function syncControls(): void {
   num("weightFall", wcfg.falloff, "wfV");
 
   chk("autoKey", state.autoKey);
+  chk("poseLocalAxes", state.poseRotationSpace === "local");
 }
 
 function save(): void {
