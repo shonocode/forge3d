@@ -235,15 +235,25 @@ describe("bevelEdges", () => {
     expect(noop.has(firstEdge)).toBe(true);
   });
 
-  it("refuses non-isolated edges (V1 isolation guard)", () => {
-    const em = buildEditMesh(makeQuadPair())!;
-    // Two edges sharing vertex 0 (the diagonal endpoint).
-    let first = -1;
-    forEachEdge(em, (he) => { if (first < 0) first = he; });
-    const next = em.halfEdges[first]!.next;
-    const result = bevelEdges(em, new Set([first, next]), 0.15);
-    expect(result.size).toBe(0);
-    expect(em.faces).toHaveLength(2);
+  it("greedily bevels a subset when selected edges share endpoints, reporting skips", () => {
+    const em = buildEditMesh(makeCube())!;
+    // Collect two interior edges that share an endpoint vertex.
+    const canonical: number[] = [];
+    forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin >= 0) canonical.push(he); });
+    const first = canonical[0]!;
+    const a = em.halfEdges[first]!.v;
+    const second = canonical.find((he) => {
+      if (he === first) return false;
+      const o = em.halfEdges[he]!.v;
+      const d = em.halfEdges[em.halfEdges[he]!.next]!.v;
+      return o === a || d === a;
+    })!;
+    const info = { skipped: 0 };
+    const result = bevelEdges(em, new Set([first, second]), 0.15, info);
+    // One edge beveled (2 chamfer faces), the shared-vertex one skipped.
+    expect(result.size).toBe(2);
+    expect(info.skipped).toBe(1);
+    expect(em.faces.length).toBeGreaterThan(12);
   });
 
   it("bevels the diagonal of a 2-tri quad into a chamfer band", () => {

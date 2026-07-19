@@ -286,27 +286,41 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
  *    materially more code; deferred to V3.
  *  - Fan must be closed (no boundary in the fan around a beveled vertex).
  */
-export function bevelEdges(em: EditMesh, selectedEdges: ReadonlySet<number>, width: number): Set<number> {
+export function bevelEdges(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  width: number,
+  outInfo?: { skipped: number },
+): Set<number> {
   if (selectedEdges.size === 0 || width <= 0) return new Set(selectedEdges);
 
   // Canonicalize selection (always work with min(he, twin)).
-  const canonical = new Set<number>();
+  const all = new Set<number>();
   for (const he of selectedEdges) {
     const t = em.halfEdges[he]!.twin;
     if (t < 0) continue; // boundary bevel edge — skip (no F2 to chamfer against)
-    canonical.add(he < t ? he : t);
+    all.add(he < t ? he : t);
   }
-  if (canonical.size === 0) return new Set();
+  if (all.size === 0) return new Set();
 
-  // V2 isolation guard: each endpoint vertex may host at most one bevel.
-  const vertEdgeCount = new Map<number, number>();
-  for (const he of canonical) {
+  // V2 isolation constraint: each endpoint vertex may host at most one bevel.
+  // Selecting a whole edge loop (the most common bevel gesture) violates this
+  // for every vertex, and the old all-or-nothing guard silently no-opped.
+  // Instead keep a greedy maximal subset with disjoint endpoints and bevel
+  // that — an alternating half of a loop — and report how many were skipped
+  // so the caller can tell the user to repeat for the rest.
+  const usedVerts = new Set<number>();
+  const canonical = new Set<number>();
+  for (const he of all) {
     const a = edgeOrigin(em, he);
     const b = edgeEnd(em, he);
-    vertEdgeCount.set(a, (vertEdgeCount.get(a) ?? 0) + 1);
-    vertEdgeCount.set(b, (vertEdgeCount.get(b) ?? 0) + 1);
+    if (usedVerts.has(a) || usedVerts.has(b)) continue;
+    usedVerts.add(a);
+    usedVerts.add(b);
+    canonical.add(he);
   }
-  for (const [, n] of vertEdgeCount) if (n > 1) return new Set();
+  if (outInfo) outInfo.skipped = all.size - canonical.size;
+  if (canonical.size === 0) return new Set();
 
   const t01 = Math.max(0.001, Math.min(0.49, width));
 

@@ -15,6 +15,8 @@ import { updateMeasureOverlay } from "./tools/measure";
 import { installIkRenderHook } from "./tools/animation-tool";
 import { initGraphEditor, drawGraphEditor } from "./tools/graph-editor";
 import { initDopesheet, drawDopesheet } from "./tools/dopesheet";
+import { initPrefs } from "./prefs";
+import { initNavGizmo } from "./viewport/nav-gizmo";
 
 // ── Init ──
 initViewport();
@@ -38,6 +40,8 @@ initGraphEditor();
 drawGraphEditor();
 initDopesheet();
 drawDopesheet();
+initPrefs();     // restore saved tool/viewport settings (needs UI + scene)
+initNavGizmo();  // clickable axis orientation widget (top-right of viewport)
 
 // ── Render Loop ──
 let _statsFrame = 0;

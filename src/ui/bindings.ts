@@ -578,6 +578,10 @@ export function bindActionButtons(): void {
     setEnvironmentPreset((this as HTMLSelectElement).value);
   });
   E("btnLoadHDRI").addEventListener("click", () => loadCustomHDRI());
+  E("btnRefImage").addEventListener("click", async () => {
+    const { importReferenceImage } = await import("../tools/reference-image");
+    importReferenceImage();
+  });
   E("envIntensity").addEventListener("input", function () {
     const v = +(this as HTMLInputElement).value;
     setEnvironmentIntensity(v);

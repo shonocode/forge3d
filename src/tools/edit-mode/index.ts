@@ -482,10 +482,14 @@ export function bevelSelection(): void {
   // Bevel produces face geometry — flip the selection mode so the user can
   // immediately see and tweak the resulting chamfer with the standard gizmo.
   applyTopologyOp("Bevel", () => {
-    const newFaces = bevelEdges(em, sel, state.editConfig.bevelWidth);
+    const info = { skipped: 0 };
+    const newFaces = bevelEdges(em, sel, state.editConfig.bevelWidth, info);
     if (newFaces.size === 0) {
-      status("⚠ Bevel V2: each endpoint vertex may host at most one selected edge");
+      status("⚠ Bevel: no beveleable edges in selection (boundary edges are skipped)");
       return new Set();
+    }
+    if (info.skipped > 0) {
+      status(`Bevel: ${info.skipped} 辺は端点共有のためスキップ — もう一度 Bevel で残りを面取り`);
     }
     state.editSelection.mode = "face";
     return newFaces;

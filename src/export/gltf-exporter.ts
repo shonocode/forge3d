@@ -32,6 +32,8 @@ function sanitizeFilename(name: string): string {
 
 function shouldExportNode(node: import("@babylonjs/core").Node): boolean {
   if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
+  // Reference images are modeling aids, never assets.
+  if (node.name.startsWith("refimg_")) return false;
   // Linked TransformNodes belonging to bones must be emitted so the
   // GLTF skin references valid joint nodes.
   if (node.name.startsWith("boneTN_")) return true;
@@ -191,7 +193,7 @@ function downloadText(content: string, filename: string): void {
  */
 export function exportOBJ(): void {
   const meshes = state.allMeshes.filter(
-    (m) => !m.name.startsWith("bone_visual_") && m.name !== "bone_hierarchy_lines",
+    (m) => !m.name.startsWith("bone_visual_") && m.name !== "bone_hierarchy_lines" && !m.name.startsWith("refimg_"),
   ) as Mesh[];
   if (!meshes.length) { status("⚠ メッシュなし"); return; }
   const raw = prompt("File name:", "model");
