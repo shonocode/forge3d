@@ -156,6 +156,10 @@ footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
   <li><strong>Model Library</strong>: Map タブの「Save to Library」で複数モデルをローカル保存</li>
   <li><strong>エクスポート</strong>: GLB / OBJ / STL ファイルとしてダウンロード</li>
 </ul>
+<div class="note">Map タブでライブラリのモデルを複数配置する場合、<strong>2 体目以降は GPU インスタンス</strong>
+（ジオメトリ共有）として置かれる — 100 体置いてもメモリは 1 体分 + 変換行列。ステータスに
+「Placed (instance)」と出た配置は移動/回転/スケールのみ可能（形状の個別編集は不可、
+編集したい場合は最初の 1 体を使う）。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -194,6 +198,14 @@ Gizmo で移動・回転・スケールでき、レイヤーにも入る。<stro
   <li><strong>Esc</strong>: 選択解除</li>
 </ul>
 <div class="note">Gizmo はドラッグした分だけ history に1エントリ。Ctrl+Z で 1 操作戻る。</div>
+
+<h4>2.2.1 Hierarchy パネル（アウトライナ）</h4>
+<ul>
+  <li><strong>🔍 filter</strong>: 名前でメッシュを絞り込み（マッチをフラット表示、階層下のマッチも拾う）</li>
+  <li><strong>👁 ボタン</strong>: メッシュ単位の表示/非表示トグル（非表示の行は薄く表示）</li>
+  <li><strong>◎ Isolate</strong>: 選択メッシュだけを表示。もう一度押すと元の表示状態に復帰
+    （ビュー状態なので Undo 履歴には積まれない）。密集シーンでの部分作業に</li>
+</ul>
 
 <h3 id="basic-undo">2.3 Undo / Redo</h3>
 <ul>

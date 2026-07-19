@@ -119,6 +119,15 @@ export function bindActionButtons(): void {
   });
   E("btnDup").addEventListener("click", duplicateSelected);
   E("btnDel").addEventListener("click", deleteSelected);
+  E("outlinerSearch").addEventListener("input", async function () {
+    const { setOutlinerFilter } = await import("./panels");
+    setOutlinerFilter((this as HTMLInputElement).value);
+  });
+  E("btnIsolate").addEventListener("click", async () => {
+    const { toggleIsolate, isIsolated } = await import("../tools/actions");
+    toggleIsolate();
+    E("btnIsolate").classList.toggle("on", isIsolated());
+  });
   E("btnAddMorph").addEventListener("click", addMorph);
   E("btnCapMorph").addEventListener("click", captureMorph);
 

@@ -53,7 +53,55 @@ export async function deleteFromLibrary(modelId: string): Promise<void> {
 
 // ── Model Placement ──
 
+/**
+ * Live prototype meshes per modelId. The FIRST placement of a model loads
+ * real geometry and registers here; every subsequent placement creates
+ * lightweight `InstancedMesh`es that share the prototype's vertex buffers
+ * (GPU instancing) instead of re-parsing the GLB into fresh geometry.
+ */
+const _instanceSources = new Map<string, import("@babylonjs/core/Meshes/mesh").Mesh[]>();
+
+/** Place via GPU instancing when live prototypes exist. Returns true on success. */
+function placeAsInstances(modelId: string, modelName: string): boolean {
+  const protos = _instanceSources.get(modelId)?.filter((m) => !m.isDisposed());
+  if (!protos || protos.length === 0) return false;
+
+  const instanceId = crypto.randomUUID();
+  const meshUniqueIds: number[] = [];
+  for (const src of protos) {
+    const inst = src.createInstance(src.name + "_i");
+    inst.parent = src.parent;
+    inst.position = src.position.clone();
+    if (src.rotationQuaternion) inst.rotationQuaternion = src.rotationQuaternion.clone();
+    else inst.rotation = src.rotation.clone();
+    inst.scaling = src.scaling.clone();
+    inst.isPickable = true;
+    inst.metadata = { mapModelId: modelId, mapInstanceId: instanceId };
+    addShadowCaster(inst);
+    meshUniqueIds.push(inst.uniqueId);
+    state.allMeshes.push(inst);
+  }
+  state.mapInstances.push({ instanceId, modelId, modelName, meshUniqueIds });
+
+  const iid = instanceId;
+  state.history.push({
+    label: "Place Model",
+    undo() { removeMapInstance(iid); },
+    redo() { void placeModel(modelId, modelName); },
+  });
+
+  const last = state.allMeshes[state.allMeshes.length - 1];
+  if (last) selectMesh(last, false);
+  updateHierarchy();
+  status("Placed (instance): " + modelName + " — ジオメトリ共有、移動/回転/スケールのみ");
+  return true;
+}
+
 export async function placeModel(modelId: string, modelName: string): Promise<void> {
+  // Fast path: GPU instances of already-loaded prototypes (no GLB re-parse,
+  // no geometry duplication — N placements share one vertex buffer).
+  if (placeAsInstances(modelId, modelName)) return;
+
   try {
     status("Loading model...");
     await import("@babylonjs/loaders/glTF");
@@ -107,6 +155,14 @@ export async function placeModel(modelId: string, modelName: string): Promise<vo
         }); },
       });
 
+      // Register this placement's meshes as instancing prototypes for
+      // subsequent placements of the same model.
+      const protoMeshes = result.meshes.filter(
+        (m): m is import("@babylonjs/core/Meshes/mesh").Mesh =>
+          m.name !== "__root__" && m.getClassName() === "Mesh",
+      );
+      if (protoMeshes.length) _instanceSources.set(modelId, protoMeshes);
+
       // Select the last imported mesh
       const lastMesh = result.meshes[result.meshes.length - 1];
       if (lastMesh) selectMesh(lastMesh, false);
@@ -149,7 +205,18 @@ export function removeMapInstance(instanceId: string): void {
       state.originalGeometryMap.delete(mesh.uniqueId);
       unregisterMeshForShading(mesh);
       removeMeshFromLayers(mesh);
-      mesh.dispose();
+      // Prototype guard: disposing a source Mesh takes its InstancedMeshes
+      // down with it. If other placements still instance this mesh, hide it
+      // instead — it lives on invisibly as the shared-geometry holder.
+      const asMesh = mesh as import("@babylonjs/core/Meshes/mesh").Mesh;
+      if ((asMesh.instances?.length ?? 0) > 0) {
+        // isVisible (not setEnabled) — a disabled source can suppress its
+        // instances' rendering, an invisible one does not.
+        asMesh.isVisible = false;
+        asMesh.isPickable = false;
+      } else {
+        mesh.dispose();
+      }
       state.allMeshes.splice(meshIdx, 1);
     }
   }

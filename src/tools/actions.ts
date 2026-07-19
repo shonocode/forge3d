@@ -100,6 +100,43 @@ export function duplicateSelected(): void {
 }
 
 /** Dispose all resources associated with a mesh */
+// ── Isolate (local view) ──
+
+/** Saved visibility per mesh uid while isolate mode is active; null = off. */
+let _isolateSnapshot: Map<number, boolean> | null = null;
+
+/** True while isolate mode is active. */
+export function isIsolated(): boolean {
+  return _isolateSnapshot !== null;
+}
+
+/**
+ * Toggle isolate mode: hide everything except the selected meshes, or restore
+ * the previous visibility. Not undoable by design (it's a view state, not an
+ * edit — matches Blender's local view).
+ */
+export function toggleIsolate(): void {
+  if (_isolateSnapshot) {
+    for (const m of state.allMeshes) {
+      const prev = _isolateSnapshot.get(m.uniqueId);
+      if (prev !== undefined) m.isVisible = prev;
+    }
+    _isolateSnapshot = null;
+    status("Isolate: OFF");
+  } else {
+    if (!state.selectedMeshes.length) {
+      status("⚠ Isolate: メッシュを選択");
+      return;
+    }
+    _isolateSnapshot = new Map(state.allMeshes.map((m) => [m.uniqueId, m.isVisible]));
+    for (const m of state.allMeshes) {
+      m.isVisible = state.selectedMeshes.includes(m);
+    }
+    status("Isolate: 選択のみ表示（もう一度で解除）");
+  }
+  updateHierarchy();
+}
+
 export function cleanupMesh(m: AbstractMesh): void {
   // Paint texture cleanup
   const tex = state.paintTextureMap.get(m.uniqueId);

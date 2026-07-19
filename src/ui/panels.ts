@@ -55,21 +55,46 @@ export function registerCacheTransformCallback(cb: (inputs: HTMLInputElement[]) 
   _cacheTransformCallback = cb;
 }
 
+/** Current outliner name filter (set by the search box, lowercased). */
+let _outlinerFilter = "";
+
+/** Update the outliner name filter and re-render. */
+export function setOutlinerFilter(text: string): void {
+  _outlinerFilter = text.trim().toLowerCase();
+  updateHierarchy();
+}
+
 export function updateHierarchy(): void {
   const el = E("sList");
   el.innerHTML = "";
 
   function addMeshItem(m: import("@babylonjs/core").AbstractMesh, depth: number): void {
+    // Filtering shows matches as a flat list (children still walked so a
+    // match nested under a non-match is not lost).
+    if (_outlinerFilter && !m.name.toLowerCase().includes(_outlinerFilter)) {
+      for (const child of getChildren(m)) addMeshItem(child, 0);
+      return;
+    }
+    const effDepth = _outlinerFilter ? 0 : depth;
     const d = document.createElement("div");
     d.className = "sitem" + (state.selectedMeshes.includes(m) ? " sel" : "");
-    d.style.paddingLeft = (8 + depth * 16) + "px";
+    d.style.paddingLeft = (8 + effDepth * 16) + "px";
+    if (!m.isVisible) d.style.opacity = "0.45";
     const col = getAlbedoColor(m.material)?.toHexString() ?? "#5b7fff";
-    const indent = depth > 0 ? '<span style="color:var(--t4);margin-right:4px;font-size:8px;">└</span>' : "";
+    const indent = effDepth > 0 ? '<span style="color:var(--t4);margin-right:4px;font-size:8px;">└</span>' : "";
     d.innerHTML = `<div class="cd" style="background:${col}"></div>${indent}<span>${escapeHtml(m.name)}</span>
+      <button class="vi" title="表示/非表示" style="background:none;border:none;cursor:pointer;font-size:10px;opacity:${m.isVisible ? 1 : 0.4};">${m.isVisible ? "👁" : "─"}</button>
       <button class="dl">✕</button>`;
     d.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).classList.contains("dl")) return;
+      const t = e.target as HTMLElement;
+      if (t.classList.contains("dl") || t.classList.contains("vi")) return;
       selectMesh(m, e.ctrlKey || e.metaKey);
+    });
+    const visBtn = d.querySelector<HTMLElement>(".vi")!;
+    visBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      m.isVisible = !m.isVisible;
+      updateHierarchy();
     });
     const delBtn = d.querySelector<HTMLElement>(".dl")!;
     delBtn.addEventListener("click", (e) => {

@@ -53,6 +53,11 @@
     </div>
     <div class="sec" style="flex:1;min-height:0;">
       <div class="sec-t">Hierarchy</div>
+      <div style="display:flex;gap:4px;margin-bottom:4px;">
+        <input type="search" id="outlinerSearch" placeholder="🔍 filter…" aria-label="Filter meshes by name"
+          style="flex:1;min-width:0;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:2px 6px;font-size:10px;">
+        <button class="cbtn" id="btnIsolate" title="選択メッシュのみ表示 (再度押して解除)" style="font-size:9px;">◎ Isolate</button>
+      </div>
       <div class="slist" id="sList"></div>
       <div style="display:flex;gap:4px;margin-top:4px;">
         <button class="cbtn" id="btnSetParent" style="flex:1;font-size:9px;">Set Parent</button>
