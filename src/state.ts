@@ -46,6 +46,10 @@ export interface PaintConfig {
   size: number;     // brush radius in px (on 1024 texture)
   opacity: number;  // 0-1
   eraser: boolean;
+  /** Brush edge hardness 0–1: 1 = crisp circle, 0 = airbrush falloff. */
+  hardness: number;
+  /** Texture size for NEWLY created paint textures (existing ones keep theirs). */
+  resolution: 512 | 1024 | 2048;
 }
 
 export interface WeightPaintConfig {
@@ -310,7 +314,7 @@ export const state = {
   /** Shape key drivers (bone channel → morph influence), applied per frame. */
   morphDrivers: [] as import("./tools/morph-driver").MorphDriver[],
   sculptConfig: { radius: 0.5, strength: 0.05, falloff: 2, brush: "push", dyntopo: false, detail: 0.1, symX: false, symY: false, symZ: false } as SculptConfig,
-  paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false } as PaintConfig,
+  paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false, hardness: 0.7, resolution: 1024 } as PaintConfig,
   paintTextureMap: new Map<number, DynamicTexture>(),
   /** Per-mesh sculpt mask: vertexUniqueId → per-vertex protection in [0,1]. */
   sculptMaskMap: new Map<number, Float32Array>(),

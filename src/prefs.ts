@@ -103,7 +103,10 @@ function syncControls(): void {
   if (color) color.value = p.color;
   num("paintSize", p.size, "psV");
   num("paintOpacity", p.opacity, "poV", 2);
+  num("paintHardness", p.hardness ?? 0.7, "phV", 2);
   chk("paintEraser", p.eraser);
+  const res = document.getElementById("paintRes") as HTMLSelectElement | null;
+  if (res) res.value = String(p.resolution ?? 1024);
 
   const wcfg = state.weightConfig;
   num("weightRadius", wcfg.radius, "wrV");

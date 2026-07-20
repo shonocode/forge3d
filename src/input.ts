@@ -4,7 +4,7 @@ import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selecti
 import { sculptAt, captureGeometry, restoreGeometry, applySculptDelta } from "./tools/sculpt";
 import type { GeoSnapshot } from "./tools/sculpt";
 import { diffAttribute } from "./tools/sculpt-delta";
-import { paintAt, hasUVs } from "./tools/texture-paint";
+import { paintAt, hasUVs, beginPaintStroke } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
@@ -368,6 +368,7 @@ export function initInput(): void {
         state.camera.detachControl();
         canvas.setPointerCapture(e.pointerId);
         try {
+          beginPaintStroke();
           paintAt(pk.pickedMesh!, pk);
         } catch (err) {
           state.painting = false;

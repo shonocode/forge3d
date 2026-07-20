@@ -155,8 +155,12 @@ export function bindActionButtons(): void {
   });
   bindSlider("paintSize", "psV", (v) => { state.paintConfig.size = v; });
   bindSlider("paintOpacity", "poV", (v) => { state.paintConfig.opacity = v; }, (v) => v.toFixed(2));
+  bindSlider("paintHardness", "phV", (v) => { state.paintConfig.hardness = v; }, (v) => v.toFixed(2));
   E("paintEraser").addEventListener("change", function () {
     state.paintConfig.eraser = (this as HTMLInputElement).checked;
+  });
+  E("paintRes").addEventListener("change", function () {
+    state.paintConfig.resolution = Number((this as HTMLSelectElement).value) as 512 | 1024 | 2048;
   });
   E("btnClearPaint").addEventListener("click", () => {
     const m = lastSelected();

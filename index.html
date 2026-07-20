@@ -177,8 +177,18 @@
           <input type="range" min="2" max="80" step="1" value="20" id="paintSize" aria-label="Paint brush size"></div>
         <div class="sr"><label>Opacity <span id="poV">1.00</span></label>
           <input type="range" min="0.05" max="1" step="0.05" value="1" id="paintOpacity" aria-label="Paint opacity"></div>
+        <div class="sr"><label>Hardness <span id="phV">0.70</span></label>
+          <input type="range" min="0" max="1" step="0.05" value="0.7" id="paintHardness" aria-label="Brush hardness"
+            title="1 = くっきりした円、0 = エアブラシ (ふわっとぼける)"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Eraser</span>
           <input type="checkbox" id="paintEraser" aria-label="Eraser mode" style="margin-left:auto"></div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)">Resolution</span>
+          <select id="paintRes" aria-label="Paint texture resolution" style="margin-left:auto;font-size:10px;"
+            title="新しく作られるペイントテクスチャの解像度 (既存テクスチャはそのまま)">
+            <option value="512">512</option>
+            <option value="1024" selected>1024</option>
+            <option value="2048">2048</option>
+          </select></div>
       </div>
       <div class="pg">
         <div class="pgt">Actions</div>
