@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   STRETCH_MAX,
+  alignUVs,
   computeFaceStretch,
   computeUVIslands,
   faceAtUVPoint,
+  flipUVs,
   rotateUVs,
   scaleUVs,
   stretchToColor,
   translateUVs,
   uvBounds,
+  weldUVs,
 } from "./uv-edit";
 
 describe("computeUVIslands", () => {
@@ -66,6 +69,48 @@ describe("UV transforms", () => {
     expect(uvs[0]).toBeCloseTo(1.5);
     expect(uvs[1]).toBeCloseTo(1.5);
     expect(uvs[2]).toBeCloseTo(0.5);
+    expect(uvs[3]).toBeCloseTo(0.5);
+  });
+
+  it("flipUVs mirrors across the pivot on one axis only", () => {
+    const uvs = new Float32Array([0.2, 0.3, 0.8, 0.7]);
+    flipUVs(uvs, [0, 1], "u", 0.5, 0.5);
+    expect(uvs[0]).toBeCloseTo(0.8);
+    expect(uvs[1]).toBeCloseTo(0.3); // v untouched
+    expect(uvs[2]).toBeCloseTo(0.2);
+    flipUVs(uvs, [0], "v", 0.5, 0.5);
+    expect(uvs[0]).toBeCloseTo(0.8); // u untouched now
+    expect(uvs[1]).toBeCloseTo(0.7);
+  });
+
+  it("flipUVs twice is the identity", () => {
+    const uvs = new Float32Array([0.1, 0.9, 0.4, 0.2]);
+    const before = Array.from(uvs);
+    flipUVs(uvs, [0, 1], "v", 0.3, 0.6);
+    flipUVs(uvs, [0, 1], "v", 0.3, 0.6);
+    Array.from(uvs).forEach((x, i) => expect(x).toBeCloseTo(before[i]!, 6));
+  });
+
+  it("weldUVs collapses the set to its centroid and returns it", () => {
+    const uvs = new Float32Array([0, 0, 1, 0.5, 0.5, 1, 9, 9]);
+    const [cu, cv] = weldUVs(uvs, [0, 1, 2]);
+    expect(cu).toBeCloseTo(0.5);
+    expect(cv).toBeCloseTo(0.5);
+    for (const v of [0, 1, 2]) {
+      expect(uvs[v * 2]).toBeCloseTo(0.5);
+      expect(uvs[v * 2 + 1]).toBeCloseTo(0.5);
+    }
+    expect(uvs[6]).toBeCloseTo(9); // unselected untouched
+  });
+
+  it("alignUVs straightens one axis to the mean, keeping the other", () => {
+    const uvs = new Float32Array([0.1, 0, 0.3, 0.5, 0.2, 1]);
+    const u = alignUVs(uvs, [0, 1, 2], "u");
+    expect(u).toBeCloseTo(0.2);
+    expect(uvs[0]).toBeCloseTo(0.2);
+    expect(uvs[2]).toBeCloseTo(0.2);
+    expect(uvs[4]).toBeCloseTo(0.2);
+    expect(uvs[1]).toBeCloseTo(0); // v untouched
     expect(uvs[3]).toBeCloseTo(0.5);
   });
 

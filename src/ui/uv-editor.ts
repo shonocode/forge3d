@@ -4,14 +4,17 @@ import { state, status } from "../state";
 import { lastSelected } from "../tools/selection";
 import { escapeHtml } from "./escape";
 import {
+  alignUVs,
   computeFaceStretch,
   computeUVIslands,
   faceAtUVPoint,
+  flipUVs,
   rotateUVs,
   scaleUVs,
   stretchToColor,
   translateUVs,
   uvBounds,
+  weldUVs,
   type UVIslands,
 } from "../tools/edit-mode/uv-edit";
 
@@ -119,6 +122,14 @@ export function openUVEditor(): void {
       xformBtns[m].disabled = editorMode === "vertex" && m !== "move";
       xformBtns[m].style.opacity = xformBtns[m].disabled ? "0.4" : "1";
     });
+    const setEnabled = (btns: HTMLButtonElement[], on: boolean): void => {
+      for (const b of btns) {
+        b.disabled = !on;
+        b.style.opacity = on ? "1" : "0.4";
+      }
+    };
+    setEnabled(islandOpBtns, editorMode === "island");
+    setEnabled(vertexOpBtns, editorMode === "vertex");
   };
   const setEditorMode = (m: EditorMode): void => {
     editorMode = m;
@@ -146,6 +157,75 @@ export function openUVEditor(): void {
   };
   bar.appendChild(group([modeBtns.island, modeBtns.vertex]));
   bar.appendChild(group([xformBtns.move, xformBtns.rotate, xformBtns.scale]));
+
+  // One-shot operators. Island ops need a selected island, vertex ops ≥2
+  // selected verts — checked at click time; enabled state follows the mode.
+  const makeAction = (label: string, title: string, run: () => boolean): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.className = "abtn";
+    b.style.cssText = "width:auto;padding:3px 9px;font-size:10px;";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", () => {
+      if (!run()) return;
+      preview();
+      refreshStretch();
+      draw();
+    });
+    return b;
+  };
+  const needIsland = (): boolean => {
+    if (editorMode !== "island" || selIsland < 0) {
+      status("⚠ Island モードで島を選択してから");
+      return false;
+    }
+    return true;
+  };
+  const needVerts = (): boolean => {
+    if (editorMode !== "vertex" || selVerts.size < 2) {
+      status("⚠ Vertex モードで UV 頂点を 2 つ以上選択 (Ctrl+クリック)");
+      return false;
+    }
+    return true;
+  };
+  const islandPivot = (): [number, number] => {
+    const bb = uvBounds(draft, islandData.islands[selIsland]!);
+    return [(bb.minU + bb.maxU) / 2, (bb.minV + bb.maxV) / 2];
+  };
+  const islandOpBtns = [
+    makeAction("Flip U", "選択島を左右反転", () => {
+      if (!needIsland()) return false;
+      const [pu, pv] = islandPivot();
+      flipUVs(draft, islandData.islands[selIsland]!, "u", pu, pv);
+      return true;
+    }),
+    makeAction("Flip V", "選択島を上下反転", () => {
+      if (!needIsland()) return false;
+      const [pu, pv] = islandPivot();
+      flipUVs(draft, islandData.islands[selIsland]!, "v", pu, pv);
+      return true;
+    }),
+  ];
+  const vertexOpBtns = [
+    makeAction("Weld", "選択 UV 頂点を重心へ溶接 (シームの継ぎ目消しに)", () => {
+      if (!needVerts()) return false;
+      weldUVs(draft, [...selVerts]);
+      status(`Weld: ${selVerts.size} 頂点を溶接`);
+      return true;
+    }),
+    makeAction("Align U", "選択頂点の U を揃えて縦一直線に", () => {
+      if (!needVerts()) return false;
+      alignUVs(draft, [...selVerts], "u");
+      return true;
+    }),
+    makeAction("Align V", "選択頂点の V を揃えて横一直線に", () => {
+      if (!needVerts()) return false;
+      alignUVs(draft, [...selVerts], "v");
+      return true;
+    }),
+  ];
+  bar.appendChild(group(islandOpBtns));
+  bar.appendChild(group(vertexOpBtns));
 
   const stretchRow = document.createElement("label");
   stretchRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;margin-left:10px;color:var(--t3,#9aa);cursor:pointer;";

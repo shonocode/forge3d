@@ -153,6 +153,57 @@ export function scaleUVs(
   }
 }
 
+/** In-place mirror of a vertex set's UVs across the pivot line perpendicular to `axis`. */
+export function flipUVs(
+  uvs: Float32Array,
+  verts: readonly number[],
+  axis: "u" | "v",
+  pivotU: number,
+  pivotV: number,
+): void {
+  for (const v of verts) {
+    if (axis === "u") uvs[v * 2] = 2 * pivotU - uvs[v * 2]!;
+    else uvs[v * 2 + 1] = 2 * pivotV - uvs[v * 2 + 1]!;
+  }
+}
+
+/**
+ * Weld a vertex set to its UV centroid (all verts get the same UV).
+ * Positions in 3D are untouched — this only stitches the texture lookup,
+ * e.g. to close a visible seam between islands. Returns the centroid.
+ */
+export function weldUVs(uvs: Float32Array, verts: readonly number[]): [number, number] {
+  if (verts.length === 0) return [0, 0];
+  let su = 0;
+  let sv = 0;
+  for (const v of verts) {
+    su += uvs[v * 2]!;
+    sv += uvs[v * 2 + 1]!;
+  }
+  const cu = su / verts.length;
+  const cv = sv / verts.length;
+  for (const v of verts) {
+    uvs[v * 2] = cu;
+    uvs[v * 2 + 1] = cv;
+  }
+  return [cu, cv];
+}
+
+/**
+ * Align a vertex set on one axis: every vert gets the mean U (axis "u") or
+ * mean V (axis "v"), straightening the run into a vertical / horizontal
+ * line. Returns the aligned coordinate.
+ */
+export function alignUVs(uvs: Float32Array, verts: readonly number[], axis: "u" | "v"): number {
+  if (verts.length === 0) return 0;
+  const off = axis === "u" ? 0 : 1;
+  let sum = 0;
+  for (const v of verts) sum += uvs[v * 2 + off]!;
+  const mean = sum / verts.length;
+  for (const v of verts) uvs[v * 2 + off] = mean;
+  return mean;
+}
+
 /**
  * Topmost face whose UV triangle contains point (u, v), or -1.
  * Iterates in face order; with non-overlapping islands there is at most one
