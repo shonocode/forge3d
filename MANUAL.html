@@ -1009,7 +1009,29 @@ Material タブのテクスチャスロット欄の <strong>AO Bake</strong> 行
   <li>GLB エクスポートでは glTF 標準の <strong>occlusionTexture</strong> として出力される (§13)</li>
   <li>1 ベイク = 1 Undo。AO スロットの ✕ でいつでも解除できる</li>
 </ul>
-<div class="note">ハイポリ → ローポリの法線ベイク（retopo ワークフロー）は F-M10 の後続バッチで実装予定。</div>
+<h3 id="misc-normalbake">12.7 Normal Bake (ハイ→ロー法線ベイク)</h3>
+<p><strong>retopo ワークフロー</strong>の要：スカルプトで作り込んだ高密度メッシュ（ハイポリ）の
+表面ディテールを、軽いローポリメッシュの<strong>ノーマルマップ</strong>に転写する。
+Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュを選んで <strong>🔥 Bake</strong>。</p>
+<ol>
+  <li>ローポリ側（ベイク先）を選択。<strong>UV 必須</strong> (§4.9)</li>
+  <li><strong>Nrm Bake</strong> 行のドロップダウンでハイポリ（ソース）メッシュを選ぶ</li>
+  <li>🔥 Bake → ノーマルマップが Normal スロットに入り、ローポリが彫り込んだように見える</li>
+</ol>
+<ul>
+  <li>ローポリ表面の各テクセルから法線方向に<strong>ケージレイ</strong>を飛ばし
+    （オフセットはメッシュサイズの 5%）、最近接のハイポリ面の<strong>平滑法線</strong>をサンプル →
+    ローポリの<strong>接空間</strong>（UV から計算したタンジェント基底）に変換して RGB 符号化
+    （glTF / OpenGL 規約、512px）</li>
+  <li><strong>ワールド空間でベイク</strong>するので、2 つのメッシュは見た目が重なっていれば OK
+    （トランスフォームの違いは吸収される）</li>
+  <li>レイが届かなかったテクセルはフラット法線 (128,128,255) にフォールバック。
+    ヒット率が 50% を切ると警告 — ハイポリとローポリが重なっているか確認</li>
+  <li>GLB エクスポートでは glTF 標準の <strong>normalTexture</strong> として出力される (§13)</li>
+  <li>1 ベイク = 1 Undo。Normal スロットの ✕ で解除</li>
+</ul>
+<div class="tip">典型的な流れ：ローポリを複製 → 複製に Subdivision + Sculpt でディテールを彫る →
+元のローポリを選択して複製をソースに Normal Bake → 複製を削除（または非表示レイヤーへ）。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -1155,6 +1177,8 @@ Material タブのテクスチャスロット欄の <strong>AO Bake</strong> 行
   <tr><td>Loop Cut / ループカット</td><td>メッシュをぐるりと一周する辺ループを追加。関節用ループなどに。</td></tr>
   <tr><td>Knife / ナイフ</td><td>画面上に引いた線でメッシュの辺を切断し、面を再分割する操作。カメラと線が成す平面で表裏とも切れる (cut through)。§4.7.1 参照。</td></tr>
   <tr><td>AO / Ambient Occlusion</td><td>周囲のジオメトリに遮られて環境光が届きにくい度合い。へこみ・すき間が暗くなる。Forge3D はレイキャストでテクスチャにベイクし glTF の occlusionTexture として出力。§12.6 参照。</td></tr>
+  <tr><td>Normal Bake / 法線ベイク</td><td>ハイポリメッシュの表面法線をローポリの接空間ノーマルマップに転写すること。retopo（リトポロジー）ワークフローの中核。§12.7 参照。</td></tr>
+  <tr><td>Cage / ケージ</td><td>法線ベイクでレイを飛ばす起点となる、ローポリ表面を法線方向に膨らませた仮想面。Forge3D はメッシュサイズの 5% を自動使用。</td></tr>
   <tr><td>Flip Diagonal / 対角線フリップ</td><td>隣接 2 三角形の共有辺を反対側の 2 頂点を結ぶ辺に張り替える操作。§4.7.2 参照。</td></tr>
   <tr><td>Shade Smooth / Flat</td><td>面をなめらか / フラットにシェーディングする法線制御。§4.8.3 参照。</td></tr>
   <tr><td>Auto Smooth / 自動スムーズ</td><td>指定角度より急な折り目だけハードエッジにし、ゆるやかな面はなめらかに繋ぐ法線制御。§4.8.3 参照。</td></tr>

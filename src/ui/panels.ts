@@ -588,13 +588,54 @@ export function updateMaterial(): void {
     bakeBtn.textContent = "🔥 Bake";
     bakeBtn.title = "ジオメトリのセルフオクルージョンを AO テクスチャにベイク (UV 必須、GLB では occlusionTexture として出力)";
     bakeBtn.addEventListener("click", () => {
-      void import("../tools/ao-bake-apply").then((mod) => {
+      void import("../tools/bake-apply").then((mod) => {
         mod.bakeAOToMesh(m, Number(resSel.value) as 256 | 512);
         // Refresh the slot list once the async bake lands.
         setTimeout(() => updateMaterial(), 400);
       });
     });
     row.appendChild(bakeBtn);
+    slotsEl.appendChild(row);
+  }
+
+  // Normal bake row — transfer a high-poly mesh's normals onto this mesh
+  // (retopo workflow). Needs UV on this (low) mesh + a source mesh pick.
+  {
+    const others = state.allMeshes.filter((o) => o !== m && !o.name.startsWith("refimg_"));
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;padding:3px 0;";
+    row.innerHTML = `<span style="min-width:60px;color:var(--t3)">Nrm Bake</span>`;
+    const srcSel = document.createElement("select");
+    srcSel.style.cssText = "font-size:9px;flex:1;min-width:0;";
+    if (others.length === 0) {
+      const o = document.createElement("option");
+      o.textContent = "— ハイポリなし —";
+      srcSel.appendChild(o);
+      srcSel.disabled = true;
+    } else {
+      for (const om of others) {
+        const o = document.createElement("option");
+        o.value = String(om.uniqueId);
+        o.textContent = om.name;
+        srcSel.appendChild(o);
+      }
+    }
+    row.appendChild(srcSel);
+    const nBakeBtn = document.createElement("button");
+    nBakeBtn.className = "abtn";
+    nBakeBtn.style.cssText = "padding:1px 7px;font-size:9px;min-width:0;";
+    nBakeBtn.textContent = "🔥 Bake";
+    nBakeBtn.title = "選択メッシュ (ハイポリ) の法線をこのメッシュのノーマルマップにベイク (UV 必須、GLB では normalTexture として出力)";
+    nBakeBtn.disabled = others.length === 0;
+    nBakeBtn.addEventListener("click", () => {
+      const high = state.allMeshes.find((om) => String(om.uniqueId) === srcSel.value);
+      if (!high) return;
+      void import("../tools/bake-apply").then((mod) => {
+        mod.bakeNormalToLowMesh(m, high, 512);
+        setTimeout(() => updateMaterial(), 400);
+      });
+    });
+    row.appendChild(nBakeBtn);
     slotsEl.appendChild(row);
   }
 
