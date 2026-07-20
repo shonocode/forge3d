@@ -991,6 +991,25 @@ glTF 標準の metallic-roughness テクスチャ（R=AO / G=roughness / B=metal
 </ul>
 <div class="tip">評価・ベイク（albedo / metallic-roughness / normal）とグラフ操作（追加・削除・結線・循環検出）は
 純関数として実装されテスト済み。キャンバス描画のみ DOM 層。Bake / Clear / Edit は Undo 可能。解像度はデフォルト 256px。</div>
+
+<h3 id="misc-aobake">12.6 AO Bake (アンビエントオクルージョンベイク)</h3>
+<p>ジオメトリの<strong>セルフオクルージョン</strong>（へこみ・すき間・接地部が環境光を受けにくい度合い）を
+UV レイアウトに沿ったテクスチャに焼き付け、PBR の <strong>AO スロット</strong>に適用する。
+Material タブのテクスチャスロット欄の <strong>AO Bake</strong> 行（解像度 256 / 512px 選択 + 🔥 Bake）。</p>
+<ol>
+  <li><strong>UV 必須</strong> — 先に Smart UV Project (§4.9) を実行しておく</li>
+  <li>メッシュを選択 → Material タブ → <strong>🔥 Bake</strong></li>
+  <li>数秒でベイク完了。しわ・耳の付け根・脚の間などが自然に暗くなる</li>
+</ol>
+<ul>
+  <li>各テクセルから<strong>半球状にレイを飛ばして遮蔽率を計算</strong>（コサイン加重 16 サンプル、
+    到達距離はメッシュサイズの 25%）。均一グリッドで加速しているので 512px でも実用時間</li>
+  <li>サンプリングは決定的 — 同じメッシュなら何度焼いても同じ結果</li>
+  <li>UV 島の境界は<strong>自動で外側に膨張</strong>させるので、シームに黒い筋が出ない</li>
+  <li>GLB エクスポートでは glTF 標準の <strong>occlusionTexture</strong> として出力される (§13)</li>
+  <li>1 ベイク = 1 Undo。AO スロットの ✕ でいつでも解除できる</li>
+</ul>
+<div class="note">ハイポリ → ローポリの法線ベイク（retopo ワークフロー）は F-M10 の後続バッチで実装予定。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -1135,6 +1154,7 @@ glTF 標準の metallic-roughness テクスチャ（R=AO / G=roughness / B=metal
   <tr><td>Bevel / 面取り</td><td>辺を「斜めに削った面」に置換。角を丸める。</td></tr>
   <tr><td>Loop Cut / ループカット</td><td>メッシュをぐるりと一周する辺ループを追加。関節用ループなどに。</td></tr>
   <tr><td>Knife / ナイフ</td><td>画面上に引いた線でメッシュの辺を切断し、面を再分割する操作。カメラと線が成す平面で表裏とも切れる (cut through)。§4.7.1 参照。</td></tr>
+  <tr><td>AO / Ambient Occlusion</td><td>周囲のジオメトリに遮られて環境光が届きにくい度合い。へこみ・すき間が暗くなる。Forge3D はレイキャストでテクスチャにベイクし glTF の occlusionTexture として出力。§12.6 参照。</td></tr>
   <tr><td>Flip Diagonal / 対角線フリップ</td><td>隣接 2 三角形の共有辺を反対側の 2 頂点を結ぶ辺に張り替える操作。§4.7.2 参照。</td></tr>
   <tr><td>Shade Smooth / Flat</td><td>面をなめらか / フラットにシェーディングする法線制御。§4.8.3 参照。</td></tr>
   <tr><td>Auto Smooth / 自動スムーズ</td><td>指定角度より急な折り目だけハードエッジにし、ゆるやかな面はなめらかに繋ぐ法線制御。§4.8.3 参照。</td></tr>

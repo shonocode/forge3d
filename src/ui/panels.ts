@@ -568,6 +568,36 @@ export function updateMaterial(): void {
     slotsEl.appendChild(row);
   }
 
+  // AO bake row — bakes geometry self-occlusion into the AO slot (needs UV).
+  {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;padding:3px 0;border-top:1px solid var(--bd);margin-top:3px;";
+    row.innerHTML = `<span style="min-width:60px;color:var(--t3)">AO Bake</span>`;
+    const resSel = document.createElement("select");
+    resSel.style.cssText = "font-size:9px;flex:1;min-width:0;";
+    for (const r of [256, 512]) {
+      const o = document.createElement("option");
+      o.value = String(r);
+      o.textContent = `${r}px`;
+      resSel.appendChild(o);
+    }
+    row.appendChild(resSel);
+    const bakeBtn = document.createElement("button");
+    bakeBtn.className = "abtn";
+    bakeBtn.style.cssText = "padding:1px 7px;font-size:9px;min-width:0;";
+    bakeBtn.textContent = "🔥 Bake";
+    bakeBtn.title = "ジオメトリのセルフオクルージョンを AO テクスチャにベイク (UV 必須、GLB では occlusionTexture として出力)";
+    bakeBtn.addEventListener("click", () => {
+      void import("../tools/ao-bake-apply").then((mod) => {
+        mod.bakeAOToMesh(m, Number(resSel.value) as 256 | 512);
+        // Refresh the slot list once the async bake lands.
+        setTimeout(() => updateMaterial(), 400);
+      });
+    });
+    row.appendChild(bakeBtn);
+    slotsEl.appendChild(row);
+  }
+
   // Procedural material section.
   const procEl = el.querySelector<HTMLElement>("#procPanel");
   if (procEl) renderProceduralControls(procEl, m);
