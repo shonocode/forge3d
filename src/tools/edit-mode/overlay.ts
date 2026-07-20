@@ -7,7 +7,7 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
-import { edgeEnd, edgeOrigin, faceVertices, forEachEdge, isSeam, type EditMesh } from "./half-edge";
+import { creaseOf, edgeEnd, edgeOrigin, faceVerts, forEachEdge, isSeam, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 const SELECTED_RGB: [number, number, number] = [1, 0.85, 0.15];
@@ -15,6 +15,8 @@ const UNSELECTED_VERTEX: [number, number, number] = [1, 1, 1];
 const UNSELECTED_EDGE: [number, number, number] = [0.55, 0.55, 0.7];
 const SEAM_RGB: [number, number, number] = [1, 0.25, 0.2];
 const SEAM_SELECTED_RGB: [number, number, number] = [1, 0.55, 0.15]; // orange = both selected and seam
+const CREASE_RGB: [number, number, number] = [0.2, 0.85, 1]; // cyan = Catmull-Clark crease
+const CREASE_SELECTED_RGB: [number, number, number] = [0.55, 0.95, 1];
 
 /**
  * Component overlay: three child meshes attached to the source mesh (so they
@@ -127,11 +129,15 @@ function buildEdgeLines(scene: Scene, em: EditMesh, sel: EditSelection): LinesMe
     const pb = new Vector3(em.positions[b * 3]!, em.positions[b * 3 + 1]!, em.positions[b * 3 + 2]!);
     const isSel = showSelected && sel.indices.has(he);
     const isSeamEdge = isSeam(em, he);
+    const isCreaseEdge = creaseOf(em, he) > 0;
     let rgb: [number, number, number];
     let alpha: number;
+    // Priority: selected+seam > selected+crease > selected > seam > crease > plain.
     if (isSel && isSeamEdge) { rgb = SEAM_SELECTED_RGB; alpha = 1; }
+    else if (isSel && isCreaseEdge) { rgb = CREASE_SELECTED_RGB; alpha = 1; }
     else if (isSel) { rgb = SELECTED_RGB; alpha = 1; }
     else if (isSeamEdge) { rgb = SEAM_RGB; alpha = 1; }
+    else if (isCreaseEdge) { rgb = CREASE_RGB; alpha = 1; }
     else { rgb = UNSELECTED_EDGE; alpha = 0.7; }
     const c = new Color4(rgb[0], rgb[1], rgb[2], alpha);
     lines.push([pa, pb]);
@@ -154,14 +160,15 @@ function buildFaceHighlight(scene: Scene, em: EditMesh, sel: EditSelection): Mes
 
   for (const f of sel.indices) {
     if (f < 0 || f >= em.faces.length) continue;
-    const [a, b, c] = faceVertices(em, f);
-    positions.push(
-      em.positions[a * 3]!, em.positions[a * 3 + 1]!, em.positions[a * 3 + 2]!,
-      em.positions[b * 3]!, em.positions[b * 3 + 1]!, em.positions[b * 3 + 2]!,
-      em.positions[c * 3]!, em.positions[c * 3 + 1]!, em.positions[c * 3 + 2]!,
-    );
-    indices.push(cursor, cursor + 1, cursor + 2);
-    cursor += 3;
+    // Fan-triangulate the polygon into the highlight mesh (n-gon aware).
+    const verts = faceVerts(em, f);
+    for (const v of verts) {
+      positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+    }
+    for (let i = 1; i + 1 < verts.length; i++) {
+      indices.push(cursor, cursor + i, cursor + i + 1);
+    }
+    cursor += verts.length;
   }
 
   if (positions.length === 0) return null;

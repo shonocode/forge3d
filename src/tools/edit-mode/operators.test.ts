@@ -84,25 +84,25 @@ describe("extrudeFaces", () => {
     expect(em.vertices).toHaveLength(8);
   });
 
-  it("single-triangle extrude → 3 new verts, 1 cap + 6 skirt tris added", () => {
+  it("single-triangle extrude → 3 new verts, 1 cap + 3 skirt quads added", () => {
     const em = buildEditMesh(makeCube())!;
     // Pick face 0 — its three verts (0, 2, 1) are all on the boundary so all 3 dup.
     const newSel = extrudeFaces(em, new Set([0]));
     // Vertex count: 8 + 3 duplicates = 11
     expect(em.vertices).toHaveLength(11);
-    // Face count: 11 unchanged (12 - 1 removed) + 6 skirt + 1 cap = 18
-    expect(em.faces).toHaveLength(18);
+    // Face count: 11 unchanged (12 - 1 removed) + 3 skirt quads (V2) + 1 cap = 15
+    expect(em.faces).toHaveLength(15);
     expect(newSel.size).toBe(1);
   });
 
   it("two-triangle (whole cube face) extrude → cap stays closed", () => {
     const em = buildEditMesh(makeCube())!;
-    // Faces 0 and 1 form the -z quad. Boundary = 4 cube edges (8 skirt tris).
+    // Faces 0 and 1 form the -z quad. Boundary = 4 cube edges (4 skirt quads).
     const newSel = extrudeFaces(em, new Set([0, 1]));
     // Verts on the -z face: 0, 1, 2, 3 — all 4 duplicate.
     expect(em.vertices).toHaveLength(12);
-    // Face count: 10 unchanged + 8 skirt + 2 cap = 20
-    expect(em.faces).toHaveLength(20);
+    // Face count: 10 unchanged + 4 skirt quads (V2) + 2 cap = 16
+    expect(em.faces).toHaveLength(16);
     expect(newSel.size).toBe(2);
     // Cap retains the original triangulation shape.
     const cap0 = faceVertices(em, [...newSel][0]!);
@@ -168,12 +168,12 @@ describe("insetFaces", () => {
     expect(em.faces).toHaveLength(12);
   });
 
-  it("single-tri inset adds 3 verts and 6 skirt + 1 cap face", () => {
+  it("single-tri inset adds 3 verts and 3 skirt quads + 1 cap face", () => {
     const em = buildEditMesh(makeCube())!;
     const sel = insetFaces(em, new Set([0]), 0.3);
     expect(em.vertices).toHaveLength(8 + 3);
-    // 11 untouched + 6 skirt + 1 cap = 18
-    expect(em.faces).toHaveLength(18);
+    // 11 untouched + 3 skirt quads (V2) + 1 cap = 15
+    expect(em.faces).toHaveLength(15);
     expect(sel.size).toBe(1);
   });
 
@@ -250,8 +250,8 @@ describe("bevelEdges", () => {
     })!;
     const info = { skipped: 0 };
     const result = bevelEdges(em, new Set([first, second]), 0.15, info);
-    // One edge beveled (2 chamfer faces), the shared-vertex one skipped.
-    expect(result.size).toBe(2);
+    // One edge beveled (1 chamfer quad in V2), the shared-vertex one skipped.
+    expect(result.size).toBe(1);
     expect(info.skipped).toBe(1);
     expect(em.faces.length).toBeGreaterThan(12);
   });
@@ -263,10 +263,10 @@ describe("bevelEdges", () => {
     expect(diagonal).toBeGreaterThanOrEqual(0);
 
     const result = bevelEdges(em, new Set([diagonal]), 0.2);
-    // 2 original tris (remapped) + 2 chamfer tris = 4 (no caps because the
-    // fan around each endpoint has only F1+F2, so no implicit split).
-    expect(em.faces).toHaveLength(4);
-    expect(result.size).toBe(2);
+    // 2 original tris (remapped) + 1 chamfer quad (V2) = 3 (no caps because
+    // the fan around each endpoint has only F1+F2, so no implicit split).
+    expect(em.faces).toHaveLength(3);
+    expect(result.size).toBe(1);
     expect(em.vertices).toHaveLength(8);
   });
 
@@ -281,10 +281,10 @@ describe("bevelEdges", () => {
 
     // Topology delta:
     //   - 12 original tris remapped (no faces removed)
-    //   - +2 chamfer tris
+    //   - +1 chamfer quad (V2)
     //   - +2 corner cap tris (one per endpoint)
-    expect(em.faces).toHaveLength(12 + 2 + 2);
-    expect(result.size).toBe(2);
+    expect(em.faces).toHaveLength(12 + 1 + 2);
+    expect(result.size).toBe(1);
     // +4 new vertices (a1, a2 at vertex a; b1, b2 at vertex b)
     expect(em.vertices).toHaveLength(8 + 4);
   });
@@ -319,7 +319,7 @@ describe("extrudeEdges", () => {
     expect(em.faces).toHaveLength(12);
   });
 
-  it("extrudes a single edge into a 2-tri fin", () => {
+  it("extrudes a single edge into a fin quad", () => {
     const em = buildEditMesh(makeQuadPair())!;
     // Boundary edge — pick the first one
     let bdEdge = -1;
@@ -328,10 +328,10 @@ describe("extrudeEdges", () => {
     }
     expect(bdEdge).toBeGreaterThanOrEqual(0);
     const sel = extrudeEdges(em, new Set([bdEdge]));
-    // 2 fin tris added; 4 → 4 original + 2 fin = ... wait the test mesh has 2 tris, so 2 + 2 = 4.
-    expect(em.faces).toHaveLength(2 + 2);
+    // 1 fin quad added (V2): 2 original tris + 1 fin = 3 faces.
+    expect(em.faces).toHaveLength(2 + 1);
     expect(em.vertices).toHaveLength(4 + 2); // 2 duplicates
-    expect(sel.size).toBe(2);
+    expect(sel.size).toBe(1);
   });
 
   it("dedups shared vertex when extruding two adjacent edges", () => {
@@ -351,7 +351,7 @@ describe("extrudeEdges", () => {
     const sel = extrudeEdges(em, new Set([e1, e2]));
     // Two adjacent edges share 1 vert → 3 distinct verts duplicated (not 4).
     expect(em.vertices).toHaveLength(4 + 3);
-    expect(sel.size).toBe(4); // 2 edges × 2 fin tris each
+    expect(sel.size).toBe(2); // 2 edges × 1 fin quad each (V2)
   });
 });
 
@@ -668,8 +668,8 @@ describe("bridgeEdgeLoops", () => {
     const sel = boundaryEdges(em);
     expect(sel.size).toBe(8); // 4 per quad (diagonals are interior)
     const newFaces = bridgeEdgeLoops(em, sel);
-    expect(newFaces.size).toBe(8); // 4 quads × 2 tris
-    expect(em.faces).toHaveLength(12);
+    expect(newFaces.size).toBe(4); // 4 REAL quads (V2)
+    expect(em.faces).toHaveLength(8); // 4 original tris + 4 band quads
     // The result is watertight: no boundary edges remain.
     expect(boundaryEdges(em).size).toBe(0);
   });

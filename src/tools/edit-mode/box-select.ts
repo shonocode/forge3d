@@ -1,6 +1,6 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
-import { edgeEnd, edgeOrigin, faceVertices, forEachEdge, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, faceVerts, forEachEdge, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 /**
@@ -53,14 +53,14 @@ export function collectBoxSelection(
     });
   } else {
     for (let f = 0; f < em.faces.length; f++) {
-      const [a, b, c] = faceVertices(em, f);
-      const pa = projectVert(a);
-      const pb = projectVert(b);
-      const pc = projectVert(c);
-      const cx = (pa.x + pb.x + pc.x) / 3;
-      const cy = (pa.y + pb.y + pc.y) / 3;
-      const cz = (pa.z + pb.z + pc.z) / 3;
-      if (inRect(cx, cy, cz)) out.add(f);
+      const verts = faceVerts(em, f);
+      let cx = 0, cy = 0, cz = 0;
+      for (const vi of verts) {
+        const p = projectVert(vi);
+        cx += p.x; cy += p.y; cz += p.z;
+      }
+      const n = verts.length;
+      if (inRect(cx / n, cy / n, cz / n)) out.add(f);
     }
   }
 

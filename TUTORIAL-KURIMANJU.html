@@ -362,6 +362,25 @@ GLB エクスポートには含まれないので置きっぱなしで OK。</di
 オンにして頂点を 1 つ動かすと、Prop. Radius 内の周辺頂点が減衰付きで一緒に動くので
 面がなめらかに繋がる（マニュアル §4.2.2）。Gizmo は <kbd>T</kbd>/<kbd>R</kbd>/<kbd>S</kbd> で
 Move / Rotate / Scale を切替（§4.2.1）— リング選択を <kbd>S</kbd> ですぼめると「くびれ」が簡単に作れる。</div>
+
+<div class="tip"><strong>四角形フローで整える</strong>：プリミティブや彫刻で三角形だらけになったら、
+Face モードで面を選んで <kbd>J</kbd>（Tris to Quads）を押すと、共面の三角形ペアが
+<strong>四角形にまとまる</strong>。quad はエッジフローが読みやすく、Loop Cut やスムージングとの
+相性が良い。forge3d は quad / 多角形をそのまま保持する（Extrude や Bevel も本物の quad を生成）ので、
+Blender 的なクリーンなトポロジで作り込める。三角形に戻したいときは <kbd>Ctrl+T</kbd>（Quads to Tris）。
+詳細はマニュアル §4.10。</div>
+
+<div class="tip"><strong>丸みを一気に出す</strong>：ローポリの quad ベースメッシュができたら、
+<kbd>Ctrl+D</kbd>（Subdivide / Catmull-Clark）でメッシュ全体を滑らかに細分割できる。
+1 回押すごとに面が約 4 倍になり角が丸まるので、カクカクした胴体が一気に有機的な曲面になる。
+くりまんじゅうのようなぷっくりした体型は、<strong>少ない quad で大まかな形を作り → Subdivide で丸める</strong>
+のが手戻りの少ない作り方（破壊的操作なので、必要ならベースメッシュを複製してから）。詳細は §4.10.3。</div>
+
+<div class="tip"><strong>鋭さを残したい辺には折り目</strong>：Subdivide は全体を丸めるので、
+「口の輪郭」「手足の付け根の段差」など<strong>鋭く残したい辺</strong>があるときは、Edge モードで
+その辺を選んで <kbd>Shift+E</kbd>（Mark Crease）を付けてから <kbd>Ctrl+D</kbd> する。折り目辺
+（シアン色）は細分割しても鋭さを保つので、「丸い体に、キリッとした口元」のような
+メリハリが出せる。鋭さの強さは右パネルの Crease Weight スライダーで調整（詳細は §4.10.4）。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -747,6 +766,10 @@ forge3d 内で見えてた状態と一致してれば OK。</p>
   <tr><td>Ctrl+E</td><td>Bridge Loops (境界ループ接続)</td></tr>
   <tr><td>K</td><td>Knife (ドラッグで切断)</td></tr>
   <tr><td>F</td><td>Flip Diagonal (対角線フリップ)</td></tr>
+  <tr><td>J</td><td>Tris to Quads (三角形→四角形)</td></tr>
+  <tr><td>Ctrl+T</td><td>Quads to Tris (四角形→三角形)</td></tr>
+  <tr><td>Ctrl+D</td><td>Subdivide (Catmull-Clark 細分割)</td></tr>
+  <tr><td>Shift+E</td><td>Mark Crease (折り目 — Subdivide で鋭さ維持)</td></tr>
   <tr><td>Shift+S</td><td>Mark Seam</td></tr>
   <tr><td>U</td><td>Smart UV Project</td></tr>
   <tr><td>X / Del</td><td>削除</td></tr>

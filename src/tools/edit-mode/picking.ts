@@ -112,15 +112,16 @@ function pointSegmentDistSq(
  * Pick a face under the cursor using Babylon's built-in ray pick. Returns the
  * face index, or -1.
  *
- * `pick.faceId` is the triangle index in the source mesh's index buffer, which
- * is exactly our EditMesh face index since build() walks the index buffer in
- * order.
+ * `pick.faceId` is the triangle index in the source mesh's index buffer;
+ * `em.triToFace` resolves it to the owning polygon face (identity for
+ * tri-only meshes).
  */
 export function pickFace(scene: Scene, em: EditMesh, screenX: number, screenY: number): number {
   const result = scene.pick(screenX, screenY, (m) => m === em.source);
   if (!result?.hit || result.faceId < 0) return -1;
-  if (result.faceId >= em.faces.length) return -1;
-  return result.faceId;
+  const face = em.triToFace[result.faceId];
+  if (face === undefined || face >= em.faces.length) return -1;
+  return face;
 }
 
 /** Camera type-narrow helper used by box select. */

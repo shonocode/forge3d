@@ -1,4 +1,4 @@
-import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, isSeam, type EditMesh } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVerts, fanTriangulate, isSeam, type EditMesh } from "./half-edge";
 import { packRects, type PackRect } from "./uv-pack";
 
 /**
@@ -11,14 +11,13 @@ import { packRects, type PackRect } from "./uv-pack";
  *  2. For each cluster, choose 2 orthogonal tangent axes perpendicular to the
  *     cluster's average normal. Project each face's verts onto these → 2D
  *     UV island.
- *  3. Pack islands into the 0–1 UV box with a simple grid layout (rows ×
- *     cols of square cells, each island scaled to fit its cell while
- *     preserving aspect ratio).
+ *  3. Pack islands into the 0–1 UV box (shelf rect-pack, uv-pack.ts).
  *
  * Output: a `UnwrapResult` containing the rebuilt geometry with one vertex
  * per (originalVertex, cluster) pair — so verts on cluster boundaries are
  * duplicated, each duplicate carrying that cluster's UV. The caller writes
- * this back to the Babylon mesh and rebuilds the EditMesh half-edges.
+ * this back to the Babylon mesh (via the fan-triangulated `indices`) and
+ * rebuilds the EditMesh from `polys` — quads / n-gons survive the unwrap.
  *
  * V1 limitations:
  *  - Morph targets are **lost** (vertex buffer is rebuilt). Callers must guard
@@ -31,8 +30,11 @@ import { packRects, type PackRect } from "./uv-pack";
 
 export interface UnwrapResult {
   positions: Float32Array;
+  /** Fan-triangulated render indices (what Babylon consumes). */
   indices: number[];
   uvs: Float32Array;
+  /** Rebuilt polygon list — same faces as the input, remapped vert ids. */
+  polys: number[][];
   /** Original vertex index each rebuilt vertex was split from (per-vertex attribute carry-over). */
   sourceVerts: number[];
 }
@@ -47,6 +49,13 @@ export interface UnwrapOptions {
 
 const DEFAULT_OPTIONS: UnwrapOptions = { angleLimit: 66, islandMargin: 0.02 };
 
+/** Per-island projection data. `faceUVs` holds 2 floats per face corner. */
+type Island = {
+  faces: number[];
+  faceUVs: Map<number, number[]>;
+  bbox: { minU: number; minV: number; maxU: number; maxV: number };
+};
+
 export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}): UnwrapResult {
   const options: UnwrapOptions = { ...DEFAULT_OPTIONS, ...opts };
   const cosThreshold = Math.cos((options.angleLimit * Math.PI) / 180);
@@ -55,12 +64,6 @@ export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}):
   const clusters = clusterFaces(em, cosThreshold);
 
   // 2. Project each cluster to 2D.
-  type Island = {
-    faces: number[];
-    /** Per-face-corner UVs as a Map(faceId -> [u0,v0, u1,v1, u2,v2]). */
-    faceUVs: Map<number, [number, number, number, number, number, number]>;
-    bbox: { minU: number; minV: number; maxU: number; maxV: number };
-  };
   const islands: Island[] = clusters.map((c) => projectCluster(em, c));
 
   // 3. Pack islands (shelf rect-pack — see uv-pack.ts).
@@ -85,23 +88,20 @@ function clusterFaces(em: EditMesh, cosThreshold: number): number[][] {
     const cluster: number[] = [];
     const queue: number[] = [seed];
     visited[seed] = 1;
-    const seedNormal = faceNormal(em, seed);
+    const seedNormal = facePolyNormal(em, seed);
     let avgNormal: [number, number, number] = [seedNormal[0], seedNormal[1], seedNormal[2]];
 
     while (queue.length > 0) {
       const cur = queue.pop()!;
       cluster.push(cur);
-      const h0 = em.faces[cur]!.he;
-      const h1 = em.halfEdges[h0]!.next;
-      const h2 = em.halfEdges[h1]!.next;
-      for (const h of [h0, h1, h2]) {
+      for (const h of faceHalfEdges(em, cur)) {
         const twin = em.halfEdges[h]!.twin;
         if (twin < 0) continue;
         const neighbor = em.halfEdges[twin]!.face;
         if (visited[neighbor]) continue;
         // Seams force a cluster boundary regardless of coplanarity.
         if (isSeam(em, canonicalEdge(em, h))) continue;
-        const n = faceNormal(em, neighbor);
+        const n = facePolyNormal(em, neighbor);
         const dot = n[0] * avgNormal[0] + n[1] * avgNormal[1] + n[2] * avgNormal[2];
         if (dot < cosThreshold) continue;
         visited[neighbor] = 1;
@@ -125,15 +125,11 @@ function clusterFaces(em: EditMesh, cosThreshold: number): number[][] {
 
 // ── Per-cluster projection ─────────────────────────────────────────────────
 
-function projectCluster(em: EditMesh, faces: number[]): {
-  faces: number[];
-  faceUVs: Map<number, [number, number, number, number, number, number]>;
-  bbox: { minU: number; minV: number; maxU: number; maxV: number };
-} {
+function projectCluster(em: EditMesh, faces: number[]): Island {
   // Average normal of the cluster.
   let nx = 0, ny = 0, nz = 0;
   for (const f of faces) {
-    const n = faceNormal(em, f);
+    const n = facePolyNormal(em, f);
     nx += n[0]; ny += n[1]; nz += n[2];
   }
   const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
@@ -154,13 +150,13 @@ function projectCluster(em: EditMesh, faces: number[]): {
   const by = nz * tx - nx * tz;
   const bz = nx * ty - ny * tx;
 
-  const faceUVs = new Map<number, [number, number, number, number, number, number]>();
+  const faceUVs = new Map<number, number[]>();
   let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
 
   for (const f of faces) {
-    const verts = faceVertices(em, f);
-    const uvs: [number, number, number, number, number, number] = [0, 0, 0, 0, 0, 0];
-    for (let i = 0; i < 3; i++) {
+    const verts = faceVerts(em, f);
+    const uvs: number[] = new Array(verts.length * 2);
+    for (let i = 0; i < verts.length; i++) {
       const v = verts[i]!;
       const x = em.positions[v * 3]!;
       const y = em.positions[v * 3 + 1]!;
@@ -182,14 +178,7 @@ function projectCluster(em: EditMesh, faces: number[]): {
 
 // ── Packing ────────────────────────────────────────────────────────────────
 
-function packIslands(
-  islands: Array<{
-    faces: number[];
-    faceUVs: Map<number, [number, number, number, number, number, number]>;
-    bbox: { minU: number; minV: number; maxU: number; maxV: number };
-  }>,
-  margin: number,
-): void {
+function packIslands(islands: Island[], margin: number): void {
   if (islands.length === 0) return;
 
   // Shelf rect-pack (uv-pack.ts): one shared scale keeps texel density
@@ -205,7 +194,7 @@ function packIslands(
     const { minU, minV } = island.bbox;
     const { offsetU, offsetV, scale } = placements[i]!;
     for (const uvs of island.faceUVs.values()) {
-      for (let k = 0; k < 3; k++) {
+      for (let k = 0; k < uvs.length / 2; k++) {
         uvs[k * 2] = (uvs[k * 2]! - minU) * scale + offsetU;
         uvs[k * 2 + 1] = (uvs[k * 2 + 1]! - minV) * scale + offsetV;
       }
@@ -215,17 +204,11 @@ function packIslands(
 
 // ── Assemble output (cluster-welded form) ──────────────────────────────────
 
-function assembleWelded(
-  em: EditMesh,
-  islands: Array<{
-    faces: number[];
-    faceUVs: Map<number, [number, number, number, number, number, number]>;
-    bbox: { minU: number; minV: number; maxU: number; maxV: number };
-  }>,
-): UnwrapResult {
+function assembleWelded(em: EditMesh, islands: Island[]): UnwrapResult {
   const positions: number[] = [];
   const indices: number[] = [];
   const uvs: number[] = [];
+  const polys: number[][] = [];
   const sourceVerts: number[] = [];
 
   for (const island of islands) {
@@ -236,10 +219,10 @@ function assembleWelded(
     // island's faces here (planar projection), so no seam is lost.
     const weld = new Map<number, number>();
     for (const f of island.faces) {
-      const verts = faceVertices(em, f);
+      const verts = faceVerts(em, f);
       const fUV = island.faceUVs.get(f)!;
-      const tri: number[] = [];
-      for (let i = 0; i < 3; i++) {
+      const poly: number[] = [];
+      for (let i = 0; i < verts.length; i++) {
         const v = verts[i]!;
         let out = weld.get(v);
         if (out === undefined) {
@@ -249,9 +232,10 @@ function assembleWelded(
           uvs.push(fUV[i * 2]!, fUV[i * 2 + 1]!);
           sourceVerts.push(v);
         }
-        tri.push(out);
+        poly.push(out);
       }
-      indices.push(tri[0]!, tri[1]!, tri[2]!);
+      polys.push(poly);
+      indices.push(...fanTriangulate(poly));
     }
   }
 
@@ -259,25 +243,9 @@ function assembleWelded(
     positions: new Float32Array(positions),
     indices,
     uvs: new Float32Array(uvs),
+    polys,
     sourceVerts,
   };
-}
-
-// ── Utils ──────────────────────────────────────────────────────────────────
-
-function faceNormal(em: EditMesh, f: number): [number, number, number] {
-  const [a, b, c] = faceVertices(em, f);
-  const ax = em.positions[a * 3]!, ay = em.positions[a * 3 + 1]!, az = em.positions[a * 3 + 2]!;
-  const bx = em.positions[b * 3]!, by = em.positions[b * 3 + 1]!, bz = em.positions[b * 3 + 2]!;
-  const cx = em.positions[c * 3]!, cy = em.positions[c * 3 + 1]!, cz = em.positions[c * 3 + 2]!;
-  const ux = bx - ax, uy = by - ay, uz = bz - az;
-  const vx = cx - ax, vy = cy - ay, vz = cz - az;
-  let nx = uy * vz - uz * vy;
-  let ny = uz * vx - ux * vz;
-  let nz = ux * vy - uy * vx;
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 1e-9) { nx /= len; ny /= len; nz /= len; }
-  return [nx, ny, nz];
 }
 
 // ── Seam editing (public surface) ──────────────────────────────────────────
@@ -290,5 +258,26 @@ export function toggleSeams(em: EditMesh, selectedEdges: ReadonlySet<number>): v
     const key = a < b ? `${a}_${b}` : `${b}_${a}`;
     if (em.seams.has(key)) em.seams.delete(key);
     else em.seams.add(key);
+  }
+}
+
+/**
+ * Toggle the Catmull-Clark crease flag for every selected edge. If ANY selected
+ * edge is uncreased, all get set to `weight` (so a mixed selection becomes fully
+ * creased); otherwise all are cleared. Returns the resulting count for status.
+ */
+export function toggleCreases(em: EditMesh, selectedEdges: ReadonlySet<number>, weight: number): void {
+  let anyUncreased = false;
+  const keys: string[] = [];
+  for (const he of selectedEdges) {
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    keys.push(key);
+    if ((em.creases.get(key) ?? 0) <= 0) anyUncreased = true;
+  }
+  for (const key of keys) {
+    if (anyUncreased) em.creases.set(key, weight);
+    else em.creases.delete(key);
   }
 }

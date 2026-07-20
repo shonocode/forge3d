@@ -471,6 +471,8 @@ export const state = {
     proportional: false,
     /** Falloff radius (local units) for proportional editing. */
     proportionalRadius: 0.5,
+    /** Catmull-Clark crease sharpness applied by Mark Crease (σ ≥ 0; ≥1 = fully sharp). */
+    creaseWeight: 1,
   },
 
   // Undo/Redo

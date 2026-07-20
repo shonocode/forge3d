@@ -14,7 +14,7 @@ import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camer
 import { applySnapToGizmos } from "./tools/snap";
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut } from "./tools/edit-mode";
+import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut, trisToQuadsSelection, quadsToTrisSelection, subdivideSelection, markCreaseSelection } from "./tools/edit-mode";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -140,11 +140,15 @@ export function initInput(): void {
       if (e.key.toLowerCase() === "g" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); edgeSlideSelection(); return; }
       if (e.key.toLowerCase() === "v" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); vertexSlideSelection(); return; }
       if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); mergeSelection(); return; }
+      if (e.key.toLowerCase() === "j" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); trisToQuadsSelection(); return; }
+      if (e.key.toLowerCase() === "t" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); quadsToTrisSelection(); return; }
+      if (e.key.toLowerCase() === "d" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); subdivideSelection(); return; }
       if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("move"); return; }
       if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("rotate"); return; }
       if (e.key.toLowerCase() === "s" && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("scale"); return; }
       if (e.key.toLowerCase() === "e" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); bridgeSelection(); return; }
       if (e.key.toLowerCase() === "s" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); markSeamSelection(); return; }
+      if (e.key.toLowerCase() === "e" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); markCreaseSelection(); return; }
       if (e.key.toLowerCase() === "u" && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); unwrapMesh(); return; }
       if (e.key.toLowerCase() === "x" || e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
       if (e.key === "Escape") { e.preventDefault(); clearComponentSelection(); return; }

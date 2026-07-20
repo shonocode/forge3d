@@ -1,12 +1,21 @@
-import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, rebuildHalfEdges, seamKey, toIndexArray, type EditMesh } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { catmullClark } from "./subdivide";
 
 /**
  * Topology operators. Each operator mutates `em` in place (rebuilds positions,
- * indices, and half-edges) and returns the **new selection set** so the caller
+ * polygons, and half-edges) and returns the **new selection set** so the caller
  * can update `state.editSelection.indices`.
  *
+ * V2 (quad / n-gon): operators work on the polygon list (`toPolygons` /
+ * `rebuildPolygons`), so pass-through faces keep their arity and the
+ * geometry-producing operators emit REAL quads (extrude skirts, inset skirts,
+ * bevel chamfers, edge fins, bridge bands, quad loop cuts). Operators whose
+ * math is inherently triangle-based (bevel fan splitting, Flip Diagonal,
+ * implicit-quad loop cut walking) keep their triangle requirement and skip /
+ * reject n-gon neighborhoods explicitly.
+ *
  * Why rebuild instead of incremental mutation? For forge3d's mesh sizes
- * (~hundreds to a few thousand triangles) the O(F) rebuild dominated by the
+ * (~hundreds to a few thousand faces) the O(F) rebuild dominated by the
  * operator's own work is fast enough, and it sidesteps a whole class of
  * stale-twin / stale-next bugs that production half-edge libraries spend most
  * of their complexity defending against (see Blender BMesh).
@@ -23,13 +32,12 @@ import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, rebuildHalfEdges, sea
 export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
   if (selectedFaces.size === 0) return new Set();
 
-  const oldIndices = toIndexArray(em);
-  const newIndices: number[] = [];
-  for (let f = 0; f < em.faces.length; f++) {
-    if (selectedFaces.has(f)) continue;
-    newIndices.push(oldIndices[f * 3]!, oldIndices[f * 3 + 1]!, oldIndices[f * 3 + 2]!);
+  const polys = toPolygons(em);
+  const kept: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!selectedFaces.has(f)) kept.push(polys[f]!);
   }
-  rebuildHalfEdges(em, em.positions, newIndices);
+  rebuildPolygons(em, em.positions, kept);
   return new Set();
 }
 
@@ -39,19 +47,13 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
  * Algorithm:
  *  1. Find the boundary of the selection — half-edges whose face is selected
  *     but whose twin's face is not (or twin is missing).
- *  2. For every vertex incident to at least one selected face AND at least one
- *     non-selected face (or a boundary), duplicate it. Interior vertices
- *     (all incident faces selected) are also duplicated so the selection
- *     becomes a fully-disconnected "cap" that can slide freely without
- *     dragging the rest of the mesh.
- *  3. Rewrite selected faces' indices to use the duplicates.
- *  4. For each boundary edge a→b (CCW inside the selected face), emit two
- *     skirt triangles connecting (a, b, b', a') so the mesh stays closed.
+ *  2. Every vertex incident to a selected face is duplicated (even interior
+ *     verts) so the selection becomes a fully-disconnected "cap" that can
+ *     slide freely without dragging the rest of the mesh.
+ *  3. Rewrite selected faces' polygons to use the duplicates (arity kept).
+ *  4. For each boundary edge a→b (CCW inside the selected face), emit ONE
+ *     skirt quad (a, b, b', a') so the mesh stays closed.
  *  5. Unselected faces are emitted unchanged.
- *
- * The new selection = the indices of the duplicated faces in the rebuilt mesh
- * (their order follows the original selected-face order, appended after all
- * the unchanged faces — see emit order below).
  *
  * Returns the new face IDs for the extruded cap so the gizmo immediately picks
  * up the just-created geometry.
@@ -59,15 +61,14 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
 export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
   if (selectedFaces.size === 0) return new Set();
 
-  const oldIndices = toIndexArray(em);
+  const polys = toPolygons(em);
   const numOldV = em.vertices.length;
 
   // 1. Collect vertices that appear in any selected face — these all get
   //    duplicated. (Even interior verts: see the cap-disconnection note above.)
   const dupSource = new Set<number>();
   for (const f of selectedFaces) {
-    const [a, b, c] = faceVertices(em, f);
-    dupSource.add(a); dupSource.add(b); dupSource.add(c);
+    for (const v of polys[f]!) dupSource.add(v);
   }
 
   // 2. Allocate duplicates: dupMap[oldVertId] = newVertId (or -1 if not duplicated).
@@ -84,51 +85,36 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
     );
   }
 
-  // 3. Build the new index list:
-  //    - Unselected faces first (positions in result = original face order minus selected)
-  //    - Skirt triangles next
-  //    - Selected faces (now pointing at the duplicates) last
-  //    Tracking the selected-face start lets us return their new IDs as the
-  //    new selection.
-  const newIndices: number[] = [];
-
-  for (let f = 0; f < em.faces.length; f++) {
-    if (selectedFaces.has(f)) continue;
-    newIndices.push(oldIndices[f * 3]!, oldIndices[f * 3 + 1]!, oldIndices[f * 3 + 2]!);
+  // 3. Emit order: unselected faces, skirt quads, then the duplicated caps —
+  //    tracking the cap start yields the new selection ids.
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
   }
 
-  // 4. Skirt edges: walk every half-edge of every selected face, emit a quad
+  // 4. Skirt quads: walk every half-edge of every selected face, emit a quad
   //    on boundary edges (twin missing or twin's face not selected).
   for (const f of selectedFaces) {
-    const h0 = em.faces[f]!.he;
-    const h1 = em.halfEdges[h0]!.next;
-    const h2 = em.halfEdges[h1]!.next;
-    for (const h of [h0, h1, h2]) {
+    for (const h of faceHalfEdges(em, f)) {
       const he = em.halfEdges[h]!;
       const twin = he.twin;
       const isBoundary = twin < 0 || !selectedFaces.has(em.halfEdges[twin]!.face);
       if (!isBoundary) continue;
       const a = he.v;
       const b = em.halfEdges[he.next]!.v;
-      const aDup = dupMap[a]!;
-      const bDup = dupMap[b]!;
-      // Outward-facing quad (a, b on the unselected side; aDup, bDup on the cap):
-      //   tri1: a, b, bDup
-      //   tri2: a, bDup, aDup
-      newIndices.push(a, b, bDup);
-      newIndices.push(a, bDup, aDup);
+      // Outward-facing quad (a, b on the unselected side; dups on the cap).
+      newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
     }
   }
 
-  // 5. Selected faces with duplicate refs — these become the new selection.
-  const newSelStart = newIndices.length / 3;
+  // 5. Caps with duplicate refs — these become the new selection.
+  const newSelStart = newPolys.length;
   for (const f of selectedFaces) {
-    const [a, b, c] = faceVertices(em, f);
-    newIndices.push(dupMap[a]!, dupMap[b]!, dupMap[c]!);
+    newPolys.push(polys[f]!.map((v) => dupMap[v]!));
   }
-  const newSelEnd = newIndices.length / 3;
+  const newSelEnd = newPolys.length;
 
-  rebuildHalfEdges(em, new Float32Array(newPositions), newIndices);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
 
   const newSel = new Set<number>();
   for (let i = newSelStart; i < newSelEnd; i++) newSel.add(i);
@@ -149,9 +135,8 @@ export function deleteFacesByVertices(em: EditMesh, selectedVerts: ReadonlySet<n
   if (selectedVerts.size === 0) return new Set();
   const facesToDrop = new Set<number>();
   for (let f = 0; f < em.faces.length; f++) {
-    const [a, b, c] = faceVertices(em, f);
-    if (selectedVerts.has(a) || selectedVerts.has(b) || selectedVerts.has(c)) {
-      facesToDrop.add(f);
+    for (const v of faceVerts(em, f)) {
+      if (selectedVerts.has(v)) { facesToDrop.add(f); break; }
     }
   }
   return deleteFaces(em, facesToDrop);
@@ -172,10 +157,10 @@ export function deleteFacesByEdges(em: EditMesh, selectedEdges: ReadonlySet<numb
 /**
  * Inset each selected face individually (Blender's "Individual Faces" inset).
  *
- * For each face, duplicate its three vertices, move each duplicate toward the
- * face centroid by `amount` (0 = no inset, 1 = collapse to centroid), and
- * stitch a skirt of three quads connecting the original boundary to the new
- * smaller face.
+ * For each face (any arity), duplicate its vertices, move each duplicate
+ * toward the face centroid by `amount` (0 = no inset, 1 = collapse to
+ * centroid), and stitch a skirt of quads connecting the original boundary to
+ * the new smaller face. The inner cap keeps the face's arity.
  *
  * "Individual" rather than "Region" mode because individual handles arbitrary
  * face selections (including disconnected, L-shaped, or wrap-around groups)
@@ -189,57 +174,55 @@ export function deleteFacesByEdges(em: EditMesh, selectedEdges: ReadonlySet<numb
 export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amount: number): Set<number> {
   if (selectedFaces.size === 0 || amount <= 0) return new Set(selectedFaces);
 
-  const oldIndices = toIndexArray(em);
+  const polys = toPolygons(em);
   const newPositions: number[] = Array.from(em.positions);
   let nextV = em.vertices.length;
 
   // Faces emit in this order: unselected (unchanged), skirts, inner caps.
-  const newIndices: number[] = [];
-  for (let f = 0; f < em.faces.length; f++) {
-    if (selectedFaces.has(f)) continue;
-    newIndices.push(oldIndices[f * 3]!, oldIndices[f * 3 + 1]!, oldIndices[f * 3 + 2]!);
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
   }
 
-  // Per-face: compute centroid, allocate three duplicates, emit skirt + cap.
-  type CapInfo = { a: number; b: number; c: number; aDup: number; bDup: number; cDup: number };
+  // Per-face: compute centroid, allocate duplicates, remember cap rings.
+  type CapInfo = { orig: number[]; dups: number[] };
   const caps: CapInfo[] = [];
 
   for (const f of selectedFaces) {
-    const [a, b, c] = faceVertices(em, f);
-    const ax = em.positions[a * 3]!, ay = em.positions[a * 3 + 1]!, az = em.positions[a * 3 + 2]!;
-    const bx = em.positions[b * 3]!, by = em.positions[b * 3 + 1]!, bz = em.positions[b * 3 + 2]!;
-    const cx = em.positions[c * 3]!, cy = em.positions[c * 3 + 1]!, cz = em.positions[c * 3 + 2]!;
-    const gx = (ax + bx + cx) / 3;
-    const gy = (ay + by + cy) / 3;
-    const gz = (az + bz + cz) / 3;
+    const verts = polys[f]!;
+    let gx = 0, gy = 0, gz = 0;
+    for (const v of verts) {
+      gx += em.positions[v * 3]!;
+      gy += em.positions[v * 3 + 1]!;
+      gz += em.positions[v * 3 + 2]!;
+    }
+    gx /= verts.length; gy /= verts.length; gz /= verts.length;
 
     const t = amount;
-    const aDup = nextV++;
-    newPositions.push(ax + (gx - ax) * t, ay + (gy - ay) * t, az + (gz - az) * t);
-    const bDup = nextV++;
-    newPositions.push(bx + (gx - bx) * t, by + (gy - by) * t, bz + (gz - bz) * t);
-    const cDup = nextV++;
-    newPositions.push(cx + (gx - cx) * t, cy + (gy - cy) * t, cz + (gz - cz) * t);
-
-    caps.push({ a, b, c, aDup, bDup, cDup });
+    const dups = verts.map((v) => {
+      const x = em.positions[v * 3]!, y = em.positions[v * 3 + 1]!, z = em.positions[v * 3 + 2]!;
+      const d = nextV++;
+      newPositions.push(x + (gx - x) * t, y + (gy - y) * t, z + (gz - z) * t);
+      return d;
+    });
+    caps.push({ orig: verts, dups });
   }
 
-  // Skirts: each original edge a→b becomes a (a, b, bDup, aDup) quad.
+  // Skirts: each original edge vᵢ→vᵢ₊₁ becomes a (vᵢ, vᵢ₊₁, dupᵢ₊₁, dupᵢ) quad.
   // The face's original normal direction is preserved (CCW from outside).
-  for (const { a, b, c, aDup, bDup, cDup } of caps) {
-    newIndices.push(a, b, bDup, a, bDup, aDup);
-    newIndices.push(b, c, cDup, b, cDup, bDup);
-    newIndices.push(c, a, aDup, c, aDup, cDup);
+  for (const { orig, dups } of caps) {
+    for (let i = 0; i < orig.length; i++) {
+      const j = (i + 1) % orig.length;
+      newPolys.push([orig[i]!, orig[j]!, dups[j]!, dups[i]!]);
+    }
   }
 
   // Caps (inner shrunk faces) — become the new selection.
-  const capStart = newIndices.length / 3;
-  for (const { aDup, bDup, cDup } of caps) {
-    newIndices.push(aDup, bDup, cDup);
-  }
-  const capEnd = newIndices.length / 3;
+  const capStart = newPolys.length;
+  for (const { dups } of caps) newPolys.push(dups);
+  const capEnd = newPolys.length;
 
-  rebuildHalfEdges(em, new Float32Array(newPositions), newIndices);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
 
   const newSel = new Set<number>();
   for (let i = capStart; i < capEnd; i++) newSel.add(i);
@@ -268,8 +251,8 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
  *  faces in the "F2 arc" get a2. The arcs are chosen by halving the
  *  intermediates between F1 and F2 going around the long way.
  *
- *  Chamfer winding is CCW-from-outside = (a1, a2, b2, b1), giving the four
- *  border edges:
+ *  Chamfer winding is CCW-from-outside = (a1, a2, b2, b1) — emitted as a REAL
+ *  quad in V2 — giving the four border edges:
  *    a1→a2 (left, at vertex a)   pairs with cap-a's a2→a1
  *    a2→b2 (bottom, F2-side)     pairs with F2's b2→a2
  *    b2→b1 (right, at vertex b)  pairs with cap-b's b1→b2
@@ -279,12 +262,16 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
  *  border at a (a1→a2, downward) needs the opposite (a2→a1) in the cap, while
  *  at b (b2→b1, upward) the cap needs b1→b2.
  *
- * V2 restriction (kept):
+ * V2 restrictions (kept):
  *  - At most 1 selected bevel edge per vertex. Two bevels meeting at one
  *    vertex would split the fan into 4+ arcs and chain multiple cap polygons
  *    together (Blender's "branch" case). That's mechanically possible but
  *    materially more code; deferred to V3.
  *  - Fan must be closed (no boundary in the fan around a beveled vertex).
+ *  - The two faces holding the bevel edge (F1 / F2) must be triangles — the
+ *    slide-toward-third-vertex math is triangle-specific. Edges whose F1/F2
+ *    is a quad / n-gon are skipped (reported via `outInfo.skipped`). Other
+ *    faces in the fans may be any arity (their corner refs are just remapped).
  */
 export function bevelEdges(
   em: EditMesh,
@@ -303,6 +290,14 @@ export function bevelEdges(
   }
   if (all.size === 0) return new Set();
 
+  // Drop edges whose holding faces aren't triangles (see V2 restrictions).
+  const triOk = new Set<number>();
+  for (const he of all) {
+    const f1 = em.halfEdges[he]!.face;
+    const f2 = em.halfEdges[em.halfEdges[he]!.twin]!.face;
+    if (faceVertexCount(em, f1) === 3 && faceVertexCount(em, f2) === 3) triOk.add(he);
+  }
+
   // V2 isolation constraint: each endpoint vertex may host at most one bevel.
   // Selecting a whole edge loop (the most common bevel gesture) violates this
   // for every vertex, and the old all-or-nothing guard silently no-opped.
@@ -311,7 +306,7 @@ export function bevelEdges(
   // so the caller can tell the user to repeat for the rest.
   const usedVerts = new Set<number>();
   const canonical = new Set<number>();
-  for (const he of all) {
+  for (const he of triOk) {
     const a = edgeOrigin(em, he);
     const b = edgeEnd(em, he);
     if (usedVerts.has(a) || usedVerts.has(b)) continue;
@@ -376,22 +371,21 @@ export function bevelEdges(
     return v; // face not in either arc — leave it (shouldn't happen)
   };
 
-  const newIndices: number[] = [];
-  for (let f = 0; f < em.faces.length; f++) {
-    const [vA, vB, vC] = faceVertices(em, f);
-    newIndices.push(remap(vA, f), remap(vB, f), remap(vC, f));
+  const polys = toPolygons(em);
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    newPolys.push(polys[f]!.map((v) => remap(v, f)));
   }
 
   // Emit chamfer quads (these are the new selection).
-  const chamferStart = newIndices.length / 3;
+  const chamferStart = newPolys.length;
   for (const { a, b } of bevels) {
     const ia = vertInfo.get(a)!;
     const ib = vertInfo.get(b)!;
-    // CCW from outside: (a1, a2, b2, b1) → tris (a1, a2, b2) + (a1, b2, b1)
-    newIndices.push(ia.v1Idx, ia.v2Idx, ib.v2Idx);
-    newIndices.push(ia.v1Idx, ib.v2Idx, ib.v1Idx);
+    // CCW from outside: one real quad (a1, a2, b2, b1).
+    newPolys.push([ia.v1Idx, ia.v2Idx, ib.v2Idx, ib.v1Idx]);
   }
-  const chamferEnd = newIndices.length / 3;
+  const chamferEnd = newPolys.length;
 
   // Emit corner caps. Winding differs by endpoint role:
   //   origin (vertex a):      cap CCW = (v2, v1, capX)
@@ -399,13 +393,13 @@ export function bevelEdges(
   for (const info of vertInfo.values()) {
     if (info.capX < 0) continue;
     if (info.role === "origin") {
-      newIndices.push(info.v2Idx, info.v1Idx, info.capX);
+      newPolys.push([info.v2Idx, info.v1Idx, info.capX]);
     } else {
-      newIndices.push(info.v1Idx, info.v2Idx, info.capX);
+      newPolys.push([info.v1Idx, info.v2Idx, info.capX]);
     }
   }
 
-  rebuildHalfEdges(em, new Float32Array(newPositions), newIndices);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
 
   const newSel = new Set<number>();
   for (let i = chamferStart; i < chamferEnd; i++) newSel.add(i);
@@ -543,8 +537,8 @@ function walkFanFull(em: EditMesh, v: number, startFace: number): { fan: number[
   cur = start;
   guard = 0;
   while (guard++ < 1024) {
-    // Predecessor half-edge in a triangle: cur.next.next.
-    const prevInFace = em.halfEdges[em.halfEdges[cur]!.next]!.next;
+    // Predecessor half-edge of `cur` within its face (arity-agnostic walk).
+    const prevInFace = prevHalfEdge(em, cur);
     const tw = em.halfEdges[prevInFace]!.twin;
     if (tw < 0) break;
     cw.push(em.halfEdges[tw]!.face);
@@ -554,12 +548,17 @@ function walkFanFull(em: EditMesh, v: number, startFace: number): { fan: number[
   return { fan: [...cw.reverse(), startFace, ...ccw], closed: false };
 }
 
+/** Predecessor of `he` in its face cycle (the half-edge whose `next` is `he`). */
+function prevHalfEdge(em: EditMesh, he: number): number {
+  let h = he;
+  let guard = 0;
+  while (em.halfEdges[h]!.next !== he && guard++ < 4096) h = em.halfEdges[h]!.next;
+  return h;
+}
+
 /** Find the half-edge in `face` whose origin is `v`. */
 function findOutgoing(em: EditMesh, v: number, face: number): number {
-  const h0 = em.faces[face]!.he;
-  const h1 = em.halfEdges[h0]!.next;
-  const h2 = em.halfEdges[h1]!.next;
-  for (const h of [h0, h1, h2]) {
+  for (const h of faceHalfEdges(em, face)) {
     if (em.halfEdges[h]!.v === v) return h;
   }
   return -1;
@@ -572,8 +571,8 @@ function thirdVertex(em: EditMesh, f: number, a: number, b: number): number {
 }
 
 function sharedNonVertex(em: EditMesh, fA: number, fB: number, excluding: number): number {
-  const setA = new Set(faceVertices(em, fA));
-  for (const v of faceVertices(em, fB)) {
+  const setA = new Set(faceVerts(em, fA));
+  for (const v of faceVerts(em, fB)) {
     if (setA.has(v) && v !== excluding) return v;
   }
   return -1;
@@ -588,28 +587,27 @@ function lerpPos(em: EditMesh, from: number, to: number, t: number): [number, nu
 // ── Loop Cut ───────────────────────────────────────────────────────────────
 
 /**
- * Cut an edge loop starting from `seedEdge`. The loop is walked by treating
- * each pair of adjacent triangles whose face normals are near-coplanar as an
- * implicit quad — the loop traverses each implicit quad by entering on one
- * side edge and exiting on the opposite side edge.
+ * Cut an edge loop starting from `seedEdge`.
  *
- * Algorithm:
- *   1. Walk from `seedEdge` in both directions via `nextLoopEdge`, accreting
- *      a list of loop edges. Stops on revisit (closed loop) or boundary
- *      (open chain).
- *   2. Insert one midpoint vertex per loop edge.
- *   3. For every implicit quad crossed by two consecutive loop edges,
- *      re-triangulate the quad with the cut edge midpoint→midpoint replacing
- *      the original triangulation diagonal.
- *   4. For triangles outside any traversed quad (e.g., when the loop hits a
- *      boundary mid-walk), fall back to per-tri midpoint splitting.
+ * V2 walking rules, per face entered through an edge:
+ *  - REAL quad → exit through the opposite edge; the quad is later cut into
+ *    two quads by the midpoint-to-midpoint edge (quad flow preserved).
+ *  - Triangle → treat the pair of near-coplanar triangles as an implicit quad
+ *    (V1 behavior): exit through the partner's off-diagonal edge and
+ *    re-triangulate the pair around the cut (4 tris).
+ *  - Any other arity (n-gon ≥5) → the loop stops there.
+ *
+ * Faces adjacent to loop edges but not crossed by the loop get their edge
+ * midpoints stitched in: triangles use the classic 1-edge / 2-edge / 3-edge
+ * splits, n-gons keep a single polygon with the midpoints inserted into the
+ * cycle (no T-vertices either way).
  *
  * Returns the set of new midpoint vertex IDs (caller flips selection mode to
  * "vertex" so the user can immediately drag the new ring with the gizmo).
  *
- * V1 limitations:
- *   - Coplanarity threshold is fixed (cos ≥ 0.7 ≈ 45°). Sharp creases break
- *     loop continuity, which is usually correct intent.
+ * Limitations (kept from V1):
+ *   - Coplanarity threshold for the tri-pair walk is fixed (cos ≥ 0.7 ≈ 45°).
+ *     Sharp creases break loop continuity, which is usually correct intent.
  *   - If two consecutive loop edges happen to live in the same triangle (a
  *     degenerate quad), that tri is split into 3 instead of re-triangulated
  *     as a real quad.
@@ -626,6 +624,7 @@ export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
   const newPositions: number[] = Array.from(em.positions);
   let nextV = em.vertices.length;
   const midpointOf = new Map<number, number>(); // canonical edge → midpoint vert id
+  const midOfPair = new Map<string, number>();  // "vMin_vMax" → midpoint vert id
   for (const e of loop) {
     const a = edgeOrigin(em, e);
     const b = edgeEnd(em, e);
@@ -633,78 +632,100 @@ export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
     const [mx, my, mz] = lerpPos(em, a, b, 0.5);
     newPositions.push(mx, my, mz);
     midpointOf.set(e, mid);
+    midOfPair.set(seamKey(a, b), mid);
   }
 
-  // Group consecutive loop edges into "quad crossings": each pair (loop[i],
-  // loop[i+1]) sits in one implicit quad. We need to know which two faces
-  // form that quad so we can re-triangulate them together.
-  type QuadCut = { f1: number; f2: number; eEntry: number; eExit: number };
-  const quadCuts: QuadCut[] = [];
-  const facesInQuads = new Set<number>();
+  // Group consecutive loop edges into crossings. Each pair (loop[i],
+  // loop[i+1]) either lies on one polygon face (poly crossing) or straddles
+  // two coplanar triangles (implicit-quad crossing).
+  type PolyCut = { kind: "poly"; f: number; eEntry: number; eExit: number };
+  type TriPairCut = { kind: "tripair"; f1: number; f2: number; eEntry: number; eExit: number };
+  const crossByFace = new Map<number, PolyCut | TriPairCut>();
   for (let i = 0; i < loop.length; i++) {
     const e1 = loop[i]!;
     const e2 = loop[(i + 1) % loop.length]!;
     // Stop at the wrap-around if loop is open (i.e., the last "next" doesn't
     // come back to the seed). For closed loops this still works because both
-    // e1 and e2 are real loop edges sharing a quad.
+    // e1 and e2 are real loop edges sharing a face.
+    if (e1 === e2) continue;
     const shared = sharedFaceBetweenEdges(em, e1, e2);
-    if (shared < 0) continue;
-    const partner = quadPartnerOfFaceCrossing(em, shared, e1, e2);
-    if (partner < 0) continue;
-    if (facesInQuads.has(shared) || facesInQuads.has(partner)) continue;
-    facesInQuads.add(shared);
-    facesInQuads.add(partner);
-    quadCuts.push({ f1: shared, f2: partner, eEntry: e1, eExit: e2 });
-  }
-
-  // Emit new index list.
-  const newIndices: number[] = [];
-
-  // 1. Pass-through: faces not in any traversed quad, not subdivided.
-  // 2. Per-tri midpoint subdivide: faces with a loop edge but no quad
-  //    partner (boundary / non-coplanar fall-through).
-  // 3. Per-quad retriangulation: paired faces fully covered by quadCuts.
-  const quadByFace = new Map<number, QuadCut>();
-  for (const qc of quadCuts) {
-    quadByFace.set(qc.f1, qc);
-    quadByFace.set(qc.f2, qc);
-  }
-
-  for (let f = 0; f < em.faces.length; f++) {
-    const qc = quadByFace.get(f);
-    if (qc && f === qc.f1) {
-      emitQuadCut(em, qc, midpointOf, newIndices);
+    if (shared < 0 || crossByFace.has(shared)) continue;
+    if (faceVertexCount(em, shared) > 3) {
+      crossByFace.set(shared, { kind: "poly", f: shared, eEntry: e1, eExit: e2 });
       continue;
     }
-    if (qc && f === qc.f2) continue; // handled with f1
+    const partner = quadPartnerOfFaceCrossing(em, shared, e1, e2);
+    if (partner < 0 || faceVertexCount(em, partner) !== 3) continue;
+    if (crossByFace.has(partner)) continue;
+    const cut: TriPairCut = { kind: "tripair", f1: shared, f2: partner, eEntry: e1, eExit: e2 };
+    crossByFace.set(shared, cut);
+    crossByFace.set(partner, cut);
+  }
 
-    // Otherwise: per-tri subdivision based on this face's loop edges.
-    const h0 = em.faces[f]!.he;
-    const h1 = em.halfEdges[h0]!.next;
-    const h2 = em.halfEdges[h1]!.next;
-    const faceHEs = [h0, h1, h2];
-    const subdivHE: number[] = [];
-    for (const h of faceHEs) {
-      const can = canonicalEdge(em, h);
-      if (midpointOf.has(can)) subdivHE.push(h);
+  // Emit the new polygon list.
+  const newPolys: number[][] = [];
+  for (let f = 0; f < em.faces.length; f++) {
+    const cross = crossByFace.get(f);
+    if (cross && cross.kind === "tripair") {
+      if (f === cross.f1) emitQuadCut(em, cross, midpointOf, newPolys);
+      continue; // f2 handled together with f1
     }
-    if (subdivHE.length === 0) {
-      // untouched face
-      newIndices.push(em.halfEdges[h0]!.v, em.halfEdges[h1]!.v, em.halfEdges[h2]!.v);
-    } else if (subdivHE.length === 1) {
-      // 1 selected edge → 2 tris fanning to off-edge vertex
-      emitTriSplit1(em, subdivHE[0]!, midpointOf, newIndices);
-    } else if (subdivHE.length === 2) {
-      // 2 selected edges → 3 tris with a cut between the 2 midpoints
-      emitTriSplit2(em, h0, h1, h2, subdivHE, midpointOf, newIndices);
+
+    const verts = faceVerts(em, f);
+    // Augmented cycle: original corners with loop midpoints inserted after
+    // the origin of each split edge.
+    const aug: number[] = [];
+    let midCount = 0;
+    for (let i = 0; i < verts.length; i++) {
+      aug.push(verts[i]!);
+      const mid = midOfPair.get(seamKey(verts[i]!, verts[(i + 1) % verts.length]!));
+      if (mid !== undefined) { aug.push(mid); midCount++; }
+    }
+
+    if (midCount === 0) {
+      newPolys.push(verts); // untouched face
+      continue;
+    }
+
+    if (cross && cross.kind === "poly") {
+      // Cut the augmented cycle at the entry/exit midpoints → two polygons.
+      // A crossed quad yields two quads (quad flow preserved).
+      const mE = midpointOf.get(cross.eEntry)!;
+      const mX = midpointOf.get(cross.eExit)!;
+      const iE = aug.indexOf(mE);
+      const iX = aug.indexOf(mX);
+      if (iE >= 0 && iX >= 0 && iE !== iX) {
+        const p1 = cycleSlice(aug, iE, iX);
+        const p2 = cycleSlice(aug, iX, iE);
+        if (p1.length >= 3 && p2.length >= 3) {
+          newPolys.push(p1, p2);
+          continue;
+        }
+      }
+      // Inconsistent crossing — fall through to the generic handling below.
+    }
+
+    if (verts.length === 3) {
+      emitTriSplits(em, f, midpointOf, newPolys);
     } else {
-      // 3 selected edges → 4 tris (classic 1→4 subdivision)
-      emitTriSplit3(em, h0, h1, h2, midpointOf, newIndices);
+      // n-gon touched by the loop but not crossed: keep one polygon with the
+      // midpoints stitched into its cycle so neighbors stay watertight.
+      newPolys.push(aug);
     }
   }
 
-  rebuildHalfEdges(em, new Float32Array(newPositions), newIndices);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
   return new Set(midpointOf.values());
+}
+
+/** Inclusive cyclic slice aug[from..to] (wrapping). */
+function cycleSlice(aug: readonly number[], from: number, to: number): number[] {
+  const out: number[] = [];
+  for (let k = from; ; k = (k + 1) % aug.length) {
+    out.push(aug[k]!);
+    if (k === to) break;
+  }
+  return out;
 }
 
 /**
@@ -744,16 +765,15 @@ function walkLoopDirection(em: EditMesh, seedEdge: number, startIncomingFace: nu
 
 /**
  * From canonical edge `cur` entered via `incomingFace`, find the next edge in
- * the loop by:
- *   1. Determining the outgoing face (the OTHER tri adjacent to `cur`).
- *   2. Picking outgoing's "quad partner" — the neighbor across the edge whose
- *      face normal is most coplanar with outgoing's.
- *   3. Identifying the side of the implicit quad that's opposite to `cur`
- *      (i.e., the edge of the partner that's between the two non-`cur` verts
- *      of the quad).
+ * the loop.
  *
- * Returns null when there's no quad partner (coplanarity below threshold or
- * boundary).
+ * Outgoing face = the OTHER face adjacent to `cur`:
+ *  - Quad → the opposite edge of the quad (2 steps around the cycle);
+ *    `partnerFace` is the quad itself.
+ *  - Triangle → V1 implicit-quad rule: pick the tri's "quad partner" — the
+ *    neighbor across the edge whose face normal is most coplanar — and exit
+ *    through the partner's edge not touching `cur`.
+ *  - Other arity → null (loop stops).
  */
 function nextLoopEdge(em: EditMesh, cur: number, incomingFace: number): { nextEdge: number; partnerFace: number } | null {
   const twin = em.halfEdges[cur]!.twin;
@@ -762,21 +782,30 @@ function nextLoopEdge(em: EditMesh, cur: number, incomingFace: number): { nextEd
   const f2 = em.halfEdges[twin]!.face;
   const outgoingFace = f1 === incomingFace ? f2 : f1;
 
-  // Outgoing face's 3 half-edges; the diagonal candidate is one of the 2 not on `cur`.
-  const oh0 = em.faces[outgoingFace]!.he;
-  const oh1 = em.halfEdges[oh0]!.next;
-  const oh2 = em.halfEdges[oh1]!.next;
-  const outNormal = faceNormal(em, outgoingFace);
+  const outHEs = faceHalfEdges(em, outgoingFace);
+
+  if (outHEs.length === 4) {
+    // Real quad: exit through the opposite edge.
+    const curHE = outHEs.find((h) => canonicalEdge(em, h) === cur);
+    if (curHE === undefined) return null;
+    const exitHE = em.halfEdges[em.halfEdges[curHE]!.next]!.next;
+    return { nextEdge: canonicalEdge(em, exitHE), partnerFace: outgoingFace };
+  }
+  if (outHEs.length !== 3) return null; // n-gon ≥5 — stop the loop
+
+  // Triangle: pick the diagonal candidate among the 2 edges not on `cur`.
+  const outNormal = facePolyNormal(em, outgoingFace);
   const COPLANAR_THRESHOLD = 0.7; // cos(45°) — coarse but covers cube faces (1.0) and rejects orthogonal neighbors (0.0).
 
   let bestDiagonalHE = -1;
   let bestDot = COPLANAR_THRESHOLD;
-  for (const h of [oh0, oh1, oh2]) {
+  for (const h of outHEs) {
     if (canonicalEdge(em, h) === cur) continue;
     const t = em.halfEdges[h]!.twin;
     if (t < 0) continue;
     const neighbor = em.halfEdges[t]!.face;
-    const neighborNormal = faceNormal(em, neighbor);
+    if (faceVertexCount(em, neighbor) !== 3) continue;
+    const neighborNormal = facePolyNormal(em, neighbor);
     const dot = dot3(outNormal, neighborNormal);
     if (dot > bestDot) {
       bestDot = dot;
@@ -790,10 +819,7 @@ function nextLoopEdge(em: EditMesh, cur: number, incomingFace: number): { nextEd
   // Find the partner's edge that doesn't share a vertex with `cur`.
   const a = edgeOrigin(em, cur);
   const b = edgeEnd(em, cur);
-  const ph0 = em.faces[partnerFace]!.he;
-  const ph1 = em.halfEdges[ph0]!.next;
-  const ph2 = em.halfEdges[ph1]!.next;
-  for (const ph of [ph0, ph1, ph2]) {
+  for (const ph of faceHalfEdges(em, partnerFace)) {
     const pa = em.halfEdges[ph]!.v;
     const pb = em.halfEdges[em.halfEdges[ph]!.next]!.v;
     if (pa !== a && pa !== b && pb !== a && pb !== b) {
@@ -816,28 +842,22 @@ function sharedFaceBetweenEdges(em: EditMesh, e1: number, e2: number): number {
 }
 
 /**
- * Given `entryFace` (which contains both `e1` and a "diagonal" we crossed
- * during loop walking), return its quad partner = the most coplanar neighbor
- * NOT adjacent to e1 (the diagonal partner).
+ * Given `entryFace` (a triangle containing `e1`), return its quad partner =
+ * the most coplanar TRIANGLE neighbor NOT adjacent to e1/e2 (the diagonal
+ * partner).
  */
 function quadPartnerOfFaceCrossing(em: EditMesh, entryFace: number, e1: number, e2: number): number {
-  // The partner is the face adjacent to entryFace whose shared edge is the
-  // implicit-quad's diagonal (not e1, not e2 if e2 happens to be in entryFace).
-  // Look up entryFace's 3 half-edges. For each non-(e1 or e2) edge, check the
-  // neighbor's normal vs entryFace's normal — pick most coplanar.
-  const h0 = em.faces[entryFace]!.he;
-  const h1 = em.halfEdges[h0]!.next;
-  const h2 = em.halfEdges[h1]!.next;
-  const myNormal = faceNormal(em, entryFace);
+  const myNormal = facePolyNormal(em, entryFace);
   let best = -1;
   let bestDot = 0.7;
-  for (const h of [h0, h1, h2]) {
+  for (const h of faceHalfEdges(em, entryFace)) {
     const can = canonicalEdge(em, h);
     if (can === e1 || can === e2) continue;
     const t = em.halfEdges[h]!.twin;
     if (t < 0) continue;
     const neighbor = em.halfEdges[t]!.face;
-    const nNormal = faceNormal(em, neighbor);
+    if (faceVertexCount(em, neighbor) !== 3) continue;
+    const nNormal = facePolyNormal(em, neighbor);
     const dot = dot3(myNormal, nNormal);
     if (dot > bestDot) {
       bestDot = dot;
@@ -848,88 +868,36 @@ function quadPartnerOfFaceCrossing(em: EditMesh, entryFace: number, e1: number, 
 }
 
 /**
- * Re-triangulate one implicit quad into 4 tris with a cut edge running from
- * the midpoint of `eEntry` to the midpoint of `eExit`.
+ * Re-triangulate one implicit quad (two coplanar tris) into 4 tris with a cut
+ * edge running from the midpoint of `eEntry` to the midpoint of `eExit`.
  *
- * The implicit quad has 4 verts: 2 on eEntry (a, b), 1 in entryFace not in
- * either loop edge (c), 1 in partnerFace not in either loop edge (d). The
- * cyclic order is a → b → (b's neighbor on eExit) → (a's neighbor on eExit)
- * → a.
+ * The implicit quad has 4 verts: 2 on eEntry (a, b), 1 in entryFace not on
+ * either loop edge, 1 in partnerFace likewise. Corner pairing (which eExit
+ * endpoint sits next to a vs b in the quad cycle) is read from partnerFace's
+ * CCW order. Triangulation: split along the cut edge mEntry-mExit, then
+ * triangulate each half:
+ *   Half 1 (a side): (a, mEntry, mExit) + (a, mExit, cornerA)
+ *   Half 2 (b side): (mEntry, b, cornerB) + (mEntry, cornerB, mExit)
  */
-function emitQuadCut(em: EditMesh, qc: { f1: number; f2: number; eEntry: number; eExit: number }, midpointOf: Map<number, number>, out: number[]): void {
+function emitQuadCut(em: EditMesh, qc: { f1: number; f2: number; eEntry: number; eExit: number }, midpointOf: Map<number, number>, out: number[][]): void {
   const mEntry = midpointOf.get(qc.eEntry)!;
   const mExit = midpointOf.get(qc.eExit)!;
-  // eEntry has verts (a, b); eExit has verts (c, d). We need to know which
-  // of (c, d) sits next to a, vs next to b, in the implicit quad's cycle.
-  // The quad's cyclic order is determined by entryFace's CCW.
   const a = edgeOrigin(em, qc.eEntry);
   const b = edgeEnd(em, qc.eEntry);
   const eExitV0 = edgeOrigin(em, qc.eExit);
   const eExitV1 = edgeEnd(em, qc.eExit);
 
-  // Identify which of eExitV0/eExitV1 is "next to a" in the quad cycle.
-  // Walk around entryFace from a's outgoing-on-eEntry. The 3rd vertex of
-  // entryFace (call it x) is adjacent to a and b. partnerFace's 3rd vertex
-  // (y) is the other endpoint of eExit. We need to figure out which of (x,y)
-  // pair gets paired with which of (eExitV0, eExitV1).
-  //
-  // The implicit quad's cyclic CCW order (from entryFace's view): a → b → ?
-  // → ? → a. After b comes b's neighbor in entryFace, which is x or jumps
-  // into partnerFace via the diagonal.
-  //
-  // Easier: collect the 4 distinct verts of the quad and order them by
-  // adjacency in the entry/partner CCW.
-
-  // The 4 corners are: a, b, plus the off-edge verts of entryFace and
-  // partnerFace. The cyclic order around the quad is: a → b (via entryFace's
-  // a→b edge) → next-CCW-vert-of-partner-after-b → next-CCW-vert-of-partner
-  // after that → back to a.
-
-  // Triangulate as 4 tris using the midpoints. The simplest pattern that
-  // preserves CCW winding: split the quad into 4 corner sub-tris around the
-  // cut edge. Two of those are in entryFace's region, two in partnerFace's.
-  //
-  //   a --- mEntry --- b
-  //   |       |        |
-  //   |       |        |
-  //   ?  --- mExit --- ?
-  //
-  // The 4 tris depend on which "?" is adjacent to a (call it cornerA) vs to
-  // b (cornerB). Cyclic CCW around the quad: a → b → cornerB → cornerA → a.
-  // Tris:
-  //   T1 = (a, mEntry, mExit) — upper-left, but we need mExit-cornerA pairing.
-  // Actually safer: each "corner triangle" uses 3 corner verts.
-  //   T1 = (a, mEntry, cornerA)
-  //   T2 = (mEntry, b, cornerB)
-  //   T3 = (cornerB, mExit, mEntry)
-  //   T4 = (cornerA, mExit, cornerB) -- wait, that's mixing sides.
-  // Let me just pick a triangulation that works: split the quad along the cut
-  // edge mEntry-mExit into two halves, then triangulate each half.
-  //   Half 1 (a side): a, mEntry, mExit, cornerA — triangulate (a, mEntry, mExit) + (a, mExit, cornerA)
-  //   Half 2 (b side): mEntry, b, cornerB, mExit — triangulate (mEntry, b, cornerB) + (mEntry, cornerB, mExit)
-
   // Determine cornerA, cornerB by checking partnerFace's CCW order — the
   // vertex coming AFTER b in the quad cycle = cornerB; before a = cornerA.
-  // Use the partnerFace half-edges to find this.
-
   let cornerA = -1, cornerB = -1;
-  // Look in partnerFace for the half-edge whose origin is one of {eExitV0, eExitV1} and whose end is also in eExit.
-  const ph0 = em.faces[qc.f2]!.he;
-  const ph1 = em.halfEdges[ph0]!.next;
-  const ph2 = em.halfEdges[ph1]!.next;
-  for (const ph of [ph0, ph1, ph2]) {
+  for (const ph of faceHalfEdges(em, qc.f2)) {
     const ov = em.halfEdges[ph]!.v;
     const ev = em.halfEdges[em.halfEdges[ph]!.next]!.v;
     if ((ov === eExitV0 && ev === eExitV1) || (ov === eExitV1 && ev === eExitV0)) {
-      // This half-edge IS eExit (in partnerFace's CCW order).
-      // After eExit comes a half-edge ending at... the 3rd vertex of partnerFace,
-      // which is one of {a, b}.
+      // This half-edge IS eExit (in partnerFace's CCW order). The half-edge
+      // after it ends at partnerFace's remaining vertex, which is `a` or `b`.
       const after = em.halfEdges[ph]!.next;
       const afterEndVert = em.halfEdges[em.halfEdges[after]!.next]!.v;
-      // afterEndVert is the partnerFace's 3rd vert. It should equal `a` or `b`.
-      // ov → ev → afterEndVert → ov. If afterEndVert == a, then ev is next to a
-      // in the cycle (so ev = cornerA, ov = cornerB). If afterEndVert == b,
-      // then ov is next to b (cornerB = ov, cornerA = ev).
       if (afterEndVert === a) { cornerA = ev; cornerB = ov; }
       else if (afterEndVert === b) { cornerB = ov; cornerA = ev; }
       break;
@@ -940,26 +908,43 @@ function emitQuadCut(em: EditMesh, qc: { f1: number; f2: number; eEntry: number;
     cornerA = eExitV0; cornerB = eExitV1;
   }
 
-  // Emit 4 tris.
-  out.push(a, mEntry, mExit);
-  out.push(a, mExit, cornerA);
-  out.push(mEntry, b, cornerB);
-  out.push(mEntry, cornerB, mExit);
+  out.push([a, mEntry, mExit]);
+  out.push([a, mExit, cornerA]);
+  out.push([mEntry, b, cornerB]);
+  out.push([mEntry, cornerB, mExit]);
+}
+
+/** Split one triangle face according to how many of its edges carry loop midpoints. */
+function emitTriSplits(em: EditMesh, f: number, midpointOf: Map<number, number>, out: number[][]): void {
+  const [h0, h1, h2] = faceHalfEdges(em, f) as [number, number, number];
+  const subdivHE: number[] = [];
+  for (const h of [h0, h1, h2]) {
+    if (midpointOf.has(canonicalEdge(em, h))) subdivHE.push(h);
+  }
+  if (subdivHE.length === 0) {
+    out.push([em.halfEdges[h0]!.v, em.halfEdges[h1]!.v, em.halfEdges[h2]!.v]);
+  } else if (subdivHE.length === 1) {
+    emitTriSplit1(em, subdivHE[0]!, midpointOf, out);
+  } else if (subdivHE.length === 2) {
+    emitTriSplit2(em, h0, h1, h2, subdivHE, midpointOf, out);
+  } else {
+    emitTriSplit3(em, h0, h1, h2, midpointOf, out);
+  }
 }
 
 /** 1 selected edge in a tri — fan to off-edge vertex. */
-function emitTriSplit1(em: EditMesh, subdivHE: number, midpointOf: Map<number, number>, out: number[]): void {
+function emitTriSplit1(em: EditMesh, subdivHE: number, midpointOf: Map<number, number>, out: number[][]): void {
   const mid = midpointOf.get(canonicalEdge(em, subdivHE))!;
   const a = em.halfEdges[subdivHE]!.v;
   const nxt = em.halfEdges[subdivHE]!.next;
   const b = em.halfEdges[nxt]!.v;
   const c = em.halfEdges[em.halfEdges[nxt]!.next]!.v;
-  out.push(a, mid, c);
-  out.push(mid, b, c);
+  out.push([a, mid, c]);
+  out.push([mid, b, c]);
 }
 
 /** 2 selected edges in a tri — split into 3 tris with a midpoint-to-midpoint cut. */
-function emitTriSplit2(em: EditMesh, h0: number, h1: number, h2: number, subdivHE: number[], midpointOf: Map<number, number>, out: number[]): void {
+function emitTriSplit2(em: EditMesh, h0: number, h1: number, h2: number, subdivHE: number[], midpointOf: Map<number, number>, out: number[][]): void {
   // Identify the un-subdivided edge: this anchors the "third vertex" position.
   const subdivSet = new Set(subdivHE);
   const otherHE = [h0, h1, h2].find((h) => !subdivSet.has(h));
@@ -967,16 +952,12 @@ function emitTriSplit2(em: EditMesh, h0: number, h1: number, h2: number, subdivH
   // tri = (v[h0], v[h1], v[h2]) CCW. The non-subdivided edge has its two
   // endpoints "untouched"; the third vertex is the one OPPOSITE to it,
   // through which both subdivided edges pass.
-  // Let other = (u, v). Third vertex = w (the one not in `other`).
-  // Subdivided edges: (u, w) and (v, w) — or some rotation. Each has a midpoint.
   const u = em.halfEdges[otherHE]!.v;
   const v = em.halfEdges[em.halfEdges[otherHE]!.next]!.v;
-  // Third vertex
   const allV = [em.halfEdges[h0]!.v, em.halfEdges[h1]!.v, em.halfEdges[h2]!.v];
   const w = allV.find((x) => x !== u && x !== v)!;
 
   // Midpoints: M_uw on edge u-w, M_vw on edge v-w.
-  // Find which subdiv half-edges correspond.
   let mUW = -1, mVW = -1;
   for (const h of subdivHE) {
     const va = em.halfEdges[h]!.v;
@@ -991,38 +972,23 @@ function emitTriSplit2(em: EditMesh, h0: number, h1: number, h2: number, subdivH
   //   (u, v, mVW)   — bottom (the un-subdivided base + cut endpoint at v's side)
   //   (u, mVW, mUW) — the "cut triangle" interior
   //   (mUW, mVW, w) — the cap at vertex w
-  out.push(u, v, mVW);
-  out.push(u, mVW, mUW);
-  out.push(mUW, mVW, w);
+  out.push([u, v, mVW]);
+  out.push([u, mVW, mUW]);
+  out.push([mUW, mVW, w]);
 }
 
 /** 3 selected edges in a tri — classic 1→4 subdivision. */
-function emitTriSplit3(em: EditMesh, h0: number, h1: number, h2: number, midpointOf: Map<number, number>, out: number[]): void {
+function emitTriSplit3(em: EditMesh, h0: number, h1: number, h2: number, midpointOf: Map<number, number>, out: number[][]): void {
   const a = em.halfEdges[h0]!.v;
   const b = em.halfEdges[h1]!.v;
   const c = em.halfEdges[h2]!.v;
   const mAB = midpointOf.get(canonicalEdge(em, h0))!;
   const mBC = midpointOf.get(canonicalEdge(em, h1))!;
   const mCA = midpointOf.get(canonicalEdge(em, h2))!;
-  out.push(a, mAB, mCA);
-  out.push(mAB, b, mBC);
-  out.push(mBC, c, mCA);
-  out.push(mAB, mBC, mCA);
-}
-
-function faceNormal(em: EditMesh, f: number): [number, number, number] {
-  const [a, b, c] = faceVertices(em, f);
-  const ax = em.positions[a * 3]!, ay = em.positions[a * 3 + 1]!, az = em.positions[a * 3 + 2]!;
-  const bx = em.positions[b * 3]!, by = em.positions[b * 3 + 1]!, bz = em.positions[b * 3 + 2]!;
-  const cx = em.positions[c * 3]!, cy = em.positions[c * 3 + 1]!, cz = em.positions[c * 3 + 2]!;
-  const ux = bx - ax, uy = by - ay, uz = bz - az;
-  const vx = cx - ax, vy = cy - ay, vz = cz - az;
-  let nx = uy * vz - uz * vy;
-  let ny = uz * vx - ux * vz;
-  let nz = ux * vy - uy * vx;
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len > 1e-9) { nx /= len; ny /= len; nz /= len; }
-  return [nx, ny, nz];
+  out.push([a, mAB, mCA]);
+  out.push([mAB, b, mBC]);
+  out.push([mBC, c, mCA]);
+  out.push([mAB, mBC, mCA]);
 }
 
 function dot3(a: [number, number, number], b: [number, number, number]): number {
@@ -1035,8 +1001,8 @@ function dot3(a: [number, number, number], b: [number, number, number]): number 
  * Extrude selected edges into "fin" quads.
  *
  * For each selected edge a-b, duplicates both endpoints (a → a', b → b') and
- * emits a fin quad (a, aDup, bDup, b) — 2 tris attached to the edge from the
- * F1-side, so the fin's twin half-edge (b→a) pairs cleanly with F1's a→b.
+ * emits ONE fin quad (a, a', b', b) attached to the edge from the F1-side, so
+ * the fin's twin half-edge (b→a) pairs cleanly with F1's a→b.
  *
  * Vertex dedup: when two selected edges share a vertex, the shared vertex's
  * duplicate is allocated once. Selecting an edge loop and extruding produces
@@ -1047,7 +1013,7 @@ function dot3(a: [number, number, number], b: [number, number, number]): number 
  *    outer perimeter becomes the new boundary.
  *  - Interior edge: results in a non-manifold edge (3 faces). Acceptable for
  *    silhouette / fin geometry — same as Blender's behavior. The fin's
- *    half-edge wins the twin slot via rebuildHalfEdges' last-write-wins.
+ *    half-edge wins the twin slot via the rebuild's last-write-wins.
  *
  * Returns the fin face IDs as the new selection (caller flips mode to "face"
  * so the gizmo lands on the fins for the inevitable "now drag them" step).
@@ -1078,38 +1044,34 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
     return d;
   };
 
-  const newIndices = toIndexArray(em);
-  const finStart = newIndices.length / 3;
+  const newPolys = toPolygons(em);
+  const finStart = newPolys.length;
   for (const he of canonical) {
     const a = edgeOrigin(em, he);
     const b = edgeEnd(em, he);
     const aDup = dupOrCreate(a);
     const bDup = dupOrCreate(b);
-    // Fin tris — CCW from the fin's outside, with the b→a edge in tri 2
-    // pairing as twin to F1's existing a→b.
-    newIndices.push(a, aDup, bDup);
-    newIndices.push(a, bDup, b);
+    // Fin quad — CCW from the fin's outside, with the b→a edge pairing as
+    // twin to F1's existing a→b.
+    newPolys.push([a, aDup, bDup, b]);
   }
-  const finEnd = newIndices.length / 3;
+  const finEnd = newPolys.length;
 
-  rebuildHalfEdges(em, new Float32Array(newPositions), newIndices);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
 
   const newSel = new Set<number>();
   for (let i = finStart; i < finEnd; i++) newSel.add(i);
   return newSel;
 }
 
-// ── Knife V1 (Edge Flip via two selected vertices) ─────────────────────────
+// ── Flip Diagonal (two selected vertices, tri-only) ────────────────────────
 
 /**
- * Connect 2 selected vertices with a new edge — V1 implementation handles
- * only the "adjacent tri" case where the verts are the two "off-edge"
- * vertices of two triangles sharing an edge. The operation is then a
- * diagonal flip: the shared edge a-b is replaced by v1-v2.
- *
- * For verts separated by >1 triangle (the general free-hand Knife), V1
- * returns empty — implementing it requires line-segment intersection with
- * mesh edges + face triangulation, scoped for Knife V2.
+ * Connect 2 selected vertices with a new edge — handles only the "adjacent
+ * tri" case where the verts are the two "off-edge" vertices of two TRIANGLES
+ * sharing an edge. The operation is then a diagonal flip: the shared edge a-b
+ * is replaced by v1-v2. Quad / n-gon faces are skipped (quads have no
+ * diagonal to flip — use Quads to Tris first if you need one).
  *
  * Returns the (unchanged) input vert set so the user's selection persists
  * across the operation; the new edge is visible in the edge overlay since
@@ -1120,16 +1082,14 @@ export function knife(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<num
   const [v1, v2] = [...selectedVerts];
   if (v1 === undefined || v2 === undefined) return new Set();
 
-  // Search faces containing v1; for each, check whether its 3 edges' twin
+  // Search triangles containing v1; for each, check whether its edges' twin
   // faces contain v2.
   for (let f = 0; f < em.faces.length; f++) {
+    if (faceVertexCount(em, f) !== 3) continue;
     const verts = faceVertices(em, f);
     if (!verts.includes(v1) || verts.includes(v2)) continue;
 
-    const h0 = em.faces[f]!.he;
-    const h1 = em.halfEdges[h0]!.next;
-    const h2 = em.halfEdges[h1]!.next;
-    for (const h of [h0, h1, h2]) {
+    for (const h of faceHalfEdges(em, f)) {
       const va = em.halfEdges[h]!.v;
       const vb = em.halfEdges[em.halfEdges[h]!.next]!.v;
       // Find the edge OPPOSITE v1 in this tri (the one not touching v1).
@@ -1137,6 +1097,7 @@ export function knife(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<num
       const tw = em.halfEdges[h]!.twin;
       if (tw < 0) continue;
       const neighborFace = em.halfEdges[tw]!.face;
+      if (faceVertexCount(em, neighborFace) !== 3) continue;
       if (!faceVertices(em, neighborFace).includes(v2)) continue;
       return flipDiagonal(em, h, v1, v2);
     }
@@ -1153,8 +1114,8 @@ export function knife(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<num
  * diagonal B-D):
  *   T1' = (b, c, d), T2' = (c, a, d).
  *
- * (See operators.ts source comments — both new tris keep outward normals
- * pairing correctly with the surrounding mesh's twins.)
+ * (Both new tris keep outward normals pairing correctly with the surrounding
+ * mesh's twins.)
  */
 function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set<number> {
   const a = em.halfEdges[edgeHE]!.v;
@@ -1172,19 +1133,15 @@ function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set
   const f1 = em.halfEdges[edgeHE]!.face;
   const f2 = em.halfEdges[twin]!.face;
 
-  const newIndices: number[] = [];
-  for (let f = 0; f < em.faces.length; f++) {
-    if (f === f1) {
-      newIndices.push(b, c, d);
-    } else if (f === f2) {
-      newIndices.push(c, a, d);
-    } else {
-      const [va, vb, vc] = faceVertices(em, f);
-      newIndices.push(va, vb, vc);
-    }
+  const polys = toPolygons(em);
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (f === f1) newPolys.push([b, c, d]);
+    else if (f === f2) newPolys.push([c, a, d]);
+    else newPolys.push(polys[f]!);
   }
 
-  rebuildHalfEdges(em, em.positions, newIndices);
+  rebuildPolygons(em, em.positions, newPolys);
   return new Set([v1, v2]);
 }
 
@@ -1204,7 +1161,8 @@ function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set
  * Topology is unchanged — only positions move. A vertex with no rail on the
  * requested side (mesh border, pole) stays put. Rail choice per side is the
  * neighbor whose edge is most perpendicular to the loop tangent, which
- * filters out the diagonal neighbors triangulated quads introduce.
+ * filters out the diagonal neighbors triangulated quads introduce. (On real
+ * quads there are no diagonals, so the rails are simply the ring edges.)
  *
  * Returns the (canonicalized) input edge set — still valid, nothing rebuilt.
  */
@@ -1249,17 +1207,24 @@ export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: n
   }
 
   // Accumulated vertex normals (loop verts only) from incident face normals.
+  // Newell's method — area-weighted like the V1 cross products, n-gon safe.
   const vn = new Map<number, [number, number, number]>();
   for (let f = 0; f < em.faces.length; f++) {
-    const [a, b, c] = faceVertices(em, f);
-    if (!loopVerts.has(a) && !loopVerts.has(b) && !loopVerts.has(c)) continue;
-    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
-    const ux = P[b * 3]! - ax, uy = P[b * 3 + 1]! - ay, uz = P[b * 3 + 2]! - az;
-    const wx = P[c * 3]! - ax, wy = P[c * 3 + 1]! - ay, wz = P[c * 3 + 2]! - az;
-    const nx = uy * wz - uz * wy;
-    const ny = uz * wx - ux * wz;
-    const nz = ux * wy - uy * wx;
-    for (const v of [a, b, c]) {
+    const fv = faceVerts(em, f);
+    let touches = false;
+    for (const v of fv) { if (loopVerts.has(v)) { touches = true; break; } }
+    if (!touches) continue;
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < fv.length; i++) {
+      const a = fv[i]!;
+      const b = fv[(i + 1) % fv.length]!;
+      const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+      const bx = P[b * 3]!, by = P[b * 3 + 1]!, bz = P[b * 3 + 2]!;
+      nx += (ay - by) * (az + bz);
+      ny += (az - bz) * (ax + bx);
+      nz += (ax - bx) * (ay + by);
+    }
+    for (const v of fv) {
       if (!loopVerts.has(v)) continue;
       const acc = vn.get(v) ?? [0, 0, 0];
       acc[0] += nx; acc[1] += ny; acc[2] += nz;
@@ -1363,9 +1328,11 @@ export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: n
 
 /**
  * Merge vertex clusters: each cluster's members become ONE vertex at the
- * cluster centroid. Faces that degenerate (fewer than 3 unique verts) are
- * dropped, the vertex buffer is compacted (unreferenced verts removed), and
- * seam keys are remapped across the compaction.
+ * cluster centroid. Faces whose cycle collapses below 3 unique verts are
+ * dropped; a quad losing one edge to the merge degrades to a triangle
+ * (consecutive duplicate corners are collapsed). The vertex buffer is
+ * compacted (unreferenced verts removed), and seam keys are remapped across
+ * the compaction.
  *
  * Returns the merged vertices' NEW (compacted) indices.
  */
@@ -1383,8 +1350,8 @@ function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
       cx += P[v * 3]!;
       cy += P[v * 3 + 1]!;
       cz += P[v * 3 + 2]!;
-      remap.set(v, target);
     }
+    for (const v of cluster) remap.set(v, target);
     P[target * 3] = cx / cluster.length;
     P[target * 3 + 1] = cy / cluster.length;
     P[target * 3 + 2] = cz / cluster.length;
@@ -1393,15 +1360,20 @@ function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
 
   const mapped = (v: number): number => remap.get(v) ?? v;
 
-  // Rewrite faces, dropping ones that collapsed.
-  const kept: number[] = [];
-  const oldIndices = toIndexArray(em);
-  for (let f = 0; f < em.faces.length; f++) {
-    const a = mapped(oldIndices[f * 3]!);
-    const b = mapped(oldIndices[f * 3 + 1]!);
-    const c = mapped(oldIndices[f * 3 + 2]!);
-    if (a === b || b === c || a === c) continue;
-    kept.push(a, b, c);
+  // Rewrite faces: collapse consecutive duplicate corners, drop faces that
+  // degenerate (<3 unique verts) or fold onto themselves (repeated corner).
+  const keptPolys: number[][] = [];
+  const polys = toPolygons(em);
+  for (const poly of polys) {
+    const mappedPoly = poly.map(mapped);
+    const dedup: number[] = [];
+    for (const v of mappedPoly) {
+      if (dedup.length === 0 || dedup[dedup.length - 1] !== v) dedup.push(v);
+    }
+    while (dedup.length > 1 && dedup[0] === dedup[dedup.length - 1]) dedup.pop();
+    if (dedup.length < 3) continue;
+    if (new Set(dedup).size !== dedup.length) continue; // bowtie — drop
+    keptPolys.push(dedup);
   }
 
   // Compact the vertex buffer to referenced verts only.
@@ -1416,7 +1388,7 @@ function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
     }
     return nv;
   };
-  const newIndices = kept.map(idxOf);
+  const newPolys = keptPolys.map((poly) => poly.map(idxOf));
 
   // Seams follow the merge + compaction; edges collapsed to a point vanish.
   const newSeams = new Set<string>();
@@ -1427,7 +1399,7 @@ function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
     if (na !== undefined && nb !== undefined && na !== nb) newSeams.add(seamKey(na, nb));
   }
 
-  rebuildHalfEdges(em, Float32Array.from(newPositions), newIndices);
+  rebuildPolygons(em, Float32Array.from(newPositions), newPolys);
   em.seams = newSeams;
 
   const out = new Set<number>();
@@ -1490,8 +1462,8 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
 // ── Bridge Edge Loops (F-M8) ───────────────────────────────────────────────
 
 /**
- * Connect two boundary edge loops with a band of quads (2 tris each) —
- * Blender's Bridge Edge Loops, V1 scope:
+ * Connect two boundary edge loops with a band of REAL quads — Blender's
+ * Bridge Edge Loops, V1 scope:
  *
  * - Both loops must be **boundary** loops (every selected edge has no twin);
  *   bridging interior loops would need face deletion first.
@@ -1499,7 +1471,7 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
  *   vertex count, both cycles or both open paths.
  *
  * Winding: each new quad traverses the A-side boundary edge reversed and the
- * B loop in reverse walk order, so every new triangle pairs manifold-cleanly
+ * B loop in reverse walk order, so every new face pairs manifold-cleanly
  * with the existing faces (and B's reversal also gives the geometrically
  * right pairing for two openings that face each other, e.g. tube ends). For
  * cycles, the rotation offset minimizing the first vertex pair's distance is
@@ -1592,8 +1564,8 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
     }
   }
 
-  const newIndices = toIndexArray(em);
-  const faceStart = newIndices.length / 3;
+  const newPolys = toPolygons(em);
+  const faceStart = newPolys.length;
   const quads = A.cycle ? n : n - 1;
   for (let i = 0; i < quads; i++) {
     const a0 = A.verts[i]!;
@@ -1602,13 +1574,12 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
     const b1 = bRev[(off + i + 1) % n]!;
     // Quad (a1, a0, b0, b1): crosses A's boundary edge reversed (a1→a0) and
     // B's boundary edge reversed (b0→b1 in reverse walk) — both manifold.
-    newIndices.push(a1, a0, b0);
-    newIndices.push(a1, b0, b1);
+    newPolys.push([a1, a0, b0, b1]);
   }
 
-  rebuildHalfEdges(em, em.positions, newIndices);
+  rebuildPolygons(em, em.positions, newPolys);
   const out = new Set<number>();
-  for (let f = faceStart; f < newIndices.length / 3; f++) out.add(f);
+  for (let f = faceStart; f < newPolys.length; f++) out.add(f);
   return out;
 }
 
@@ -1642,4 +1613,168 @@ export function vertexSlide(em: EditMesh, anchor: number, mover: number, t: numb
   P[mover * 3 + 1] = P[mover * 3 + 1]! + (P[anchor * 3 + 1]! - P[mover * 3 + 1]!) * f;
   P[mover * 3 + 2] = P[mover * 3 + 2]! + (P[anchor * 3 + 2]! - P[mover * 3 + 2]!) * f;
   return new Set([mover]);
+}
+
+// ── Tris to Quads / Quads to Tris (half-edge V2) ───────────────────────────
+
+/**
+ * Join adjacent triangle pairs into quads — Blender's Tris to Quads.
+ *
+ * Candidate = every interior edge whose two faces are both triangles (and
+ * inside `selectedFaces` when given). A pair qualifies when the face normals
+ * agree within `maxAngleDeg` AND the resulting quad is convex; candidates are
+ * greedily merged best-normal-alignment first, each triangle used at most
+ * once (so a fully triangulated grid merges into a clean quad grid rather
+ * than a zigzag).
+ *
+ * Quad winding: for shared edge a→b (in tri1) with off-edge verts x (tri1)
+ * and y (tri2), the merged CCW cycle is (b, x, a, y) — both source windings
+ * are preserved.
+ *
+ * Returns the new quad face ids (∅ when nothing merged).
+ */
+export function trisToQuads(
+  em: EditMesh,
+  selectedFaces: ReadonlySet<number> | null,
+  maxAngleDeg = 40,
+): Set<number> {
+  const cosLimit = Math.cos((maxAngleDeg * Math.PI) / 180);
+  const inScope = (f: number): boolean =>
+    faceVertexCount(em, f) === 3 && (!selectedFaces || selectedFaces.has(f));
+
+  type Cand = { f1: number; f2: number; score: number; quad: number[] };
+  const cands: Cand[] = [];
+  forEachEdge(em, (he) => {
+    const t = em.halfEdges[he]!.twin;
+    if (t < 0) return;
+    const f1 = em.halfEdges[he]!.face;
+    const f2 = em.halfEdges[t]!.face;
+    if (!inScope(f1) || !inScope(f2)) return;
+    const n1 = facePolyNormal(em, f1);
+    const n2 = facePolyNormal(em, f2);
+    const dot = dot3(n1, n2);
+    if (dot < cosLimit) return;
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    const x = thirdVertex(em, f1, a, b);
+    const y = thirdVertex(em, f2, a, b);
+    if (x < 0 || y < 0 || x === y) return;
+    const quad = [b, x, a, y];
+    if (!isConvexQuad(em.positions, quad)) return;
+    cands.push({ f1, f2, score: dot, quad });
+  });
+  if (cands.length === 0) return new Set();
+  cands.sort((p, q) => q.score - p.score);
+
+  const used = new Set<number>();
+  const merged: number[][] = [];
+  for (const c of cands) {
+    if (used.has(c.f1) || used.has(c.f2)) continue;
+    used.add(c.f1);
+    used.add(c.f2);
+    merged.push(c.quad);
+  }
+  if (merged.length === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!used.has(f)) newPolys.push(polys[f]!);
+  }
+  const quadStart = newPolys.length;
+  for (const quad of merged) newPolys.push(quad);
+  rebuildPolygons(em, em.positions, newPolys);
+
+  const out = new Set<number>();
+  for (let f = quadStart; f < newPolys.length; f++) out.add(f);
+  return out;
+}
+
+/** Convexity test: every corner turn agrees with the quad's Newell normal. */
+function isConvexQuad(P: Float32Array, quad: readonly number[]): boolean {
+  // Newell normal over the 4 corners.
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i]!;
+    const b = quad[(i + 1) % 4]!;
+    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+    const bx = P[b * 3]!, by = P[b * 3 + 1]!, bz = P[b * 3 + 2]!;
+    nx += (ay - by) * (az + bz);
+    ny += (az - bz) * (ax + bx);
+    nz += (ax - bx) * (ay + by);
+  }
+  const nlen = Math.hypot(nx, ny, nz);
+  if (nlen < 1e-12) return false;
+
+  for (let i = 0; i < 4; i++) {
+    const p0 = quad[i]!;
+    const p1 = quad[(i + 1) % 4]!;
+    const p2 = quad[(i + 2) % 4]!;
+    const e1x = P[p1 * 3]! - P[p0 * 3]!;
+    const e1y = P[p1 * 3 + 1]! - P[p0 * 3 + 1]!;
+    const e1z = P[p1 * 3 + 2]! - P[p0 * 3 + 2]!;
+    const e2x = P[p2 * 3]! - P[p1 * 3]!;
+    const e2y = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
+    const e2z = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
+    const cx = e1y * e2z - e1z * e2y;
+    const cy = e1z * e2x - e1x * e2z;
+    const cz = e1x * e2y - e1y * e2x;
+    const d = cx * nx + cy * ny + cz * nz;
+    const scale = Math.hypot(e1x, e1y, e1z) * Math.hypot(e2x, e2y, e2z) * nlen;
+    if (d <= scale * 1e-6) return false; // reflex or degenerate corner
+  }
+  return true;
+}
+
+/**
+ * Catmull-Clark subdivision surface — smooth `level` (≥1) steps over the WHOLE
+ * mesh (the operator is global by nature: every face turns into n quads and
+ * the surface relaxes toward the limit surface, so a partial selection would
+ * leave T-vertices at the boundary). Delegates the math to
+ * {@link catmullClark}; here we just rebuild `em` and return an empty
+ * selection (component ids are all fresh — the caller clears the selection).
+ *
+ * Original vertices keep their indices (0…V-1) so their UVs / skin weights are
+ * carried verbatim by commitTopology; the new face/edge points sample the old
+ * surface via barycentric transfer. Morph targets can't survive the vertex-
+ * count change — the caller must guard.
+ */
+export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> {
+  if (level < 1) return new Set();
+  const result = catmullClark(em.positions, toPolygons(em), level, em.creases);
+  rebuildPolygons(em, result.positions, result.polys);
+  // Carry the propagated (σ−1) creases onto the subdivided edges. Seams are
+  // dropped — their vertex-pair keys no longer name real edges after the split.
+  em.creases = result.creases;
+  return new Set();
+}
+
+/**
+ * Fan-triangulate the selected quad / n-gon faces (whole mesh when
+ * `selectedFaces` is null) — Blender's Triangulate Faces. Triangle faces are
+ * left untouched. Returns the new triangle face ids (∅ when nothing had to
+ * be triangulated).
+ */
+export function quadsToTris(em: EditMesh, selectedFaces: ReadonlySet<number> | null): Set<number> {
+  const polys = toPolygons(em);
+  const targetSet = new Set<number>();
+  for (let f = 0; f < polys.length; f++) {
+    if (polys[f]!.length > 3 && (!selectedFaces || selectedFaces.has(f))) targetSet.add(f);
+  }
+  if (targetSet.size === 0) return new Set();
+
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!targetSet.has(f)) newPolys.push(polys[f]!);
+  }
+  const triStart = newPolys.length;
+  for (const f of targetSet) {
+    const p = polys[f]!;
+    for (let i = 1; i + 1 < p.length; i++) newPolys.push([p[0]!, p[i]!, p[i + 1]!]);
+  }
+  rebuildPolygons(em, em.positions, newPolys);
+
+  const out = new Set<number>();
+  for (let f = triStart; f < newPolys.length; f++) out.add(f);
+  return out;
 }

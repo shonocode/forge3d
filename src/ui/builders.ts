@@ -411,6 +411,30 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).markSeamSelection(),
     },
     {
+      label: "Mark Crease",
+      key: "Shift+E",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).markCreaseSelection(),
+    },
+    {
+      label: "Tris to Quads",
+      key: "J",
+      modes: ["vertex", "edge", "face"],
+      action: async () => (await import("../tools/edit-mode")).trisToQuadsSelection(),
+    },
+    {
+      label: "Quads to Tris",
+      key: "Ctrl+T",
+      modes: ["vertex", "edge", "face"],
+      action: async () => (await import("../tools/edit-mode")).quadsToTrisSelection(),
+    },
+    {
+      label: "Subdivide (CC)",
+      key: "Ctrl+D",
+      modes: ["vertex", "edge", "face"],
+      action: async () => (await import("../tools/edit-mode")).subdivideSelection(),
+    },
+    {
       label: "Delete",
       key: "X",
       modes: ["vertex", "edge", "face"],
@@ -502,6 +526,11 @@ export function buildEditToolsPanel(): void {
   paramSection.appendChild(
     makeSlider("Slide Amount", "em-slide-amount", state.editConfig.slideAmount, -0.95, 0.95, 0.05, (v) => {
       state.editConfig.slideAmount = v;
+    }),
+  );
+  paramSection.appendChild(
+    makeSlider("Crease Weight", "em-crease-weight", state.editConfig.creaseWeight, 0, 4, 0.5, (v) => {
+      state.editConfig.creaseWeight = v;
     }),
   );
   el.appendChild(paramSection);

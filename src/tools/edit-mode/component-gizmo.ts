@@ -6,7 +6,7 @@ import { ScaleGizmo } from "@babylonjs/core/Gizmos/scaleGizmo";
 import { UtilityLayerRenderer } from "@babylonjs/core/Rendering/utilityLayerRenderer";
 import type { Scene } from "@babylonjs/core/scene";
 import { commitPositions } from "./commit";
-import { faceVertices, edgeOrigin, edgeEnd, type EditMesh } from "./half-edge";
+import { faceVerts, edgeOrigin, edgeEnd, type EditMesh } from "./half-edge";
 import { refreshOverlayPositions, type EditOverlay } from "./overlay";
 import { computeFalloffWeights } from "./proportional";
 import { state } from "../../state";
@@ -259,8 +259,7 @@ function computeAffectedVertices(em: EditMesh, sel: EditSelection): number[] {
     }
   } else {
     for (const f of sel.indices) {
-      const [a, b, c] = faceVertices(em, f);
-      set.add(a); set.add(b); set.add(c);
+      for (const v of faceVerts(em, f)) set.add(v);
     }
   }
   return Array.from(set);

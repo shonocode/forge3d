@@ -3,18 +3,18 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status, E, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh } from "./build";
-import { commitTopology } from "./commit";
+import { commitTopology, writePolyMetadata } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, vertexSlide } from "./operators";
-import { smartUVProject, toggleSeams } from "./uv-unwrap";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, quadsToTris, subdivideCatmullClark, trisToQuads, vertexSlide } from "./operators";
+import { smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { rebuildHalfEdges, toIndexArray } from "./half-edge";
+import { hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
 import { refreshEditToolsUI } from "../../ui/builders";
@@ -179,15 +179,20 @@ export function clearComponentSelection(): void {
 function applyTopologyOp(label: string, op: () => Set<number>): void {
   if (!state.editMesh || !currentOverlay || !currentGizmo) return;
   const em = state.editMesh;
+  // Snapshot POLYGONS (not triangles) so undo/redo restores quads / n-gons.
+  // Seams / creases are edge-attribute maps that some ops mutate (Merge remaps
+  // seams; Subdivide propagates creases), so snapshot them too.
   const before = {
     positions: new Float32Array(em.positions),
-    indices: toIndexArray(em),
+    polys: toPolygons(em),
+    seams: new Set(em.seams),
+    creases: new Map(em.creases),
     selection: new Set(state.editSelection.indices),
     mode: state.editSelection.mode,
   };
   const newSel = op();
   state.editSelection.indices = newSel;
-  commitTopology(em, toIndexArray(em));
+  commitTopology(em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   currentGizmo.refresh(em, state.editSelection);
   applyModeLabel();
@@ -195,19 +200,26 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
 
   const after = {
     positions: new Float32Array(em.positions),
-    indices: toIndexArray(em),
+    polys: toPolygons(em),
+    seams: new Set(em.seams),
+    creases: new Map(em.creases),
     selection: new Set(state.editSelection.indices),
   };
   const overlayRef = currentOverlay;
   const gizmoRef = currentGizmo;
+  const restoreEdgeAttrs = (seams: Set<string>, creases: Map<string, number>): void => {
+    em.seams = new Set(seams);
+    em.creases = new Map(creases);
+  };
   state.history.push({
     label,
     undo() {
       if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
-      rebuildHalfEdges(em, new Float32Array(before.positions), before.indices.slice());
+      rebuildPolygons(em, new Float32Array(before.positions), before.polys);
+      restoreEdgeAttrs(before.seams, before.creases);
       state.editSelection.indices = new Set(before.selection);
       state.editSelection.mode = before.mode;
-      commitTopology(em, toIndexArray(em));
+      commitTopology(em);
       rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
       gizmoRef.refresh(em, state.editSelection);
       applyModeLabel();
@@ -215,9 +227,10 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
     },
     redo() {
       if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
-      rebuildHalfEdges(em, new Float32Array(after.positions), after.indices.slice());
+      rebuildPolygons(em, new Float32Array(after.positions), after.polys);
+      restoreEdgeAttrs(after.seams, after.creases);
       state.editSelection.indices = new Set(after.selection);
-      commitTopology(em, toIndexArray(em));
+      commitTopology(em);
       rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
       gizmoRef.refresh(em, state.editSelection);
       applyModeLabel();
@@ -426,12 +439,16 @@ function executeKnifeCut(x1: number, y1: number, x2: number, y2: number): void {
     return t >= -0.02 && t <= 1.02;
   };
 
+  const hadPolys = hasNonTriFaces(em);
   applyTopologyOp("Knife", () => {
     const result = planeCut(em.positions, toIndexArray(em), [a.x, a.y, a.z], [n.x, n.y, n.z], accept);
     if (!result) {
       status("⚠ Knife: 切断線がメッシュの辺を横切っていない");
       return new Set(state.editSelection.indices);
     }
+    // planeCut is triangle-based: quads / n-gons are fan-triangulated by the
+    // cut (V2 limitation — undo restores them).
+    if (hadPolys) status("Knife: 多角形面は三角形化して切断（Undo で戻る）");
     rebuildHalfEdges(em, result.positions, result.indices);
     // The fresh cut verts are the natural follow-up selection (drag the new
     // edge loop into shape) — switch to vertex mode.
@@ -469,6 +486,41 @@ export function markSeamSelection(): void {
 }
 
 /**
+ * Toggle Catmull-Clark crease markers on the selected edges (Edge mode).
+ * Creased edges stay sharp under Subdivide; visualized as cyan lines. Weight
+ * comes from `editConfig.creaseWeight` (σ ≥ 1 = fully sharp; a σ of 2 keeps the
+ * edge sharp for two subdivision levels then relaxes).
+ */
+export function markCreaseSelection(): void {
+  const em = state.editMesh;
+  if (!em || !currentOverlay) return;
+  if (state.editSelection.mode !== "edge") {
+    status("⚠ Mark Crease: edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Select edges to mark/unmark as creases");
+    return;
+  }
+  const sel = new Set(state.editSelection.indices);
+  const before = new Map(em.creases);
+  toggleCreases(em, sel, state.editConfig.creaseWeight);
+  const after = new Map(em.creases);
+  rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  const restore = (m: Map<string, number>): void => {
+    em.creases.clear();
+    for (const [k, v] of m) em.creases.set(k, v);
+    if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  };
+  state.history.push({
+    label: "Mark Crease",
+    undo() { restore(before); },
+    redo() { restore(after); },
+  });
+  status(`Creases: ${em.creases.size} edge(s)`);
+}
+
+/**
  * Run Smart UV Project on the active EditMesh, rebuild the Babylon mesh with
  * the new UVs (vertex count grows: each face becomes 3 unique verts in V1),
  * and re-enter Edit Mode on the rebuilt geometry.
@@ -491,6 +543,7 @@ export function unwrapMesh(): void {
   const beforePos = new Float32Array(em.positions);
   const beforeIdxRaw = mesh.getIndices() ?? [];
   const beforeIdx: number[] = Array.from(beforeIdxRaw);
+  const beforePolys = toPolygons(em);
   const beforeUV = mesh.getVerticesData(VertexBuffer.UVKind);
   const beforeUVCopy = beforeUV ? new Float32Array(beforeUV) : null;
   const beforeMIRaw = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind);
@@ -532,8 +585,9 @@ export function unwrapMesh(): void {
   }
   vd.applyToMesh(mesh, true);
 
-  // Rebuild EditMesh + overlay.
-  rebuildHalfEdges(em, new Float32Array(result.positions), result.indices.slice());
+  // Rebuild EditMesh + overlay (polygon-preserving: quads survive unwrap).
+  rebuildPolygons(em, new Float32Array(result.positions), result.polys);
+  syncManualApply(em);
   // After the rebuild, the previous selection's component IDs are stale.
   state.editSelection.indices.clear();
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
@@ -560,7 +614,8 @@ export function unwrapMesh(): void {
       VertexData.ComputeNormals(beforePos, beforeIdx, n2);
       vd2.normals = n2;
       vd2.applyToMesh(m, true);
-      rebuildHalfEdges(em, new Float32Array(beforePos), beforeIdx.slice());
+      rebuildPolygons(em, new Float32Array(beforePos), beforePolys);
+      syncManualApply(em);
       state.editSelection.indices = new Set(beforeSel);
       state.editSelection.mode = beforeMode;
       if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
@@ -581,7 +636,8 @@ export function unwrapMesh(): void {
       VertexData.ComputeNormals(afterPos, afterIdx, n2);
       vd2.normals = n2;
       vd2.applyToMesh(m, true);
-      rebuildHalfEdges(em, new Float32Array(afterPos), afterIdx.slice());
+      rebuildPolygons(em, new Float32Array(afterPos), result.polys);
+      syncManualApply(em);
       state.editSelection.indices.clear();
       if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
       if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
@@ -590,6 +646,85 @@ export function unwrapMesh(): void {
   });
 
   status(`Unwrap: ${em.vertices.length} verts, ${em.faces.length} faces`);
+}
+
+/**
+ * Re-sync the EditMesh render mapping + polygon metadata after a manual
+ * VertexData apply (paths that bypass commitTopology, e.g. Unwrap).
+ */
+function syncManualApply(em: NonNullable<typeof state.editMesh>): void {
+  em.triToFace = triangulateFaces(em).triToFace;
+  writePolyMetadata(em);
+}
+
+/**
+ * Join adjacent coplanar triangles into quads (Blender's Tris to Quads).
+ * Face-mode selection limits the scope; otherwise the whole mesh converts.
+ */
+export function trisToQuadsSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  const sel =
+    state.editSelection.mode === "face" && state.editSelection.indices.size > 0
+      ? new Set(state.editSelection.indices)
+      : null;
+  applyTopologyOp("Tris to Quads", () => {
+    const result = trisToQuads(em, sel);
+    if (result.size === 0) {
+      status("⚠ Tris to Quads: 結合できる三角形ペアがない（共面 + 凸の四角形のみ）");
+      return new Set<number>();
+    }
+    state.editSelection.mode = "face";
+    return result;
+  });
+}
+
+/**
+ * Fan-triangulate quads / n-gons back to triangles (Blender's Triangulate
+ * Faces). Face-mode selection limits the scope; otherwise the whole mesh.
+ */
+export function quadsToTrisSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  const sel =
+    state.editSelection.mode === "face" && state.editSelection.indices.size > 0
+      ? new Set(state.editSelection.indices)
+      : null;
+  applyTopologyOp("Quads to Tris", () => {
+    const result = quadsToTris(em, sel);
+    if (result.size === 0) {
+      status("⚠ Quads to Tris: 三角形化する多角形面がない");
+      return new Set<number>();
+    }
+    state.editSelection.mode = "face";
+    return result;
+  });
+}
+
+/**
+ * Catmull-Clark subdivision surface — one smooth level per press over the
+ * whole mesh (repeat for more). Global by nature, so selection is ignored.
+ * Guards against morph targets (vertex-count change would corrupt them).
+ */
+export function subdivideSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  if (em.source.morphTargetManager) {
+    status("⚠ Subdivide: モーフターゲット付きは不可（頂点数が変わるため、モーフ作成前に）");
+    return;
+  }
+  const beforeFaces = em.faces.length;
+  if (beforeFaces > 20000) {
+    status("⚠ Subdivide: 面数が多すぎる（2万面上限）— 先に Decimate / 分割数を下げて");
+    return;
+  }
+  applyTopologyOp("Subdivide (Catmull-Clark)", () => {
+    subdivideCatmullClark(em, 1);
+    // All component ids are fresh after the rebuild — start clean.
+    state.editSelection.mode = "face";
+    return new Set<number>();
+  });
+  status(`Subdivide: ${beforeFaces} → ${em.faces.length} faces`);
 }
 
 export function loopCutSelection(): void {
@@ -637,11 +772,11 @@ export function bevelSelection(): void {
     const info = { skipped: 0 };
     const newFaces = bevelEdges(em, sel, state.editConfig.bevelWidth, info);
     if (newFaces.size === 0) {
-      status("⚠ Bevel: no beveleable edges in selection (boundary edges are skipped)");
+      status("⚠ Bevel: no beveleable edges in selection (boundary / quad-adjacent edges are skipped)");
       return new Set();
     }
     if (info.skipped > 0) {
-      status(`Bevel: ${info.skipped} 辺は端点共有のためスキップ — もう一度 Bevel で残りを面取り`);
+      status(`Bevel: ${info.skipped} 辺はスキップ（端点共有 or 多角形面に隣接）— 端点共有分はもう一度 Bevel で面取り`);
     }
     state.editSelection.mode = "face";
     return newFaces;
