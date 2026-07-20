@@ -6,7 +6,9 @@ import {
   computeUVIslands,
   faceAtUVPoint,
   flipUVs,
+  nearestOtherVert,
   rotateUVs,
+  snapUV,
   scaleUVs,
   stretchToColor,
   translateUVs,
@@ -118,6 +120,22 @@ describe("UV transforms", () => {
     const uvs = [0, 0, 2, 3, -1, 1];
     expect(uvBounds(uvs, [1, 2])).toEqual({ minU: -1, minV: 1, maxU: 2, maxV: 3 });
     expect(uvBounds(uvs, [])).toEqual({ minU: 0, minV: 0, maxU: 0, maxV: 0 });
+  });
+});
+
+describe("snapUV / nearestOtherVert", () => {
+  it("snapUV rounds to the nearest grid intersection", () => {
+    expect(snapUV(0.13, 0.62, 0.125)).toEqual([0.125, 0.625]);
+    expect(snapUV(0.3, 0.3, 0)).toEqual([0.3, 0.3]); // step 0 = no-op
+  });
+
+  it("nearestOtherVert finds the closest non-excluded vert within range", () => {
+    const uvs = [0, 0, 0.5, 0.5, 0.52, 0.5, 2, 2];
+    expect(nearestOtherVert(uvs, new Set([1]), 0.5, 0.5, 0.1)).toBe(2);
+    // The excluded vert itself never matches, even at distance 0.
+    expect(nearestOtherVert(uvs, new Set([1, 2]), 0.5, 0.5, 0.1)).toBe(-1);
+    // Out of range → -1.
+    expect(nearestOtherVert(uvs, new Set(), 5, 5, 0.1)).toBe(-1);
   });
 });
 

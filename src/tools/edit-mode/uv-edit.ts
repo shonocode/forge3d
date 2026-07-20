@@ -228,6 +228,40 @@ export function faceAtUVPoint(uvs: ArrayLike<number>, indices: readonly number[]
   return -1;
 }
 
+/** Round a UV point to the nearest grid intersection of the given step. */
+export function snapUV(u: number, v: number, step: number): [number, number] {
+  if (step <= 0) return [u, v];
+  return [Math.round(u / step) * step, Math.round(v / step) * step];
+}
+
+/**
+ * Nearest vertex to (u, v) that is NOT in `exclude` (typically the dragged
+ * set), within `maxDist` (UV units). Returns -1 when nothing is close enough.
+ * Used by the UV editor's magnet snap to stitch a dragged vert onto another.
+ */
+export function nearestOtherVert(
+  uvs: ArrayLike<number>,
+  exclude: ReadonlySet<number>,
+  u: number,
+  v: number,
+  maxDist: number,
+): number {
+  let best = -1;
+  let bestSq = maxDist * maxDist;
+  const n = uvs.length / 2;
+  for (let i = 0; i < n; i++) {
+    if (exclude.has(i)) continue;
+    const du = uvs[i * 2]! - u;
+    const dv = uvs[i * 2 + 1]! - v;
+    const dsq = du * du + dv * dv;
+    if (dsq < bestSq) {
+      bestSq = dsq;
+      best = i;
+    }
+  }
+  return best;
+}
+
 /** Cap applied to degenerate / infinitely stretched faces. */
 export const STRETCH_MAX = 8;
 

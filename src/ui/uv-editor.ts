@@ -9,8 +9,10 @@ import {
   computeUVIslands,
   faceAtUVPoint,
   flipUVs,
+  nearestOtherVert,
   rotateUVs,
   scaleUVs,
+  snapUV,
   stretchToColor,
   translateUVs,
   uvBounds,
@@ -34,6 +36,14 @@ type EditorMode = "island" | "vertex";
 type XformMode = "move" | "rotate" | "scale";
 
 const VERTEX_PICK_PX = 9;
+/** Screen radius (px) within which a dragged vert magnets onto another vert. */
+const MAGNET_PX = 10;
+const ROTATE_SNAP = Math.PI / 12; // 15°
+const SCALE_SNAP = 0.1;
+
+// Session-sticky snap settings (kept across editor opens, not persisted).
+let snapEnabled = false;
+let snapStep = 0.125;
 
 export function openUVEditor(): void {
   const mesh = (state.editMesh?.source ?? lastSelected()) as Mesh | undefined;
@@ -78,11 +88,15 @@ export function openUVEditor(): void {
   // Drag state.
   let drag: {
     verts: number[];
+    vertSet: Set<number>;
     snap: Float32Array; // uv pairs parallel to verts
     startU: number;
     startV: number;
     pivotU: number;
     pivotV: number;
+    /** Snap reference point: island bbox min corner / the picked vert's UV. */
+    refU: number;
+    refV: number;
   } | null = null;
   let pan: { x: number; y: number } | null = null;
 
@@ -227,6 +241,34 @@ export function openUVEditor(): void {
   bar.appendChild(group(islandOpBtns));
   bar.appendChild(group(vertexOpBtns));
 
+  const snapRow = document.createElement("label");
+  snapRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;margin-left:10px;color:var(--t3,#9aa);cursor:pointer;";
+  const snapChk = document.createElement("input");
+  snapChk.type = "checkbox";
+  snapChk.checked = snapEnabled;
+  snapChk.addEventListener("change", () => {
+    snapEnabled = snapChk.checked;
+    draw();
+  });
+  snapRow.appendChild(snapChk);
+  snapRow.appendChild(document.createTextNode("⌗ Snap"));
+  snapRow.title = "移動をグリッドに吸着 (Vertex モードでは他の UV 頂点へのマグネット優先)。回転 15° / 拡縮 0.1 刻み";
+  const snapSel = document.createElement("select");
+  snapSel.style.cssText = "font-size:10px;background:var(--bg2,#1a1d24);color:inherit;border:1px solid var(--bg3,#2a2e38);";
+  for (const [label, val] of [["1/4", 0.25], ["1/8", 0.125], ["1/16", 0.0625], ["1/32", 0.03125]] as const) {
+    const o = document.createElement("option");
+    o.value = String(val);
+    o.textContent = label;
+    snapSel.appendChild(o);
+  }
+  snapSel.value = String(snapStep);
+  snapSel.addEventListener("change", () => {
+    snapStep = Number(snapSel.value);
+    draw();
+  });
+  snapRow.appendChild(snapSel);
+  bar.appendChild(snapRow);
+
   const stretchRow = document.createElement("label");
   stretchRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;margin-left:10px;color:var(--t3,#9aa);cursor:pointer;";
   const stretchChk = document.createElement("input");
@@ -311,6 +353,21 @@ export function openUVEditor(): void {
     ctx.lineWidth = 1;
     ctx.strokeRect(bx0, by0, bx1 - bx0, by1 - by0);
 
+    // Snap grid inside the unit box.
+    if (snapEnabled && snapStep > 0) {
+      ctx.strokeStyle = "rgba(120,140,180,0.25)";
+      ctx.beginPath();
+      for (let g = snapStep; g < 1 - 1e-9; g += snapStep) {
+        const [gx] = uvToScreen(g, 0);
+        ctx.moveTo(gx, by0);
+        ctx.lineTo(gx, by1);
+        const [, gy] = uvToScreen(0, g);
+        ctx.moveTo(bx0, gy);
+        ctx.lineTo(bx1, gy);
+      }
+      ctx.stroke();
+    }
+
     // Face fills (stretch overlay).
     if (stretchOn && faceStretch) {
       for (let f = 0; f < faceStretch.length; f++) {
@@ -386,7 +443,7 @@ export function openUVEditor(): void {
     return best;
   };
 
-  const beginDrag = (verts: number[], u: number, v: number): void => {
+  const beginDrag = (verts: number[], u: number, v: number, ref?: [number, number]): void => {
     const snap = new Float32Array(verts.length * 2);
     verts.forEach((vi, i) => {
       snap[i * 2] = draft[vi * 2]!;
@@ -395,11 +452,16 @@ export function openUVEditor(): void {
     const bb = uvBounds(draft, verts);
     drag = {
       verts,
+      vertSet: new Set(verts),
       snap,
       startU: u,
       startV: v,
       pivotU: (bb.minU + bb.maxU) / 2,
       pivotV: (bb.minV + bb.maxV) / 2,
+      // Default snap reference: the island's bbox min corner — dragging an
+      // island onto the grid aligns its corner, Blender-style.
+      refU: ref ? ref[0] : bb.minU,
+      refV: ref ? ref[1] : bb.minV,
     };
   };
 
@@ -434,7 +496,7 @@ export function openUVEditor(): void {
           selVerts.clear();
           selVerts.add(hit);
         }
-        if (selVerts.has(hit)) beginDrag([...selVerts], u, v);
+        if (selVerts.has(hit)) beginDrag([...selVerts], u, v, [draft[hit * 2]!, draft[hit * 2 + 1]!]);
       } else if (!e.ctrlKey && !e.metaKey) {
         selVerts.clear();
       }
@@ -465,15 +527,39 @@ export function openUVEditor(): void {
     });
     const mode: XformMode = editorMode === "vertex" ? "move" : xform;
     if (mode === "move") {
-      translateUVs(draft, drag.verts, u - drag.startU, v - drag.startV);
+      let du = u - drag.startU;
+      let dv = v - drag.startV;
+      if (snapEnabled) {
+        // Snap the reference point (island bbox corner / picked vert), then
+        // rigid-shift the whole set by the corrected delta. Vertex mode
+        // prefers the magnet (stitch onto another vert) over the grid.
+        const tx = drag.refU + du;
+        const ty = drag.refV + dv;
+        let sx: number, sy: number;
+        const magnet = editorMode === "vertex"
+          ? nearestOtherVert(draft, drag.vertSet, tx, ty, MAGNET_PX / viewScale)
+          : -1;
+        if (magnet >= 0) {
+          sx = draft[magnet * 2]!;
+          sy = draft[magnet * 2 + 1]!;
+        } else {
+          [sx, sy] = snapUV(tx, ty, snapStep);
+        }
+        du = sx - drag.refU;
+        dv = sy - drag.refV;
+      }
+      translateUVs(draft, drag.verts, du, dv);
     } else if (mode === "rotate") {
       const a0 = Math.atan2(drag.startV - drag.pivotV, drag.startU - drag.pivotU);
       const a1 = Math.atan2(v - drag.pivotV, u - drag.pivotU);
-      rotateUVs(draft, drag.verts, a1 - a0, drag.pivotU, drag.pivotV);
+      let angle = a1 - a0;
+      if (snapEnabled) angle = Math.round(angle / ROTATE_SNAP) * ROTATE_SNAP;
+      rotateUVs(draft, drag.verts, angle, drag.pivotU, drag.pivotV);
     } else {
       const d0 = Math.hypot(drag.startU - drag.pivotU, drag.startV - drag.pivotV);
       const d1 = Math.hypot(u - drag.pivotU, v - drag.pivotV);
-      const factor = d0 > 1e-6 ? Math.max(1e-3, d1 / d0) : 1;
+      let factor = d0 > 1e-6 ? Math.max(1e-3, d1 / d0) : 1;
+      if (snapEnabled) factor = Math.max(SCALE_SNAP, Math.round(factor / SCALE_SNAP) * SCALE_SNAP);
       scaleUVs(draft, drag.verts, factor, drag.pivotU, drag.pivotV);
     }
     preview();
