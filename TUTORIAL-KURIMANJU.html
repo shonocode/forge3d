@@ -357,6 +357,11 @@ GLB エクスポートには含まれないので置きっぱなしで OK。</di
 <kbd>G</kbd>（マニュアル §4.6.1）。隣の辺に沿って滑るので、表面から浮いたり食い込んだりしない。
 ほかにも頂点をまとめる <strong>Merge</strong>（<kbd>M</kbd>）、筒どうしを繋ぐ
 <strong>Bridge Loops</strong>（<kbd>Ctrl+E</kbd>）が使える（§4.8.1 / §4.8.2）。</div>
+
+<div class="tip">丸みの調整には <strong>◉ Proportional</strong>（Transform セクション）も便利。
+オンにして頂点を 1 つ動かすと、Prop. Radius 内の周辺頂点が減衰付きで一緒に動くので
+面がなめらかに繋がる（マニュアル §4.2.2）。Gizmo は <kbd>T</kbd>/<kbd>R</kbd>/<kbd>S</kbd> で
+Move / Rotate / Scale を切替（§4.2.1）— リング選択を <kbd>S</kbd> ですぼめると「くびれ」が簡単に作れる。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -711,6 +716,7 @@ forge3d 内で見えてた状態と一致してれば OK。</p>
 <table>
   <tr><th>キー</th><th>動作</th></tr>
   <tr><td>1 / 2 / 3</td><td>Vertex / Edge / Face</td></tr>
+  <tr><td>T / R / S</td><td>Gizmo: Move / Rotate / Scale</td></tr>
   <tr><td>E</td><td>Extrude (押し出し)</td></tr>
   <tr><td>I</td><td>Inset (内側オフセット)</td></tr>
   <tr><td>Ctrl+B</td><td>Bevel (面取り)</td></tr>

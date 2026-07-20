@@ -5,7 +5,7 @@ import { state, status, E, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh } from "./build";
 import { commitTopology } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
-import { createComponentGizmo, type ComponentGizmo } from "./component-gizmo";
+import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
 import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter } from "./operators";
@@ -109,6 +109,22 @@ export function exitEditMode(): void {
   document.querySelectorAll<HTMLElement>("#btnMobEdit").forEach((b) => b.classList.remove("on"));
   updateProperties();
   status("Object Mode");
+}
+
+/**
+ * Switch the component gizmo between Move / Rotate / Scale (keys T / R / S
+ * in Edit Mode). No-op outside Edit Mode.
+ */
+export function setEditGizmoMode(mode: EditGizmoMode): void {
+  if (!state.editMesh || !currentGizmo) return;
+  currentGizmo.setMode(mode);
+  refreshEditToolsUI();
+  status(`Gizmo: ${mode}`);
+}
+
+/** Current gizmo transform mode ("move" outside Edit Mode). */
+export function getEditGizmoMode(): EditGizmoMode {
+  return currentGizmo?.mode ?? "move";
 }
 
 export function setComponentMode(mode: ComponentMode): void {
@@ -587,8 +603,8 @@ export function bridgeSelection(): void {
  */
 export function handleEditModePointerDown(screenX: number, screenY: number, additive: boolean): boolean {
   if (!state.editMesh || !currentOverlay || !currentGizmo) return false;
-  // Don't steal clicks that land on the gizmo handles.
-  if (currentGizmo.gizmo.isHovered) return false;
+  // Don't steal clicks that land on any of the gizmo handles.
+  if (currentGizmo.isHovered()) return false;
 
   const em = state.editMesh;
   let picked = -1;

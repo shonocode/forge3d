@@ -237,6 +237,58 @@ export function buildEditToolsPanel(): void {
   modeSection.appendChild(modeRow);
   el.appendChild(modeSection);
 
+  // Gizmo transform mode (Move / Rotate / Scale)
+  const gizmoSection = document.createElement("div");
+  gizmoSection.className = "pg";
+  gizmoSection.innerHTML = '<div class="pgt">Transform</div>';
+  const gizmoRow = document.createElement("div");
+  gizmoRow.style.cssText = "display:flex;gap:4px;";
+  const GIZMO_MODES: { id: "move" | "rotate" | "scale"; label: string; key: string }[] = [
+    { id: "move",   label: "Move",   key: "T" },
+    { id: "rotate", label: "Rotate", key: "R" },
+    { id: "scale",  label: "Scale",  key: "S" },
+  ];
+  for (const m of GIZMO_MODES) {
+    const b = document.createElement("button");
+    b.className = "abtn em-gizmo-btn" + (m.id === "move" ? " on" : "");
+    b.dataset.gizmoMode = m.id;
+    b.textContent = `${m.label} (${m.key})`;
+    b.style.flex = "1";
+    b.setAttribute("aria-label", `Gizmo ${m.label} mode`);
+    b.addEventListener("click", () => {
+      void import("../tools/edit-mode").then(({ setEditGizmoMode, isEditMode }) => {
+        if (!isEditMode()) {
+          status("⚠ Enter Edit Mode (Tab) first");
+          return;
+        }
+        setEditGizmoMode(m.id);
+      });
+    });
+    gizmoRow.appendChild(b);
+  }
+  gizmoSection.appendChild(gizmoRow);
+  // Proportional editing toggle — applies to all three transforms.
+  const propRow = document.createElement("label");
+  propRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;margin-top:6px;";
+  const propChk = document.createElement("input");
+  propChk.type = "checkbox";
+  propChk.id = "em-proportional";
+  propChk.checked = state.editConfig.proportional;
+  propChk.setAttribute("aria-label", "Proportional editing");
+  propChk.addEventListener("change", () => {
+    state.editConfig.proportional = propChk.checked;
+  });
+  propRow.appendChild(propChk);
+  propRow.appendChild(document.createTextNode(" ◉ Proportional (周辺も追従)"));
+  propRow.title = "選択の周囲 Radius 内の頂点も減衰しながら一緒に動く (Blender の O)";
+  gizmoSection.appendChild(propRow);
+  gizmoSection.appendChild(
+    makeSlider("Prop. Radius", "em-prop-radius", state.editConfig.proportionalRadius, 0.05, 3, 0.05, (v) => {
+      state.editConfig.proportionalRadius = v;
+    }),
+  );
+  el.appendChild(gizmoSection);
+
   // Operator buttons section
   const opSection = document.createElement("div");
   opSection.className = "pg";
@@ -447,6 +499,13 @@ export function refreshEditToolsUI(): void {
   for (const b of document.querySelectorAll<HTMLElement>(".em-mode-btn")) {
     b.classList.toggle("on", b.dataset.editMode === currentMode);
   }
+  // Gizmo transform-mode buttons
+  void import("../tools/edit-mode").then(({ getEditGizmoMode }) => {
+    const gm = getEditGizmoMode();
+    for (const b of document.querySelectorAll<HTMLElement>(".em-gizmo-btn")) {
+      b.classList.toggle("on", b.dataset.gizmoMode === gm);
+    }
+  });
   // Operator buttons: enable only those matching current mode (when in Edit Mode)
   const inEdit = state.editMesh !== null;
   for (const b of document.querySelectorAll<HTMLButtonElement>(".em-op-btn")) {

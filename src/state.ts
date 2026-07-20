@@ -444,6 +444,10 @@ export const state = {
     bevelWidth: 0.15,
     /** Edge Slide factor per press: sign = side, magnitude = lerp toward the rail. */
     slideAmount: 0.25,
+    /** Proportional editing (soft select): gizmo transforms also pull nearby verts. */
+    proportional: false,
+    /** Falloff radius (local units) for proportional editing. */
+    proportionalRadius: 0.5,
   },
 
   // Undo/Redo
