@@ -44,6 +44,12 @@ describe("pack / unpack", () => {
     expect(() => unpackProject(glb)).toThrow(/magic|short/);
   });
 
+  it("starts with the F3DP magic bytes (autosave recovery sniffs these)", () => {
+    const packed = packProject(SIDECAR, glb);
+    // main.ts recovery detects a container by 0x46 0x33 0x44 0x50 = "F3DP".
+    expect([packed[0], packed[1], packed[2], packed[3]]).toEqual([0x46, 0x33, 0x44, 0x50]);
+  });
+
   it("rejects truncated files", () => {
     const packed = packProject(SIDECAR, glb);
     expect(() => unpackProject(packed.subarray(0, 10))).toThrow();

@@ -61,7 +61,7 @@ function pngToCanvas(dataUrl: string): Promise<OffscreenCanvas> {
   });
 }
 
-function collectSidecar(): ProjectSidecar {
+export function collectSidecar(): ProjectSidecar {
   const layerNameById = new Map(state.layers.map((l) => [l.id, l.name]));
   const meshes: ProjectMeshEntry[] = [];
 

@@ -154,7 +154,9 @@ footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
 <h3>1.2 保存と復元</h3>
 <ul>
   <li><strong>自動保存</strong>: 30 秒ごとに OPFS / IndexedDB にチェックポイント保存。クラッシュ時は次回起動で復元を提案。
-    <strong>前回保存から編集がなければスキップ</strong>されるので、放置中に定期的なカクつきは起きない</li>
+    <strong>前回保存から編集がなければスキップ</strong>されるので、放置中に定期的なカクつきは起きない。
+    チェックポイントは <code>.forge3d</code> 形式なので、復元しても<strong>手続きグラフ・スカルプトマスク・
+    ペイントレイヤー・quad 構造・シーム・折り目まで丸ごと戻る</strong>（GLB では失われる情報も保持）</li>
   <li><strong>Model Library</strong>: Map タブの「Save to Library」で複数モデルをローカル保存</li>
   <li><strong>エクスポート</strong>: GLB / OBJ / STL ファイルとしてダウンロード</li>
 </ul>
@@ -1247,7 +1249,9 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
   <li><strong>OPFS</strong> (Origin Private File System) 優先 → 大容量に対応</li>
   <li>未対応ブラウザでは <strong>IndexedDB</strong> にフォールバック</li>
   <li>Model Library から保存・読み込み・削除</li>
-  <li>自動保存 30 秒間隔 (クラッシュ復旧用、24 時間で自動失効)。編集がない周期は差分判定でスキップ</li>
+  <li>自動保存 30 秒間隔 (クラッシュ復旧用、24 時間で自動失効)。編集がない周期は差分判定でスキップ。
+    チェックポイントは <code>.forge3d</code> コンテナで保存されるので、サイドカー情報 (手続きグラフ /
+    マスク / レイヤー / quad / シーム / 折り目 等) ごと復元される</li>
 </ul>
 
 <h3>13.4 プロジェクトファイル (.forge3d)</h3>
@@ -1263,9 +1267,12 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
     <strong>ボーンコンストレイント</strong> (§7.7、Limit Rotation / Aim、ボーン名キー) /
     <strong>Shape Key Driver</strong> (§12.1.1、メッシュ / ボーン名で対応付け) /
     <strong>ペイントレイヤースタック + チャンネルペイント</strong> (§6.1 / §6.2、各レイヤーの
-    PNG + blend 設定。ファイルサイズはその分増える)</li>
+    PNG + blend 設定。ファイルサイズはその分増える) /
+    <strong>Edit Mode の quad / n-gon 構造・シーム・折り目</strong> (§4.10、GLB は三角形のみなので
+    サイドカーが quad フローとマーキングを保持)</li>
   <li>開くと通常のモデル読込と同じ流れでシーンに追加され、グラフは自動再ベイク、
-    マスクとレイヤーも復元される (メッシュ名で対応付け)</li>
+    マスクとレイヤーも復元される (メッシュ名で対応付け)。quad / シーム / 折り目は次に
+    Edit Mode に入ったとき復元される</li>
   <li>非可搬なもの (現状): モディファイアスタック (エクスポート時点の評価結果が形状として保存される)</li>
 </ul>
 </section>

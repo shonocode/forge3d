@@ -149,9 +149,21 @@ void (async () => {
     const label = mins < 1 ? "just now" : mins + " min ago";
     if (confirm("Recover unsaved work from " + label + "?")) {
       status("Recovering...");
-      const file = new File([cp.data], "recovery.glb", { type: "model/gltf-binary" });
-      const { loadFileDirectly } = await import("./export/gltf-exporter");
-      await loadFileDirectly(file);
+      const bytes = new Uint8Array(cp.data);
+      // Checkpoints are .forge3d containers (magic "F3DP"); older builds wrote
+      // a plain GLB — fall back to loading that directly.
+      const isContainer =
+        bytes.length >= 4 &&
+        bytes[0] === 0x46 && bytes[1] === 0x33 && bytes[2] === 0x44 && bytes[3] === 0x50;
+      if (isContainer) {
+        const file = new File([cp.data], "recovery.forge3d", { type: "application/octet-stream" });
+        const { importProjectFile } = await import("./export/project-io");
+        await importProjectFile(file);
+      } else {
+        const file = new File([cp.data], "recovery.glb", { type: "model/gltf-binary" });
+        const { loadFileDirectly } = await import("./export/gltf-exporter");
+        await loadFileDirectly(file);
+      }
       status("Session recovered");
     }
     await clearCheckpoint();

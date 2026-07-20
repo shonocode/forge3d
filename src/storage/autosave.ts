@@ -104,7 +104,17 @@ async function doAutoSave(): Promise<void> {
     if (glbFile) {
       const blob = glbFile as Blob;
       const buffer = await blob.arrayBuffer();
-      await saveCheckpoint(buffer);
+      // Wrap the GLB in a .forge3d container so the checkpoint keeps everything
+      // glTF can't hold — quad structure, seams, creases, procedural graphs,
+      // sculpt masks, paint layers, bone rolls/constraints/drivers. Recovery
+      // (main.ts) detects the "F3DP" magic; legacy plain-GLB checkpoints still
+      // load via the fallback path.
+      const { packProject } = await import("../export/project-format");
+      const { collectSidecar } = await import("../export/project-io");
+      const packed = packProject(collectSidecar(), new Uint8Array(buffer));
+      // packProject returns an exactly-sized fresh Uint8Array, so its backing
+      // buffer is the payload verbatim.
+      await saveCheckpoint(packed.buffer as ArrayBuffer);
       _lastSavedSig = sig;
     }
   } catch (e) {
