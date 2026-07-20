@@ -58,6 +58,21 @@ export function isSeamJump(x0: number, y0: number, x1: number, y1: number, texSi
 }
 
 /**
+ * Fit a w×h source into a square of side `max`, preserving aspect ratio
+ * (longer side = max). Degenerate sources collapse to [max, max].
+ */
+export function fitWithin(w: number, h: number, max: number): [number, number] {
+  if (w <= 0 || h <= 0) return [max, max];
+  const s = max / Math.max(w, h);
+  return [w * s, h * s];
+}
+
+/** Stroke direction angle (radians) from the previous dab to the current one. */
+export function strokeAngle(x0: number, y0: number, x1: number, y1: number): number {
+  return Math.atan2(y1 - y0, x1 - x0);
+}
+
+/**
  * Radial brush alpha at normalized distance `t` ∈ [0, 1] from the dab
  * center, for a given hardness ∈ [0, 1]:
  *  - inside `t ≤ hardness` the brush is fully opaque

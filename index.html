@@ -198,6 +198,25 @@
           </select></div>
       </div>
       <div class="pg">
+        <div class="pgt">Brush Image (Stamp / Stencil)</div>
+        <div class="pr" style="margin-bottom:4px">
+          <button class="abtn" id="btnBrushImage" style="flex:1;font-size:10px;"
+            title="スタンプ / ステンシルに使う画像を読み込む (アルファ付き PNG 推奨)">📂 Load Image</button>
+        </div>
+        <div class="pr" style="margin-bottom:4px;font-size:9px;color:var(--t4);">
+          <span id="brushImgName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">— 画像なし —</span>
+        </div>
+        <div class="pr" style="margin-bottom:4px"><span class="pl" style="font-size:10px;color:var(--t3)">Mode</span>
+          <select id="brushMode" aria-label="Brush image mode" style="margin-left:auto;font-size:10px;"
+            title="Round = 通常の丸ブラシ / Stamp = 画像をスタンプ (ストローク方向に回転) / Stencil = 画像をタイルしたアルファ越しに塗る">
+            <option value="round" selected>Round</option>
+            <option value="stamp">Stamp</option>
+            <option value="stencil">Stencil</option>
+          </select></div>
+        <div class="sr"><label>Stencil Scale <span id="ssV">1.00</span></label>
+          <input type="range" min="0.25" max="4" step="0.25" value="1" id="stencilScale" aria-label="Stencil tile scale"></div>
+      </div>
+      <div class="pg">
         <div class="pgt">Layers</div>
         <div id="paintLayersC"></div>
         <button class="abtn" id="btnAddPaintLayer" style="margin-top:4px;"

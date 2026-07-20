@@ -176,6 +176,19 @@ export function bindActionButtons(): void {
     if (!m) { status("⚠ メッシュを選択"); return; }
     void import("../tools/texture-paint").then((mod) => mod.addPaintLayer(m));
   });
+  E("btnBrushImage").addEventListener("click", () => {
+    void import("../tools/texture-paint").then((mod) => mod.loadBrushImage());
+  });
+  E("brushMode").addEventListener("change", function () {
+    const mode = (this as HTMLSelectElement).value as typeof state.paintConfig.brushMode;
+    state.paintConfig.brushMode = mode;
+    if (mode !== "round") {
+      void import("../tools/texture-paint").then((mod) => {
+        if (!mod.getBrushImageName()) status("⚠ 先に 📂 Load Image でブラシ画像を読み込む (それまで Round で描画)");
+      });
+    }
+  });
+  bindSlider("stencilScale", "ssV", (v) => { state.paintConfig.stencilScale = v; }, (v) => v.toFixed(2));
 
   // Bone controls
   E("btnNewSkel").addEventListener("click", () => {

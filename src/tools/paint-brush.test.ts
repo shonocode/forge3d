@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brushAlpha, isSeamJump, strokeDabs } from "./paint-brush";
+import { brushAlpha, fitWithin, isSeamJump, strokeAngle, strokeDabs } from "./paint-brush";
 
 describe("strokeDabs", () => {
   it("spaces dabs evenly and always ends at the pointer", () => {
@@ -37,6 +37,20 @@ describe("isSeamJump", () => {
   it("flags hops longer than 25% of the atlas", () => {
     expect(isSeamJump(0, 0, 300, 0, 1024)).toBe(true);
     expect(isSeamJump(0, 0, 200, 0, 1024)).toBe(false);
+  });
+});
+
+describe("fitWithin / strokeAngle", () => {
+  it("fits preserving aspect (longer side = max)", () => {
+    expect(fitWithin(200, 100, 50)).toEqual([50, 25]);
+    expect(fitWithin(100, 200, 50)).toEqual([25, 50]);
+    expect(fitWithin(0, 100, 50)).toEqual([50, 50]); // degenerate
+  });
+
+  it("strokeAngle points along the segment", () => {
+    expect(strokeAngle(0, 0, 1, 0)).toBeCloseTo(0);
+    expect(strokeAngle(0, 0, 0, 1)).toBeCloseTo(Math.PI / 2);
+    expect(strokeAngle(0, 0, -1, 0)).toBeCloseTo(Math.PI);
   });
 });
 

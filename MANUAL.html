@@ -638,6 +638,23 @@ Scale で他の島とテクセル密度を揃えると改善する。</div>
 <div class="note">チャンネルペイントは<strong>レイヤー非対応</strong> (フラット 1 枚)。
 レイヤーは Albedo 専用。Metallic スロットに画像をインポートするとチャンネルペイントは破棄される。
 チャンネルキャンバスも <strong>.forge3d</strong> に保存・復元される (§13.4)。</div>
+
+<h3 id="paint-stamp">6.3 Stamp / Stencil ブラシ</h3>
+<p>Paint タブの <strong>Brush Image</strong> セクション。<strong>📂 Load Image</strong> で読み込んだ
+画像 (アルファ付き PNG 推奨) を 2 つのモードでブラシに使える。どちらも Albedo 専用
+(Roughness / Metallic 中は通常の丸ブラシで描画)。</p>
+<ul>
+  <li><strong>Stamp</strong>: 画像そのものをブラシ先端として押していく。
+    <strong>ストローク方向に自動回転</strong>するので、鎖・足跡・模様を線に沿って並べられる。
+    スタンプ間隔はブラシ径 1 個分。画像の色がそのまま乗る (ピッカー色は使わない)。
+    上位レイヤーでの消しゴムはスタンプ形に透明化</li>
+  <li><strong>Stencil</strong>: 画像のアルファを<strong>テクスチャ空間にタイル</strong>し、
+    その穴を通して通常のソフトブラシで塗る。パターンはアトラスに固定されているので、
+    別々のストロークでも連続した模様が浮かび上がる (布目・網目・ドット柄に)。
+    <strong>Stencil Scale</strong> でタイルの大きさを調整。ピッカー色 + Opacity / Hardness が効く</li>
+  <li>モードはセッション内のみ (リロード後は Round に戻る — 画像は保存されないため)</li>
+</ul>
+<div class="tip">Stamp 用画像は背景が透明な PNG を使うこと。不透明な画像だと四角いハンコになる。</div>
 </section>
 
 <!-- =================================================================== -->

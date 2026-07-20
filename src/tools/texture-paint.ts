@@ -4,7 +4,8 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
 import { getAlbedoColor } from "../materials/pbr-helpers";
-import { brushAlpha, isSeamJump, strokeDabs } from "./paint-brush";
+import { brushAlpha, fitWithin, isSeamJump, strokeAngle, strokeDabs } from "./paint-brush";
+import { openFileDialog } from "../ui/file-input";
 import {
   blendToCompositeOp,
   canRemoveLayer,
@@ -246,6 +247,56 @@ export function compositePaintChannels(meshUniqueId: number): void {
 /** Previous dab position of the in-progress stroke (canvas px), per mesh. */
 let _lastDab: { uid: number; x: number; y: number } | null = null;
 
+// ── Brush image (stamp / stencil, F-M11) ──
+//
+// One image serves both modes: Stamp presses it as the brush tip (rotated
+// to follow the stroke direction), Stencil tiles its alpha over the atlas
+// and the normal soft brush paints through it. Albedo-only — channel
+// painting always uses the round brush.
+
+let _brushImage: HTMLImageElement | null = null;
+let _brushImageName = "";
+/** Cached stencil tile (image scaled by stencilScale). */
+let _stencilTile: { canvas: OffscreenCanvas; scale: number } | null = null;
+/** Reusable dab-masking scratch canvas (stencil mode). */
+let _stencilScratch: OffscreenCanvas | null = null;
+
+/** Load an image file as the stamp / stencil brush tip. */
+export function loadBrushImage(): void {
+  openFileDialog("image/*", (file) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      _brushImage = img;
+      _brushImageName = file.name;
+      _stencilTile = null;
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+      const nameEl = document.getElementById("brushImgName");
+      if (nameEl) nameEl.textContent = file.name;
+      status("Brush image: " + file.name);
+    };
+    img.onerror = () => status("⚠ 画像の読み込みに失敗");
+    img.src = url;
+  });
+}
+
+export function getBrushImageName(): string {
+  return _brushImageName;
+}
+
+/** Stencil tile at the current scale (rebuilt when scale / image change). */
+function stencilTile(): OffscreenCanvas | null {
+  if (!_brushImage) return null;
+  const scale = Math.max(0.1, state.paintConfig.stencilScale || 1);
+  if (_stencilTile && _stencilTile.scale === scale) return _stencilTile.canvas;
+  const w = Math.max(1, Math.round(_brushImage.width * scale));
+  const h = Math.max(1, Math.round(_brushImage.height * scale));
+  const c = new OffscreenCanvas(w, h);
+  c.getContext("2d")!.drawImage(_brushImage, 0, 0, w, h);
+  _stencilTile = { canvas: c, scale };
+  return c;
+}
+
 /** Reset stroke continuity — call on pointerdown before the first dab. */
 export function beginPaintStroke(): void {
   _lastDab = null;
@@ -335,13 +386,19 @@ export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
   const cx = uv.x * texSize;
   const cy = (1 - uv.y) * texSize;
 
+  const mode = state.paintConfig.brushMode ?? "round";
+  // Stamp spacing is wider (the tip is a full image, not a soft dot).
+  const spacing = Math.max(1, radius * (mode === "stamp" ? 1.0 : 0.35));
+
   let dabs: Array<[number, number]>;
+  let prevDab: { x: number; y: number } | null = null;
   if (
     _lastDab &&
     _lastDab.uid === mesh.uniqueId &&
     !isSeamJump(_lastDab.x, _lastDab.y, cx, cy, texSize)
   ) {
-    dabs = strokeDabs(_lastDab.x, _lastDab.y, cx, cy, Math.max(1, radius * 0.35));
+    prevDab = { x: _lastDab.x, y: _lastDab.y };
+    dabs = strokeDabs(_lastDab.x, _lastDab.y, cx, cy, spacing);
   } else {
     dabs = [[cx, cy]];
   }
@@ -349,9 +406,56 @@ export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
 
   const alpha = eraser ? 1 : opacity;
 
+  // Image brushes are albedo-only; a stamp can't repaint the base color on
+  // erase (it has its own pixels), so that combination falls back to round.
+  const img = channel === "albedo" && mode !== "round" ? _brushImage : null;
+  const stampOk = img && mode === "stamp" && !(eraser && compositeOp === "source-over");
+  const stencilOk = img && mode === "stencil";
+
   ctx.save();
-  ctx.globalCompositeOperation = compositeOp;
-  for (const [dx, dy] of dabs) drawDab(ctx, dx, dy, radius, fill, alpha, hardness);
+  if (stampOk) {
+    // Press the image as the tip, rotated to follow the stroke direction.
+    const [sw, sh] = fitWithin(img.width, img.height, radius * 2);
+    const angle = prevDab ? strokeAngle(prevDab.x, prevDab.y, cx, cy) : 0;
+    ctx.globalCompositeOperation = compositeOp;
+    ctx.globalAlpha = alpha;
+    for (const [dx, dy] of dabs) {
+      ctx.save();
+      ctx.translate(dx, dy);
+      ctx.rotate(angle);
+      ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+      ctx.restore();
+    }
+  } else if (stencilOk) {
+    // Soft dab masked by the atlas-anchored tiled stencil alpha: the
+    // pattern stays fixed in texture space, so separate strokes reveal a
+    // continuous motif.
+    const tile = stencilTile()!;
+    const s = Math.ceil(radius * 2);
+    if (!_stencilScratch || _stencilScratch.width < s || _stencilScratch.height < s) {
+      _stencilScratch = new OffscreenCanvas(s, s);
+    }
+    const scratch = _stencilScratch;
+    const sctx = scratch.getContext("2d")!;
+    for (const [dx, dy] of dabs) {
+      sctx.save();
+      sctx.globalCompositeOperation = "source-over";
+      sctx.clearRect(0, 0, scratch.width, scratch.height);
+      drawDab(sctx, radius, radius, radius, fill, alpha, hardness);
+      // destination-in: keep dab alpha only where the (texture-space
+      // anchored) pattern has pixels; untouched areas clear to 0.
+      sctx.globalCompositeOperation = "destination-in";
+      sctx.fillStyle = sctx.createPattern(tile, "repeat")!;
+      sctx.translate(-(dx - radius), -(dy - radius));
+      sctx.fillRect(dx - radius, dy - radius, s, s);
+      sctx.restore();
+      ctx.globalCompositeOperation = compositeOp;
+      ctx.drawImage(scratch, dx - radius, dy - radius);
+    }
+  } else {
+    ctx.globalCompositeOperation = compositeOp;
+    for (const [dx, dy] of dabs) drawDab(ctx, dx, dy, radius, fill, alpha, hardness);
+  }
   ctx.restore();
   recomposite();
 }

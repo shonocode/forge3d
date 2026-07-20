@@ -109,6 +109,10 @@ function syncControls(): void {
   if (res) res.value = String(p.resolution ?? 1024);
   const pch = document.getElementById("paintChannel") as HTMLSelectElement | null;
   if (pch) pch.value = p.channel ?? "albedo";
+  // Brush image itself isn't persisted — always come back in round mode so
+  // a stale stamp/stencil pref can't silently paint with no image.
+  p.brushMode = "round";
+  num("stencilScale", p.stencilScale ?? 1, "ssV", 2);
 
   const wcfg = state.weightConfig;
   num("weightRadius", wcfg.radius, "wrV");
