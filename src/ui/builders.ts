@@ -381,6 +381,12 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).edgeSlideSelection(),
     },
     {
+      label: "Vertex Slide",
+      key: "Shift+V",
+      modes: ["vertex"],
+      action: async () => (await import("../tools/edit-mode")).vertexSlideSelection(),
+    },
+    {
       label: "Merge",
       key: "M",
       modes: ["vertex", "edge"],

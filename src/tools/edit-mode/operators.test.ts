@@ -705,3 +705,48 @@ describe("bridgeEdgeLoops", () => {
     expect(bridgeEdgeLoops(em, sel).size).toBe(0);
   });
 });
+
+// ── F-M8 batch 4: vertexSlide ──
+
+import { vertexSlide } from "./operators";
+
+describe("vertexSlide", () => {
+  it("slides the mover toward the anchor along their shared edge", () => {
+    const em = buildEditMesh(makeCube())!;
+    const sel = vertexSlide(em, 0, 1, 0.5); // anchor (-1,-1,-1), mover (1,-1,-1)
+    expect([...sel]).toEqual([1]);
+    expect(em.positions[3]).toBeCloseTo(0);
+    expect(em.positions[4]).toBeCloseTo(-1);
+    expect(em.positions[5]).toBeCloseTo(-1);
+    // Anchor untouched.
+    expect(em.positions[0]).toBeCloseTo(-1);
+  });
+
+  it("negative t extrapolates away from the anchor", () => {
+    const em = buildEditMesh(makeCube())!;
+    vertexSlide(em, 0, 1, -0.5);
+    expect(em.positions[3]).toBeCloseTo(2);
+    expect(em.positions[4]).toBeCloseTo(-1);
+  });
+
+  it("rejects non-adjacent vertex pairs without touching positions", () => {
+    const em = buildEditMesh(makeCube())!;
+    const before = new Float32Array(em.positions);
+    const sel = vertexSlide(em, 0, 6, 0.5); // opposite cube corners
+    expect(sel.size).toBe(0);
+    expect(Array.from(em.positions)).toEqual(Array.from(before));
+  });
+
+  it("rejects anchor === mover", () => {
+    const em = buildEditMesh(makeCube())!;
+    expect(vertexSlide(em, 2, 2, 0.5).size).toBe(0);
+  });
+
+  it("t is clamped to ±1 (mover lands exactly on the anchor)", () => {
+    const em = buildEditMesh(makeCube())!;
+    vertexSlide(em, 0, 1, 5);
+    expect(em.positions[3]).toBeCloseTo(-1);
+    expect(em.positions[4]).toBeCloseTo(-1);
+    expect(em.positions[5]).toBeCloseTo(-1);
+  });
+});

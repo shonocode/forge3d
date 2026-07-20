@@ -76,6 +76,12 @@ export function createComponentGizmo(
   let dragCentroid = new Vector3();
 
   const onDragStart = (): void => {
+    // Pick up the shared snap settings (Object Mode gizmos read the same
+    // config in snap.ts) — refreshed per drag so toggling mid-session works.
+    const sc = state.snapConfig;
+    gizmo.snapDistance = sc.positionEnabled ? sc.positionIncrement : 0;
+    rotationGizmo.snapDistance = sc.rotationEnabled ? (sc.rotationIncrement * Math.PI) / 180 : 0;
+    scaleGizmo.snapDistance = sc.scaleEnabled ? sc.scaleIncrement : 0;
     dragSnapshot = new Float32Array(em.positions);
     const affected = computeAffectedVertices(em, sel);
     const cfg = state.editConfig;

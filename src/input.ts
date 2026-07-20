@@ -14,7 +14,7 @@ import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camer
 import { applySnapToGizmos } from "./tools/snap";
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode } from "./tools/edit-mode";
+import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, knifeSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection } from "./tools/edit-mode";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -137,6 +137,7 @@ export function initInput(): void {
       if (e.key.toLowerCase() === "r" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); loopCutSelection(); return; }
       if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); knifeSelection(); return; }
       if (e.key.toLowerCase() === "g" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); edgeSlideSelection(); return; }
+      if (e.key.toLowerCase() === "v" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); vertexSlideSelection(); return; }
       if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); mergeSelection(); return; }
       if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("move"); return; }
       if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("rotate"); return; }

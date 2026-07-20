@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, vertexSlide } from "./operators";
 import { smartUVProject, toggleSeams } from "./uv-unwrap";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -534,6 +534,41 @@ export function edgeSlideSelection(): void {
   }
   const sel = new Set(state.editSelection.indices);
   applyTopologyOp("Edge Slide", () => edgeSlide(em, sel, t));
+}
+
+/**
+ * Slide one vertex along its shared edge with another. Selection order
+ * matters: first pick = anchor, second pick (Ctrl+click) = the vert that
+ * moves. `slideAmount` sign: positive → toward the anchor, negative → away.
+ * Repeat presses accumulate, mirroring Edge Slide's nudge workflow.
+ */
+export function vertexSlideSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  if (state.editSelection.mode !== "vertex") {
+    status("⚠ Vertex Slide: vertex mode only");
+    return;
+  }
+  if (state.editSelection.indices.size !== 2) {
+    status("⚠ Vertex Slide: 基準 → 動かす頂点の順に 2 つ選択 (Ctrl+クリック)");
+    return;
+  }
+  const t = state.editConfig.slideAmount;
+  if (t === 0) {
+    status("⚠ Slide Amount が 0 — スライダーで量を設定");
+    return;
+  }
+  // Set iteration preserves insertion order: [anchor, mover].
+  const [anchor, mover] = [...state.editSelection.indices] as [number, number];
+  applyTopologyOp("Vertex Slide", () => {
+    const result = vertexSlide(em, anchor, mover, t);
+    if (result.size === 0) {
+      status("⚠ Vertex Slide: 2 頂点が辺で繋がっていない");
+      return new Set(state.editSelection.indices);
+    }
+    // Keep both selected so repeat presses keep sliding the same vert.
+    return new Set([anchor, mover]);
+  });
 }
 
 /**

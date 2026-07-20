@@ -1611,3 +1611,35 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
   for (let f = faceStart; f < newIndices.length / 3; f++) out.add(f);
   return out;
 }
+
+// ── Vertex Slide (F-M8) ────────────────────────────────────────────────────
+
+/**
+ * Slide `mover` along its shared edge with `anchor` — Blender's Vertex Slide
+ * (Shift+V) adapted to the slider workflow: select the anchor first, the vert
+ * to move second, then apply.
+ *
+ * `t` ∈ [-1, 1]: positive interpolates `mover` toward `anchor` (1 = onto it),
+ * negative extrapolates away from `anchor` along the same edge line. Topology
+ * is unchanged — only `mover`'s position is written.
+ *
+ * Returns `{mover}` on success, empty set when the two verts don't share an
+ * edge (nothing written).
+ */
+export function vertexSlide(em: EditMesh, anchor: number, mover: number, t: number): Set<number> {
+  if (anchor === mover) return new Set();
+  let adjacent = false;
+  for (let i = 0; i < em.halfEdges.length && !adjacent; i++) {
+    const a = edgeOrigin(em, i);
+    const b = edgeEnd(em, i);
+    adjacent = (a === anchor && b === mover) || (a === mover && b === anchor);
+  }
+  if (!adjacent) return new Set();
+
+  const P = em.positions;
+  const f = Math.max(-1, Math.min(1, t));
+  P[mover * 3] = P[mover * 3]! + (P[anchor * 3]! - P[mover * 3]!) * f;
+  P[mover * 3 + 1] = P[mover * 3 + 1]! + (P[anchor * 3 + 1]! - P[mover * 3 + 1]!) * f;
+  P[mover * 3 + 2] = P[mover * 3 + 2]! + (P[anchor * 3 + 2]! - P[mover * 3 + 2]!) * f;
+  return new Set([mover]);
+}
