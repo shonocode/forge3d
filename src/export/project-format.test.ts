@@ -175,3 +175,45 @@ describe("paint layers / channels sidecar fields", () => {
     expect(() => validateSidecar(bad)).toThrow(/paintChannels/);
   });
 });
+
+describe("edit structure sidecar fields (half-edge V2 persistence)", () => {
+  const WITH_EDIT: ProjectSidecar = {
+    ...SIDECAR,
+    meshes: [
+      {
+        name: "cube",
+        editPolys: [[0, 3, 2, 1], [4, 5, 6, 7]],
+        editSeams: ["0_3", "1_2"],
+        editCreases: [["0_1", 1], ["2_3", 2.5]],
+      },
+    ],
+  };
+
+  it("round-trips editPolys / editSeams / editCreases through pack/unpack", () => {
+    const packed = packProject(WITH_EDIT, new Uint8Array([9, 9, 9]));
+    const { sidecar } = unpackProject(packed);
+    const m = sidecar.meshes[0]!;
+    expect(m.editPolys).toEqual([[0, 3, 2, 1], [4, 5, 6, 7]]);
+    expect(m.editSeams).toEqual(["0_3", "1_2"]);
+    expect(m.editCreases).toEqual([["0_1", 1], ["2_3", 2.5]]);
+  });
+
+  it("accepts a sidecar without any edit-structure fields (older projects)", () => {
+    expect(() => validateSidecar(SIDECAR)).not.toThrow();
+  });
+
+  it("rejects a malformed editPolys entry (too few verts)", () => {
+    const bad = { ...SIDECAR, meshes: [{ name: "x", editPolys: [[0, 1]] }] };
+    expect(() => validateSidecar(bad)).toThrow(/editPolys/);
+  });
+
+  it("rejects a malformed editCreases entry (missing sharpness)", () => {
+    const bad = { ...SIDECAR, meshes: [{ name: "x", editCreases: [["0_1"]] }] };
+    expect(() => validateSidecar(bad)).toThrow(/editCreases/);
+  });
+
+  it("rejects non-string editSeams entries", () => {
+    const bad = { ...SIDECAR, meshes: [{ name: "x", editSeams: [12] }] };
+    expect(() => validateSidecar(bad)).toThrow(/editSeams/);
+  });
+});

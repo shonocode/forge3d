@@ -1,7 +1,7 @@
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { toPolygons, triangulateFaces, type EditMesh } from "./half-edge";
-import { POLY_METADATA_KEY } from "./build";
+import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "./build";
 import { transferAttribute, transferSkinWeights } from "./attribute-transfer";
 
 /**
@@ -75,13 +75,34 @@ export function commitTopology(em: EditMesh): void {
 }
 
 /**
- * Persist the polygon structure on the source mesh's metadata. build.ts
- * validates it against the index buffer on the next Edit Mode entry, so a
- * stale copy (mesh re-triangulated by sculpt / modifiers) is harmless.
+ * Persist the polygon structure + edge attributes (seams / creases) on the
+ * source mesh's metadata. build.ts validates polys against the index buffer
+ * on the next Edit Mode entry (stale copy → discarded), and keeps in-range
+ * seam / crease keys. This is what makes quads / seams / creases survive
+ * leaving Edit Mode and .forge3d round-trips (the sidecar reads these keys).
  */
 export function writePolyMetadata(em: EditMesh): void {
   const mesh = em.source;
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   meta[POLY_METADATA_KEY] = toPolygons(em);
+  writeEdgeAttrMetadataInto(em, meta);
   mesh.metadata = meta;
+}
+
+/**
+ * Persist only the edge attributes (seams / creases) — used by Mark Seam /
+ * Mark Crease, which change these without a topology commit.
+ */
+export function writeEdgeAttrMetadata(em: EditMesh): void {
+  const mesh = em.source;
+  const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+  writeEdgeAttrMetadataInto(em, meta);
+  mesh.metadata = meta;
+}
+
+function writeEdgeAttrMetadataInto(em: EditMesh, meta: Record<string, unknown>): void {
+  if (em.seams.size > 0) meta[SEAM_METADATA_KEY] = [...em.seams];
+  else delete meta[SEAM_METADATA_KEY];
+  if (em.creases.size > 0) meta[CREASE_METADATA_KEY] = [...em.creases];
+  else delete meta[CREASE_METADATA_KEY];
 }

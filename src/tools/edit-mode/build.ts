@@ -4,6 +4,10 @@ import { rebuildPolygons, triangulateFaces, type EditMesh } from "./half-edge";
 
 /** Metadata key holding the polygon (quad / n-gon) structure — see build/commit. */
 export const POLY_METADATA_KEY = "forge3dPolys";
+/** Metadata key holding UV seam edge keys (string[] of "min_max" vertex pairs). */
+export const SEAM_METADATA_KEY = "forge3dSeams";
+/** Metadata key holding Catmull-Clark creases ([key, σ] pairs). */
+export const CREASE_METADATA_KEY = "forge3dCreases";
 
 /**
  * Build an EditMesh from a Babylon Mesh.
@@ -45,6 +49,10 @@ export function buildEditMesh(source: Mesh): EditMesh | null {
     triToFace: [],
   };
 
+  // Edge attributes (seams / creases) are keyed by vertex pairs, valid
+  // regardless of the polygon match, so restore them either way.
+  restoreEdgeAttrs(source, em, numV);
+
   const stored = readStoredPolys(source, numV);
   if (stored) {
     rebuildPolygons(em, positions, stored);
@@ -66,6 +74,34 @@ export function buildEditMesh(source: Mesh): EditMesh | null {
   em.triToFace = new Array<number>(numF);
   for (let f = 0; f < numF; f++) em.triToFace[f] = f;
   return em;
+}
+
+/** True iff an "a_b" edge key references two distinct in-range vertices. */
+function validEdgeKey(k: unknown, numV: number): k is string {
+  if (typeof k !== "string") return false;
+  const us = k.indexOf("_");
+  if (us <= 0) return false;
+  const a = Number(k.slice(0, us));
+  const b = Number(k.slice(us + 1));
+  return Number.isInteger(a) && Number.isInteger(b) && a >= 0 && b >= 0 && a < numV && b < numV && a !== b;
+}
+
+/** Populate em.seams / em.creases from mesh metadata (dropping stale keys). */
+function restoreEdgeAttrs(source: Mesh, em: EditMesh, numV: number): void {
+  const meta = (source.metadata ?? null) as Record<string, unknown> | null;
+  if (!meta) return;
+  const rawSeams = meta[SEAM_METADATA_KEY];
+  if (Array.isArray(rawSeams)) {
+    for (const k of rawSeams) if (validEdgeKey(k, numV)) em.seams.add(k);
+  }
+  const rawCreases = meta[CREASE_METADATA_KEY];
+  if (Array.isArray(rawCreases)) {
+    for (const pair of rawCreases) {
+      if (!Array.isArray(pair) || pair.length !== 2) continue;
+      const [k, s] = pair as [unknown, unknown];
+      if (validEdgeKey(k, numV) && typeof s === "number" && s > 0) em.creases.set(k, s);
+    }
+  }
 }
 
 /** Structurally validate the stored polygon list (shape + index range only). */

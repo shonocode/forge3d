@@ -31,6 +31,7 @@ import { validateMorphDrivers } from "../tools/morph-driver";
 import { createLayer, toggleLayerVisibility, assignMeshToLayer } from "../tools/layers";
 import { updateLayerUI, updateHierarchy } from "../ui/panels";
 import { openFileDialog } from "../ui/file-input";
+import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "../tools/edit-mode/build";
 
 function sanitizeProjectName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, "_").replace(/^\.+/, "_").trim() || "project";
@@ -105,7 +106,24 @@ function collectSidecar(): ProjectSidecar {
       };
     }
 
-    if (entry.proceduralGraph || entry.sculptMask || entry.layerName || entry.paintLayers || entry.paintChannels) {
+    // Edit Mode polygon structure + edge attributes (half-edge V2). These live
+    // on mesh.metadata (written by commitTopology / Mark Seam / Mark Crease);
+    // GLB can't carry them, so the sidecar preserves quad flow / seams / creases.
+    const meta = (mesh.metadata ?? null) as Record<string, unknown> | null;
+    if (meta) {
+      const polys = meta[POLY_METADATA_KEY];
+      if (Array.isArray(polys) && polys.length > 0) entry.editPolys = polys as number[][];
+      const seams = meta[SEAM_METADATA_KEY];
+      if (Array.isArray(seams) && seams.length > 0) entry.editSeams = seams as string[];
+      const creases = meta[CREASE_METADATA_KEY];
+      if (Array.isArray(creases) && creases.length > 0) entry.editCreases = creases as Array<[string, number]>;
+    }
+
+    if (
+      entry.proceduralGraph || entry.sculptMask || entry.layerName ||
+      entry.paintLayers || entry.paintChannels ||
+      entry.editPolys || entry.editSeams || entry.editCreases
+    ) {
       meshes.push(entry);
     }
   }
@@ -265,6 +283,18 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     if (entry.layerName) {
       const lid = layerIdByName.get(entry.layerName);
       if (lid) assignMeshToLayer(mesh, lid);
+    }
+
+    // Edit Mode polygon structure + edge attributes → back onto metadata, so
+    // the next Edit Mode entry (buildEditMesh) restores quads / seams / creases.
+    // build.ts validates polys against the index buffer and drops stale keys,
+    // so a vertex-order mismatch degrades gracefully to triangles.
+    if (entry.editPolys || entry.editSeams || entry.editCreases) {
+      const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+      if (entry.editPolys) meta[POLY_METADATA_KEY] = entry.editPolys;
+      if (entry.editSeams) meta[SEAM_METADATA_KEY] = entry.editSeams;
+      if (entry.editCreases) meta[CREASE_METADATA_KEY] = entry.editCreases;
+      mesh.metadata = meta;
     }
   }
 

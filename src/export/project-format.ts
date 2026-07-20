@@ -59,6 +59,17 @@ export interface ProjectMeshEntry {
     roughPng: string;
     metalPng: string;
   };
+  /**
+   * Edit Mode polygon structure (half-edge V2): quad / n-gon faces as CCW
+   * vertex-index cycles. GLB is triangle-only, so without this the quad flow
+   * is lost on reopen. Validated against the imported index buffer on the next
+   * Edit Mode entry (stale copy discarded). Absent for tri-only meshes.
+   */
+  editPolys?: number[][];
+  /** UV seam edge keys ("min_max" vertex pairs) — see Mark Seam. */
+  editSeams?: string[];
+  /** Catmull-Clark creases as [edgeKey, sharpness] pairs — see Mark Crease. */
+  editCreases?: Array<[string, number]>;
 }
 
 export interface ProjectSidecar {
@@ -224,6 +235,27 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
       const pc = m.paintChannels as { roughPng?: unknown; metalPng?: unknown };
       if (typeof pc !== "object" || pc === null || typeof pc.roughPng !== "string" || typeof pc.metalPng !== "string") {
         throw new Error("Sidecar: paintChannels needs roughPng + metalPng strings");
+      }
+    }
+    if (m.editPolys !== undefined) {
+      if (!Array.isArray(m.editPolys)) throw new Error("Sidecar: editPolys must be an array");
+      for (const poly of m.editPolys) {
+        if (!Array.isArray(poly) || poly.length < 3 || !poly.every((v) => Number.isInteger(v))) {
+          throw new Error("Sidecar: each editPolys entry must be an int array of length ≥3");
+        }
+      }
+    }
+    if (m.editSeams !== undefined) {
+      if (!Array.isArray(m.editSeams) || !m.editSeams.every((k) => typeof k === "string")) {
+        throw new Error("Sidecar: editSeams must be a string array");
+      }
+    }
+    if (m.editCreases !== undefined) {
+      if (!Array.isArray(m.editCreases)) throw new Error("Sidecar: editCreases must be an array");
+      for (const pair of m.editCreases) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "number") {
+          throw new Error("Sidecar: each editCreases entry must be [string, number]");
+        }
       }
     }
   }

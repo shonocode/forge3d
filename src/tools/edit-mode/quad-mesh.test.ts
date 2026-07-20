@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { buildEditMesh, POLY_METADATA_KEY } from "./build";
+import { buildEditMesh, CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "./build";
+import { writePolyMetadata } from "./commit";
 import {
   faceVertexCount,
   faceVerts,
@@ -141,6 +142,50 @@ describe("buildEditMesh polygon metadata restore", () => {
     const bad = { [POLY_METADATA_KEY]: [[0, 1], [0, 1, 99]] };
     const em = buildEditMesh(makeStubMesh(CUBE_POSITIONS, TRI_CUBE_INDICES, bad))!;
     expect(em.faces).toHaveLength(12);
+  });
+});
+
+describe("seam / crease metadata persistence (.forge3d v2)", () => {
+  it("writePolyMetadata stores polys + seams + creases; build restores them", () => {
+    const em = makeQuadCubeEM();
+    em.seams.add("0_3");
+    em.seams.add("1_2");
+    em.creases.set("0_1", 1);
+    em.creases.set("2_3", 2.5);
+    writePolyMetadata(em);
+
+    const meta = em.source.metadata as Record<string, unknown>;
+    expect(meta[SEAM_METADATA_KEY]).toEqual(["0_3", "1_2"]);
+    expect(meta[CREASE_METADATA_KEY]).toEqual([["0_1", 1], ["2_3", 2.5]]);
+
+    // Fresh build off the SAME mesh (metadata carries polys + edge attrs).
+    const em2 = buildEditMesh(em.source)!;
+    expect(em2.faces).toHaveLength(6); // quads restored
+    expect([...em2.seams].sort()).toEqual(["0_3", "1_2"]);
+    expect(em2.creases.get("0_1")).toBe(1);
+    expect(em2.creases.get("2_3")).toBe(2.5);
+  });
+
+  it("drops out-of-range or degenerate edge keys on restore", () => {
+    const meta = {
+      [POLY_METADATA_KEY]: CUBE_QUADS,
+      [SEAM_METADATA_KEY]: ["0_3", "0_99", "5_5", "bad"],
+      [CREASE_METADATA_KEY]: [["1_2", 1], ["3_100", 2], ["4_4", 1], ["ok", 1]],
+    };
+    const indices = CUBE_QUADS.flatMap((q) => fanTriangulate(q));
+    const em = buildEditMesh(makeStubMesh(CUBE_POSITIONS, indices, meta))!;
+    expect([...em.seams]).toEqual(["0_3"]); // only the valid in-range key
+    expect([...em.creases.keys()]).toEqual(["1_2"]);
+  });
+
+  it("clears metadata keys when seams / creases are emptied", () => {
+    const em = makeQuadCubeEM();
+    em.seams.add("0_3");
+    writePolyMetadata(em);
+    expect((em.source.metadata as Record<string, unknown>)[SEAM_METADATA_KEY]).toBeDefined();
+    em.seams.clear();
+    writePolyMetadata(em);
+    expect((em.source.metadata as Record<string, unknown>)[SEAM_METADATA_KEY]).toBeUndefined();
   });
 });
 

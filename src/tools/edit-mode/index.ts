@@ -3,7 +3,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status, E, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh } from "./build";
-import { commitTopology, writePolyMetadata } from "./commit";
+import { commitTopology, writeEdgeAttrMetadata, writePolyMetadata } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
@@ -476,11 +476,12 @@ export function markSeamSelection(): void {
   const before = new Set(em.seams);
   toggleSeams(em, sel);
   const after = new Set(em.seams);
+  writeEdgeAttrMetadata(em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   state.history.push({
     label: "Mark Seam",
-    undo() { em.seams.clear(); for (const k of before) em.seams.add(k); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
-    redo() { em.seams.clear(); for (const k of after) em.seams.add(k); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
+    undo() { em.seams.clear(); for (const k of before) em.seams.add(k); writeEdgeAttrMetadata(em); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
+    redo() { em.seams.clear(); for (const k of after) em.seams.add(k); writeEdgeAttrMetadata(em); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
   });
   status(`Seams: ${em.seams.size} edge(s)`);
 }
@@ -506,10 +507,12 @@ export function markCreaseSelection(): void {
   const before = new Map(em.creases);
   toggleCreases(em, sel, state.editConfig.creaseWeight);
   const after = new Map(em.creases);
+  writeEdgeAttrMetadata(em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   const restore = (m: Map<string, number>): void => {
     em.creases.clear();
     for (const [k, v] of m) em.creases.set(k, v);
+    writeEdgeAttrMetadata(em);
     if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   };
   state.history.push({
