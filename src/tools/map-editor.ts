@@ -196,6 +196,7 @@ export function removeMapInstance(instanceId: string): void {
       // Cleanup associated resources (paint, morph, skeleton, modifiers, shading, layers)
       const paintTex = state.paintTextureMap.get(mesh.uniqueId);
       if (paintTex) { paintTex.dispose(); state.paintTextureMap.delete(mesh.uniqueId); }
+      state.paintLayersMap.delete(mesh.uniqueId);
       const morph = state.morphMap.get(mesh.uniqueId);
       if (morph) { morph.manager.dispose(); state.morphMap.delete(mesh.uniqueId); }
       state.morphDrivers = state.morphDrivers.filter((d) => d.meshUniqueId !== mesh.uniqueId);

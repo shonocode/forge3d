@@ -124,6 +124,7 @@ export function updateProperties(): void {
   updateDimensions();
   updateMaterial();
   updateMorphUI();
+  void import("../tools/texture-paint").then((mod) => mod.updatePaintLayersUI());
   updateModifierUI();
 }
 

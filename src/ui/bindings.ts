@@ -166,6 +166,11 @@ export function bindActionButtons(): void {
     const m = lastSelected();
     if (m) clearPaintTexture(m);
   });
+  E("btnAddPaintLayer").addEventListener("click", () => {
+    const m = lastSelected();
+    if (!m) { status("⚠ メッシュを選択"); return; }
+    void import("../tools/texture-paint").then((mod) => mod.addPaintLayer(m));
+  });
 
   // Bone controls
   E("btnNewSkel").addEventListener("click", () => {

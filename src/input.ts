@@ -4,7 +4,7 @@ import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selecti
 import { sculptAt, captureGeometry, restoreGeometry, applySculptDelta } from "./tools/sculpt";
 import type { GeoSnapshot } from "./tools/sculpt";
 import { diffAttribute } from "./tools/sculpt-delta";
-import { paintAt, hasUVs, beginPaintStroke } from "./tools/texture-paint";
+import { paintAt, hasUVs, beginPaintStroke, ensurePaintLayers, compositePaintLayers, type PaintLayer } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
@@ -294,7 +294,7 @@ export function initInput(): void {
 
   // Undo snapshot state for brush strokes
   let sculptSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: GeoSnapshot } | null = null;
-  let paintSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: ImageData; halfCanvas: OffscreenCanvas } | null = null;
+  let paintSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; layer: PaintLayer; before: ImageData; halfCanvas: OffscreenCanvas } | null = null;
   const SNAP_SIZE = 512; // Downscaled snapshot size (1/4 memory of 1024)
   let weightSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
 
@@ -349,17 +349,17 @@ export function initInput(): void {
           status("UV座標なし — ペイント不可");
           return;
         }
-        // Capture downscaled paint texture snapshot for undo (512×512 = 1MB vs 4MB)
+        // Capture a downscaled snapshot of the ACTIVE LAYER for undo
+        // (512×512; the stack composite is derived, layers are the truth).
         const target = pk.pickedMesh!;
-        const paintTex = state.paintTextureMap.get(target.uniqueId);
-        if (paintTex) {
-          const ctx = paintTex.getContext() as CanvasRenderingContext2D | null;
-          if (ctx) {
-            const halfCanvas = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
-            const hCtx = halfCanvas.getContext("2d")!;
-            hCtx.drawImage(ctx.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
-            paintSnapshot = { mesh: target, before: hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE), halfCanvas };
-          }
+        const stack = ensurePaintLayers(target);
+        const layer = stack.layers[stack.active];
+        if (layer) {
+          const halfCanvas = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
+          const hCtx = halfCanvas.getContext("2d")!;
+          hCtx.clearRect(0, 0, SNAP_SIZE, SNAP_SIZE);
+          hCtx.drawImage(layer.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+          paintSnapshot = { mesh: target, layer, before: hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE), halfCanvas };
         } else {
           paintSnapshot = null;
         }
@@ -575,45 +575,33 @@ export function initInput(): void {
       sculptSnapshot = null;
     }
 
-    // Push paint undo (downscaled 512×512 snapshots)
+    // Push paint undo (downscaled 512×512 snapshots of the active layer)
     if (wasPainting && paintSnapshot) {
-      const { mesh, before, halfCanvas } = paintSnapshot;
-      const paintTex = state.paintTextureMap.get(mesh.uniqueId);
-      if (paintTex) {
-        const ctx = paintTex.getContext() as CanvasRenderingContext2D | null;
-        if (ctx) {
-          const hCtx = halfCanvas.getContext("2d")!;
-          hCtx.drawImage(ctx.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
-          const after = hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE);
-          const m = mesh, beforeData = before, afterData = after;
-          state.history.push({
-            label: "Paint",
-            undo() {
-              const t = state.paintTextureMap.get(m.uniqueId);
-              if (!t) return;
-              const c = t.getContext() as CanvasRenderingContext2D | null;
-              if (!c) return;
-              const sz = t.getSize().width;
-              const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
-              const tc = tmp.getContext("2d")!;
-              tc.putImageData(beforeData, 0, 0);
-              c.drawImage(tmp, 0, 0, sz, sz);
-              t.update();
-            },
-            redo() {
-              const t = state.paintTextureMap.get(m.uniqueId);
-              if (!t) return;
-              const c = t.getContext() as CanvasRenderingContext2D | null;
-              if (!c) return;
-              const sz = t.getSize().width;
-              const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
-              const tc = tmp.getContext("2d")!;
-              tc.putImageData(afterData, 0, 0);
-              c.drawImage(tmp, 0, 0, sz, sz);
-              t.update();
-            },
-          });
-        }
+      const { mesh, layer, before, halfCanvas } = paintSnapshot;
+      {
+        const hCtx = halfCanvas.getContext("2d")!;
+        hCtx.clearRect(0, 0, SNAP_SIZE, SNAP_SIZE);
+        hCtx.drawImage(layer.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+        const after = hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE);
+        const m = mesh, beforeData = before, afterData = after;
+        const restore = (data: ImageData): void => {
+          const c = layer.canvas.getContext("2d");
+          if (!c) return;
+          const sz = layer.canvas.width;
+          const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
+          const tc = tmp.getContext("2d")!;
+          tc.putImageData(data, 0, 0);
+          c.save();
+          c.globalCompositeOperation = "copy"; // replace incl. transparency
+          c.drawImage(tmp, 0, 0, sz, sz);
+          c.restore();
+          compositePaintLayers(m.uniqueId);
+        };
+        state.history.push({
+          label: "Paint",
+          undo() { restore(beforeData); },
+          redo() { restore(afterData); },
+        });
       }
       paintSnapshot = null;
     }

@@ -600,6 +600,25 @@ Scale で他の島とテクセル密度を揃えると改善する。</div>
 </ul>
 <div class="note">プリミティブは生成時に UV が自動付与される。インポートメッシュは元の UV を尊重。
 2048 使用時は Undo スナップショットが縮小保存されるため、Undo 後にわずかなぼけが出ることがある。</div>
+
+<h3 id="paint-layers">6.1 ペイントレイヤー</h3>
+<p>Paint タブの <strong>Layers</strong> セクション。Photoshop 的なレイヤースタックで、
+最下段の <strong>Base</strong> (不透明、削除不可) の上に透明レイヤーを重ねられる。
+ストロークは<strong>アクティブレイヤー</strong> (ハイライト行) にだけ乗る。</p>
+<ul>
+  <li><strong>+ Add Layer</strong>: 透明レイヤーを最上段に追加してアクティブ化 (Undo 可)</li>
+  <li>行クリック = アクティブ切替 / チェック = 表示・非表示 / <strong>✕</strong> = 削除 (Undo 可)</li>
+  <li><strong>ブレンドモード</strong>: normal / multiply (乗算 — 陰影・汚し) /
+    screen (スクリーン — ハイライト) / overlay (オーバーレイ — コントラスト)。
+    <strong>Opacity</strong> スライダーと組み合わせて非破壊で重ねる</li>
+  <li><strong>消しゴムはレイヤーで挙動が変わる</strong>: Base ではベース色で塗り戻し、
+    上位レイヤーでは透明に消して下のレイヤーを見せる</li>
+  <li><strong>Clear Paint</strong> はアクティブレイヤーだけをクリア</li>
+  <li>ストローク Undo / Clear Undo もレイヤー単位で正しく戻る</li>
+</ul>
+<div class="warn"><strong>V1 制限</strong>: レイヤー構成は<strong>セッション内のみ</strong>。
+GLB / .forge3d には<strong>合成結果のテクスチャ</strong>が保存される (開き直すと 1 枚に統合された
+状態から再開)。表示/blend/opacity の変更は Undo 履歴に乗らない (いつでも触り直せる live 値)。</div>
 </section>
 
 <!-- =================================================================== -->

@@ -38,13 +38,15 @@ export function importTextureForSlot(mesh: AbstractMesh, slot: TextureSlot): voi
       mat.useRoughnessFromMetallicTextureGreen = true;
     }
 
-    // Clear paint texture if albedo is replaced by import
+    // Clear paint texture (and its layer stack) if albedo is replaced by
+    // import — the next stroke reseeds the Base layer from the new image.
     if (slot === "albedo") {
       const paintTex = state.paintTextureMap.get(mesh.uniqueId);
       if (paintTex) {
         paintTex.dispose();
         state.paintTextureMap.delete(mesh.uniqueId);
       }
+      state.paintLayersMap.delete(mesh.uniqueId);
     }
 
     status("Texture: " + file.name + " \u2192 " + slot);

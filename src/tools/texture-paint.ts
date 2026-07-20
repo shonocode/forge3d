@@ -5,6 +5,28 @@ import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
 import { getAlbedoColor } from "../materials/pbr-helpers";
 import { brushAlpha, isSeamJump, strokeDabs } from "./paint-brush";
+import {
+  blendToCompositeOp,
+  canRemoveLayer,
+  makeBaseMeta,
+  makeLayerMeta,
+  nextActiveAfterRemove,
+  LAYER_BLENDS,
+  type LayerBlend,
+  type PaintLayerMeta,
+} from "./paint-layers";
+import { escapeHtml } from "../ui/escape";
+
+/** One paint layer: metadata + its own transparent canvas. */
+export interface PaintLayer extends PaintLayerMeta {
+  canvas: OffscreenCanvas;
+}
+
+/** A mesh's layer stack (bottom-up; index 0 = opaque Base). */
+export interface MeshPaintLayers {
+  layers: PaintLayer[];
+  active: number;
+}
 
 /** Size for a NEW paint texture (existing textures keep their own size). */
 const texCreateSize = (): number => state.paintConfig.resolution || 1024;
@@ -89,6 +111,59 @@ export function ensurePaintTexture(mesh: AbstractMesh): DynamicTexture {
   return tex;
 }
 
+// ── Layer stack (F-M11) ──
+
+/**
+ * Ensure the mesh has a layer stack. The Base layer is seeded from the
+ * current DynamicTexture content, so an imported albedo / base-color fill
+ * becomes layer 0 and older single-layer paintings keep looking identical.
+ */
+export function ensurePaintLayers(mesh: AbstractMesh): MeshPaintLayers {
+  const existing = state.paintLayersMap.get(mesh.uniqueId);
+  if (existing) return existing;
+  const tex = ensurePaintTexture(mesh);
+  const size = texSizeOf(tex);
+  const base = new OffscreenCanvas(size, size);
+  const bctx = base.getContext("2d")!;
+  const texCtx = tex.getContext() as CanvasRenderingContext2D | null;
+  if (texCtx) bctx.drawImage(texCtx.canvas, 0, 0);
+  const stack: MeshPaintLayers = {
+    layers: [{ ...makeBaseMeta(), canvas: base }],
+    active: 0,
+  };
+  state.paintLayersMap.set(mesh.uniqueId, stack);
+  updatePaintLayersUI();
+  return stack;
+}
+
+/** Composite the layer stack bottom-up into the mesh's DynamicTexture. */
+export function compositePaintLayers(meshUniqueId: number): void {
+  const tex = state.paintTextureMap.get(meshUniqueId);
+  const stack = state.paintLayersMap.get(meshUniqueId);
+  if (!tex || !stack) return;
+  const ctx = tex.getContext() as CanvasRenderingContext2D | null;
+  if (!ctx) return;
+  const size = texSizeOf(tex);
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, size, size);
+  for (const layer of stack.layers) {
+    if (!layer.visible) continue;
+    ctx.globalAlpha = layer.opacity;
+    ctx.globalCompositeOperation = layer.isBase ? "source-over" : blendToCompositeOp(layer.blend);
+    ctx.drawImage(layer.canvas, 0, 0, size, size);
+  }
+  ctx.restore();
+  tex.update();
+}
+
+/** The canvas strokes are currently painting into (undo snapshots read it). */
+export function getActivePaintLayer(meshUniqueId: number): PaintLayer | null {
+  const stack = state.paintLayersMap.get(meshUniqueId);
+  return stack ? stack.layers[stack.active] ?? null : null;
+}
+
 // ── Stroke engine (F-M11) ──
 //
 // Dabs are interpolated between successive pointer events (uniform arc-
@@ -106,7 +181,7 @@ export function beginPaintStroke(): void {
 
 /** One soft dab at (x, y). Gradient stops sample the brushAlpha profile. */
 function drawDab(
-  ctx: CanvasRenderingContext2D,
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   x: number,
   y: number,
   radius: number,
@@ -133,14 +208,22 @@ function colorWithAlpha(hex: string, alpha: number): string {
 
 /**
  * Paint at the UV coordinates from a pick result. Dabs since the previous
- * event are interpolated (unless the pick hopped across a UV seam).
+ * event are interpolated (unless the pick hopped across a UV seam) and land
+ * on the ACTIVE layer; the stack is then composited to the visible texture.
+ *
+ * Eraser semantics per layer: on Base it repaints the material's base color
+ * (nothing below to reveal); on overlay layers it erases to transparency
+ * (destination-out), revealing the layers underneath.
  */
 export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
   const uv = pick.getTextureCoordinates();
   if (!uv) return;
 
   const tex = ensurePaintTexture(mesh);
-  const ctx = tex.getContext() as CanvasRenderingContext2D | null;
+  const stack = ensurePaintLayers(mesh);
+  const layer = stack.layers[stack.active];
+  if (!layer) return;
+  const ctx = layer.canvas.getContext("2d");
   if (!ctx) return;
   const { color, size, opacity, eraser, hardness } = state.paintConfig;
   const texSize = texSizeOf(tex);
@@ -163,26 +246,32 @@ export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
   }
   _lastDab = { uid: mesh.uniqueId, x: cx, y: cy };
 
+  const eraseToTransparent = eraser && !layer.isBase;
   const fill = eraser
-    ? getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff"
+    ? eraseToTransparent
+      ? "#ffffff" // color irrelevant for destination-out; alpha profile erases
+      : getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff"
     : color;
   const alpha = eraser ? 1 : opacity;
 
   ctx.save();
-  ctx.globalCompositeOperation = "source-over";
+  ctx.globalCompositeOperation = eraseToTransparent ? "destination-out" : "source-over";
   for (const [dx, dy] of dabs) drawDab(ctx, dx, dy, radius, fill, alpha, hardness);
   ctx.restore();
-  tex.update();
+  compositePaintLayers(mesh.uniqueId);
 }
 
 /**
- * Clear the paint texture (fill with base color).
+ * Clear the ACTIVE paint layer: Base refills with the material's base
+ * color, overlay layers clear to transparency. One undo entry.
  */
 export function clearPaintTexture(mesh: AbstractMesh): void {
   const tex = state.paintTextureMap.get(mesh.uniqueId);
   if (!tex) return;
-
-  const ctx = tex.getContext() as CanvasRenderingContext2D | null;
+  const stack = ensurePaintLayers(mesh);
+  const layer = stack.layers[stack.active];
+  if (!layer) return;
+  const ctx = layer.canvas.getContext("2d");
   if (!ctx) return;
   const texSize = texSizeOf(tex);
 
@@ -190,36 +279,38 @@ export function clearPaintTexture(mesh: AbstractMesh): void {
   const beforeData = ctx.getImageData(0, 0, texSize, texSize);
 
   const baseColor = getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff";
-  ctx.fillStyle = baseColor;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 1;
-  ctx.fillRect(0, 0, texSize, texSize);
-  tex.update();
+  const doClear = (c: OffscreenCanvasRenderingContext2D): void => {
+    c.save();
+    c.globalCompositeOperation = "source-over";
+    c.globalAlpha = 1;
+    if (layer.isBase) {
+      c.fillStyle = baseColor;
+      c.fillRect(0, 0, texSize, texSize);
+    } else {
+      c.clearRect(0, 0, texSize, texSize);
+    }
+    c.restore();
+  };
+  doClear(ctx);
+  compositePaintLayers(mesh.uniqueId);
 
   state.history.push({
     label: "Clear Paint",
     undo() {
-      const t = state.paintTextureMap.get(mesh.uniqueId);
-      if (!t) return;
-      const c = t.getContext() as CanvasRenderingContext2D | null;
+      const c = layer.canvas.getContext("2d");
       if (!c) return;
       c.putImageData(beforeData, 0, 0);
-      t.update();
+      compositePaintLayers(mesh.uniqueId);
     },
     redo() {
-      const t = state.paintTextureMap.get(mesh.uniqueId);
-      if (!t) return;
-      const c = t.getContext() as CanvasRenderingContext2D | null;
+      const c = layer.canvas.getContext("2d");
       if (!c) return;
-      c.fillStyle = baseColor;
-      c.globalCompositeOperation = "source-over";
-      c.globalAlpha = 1;
-      c.fillRect(0, 0, texSize, texSize);
-      t.update();
+      doClear(c);
+      compositePaintLayers(mesh.uniqueId);
     },
   });
 
-  status("Paint cleared");
+  status(`Paint cleared (${layer.name})`);
 }
 
 /**
@@ -228,4 +319,152 @@ export function clearPaintTexture(mesh: AbstractMesh): void {
 export function hasUVs(mesh: AbstractMesh): boolean {
   const uvs = mesh.getVerticesData("uv");
   return uvs != null && uvs.length > 0;
+}
+
+// ── Layer operations + panel UI ────────────────────────────────────────────
+
+/** Add a transparent overlay layer on top and make it active (undoable). */
+export function addPaintLayer(mesh: AbstractMesh): void {
+  const tex = ensurePaintTexture(mesh);
+  const stack = ensurePaintLayers(mesh);
+  const size = texSizeOf(tex);
+  const layer: PaintLayer = { ...makeLayerMeta(stack.layers.length), canvas: new OffscreenCanvas(size, size) };
+  const prevActive = stack.active;
+  stack.layers.push(layer);
+  stack.active = stack.layers.length - 1;
+  compositePaintLayers(mesh.uniqueId);
+  updatePaintLayersUI();
+
+  state.history.push({
+    label: "Add Paint Layer",
+    undo() {
+      const s = state.paintLayersMap.get(mesh.uniqueId);
+      if (!s) return;
+      const idx = s.layers.indexOf(layer);
+      if (idx >= 0) s.layers.splice(idx, 1);
+      s.active = Math.min(prevActive, s.layers.length - 1);
+      compositePaintLayers(mesh.uniqueId);
+      updatePaintLayersUI();
+    },
+    redo() {
+      const s = state.paintLayersMap.get(mesh.uniqueId);
+      if (!s) return;
+      s.layers.push(layer);
+      s.active = s.layers.length - 1;
+      compositePaintLayers(mesh.uniqueId);
+      updatePaintLayersUI();
+    },
+  });
+  status(`Layer added: ${layer.name}`);
+}
+
+/** Remove a non-base layer (undoable — the canvas content survives in history). */
+export function removePaintLayer(mesh: AbstractMesh, index: number): void {
+  const stack = state.paintLayersMap.get(mesh.uniqueId);
+  if (!stack || !canRemoveLayer(stack.layers, index)) {
+    status("⚠ Base レイヤーは削除できない");
+    return;
+  }
+  const layer = stack.layers[index]!;
+  const prevActive = stack.active;
+  stack.layers.splice(index, 1);
+  stack.active = nextActiveAfterRemove(prevActive, index);
+  compositePaintLayers(mesh.uniqueId);
+  updatePaintLayersUI();
+
+  state.history.push({
+    label: "Delete Paint Layer",
+    undo() {
+      const s = state.paintLayersMap.get(mesh.uniqueId);
+      if (!s) return;
+      s.layers.splice(index, 0, layer);
+      s.active = prevActive;
+      compositePaintLayers(mesh.uniqueId);
+      updatePaintLayersUI();
+    },
+    redo() {
+      const s = state.paintLayersMap.get(mesh.uniqueId);
+      if (!s) return;
+      const idx = s.layers.indexOf(layer);
+      if (idx >= 0) s.layers.splice(idx, 1);
+      s.active = nextActiveAfterRemove(prevActive, index);
+      compositePaintLayers(mesh.uniqueId);
+      updatePaintLayersUI();
+    },
+  });
+  status(`Layer deleted: ${layer.name}`);
+}
+
+/**
+ * Rebuild the Paint tab's layer list. Shows a hint until the mesh has a
+ * stack (created lazily on first stroke / Add Layer). Topmost layer first,
+ * Photoshop-style.
+ */
+export function updatePaintLayersUI(): void {
+  const el = document.getElementById("paintLayersC");
+  if (!el) return;
+  const mesh = state.selectedMeshes[state.selectedMeshes.length - 1];
+  const stack = mesh ? state.paintLayersMap.get(mesh.uniqueId) : undefined;
+  if (!mesh || !stack) {
+    el.innerHTML = '<div class="empty" style="font-size:9px;">ペイント開始で Base レイヤーが作られる</div>';
+    return;
+  }
+
+  const rows: string[] = [];
+  for (let i = stack.layers.length - 1; i >= 0; i--) {
+    const l = stack.layers[i]!;
+    const active = i === stack.active;
+    const blendOpts = LAYER_BLENDS
+      .map((b) => `<option value="${b}"${l.blend === b ? " selected" : ""}>${b}</option>`)
+      .join("");
+    rows.push(`
+      <div class="sr pl-row" data-idx="${i}" style="display:flex;align-items:center;gap:3px;font-size:9px;padding:2px 3px;border-radius:3px;${active ? "background:var(--acg,rgba(255,200,0,0.12));" : ""}cursor:pointer;">
+        <input type="checkbox" class="pl-vis" data-idx="${i}"${l.visible ? " checked" : ""} title="表示 / 非表示">
+        <span style="flex:1;${active ? "color:var(--ac2);font-weight:600;" : ""}">${escapeHtml(l.name)}</span>
+        <select class="pl-blend" data-idx="${i}" style="font-size:9px;width:64px;"${l.isBase ? " disabled" : ""}>${blendOpts}</select>
+        <input type="range" class="pl-op" data-idx="${i}" min="0" max="1" step="0.05" value="${l.opacity}" style="width:44px;" title="Opacity">
+        ${l.isBase ? "" : `<button class="abtn dan pl-del" data-idx="${i}" style="padding:0 4px;font-size:9px;min-width:0;">✕</button>`}
+      </div>`);
+  }
+  el.innerHTML = rows.join("");
+
+  const m = mesh;
+  el.querySelectorAll<HTMLElement>(".pl-row").forEach((row) => {
+    row.addEventListener("click", (ev) => {
+      // Ignore clicks that landed on the row's own controls.
+      const t = ev.target as HTMLElement;
+      if (t.closest(".pl-vis, .pl-blend, .pl-op, .pl-del")) return;
+      const s = state.paintLayersMap.get(m.uniqueId);
+      if (!s) return;
+      s.active = Number(row.dataset.idx);
+      updatePaintLayersUI();
+    });
+  });
+  el.querySelectorAll<HTMLInputElement>(".pl-vis").forEach((inp) => {
+    inp.addEventListener("change", () => {
+      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(inp.dataset.idx)];
+      if (!l) return;
+      l.visible = inp.checked;
+      compositePaintLayers(m.uniqueId);
+    });
+  });
+  el.querySelectorAll<HTMLSelectElement>(".pl-blend").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(sel.dataset.idx)];
+      if (!l) return;
+      l.blend = sel.value as LayerBlend;
+      compositePaintLayers(m.uniqueId);
+    });
+  });
+  el.querySelectorAll<HTMLInputElement>(".pl-op").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(inp.dataset.idx)];
+      if (!l) return;
+      l.opacity = Number(inp.value);
+      compositePaintLayers(m.uniqueId);
+    });
+  });
+  el.querySelectorAll<HTMLButtonElement>(".pl-del").forEach((btn) => {
+    btn.addEventListener("click", () => removePaintLayer(m, Number(btn.dataset.idx)));
+  });
 }

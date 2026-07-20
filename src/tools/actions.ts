@@ -144,6 +144,7 @@ export function cleanupMesh(m: AbstractMesh): void {
     tex.dispose();
     state.paintTextureMap.delete(m.uniqueId);
   }
+  state.paintLayersMap.delete(m.uniqueId);
   // Sculpt mask cleanup
   state.sculptMaskMap.delete(m.uniqueId);
   // Morph target manager cleanup
