@@ -107,6 +107,8 @@ function syncControls(): void {
   chk("paintEraser", p.eraser);
   const res = document.getElementById("paintRes") as HTMLSelectElement | null;
   if (res) res.value = String(p.resolution ?? 1024);
+  const pch = document.getElementById("paintChannel") as HTMLSelectElement | null;
+  if (pch) pch.value = p.channel ?? "albedo";
 
   const wcfg = state.weightConfig;
   num("weightRadius", wcfg.radius, "wrV");

@@ -619,6 +619,23 @@ Scale で他の島とテクセル密度を揃えると改善する。</div>
 <div class="warn"><strong>V1 制限</strong>: レイヤー構成は<strong>セッション内のみ</strong>。
 GLB / .forge3d には<strong>合成結果のテクスチャ</strong>が保存される (開き直すと 1 枚に統合された
 状態から再開)。表示/blend/opacity の変更は Undo 履歴に乗らない (いつでも触り直せる live 値)。</div>
+
+<h3 id="paint-channels">6.2 チャンネルペイント (Roughness / Metallic)</h3>
+<p>Paint Brush の <strong>Channel</strong> セレクタで、色 (Albedo) 以外に
+<strong>Roughness</strong> と <strong>Metallic</strong> を直接ペイントできる。
+「目だけツヤツヤ」「ベルトの金具だけ金属」のような質感の塗り分けに。</p>
+<ul>
+  <li><strong>値の指定はカラーピッカーの明るさ</strong> (Rec.709 輝度): 白 = 1.0
+    (完全にザラザラ / 完全に金属)、黒 = 0、グレー = 中間。ステータスバーにも案内が出る</li>
+  <li>初回ストロークで現在のマテリアルの Roughness / Metallic 値を初期値として
+    テクスチャ化し、マテリアルを<strong>テクスチャ駆動モード</strong>に切替える
+    (glTF 標準の metallic-roughness パック: G = roughness / B = metallic)</li>
+  <li><strong>消しゴム</strong>はそのチャンネルの初期値に塗り戻す</li>
+  <li>ブラシの Size / Opacity / Hardness、連続ストローク、1 ストローク = 1 Undo は Albedo と同じ</li>
+  <li>GLB エクスポートでは metallicRoughnessTexture としてそのまま出力される</li>
+</ul>
+<div class="note">チャンネルペイントは<strong>レイヤー非対応</strong> (フラット 1 枚)。
+レイヤーは Albedo 専用。Metallic スロットに画像をインポートするとチャンネルペイントは破棄される。</div>
 </section>
 
 <!-- =================================================================== -->

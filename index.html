@@ -170,6 +170,13 @@
     <div class="tbody" id="tb-paint">
       <div class="pg">
         <div class="pgt">Paint Brush</div>
+        <div class="pr" style="margin-bottom:4px"><span class="pl">Channel</span>
+          <select id="paintChannel" aria-label="Paint channel" style="margin-left:auto;font-size:10px;"
+            title="Albedo = 色 (レイヤー対応)。Roughness / Metallic = 色の明るさを値としてペイント (白 = 1, 黒 = 0)">
+            <option value="albedo" selected>Albedo</option>
+            <option value="roughness">Roughness</option>
+            <option value="metallic">Metallic</option>
+          </select></div>
         <div class="pr" style="margin-bottom:6px"><span class="pl">Color</span>
           <input type="color" value="#ff0000" id="paintColor" aria-label="Paint color"
             style="flex:1;min-height:26px;border:none;cursor:pointer;background:var(--bg2);border-radius:3px;padding:0;"></div>

@@ -4,7 +4,7 @@ import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selecti
 import { sculptAt, captureGeometry, restoreGeometry, applySculptDelta } from "./tools/sculpt";
 import type { GeoSnapshot } from "./tools/sculpt";
 import { diffAttribute } from "./tools/sculpt-delta";
-import { paintAt, hasUVs, beginPaintStroke, ensurePaintLayers, compositePaintLayers, type PaintLayer } from "./tools/texture-paint";
+import { paintAt, hasUVs, beginPaintStroke, getStrokeTarget } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
@@ -294,7 +294,13 @@ export function initInput(): void {
 
   // Undo snapshot state for brush strokes
   let sculptSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: GeoSnapshot } | null = null;
-  let paintSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; layer: PaintLayer; before: ImageData; halfCanvas: OffscreenCanvas } | null = null;
+  let paintSnapshot: {
+    mesh: import("@babylonjs/core").AbstractMesh;
+    canvas: OffscreenCanvas;
+    recomposite: () => void;
+    before: ImageData;
+    halfCanvas: OffscreenCanvas;
+  } | null = null;
   const SNAP_SIZE = 512; // Downscaled snapshot size (1/4 memory of 1024)
   let weightSnapshot: { mesh: import("@babylonjs/core").AbstractMesh; before: Float32Array } | null = null;
 
@@ -349,17 +355,23 @@ export function initInput(): void {
           status("UV座標なし — ペイント不可");
           return;
         }
-        // Capture a downscaled snapshot of the ACTIVE LAYER for undo
-        // (512×512; the stack composite is derived, layers are the truth).
+        // Capture a downscaled snapshot of the stroke target for undo
+        // (512×512): albedo → active layer canvas, roughness / metallic →
+        // that channel's canvas. Composites are derived, canvases are truth.
         const target = pk.pickedMesh!;
-        const stack = ensurePaintLayers(target);
-        const layer = stack.layers[stack.active];
-        if (layer) {
+        const strokeTarget = getStrokeTarget(target);
+        if (strokeTarget) {
           const halfCanvas = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
           const hCtx = halfCanvas.getContext("2d")!;
           hCtx.clearRect(0, 0, SNAP_SIZE, SNAP_SIZE);
-          hCtx.drawImage(layer.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
-          paintSnapshot = { mesh: target, layer, before: hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE), halfCanvas };
+          hCtx.drawImage(strokeTarget.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+          paintSnapshot = {
+            mesh: target,
+            canvas: strokeTarget.canvas,
+            recomposite: strokeTarget.recomposite,
+            before: hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE),
+            halfCanvas,
+          };
         } else {
           paintSnapshot = null;
         }
@@ -575,19 +587,19 @@ export function initInput(): void {
       sculptSnapshot = null;
     }
 
-    // Push paint undo (downscaled 512×512 snapshots of the active layer)
+    // Push paint undo (downscaled 512×512 snapshots of the stroke target)
     if (wasPainting && paintSnapshot) {
-      const { mesh, layer, before, halfCanvas } = paintSnapshot;
+      const { canvas, recomposite, before, halfCanvas } = paintSnapshot;
       {
         const hCtx = halfCanvas.getContext("2d")!;
         hCtx.clearRect(0, 0, SNAP_SIZE, SNAP_SIZE);
-        hCtx.drawImage(layer.canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
+        hCtx.drawImage(canvas, 0, 0, SNAP_SIZE, SNAP_SIZE);
         const after = hCtx.getImageData(0, 0, SNAP_SIZE, SNAP_SIZE);
-        const m = mesh, beforeData = before, afterData = after;
+        const beforeData = before, afterData = after;
         const restore = (data: ImageData): void => {
-          const c = layer.canvas.getContext("2d");
+          const c = canvas.getContext("2d");
           if (!c) return;
-          const sz = layer.canvas.width;
+          const sz = canvas.width;
           const tmp = new OffscreenCanvas(SNAP_SIZE, SNAP_SIZE);
           const tc = tmp.getContext("2d")!;
           tc.putImageData(data, 0, 0);
@@ -595,7 +607,7 @@ export function initInput(): void {
           c.globalCompositeOperation = "copy"; // replace incl. transparency
           c.drawImage(tmp, 0, 0, sz, sz);
           c.restore();
-          compositePaintLayers(m.uniqueId);
+          recomposite();
         };
         state.history.push({
           label: "Paint",

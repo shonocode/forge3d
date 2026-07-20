@@ -162,6 +162,11 @@ export function bindActionButtons(): void {
   E("paintRes").addEventListener("change", function () {
     state.paintConfig.resolution = Number((this as HTMLSelectElement).value) as 512 | 1024 | 2048;
   });
+  E("paintChannel").addEventListener("change", function () {
+    const ch = (this as HTMLSelectElement).value as typeof state.paintConfig.channel;
+    state.paintConfig.channel = ch;
+    status(ch === "albedo" ? "Paint: Albedo (色)" : `Paint: ${ch} — 色の明るさが値になる (白=1 / 黒=0)`);
+  });
   E("btnClearPaint").addEventListener("click", () => {
     const m = lastSelected();
     if (m) clearPaintTexture(m);

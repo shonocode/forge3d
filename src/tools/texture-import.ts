@@ -36,6 +36,8 @@ export function importTextureForSlot(mesh: AbstractMesh, slot: TextureSlot): voi
     if (slot === "metallic") {
       mat.useMetallnessFromMetallicTextureBlue = true;
       mat.useRoughnessFromMetallicTextureGreen = true;
+      // A channel-paint MR texture is superseded by the import.
+      state.paintChannelsMap.delete(mesh.uniqueId);
     }
 
     // Clear paint texture (and its layer stack) if albedo is replaced by

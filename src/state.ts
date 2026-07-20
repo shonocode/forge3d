@@ -50,6 +50,8 @@ export interface PaintConfig {
   hardness: number;
   /** Texture size for NEWLY created paint textures (existing ones keep theirs). */
   resolution: 512 | 1024 | 2048;
+  /** Which material channel strokes write into (albedo = layered painting). */
+  channel: import("./tools/paint-channels").PaintChannel;
 }
 
 export interface WeightPaintConfig {
@@ -314,10 +316,12 @@ export const state = {
   /** Shape key drivers (bone channel → morph influence), applied per frame. */
   morphDrivers: [] as import("./tools/morph-driver").MorphDriver[],
   sculptConfig: { radius: 0.5, strength: 0.05, falloff: 2, brush: "push", dyntopo: false, detail: 0.1, symX: false, symY: false, symZ: false } as SculptConfig,
-  paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false, hardness: 0.7, resolution: 1024 } as PaintConfig,
+  paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false, hardness: 0.7, resolution: 1024, channel: "albedo" } as PaintConfig,
   paintTextureMap: new Map<number, DynamicTexture>(),
   /** Per-mesh paint layer stacks (session-scoped; the composite rides GLB). */
   paintLayersMap: new Map<number, import("./tools/texture-paint").MeshPaintLayers>(),
+  /** Per-mesh roughness / metalness paint canvases + packed MR texture. */
+  paintChannelsMap: new Map<number, import("./tools/texture-paint").MeshPaintChannels>(),
   /** Per-mesh sculpt mask: vertexUniqueId → per-vertex protection in [0,1]. */
   sculptMaskMap: new Map<number, Float32Array>(),
 

@@ -15,6 +15,7 @@ import {
   type LayerBlend,
   type PaintLayerMeta,
 } from "./paint-layers";
+import { channelTintRgb, hexToRgb, luminance01, type PaintChannel } from "./paint-channels";
 import { escapeHtml } from "../ui/escape";
 
 /** One paint layer: metadata + its own transparent canvas. */
@@ -164,6 +165,77 @@ export function getActivePaintLayer(meshUniqueId: number): PaintLayer | null {
   return stack ? stack.layers[stack.active] ?? null : null;
 }
 
+// ── Non-albedo channel painting (F-M11) ──
+
+/** Per-mesh roughness / metalness paint canvases + the packed MR texture. */
+export interface MeshPaintChannels {
+  rough: OffscreenCanvas;
+  metal: OffscreenCanvas;
+  baseRough: number;
+  baseMetal: number;
+  tex: DynamicTexture;
+}
+
+/**
+ * Ensure the mesh has channel-paint canvases + a packed metallic-roughness
+ * DynamicTexture (G = roughness, B = metalness — glTF layout). The canvases
+ * are seeded from the material's scalar roughness / metallic so the first
+ * stroke starts from the current look; the material is switched to
+ * texture-driven mode (metallic = roughness = 1 + channel flags).
+ */
+export function ensurePaintChannels(mesh: AbstractMesh): MeshPaintChannels | null {
+  const existing = state.paintChannelsMap.get(mesh.uniqueId);
+  if (existing) return existing;
+  const mat = mesh.material as PBRMaterial | null;
+  if (!mat || !("albedoTexture" in mat)) return null;
+
+  const size = texCreateSize();
+  const baseRough = typeof mat.roughness === "number" ? mat.roughness : 0.5;
+  const baseMetal = typeof mat.metallic === "number" ? mat.metallic : 0;
+
+  const makeChannelCanvas = (tint: [number, number, number]): OffscreenCanvas => {
+    const c = new OffscreenCanvas(size, size);
+    const cc = c.getContext("2d")!;
+    cc.fillStyle = `rgb(${tint[0]},${tint[1]},${tint[2]})`;
+    cc.fillRect(0, 0, size, size);
+    return c;
+  };
+  const rough = makeChannelCanvas(channelTintRgb("roughness", baseRough));
+  const metal = makeChannelCanvas(channelTintRgb("metallic", baseMetal));
+
+  const tex = new DynamicTexture("paintMR_" + mesh.uniqueId, size, state.scene, false);
+  const ch: MeshPaintChannels = { rough, metal, baseRough, baseMetal, tex };
+  state.paintChannelsMap.set(mesh.uniqueId, ch);
+
+  mat.metallicTexture = tex;
+  mat.useRoughnessFromMetallicTextureGreen = true;
+  mat.useMetallnessFromMetallicTextureBlue = true;
+  mat.metallic = 1;
+  mat.roughness = 1;
+  compositePaintChannels(mesh.uniqueId);
+  status(`Roughness/Metallic ペイント開始 (base R ${baseRough.toFixed(2)} / M ${baseMetal.toFixed(2)})`);
+  return ch;
+}
+
+/** Pack rough (G) + metal (B) canvases into the MR texture additively. */
+export function compositePaintChannels(meshUniqueId: number): void {
+  const ch = state.paintChannelsMap.get(meshUniqueId);
+  if (!ch) return;
+  const ctx = ch.tex.getContext() as CanvasRenderingContext2D | null;
+  if (!ctx) return;
+  const size = ch.tex.getSize().width;
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, size, size);
+  ctx.globalCompositeOperation = "lighter"; // additive: (0,G,0)+(0,0,B)
+  ctx.drawImage(ch.rough, 0, 0, size, size);
+  ctx.drawImage(ch.metal, 0, 0, size, size);
+  ctx.restore();
+  ch.tex.update();
+}
+
 // ── Stroke engine (F-M11) ──
 //
 // Dabs are interpolated between successive pointer events (uniform arc-
@@ -185,7 +257,7 @@ function drawDab(
   x: number,
   y: number,
   radius: number,
-  color: string,
+  rgb: [number, number, number],
   opacity: number,
   hardness: number,
 ): void {
@@ -193,17 +265,11 @@ function drawDab(
   // Piecewise-linear approximation of the smoothstep falloff.
   const stops = hardness >= 1 ? [0, 1] : [0, hardness, hardness + (1 - hardness) * 0.33, hardness + (1 - hardness) * 0.66, 1];
   for (const t of stops) {
-    g.addColorStop(Math.min(1, Math.max(0, t)), colorWithAlpha(color, opacity * brushAlpha(t >= 1 ? 1 : t, hardness)));
+    const a = Math.max(0, Math.min(1, opacity * brushAlpha(t >= 1 ? 1 : t, hardness)));
+    g.addColorStop(Math.min(1, Math.max(0, t)), `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`);
   }
   ctx.fillStyle = g;
   ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-}
-
-function colorWithAlpha(hex: string, alpha: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const gr = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${gr},${b},${Math.max(0, Math.min(1, alpha))})`;
 }
 
 /**
@@ -218,15 +284,50 @@ function colorWithAlpha(hex: string, alpha: number): string {
 export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
   const uv = pick.getTextureCoordinates();
   if (!uv) return;
-
-  const tex = ensurePaintTexture(mesh);
-  const stack = ensurePaintLayers(mesh);
-  const layer = stack.layers[stack.active];
-  if (!layer) return;
-  const ctx = layer.canvas.getContext("2d");
-  if (!ctx) return;
   const { color, size, opacity, eraser, hardness } = state.paintConfig;
-  const texSize = texSizeOf(tex);
+  const channel: PaintChannel = state.paintConfig.channel ?? "albedo";
+
+  // Resolve the stroke target: albedo → active layer canvas; roughness /
+  // metallic → the mesh's channel canvas (created on demand).
+  let targetCanvas: OffscreenCanvas;
+  let texSize: number;
+  let fill: [number, number, number];
+  let compositeOp: GlobalCompositeOperation = "source-over";
+  let recomposite: () => void;
+
+  if (channel === "albedo") {
+    const tex = ensurePaintTexture(mesh);
+    const stack = ensurePaintLayers(mesh);
+    const layer = stack.layers[stack.active];
+    if (!layer) return;
+    targetCanvas = layer.canvas;
+    texSize = texSizeOf(tex);
+    const eraseToTransparent = eraser && !layer.isBase;
+    if (eraseToTransparent) compositeOp = "destination-out";
+    fill = eraser
+      ? eraseToTransparent
+        ? [255, 255, 255] // color irrelevant for destination-out
+        : hexToRgb(getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff")
+      : hexToRgb(color);
+    recomposite = (): void => compositePaintLayers(mesh.uniqueId);
+  } else {
+    const ch = ensurePaintChannels(mesh);
+    if (!ch) {
+      status("⚠ Channel paint: PBRMaterial が必要");
+      return;
+    }
+    targetCanvas = channel === "roughness" ? ch.rough : ch.metal;
+    texSize = targetCanvas.width;
+    // Brush value = picker luma; eraser restores the channel's base value.
+    const v = eraser
+      ? channel === "roughness" ? ch.baseRough : ch.baseMetal
+      : luminance01(color);
+    fill = channelTintRgb(channel, v);
+    recomposite = (): void => compositePaintChannels(mesh.uniqueId);
+  }
+
+  const ctx = targetCanvas.getContext("2d");
+  if (!ctx) return;
   // Brush size is calibrated on a 1024 atlas — scale for other resolutions.
   const radius = size * (texSize / 1024);
 
@@ -246,19 +347,35 @@ export function paintAt(mesh: AbstractMesh, pick: PickingInfo): void {
   }
   _lastDab = { uid: mesh.uniqueId, x: cx, y: cy };
 
-  const eraseToTransparent = eraser && !layer.isBase;
-  const fill = eraser
-    ? eraseToTransparent
-      ? "#ffffff" // color irrelevant for destination-out; alpha profile erases
-      : getAlbedoColor(mesh.material)?.toHexString() ?? "#ffffff"
-    : color;
   const alpha = eraser ? 1 : opacity;
 
   ctx.save();
-  ctx.globalCompositeOperation = eraseToTransparent ? "destination-out" : "source-over";
+  ctx.globalCompositeOperation = compositeOp;
   for (const [dx, dy] of dabs) drawDab(ctx, dx, dy, radius, fill, alpha, hardness);
   ctx.restore();
-  compositePaintLayers(mesh.uniqueId);
+  recomposite();
+}
+
+/**
+ * The canvas the NEXT stroke will paint into + its recomposite hook —
+ * stroke undo snapshots read this (channel-aware).
+ */
+export function getStrokeTarget(
+  mesh: AbstractMesh,
+): { canvas: OffscreenCanvas; recomposite: () => void } | null {
+  const channel: PaintChannel = state.paintConfig.channel ?? "albedo";
+  if (channel === "roughness" || channel === "metallic") {
+    const ch = ensurePaintChannels(mesh);
+    if (!ch) return null;
+    return {
+      canvas: channel === "roughness" ? ch.rough : ch.metal,
+      recomposite: () => compositePaintChannels(mesh.uniqueId),
+    };
+  }
+  const stack = ensurePaintLayers(mesh);
+  const layer = stack.layers[stack.active];
+  if (!layer) return null;
+  return { canvas: layer.canvas, recomposite: () => compositePaintLayers(mesh.uniqueId) };
 }
 
 /**
