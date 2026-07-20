@@ -11,6 +11,19 @@ const INTERVAL = 30_000; // 30 seconds
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _saving = false;
 let _db: IDBDatabase | null = null;
+/** Scene signature at the last successful checkpoint — unchanged = skip. */
+let _lastSavedSig = "";
+
+/**
+ * Cheap change signature: the undo-history edit counter covers every
+ * undoable operation, the mesh count catches non-undoable imports. Live
+ * tweaks that bypass history (layer opacity sliders etc.) are picked up by
+ * the next history-bumping edit — an acceptable approximation for a crash
+ * checkpoint.
+ */
+function sceneSignature(): string {
+  return state.history.version + ":" + state.allMeshes.length;
+}
 
 function openDB(): Promise<IDBDatabase> {
   if (_db) return Promise.resolve(_db);
@@ -60,6 +73,11 @@ export async function clearCheckpoint(): Promise<void> {
 
 async function doAutoSave(): Promise<void> {
   if (_saving || !state.allMeshes.length) return;
+  // Differential skip: nothing changed since the last checkpoint → don't
+  // re-serialize the whole scene (GLB export causes a visible hitch on
+  // large scenes and burns battery when idle).
+  const sig = sceneSignature();
+  if (sig === _lastSavedSig) return;
   _saving = true;
   // Lazy imports keep the initial bundle small and avoid circular deps.
   const { GLTF2Export } = await import("@babylonjs/serializers/glTF");
@@ -87,6 +105,7 @@ async function doAutoSave(): Promise<void> {
       const blob = glbFile as Blob;
       const buffer = await blob.arrayBuffer();
       await saveCheckpoint(buffer);
+      _lastSavedSig = sig;
     }
   } catch (e) {
     console.warn("Auto-save failed:", e);

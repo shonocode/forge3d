@@ -191,6 +191,16 @@ interface MorphKeyHit {
 }
 let _morphKeyHits: MorphKeyHit[] = [];
 
+/** Tangent-handle hit target for morph keys (Bezier 補間, F-M5 拡張). */
+interface MorphHandleHit {
+  kf: MorphKeyframe;
+  side: "in" | "out";
+  px: number;
+  py: number;
+}
+let _morphHandleHits: MorphHandleHit[] = [];
+let _dragMorphHandle: MorphHandleHit | null = null;
+
 let _dragMorph: {
   track: MorphTrack;
   kf: MorphKeyframe;
@@ -393,6 +403,7 @@ function drawMorphGraph(
   tracks: readonly MorphTrack[],
 ): void {
   _morphKeyHits = [];
+  _morphHandleHits = [];
   drawGrid(ctx, w, h, maxFrames);
 
   const lo = -0.08;
@@ -438,6 +449,18 @@ function drawMorphGraph(
     for (const kf of track.keyframes) {
       const kx = frameToPx(kf.frame, w, maxFrames);
       const ky = mapY(kf.value, lo, hi, h);
+
+      if (kf.tangents) {
+        const ihx = frameToPx(kf.frame + kf.tangents.in[0], w, maxFrames);
+        const ihy = mapY(kf.value + kf.tangents.in[1], lo, hi, h);
+        drawHandle(ctx, color, kx, ky, ihx, ihy);
+        _morphHandleHits.push({ kf, side: "in", px: ihx, py: ihy });
+        const ohx = frameToPx(kf.frame + kf.tangents.out[0], w, maxFrames);
+        const ohy = mapY(kf.value + kf.tangents.out[1], lo, hi, h);
+        drawHandle(ctx, color, kx, ky, ohx, ohy);
+        _morphHandleHits.push({ kf, side: "out", px: ohx, py: ohy });
+      }
+
       const isDragged = _dragMorph?.kf === kf;
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -470,6 +493,10 @@ function drawMorphGraph(
 function convertCurrentKeyframeToBezier(): void {
   const clip = getActiveClip();
   if (!clip) { status("⚠ クリップがありません"); return; }
+  if (_morphMode) {
+    convertCurrentMorphKeysToBezier(clip.morphTracks ?? []);
+    return;
+  }
   if (!state.selectedBoneId) { status("⚠ ボーンを選択してください"); return; }
   const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
   if (!track) { status("⚠ このボーンのトラックがありません"); return; }
@@ -503,6 +530,35 @@ function convertCurrentKeyframeToBezier(): void {
   } else {
     status(`Bezier 化: ${converted} チャンネル @ frame ${state.currentFrame}`);
   }
+  drawGraphEditor();
+}
+
+/**
+ * Morph-mode "→ Bezier": promote every morph key sitting at the playhead
+ * to Bezier, seeding tangents from its neighbors so the curve doesn't jump.
+ */
+function convertCurrentMorphKeysToBezier(tracks: readonly MorphTrack[]): void {
+  let converted = 0;
+  for (const track of tracks) {
+    const idx = track.keyframes.findIndex((k) => k.frame === state.currentFrame);
+    if (idx < 0) continue;
+    const kf = track.keyframes[idx]!;
+    if (kf.tangents) continue;
+    const prev = idx > 0 ? track.keyframes[idx - 1]! : null;
+    const next = idx + 1 < track.keyframes.length ? track.keyframes[idx + 1]! : null;
+    kf.tangents = autoTangentsFor(
+      prev ? prev.frame : null,
+      prev ? prev.value : 0,
+      kf.frame,
+      kf.value,
+      next ? next.frame : null,
+      next ? next.value : 0,
+    );
+    converted++;
+  }
+  status(converted > 0
+    ? `Bezier 化: ${converted} モーフキー @ frame ${state.currentFrame}`
+    : "⚠ 現在フレームに未変換のモーフキーがありません");
   drawGraphEditor();
 }
 
@@ -605,6 +661,7 @@ function onPointerDown(e: PointerEvent): void {
 }
 
 function onPointerMove(e: PointerEvent): void {
+  if (_dragMorphHandle) { onMorphHandleDragMove(e); return; }
   if (_dragMorph) { onMorphDragMove(e); return; }
   if (_dragKey) { onKeyDragMove(e); return; }
   if (!_dragging || !_canvas || !_lastMapping) return;
@@ -642,10 +699,19 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if ((_dragging || _dragKey || _dragMorph) && _canvas) {
+  if ((_dragging || _dragKey || _dragMorph || _dragMorphHandle) && _canvas) {
     try { _canvas.releasePointerCapture(e.pointerId); } catch { /* may not own */ }
   }
   _dragging = null;
+
+  if (_dragMorphHandle) {
+    _dragMorphHandle = null;
+    // Re-pose with the reshaped curve (the handle drag itself has no undo,
+    // matching bone tangent edits).
+    scrubToFrame(state.currentFrame);
+    drawGraphEditor();
+    return;
+  }
 
   if (_dragMorph) {
     const drag = _dragMorph;
@@ -669,6 +735,22 @@ function onMorphPointerDown(e: PointerEvent, x: number, y: number, rectW: number
   if (!_canvas || !_lastMapping) return;
   const clip = getActiveClip();
   if (!clip) return;
+
+  // Tangent handles take priority over key dots (same order as bone mode).
+  let bestHandle: { hit: MorphHandleHit; distSq: number } | null = null;
+  for (const hh of _morphHandleHits) {
+    const dx = hh.px - x, dy = hh.py - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= HIT_RADIUS * HIT_RADIUS && (!bestHandle || d2 < bestHandle.distSq)) {
+      bestHandle = { hit: hh, distSq: d2 };
+    }
+  }
+  if (bestHandle) {
+    _dragMorphHandle = bestHandle.hit;
+    _canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
 
   let best: { hit: MorphKeyHit; distSq: number } | null = null;
   for (const k of _morphKeyHits) {
@@ -697,6 +779,30 @@ function onMorphPointerDown(e: PointerEvent, x: number, y: number, rectW: number
 
   const frame = Math.round((x / rectW) * clip.maxFrames);
   scrubToFrame(Math.max(0, Math.min(clip.maxFrames, frame)));
+  drawGraphEditor();
+}
+
+/** Live tangent edit of the grabbed morph handle (data-space deltas). */
+function onMorphHandleDragMove(e: PointerEvent): void {
+  if (!_dragMorphHandle || !_canvas || !_lastMapping) return;
+  const rect = _canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const { w, h, lo, hi, maxFrames } = _lastMapping;
+
+  const d = _dragMorphHandle;
+  const frameAtX = (x / w) * maxFrames;
+  const valueAtY = lo + (1 - y / h) * (hi - lo);
+  let dx = frameAtX - d.kf.frame;
+  const dy = valueAtY - d.kf.value;
+  // Keep each handle on its own side of the key (prevents X-fold, same
+  // rule as bone channels).
+  if (d.side === "in" && dx > 0) dx = 0;
+  if (d.side === "out" && dx < 0) dx = 0;
+
+  const tan = d.kf.tangents!;
+  if (d.side === "in") tan.in = [dx, dy];
+  else tan.out = [dx, dy];
   drawGraphEditor();
 }
 

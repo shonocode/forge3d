@@ -11,6 +11,7 @@
 
 import type { MorphKeyframe, MorphTrack } from "../state";
 import { getEasingFunction } from "./easing";
+import { evaluateBezierSegment } from "./bezier";
 
 /** Evaluate a track's influence at `frame`. Returns null for empty tracks. */
 export function evalMorphTrack(track: MorphTrack, frame: number): number | null {
@@ -26,6 +27,17 @@ export function evalMorphTrack(track: MorphTrack, frame: number): number | null 
     if (frame < a.frame || frame > b.frame) continue;
     const span = b.frame - a.frame;
     if (span <= 0) return b.value;
+    // Bezier segment when both surrounding keys carry tangents (same rule
+    // as bone channels); influence stays clamped to [0, 1] even if the
+    // handles overshoot.
+    if (a.tangents && b.tangents) {
+      const v = evaluateBezierSegment(
+        frame,
+        a.frame, a.value, a.tangents.out[0], a.tangents.out[1],
+        b.frame, b.value, b.tangents.in[0], b.tangents.in[1],
+      );
+      return v < 0 ? 0 : v > 1 ? 1 : v;
+    }
     const t = (frame - a.frame) / span;
     const eased = getEasingFunction(a.easing ?? "linear")(t);
     return a.value + (b.value - a.value) * eased;

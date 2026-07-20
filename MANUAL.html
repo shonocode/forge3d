@@ -152,7 +152,8 @@ footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
 
 <h3>1.2 保存と復元</h3>
 <ul>
-  <li><strong>自動保存</strong>: 30 秒ごとに OPFS / IndexedDB にチェックポイント保存。クラッシュ時は次回起動で復元を提案</li>
+  <li><strong>自動保存</strong>: 30 秒ごとに OPFS / IndexedDB にチェックポイント保存。クラッシュ時は次回起動で復元を提案。
+    <strong>前回保存から編集がなければスキップ</strong>されるので、放置中に定期的なカクつきは起きない</li>
   <li><strong>Model Library</strong>: Map タブの「Save to Library」で複数モデルをローカル保存</li>
   <li><strong>エクスポート</strong>: GLB / OBJ / STL ファイルとしてダウンロード</li>
 </ul>
@@ -883,6 +884,11 @@ Pose モードでボーンの回転ドラッグを終えるたびに、そのボ
     全モーフトラックの influence カーブ (0–1 軸、ティール系色分け) を表示。キー (●) を
     ドラッグで時間と値を同時編集 (値は 0–1 にクランプ、1 ドラッグ = 1 Undo、
     移動先に既存キーがあれば時間は据え置き)。背景クリックでスクラブ</li>
+  <li><strong>Bezier 補間対応</strong>: Morphs モード中に <strong>→ Bezier</strong> ボタンで
+    現在フレームの全モーフキーを Bezier 化 (近傍からタンジェントを自動シード)。
+    ハンドル (○) をドラッグしてまばたきの鋭さや口パクの緩急を自由に整形できる。
+    区間の両端キーが Bezier のときだけ曲線補間になり、influence は 0–1 に自動クランプ。
+    ボーンカーブと同じ操作感 (ハンドルはキーの左右にロック)</li>
 </ul>
 
 <h3>9.3 編集</h3>
@@ -1145,7 +1151,7 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
   <li><strong>OPFS</strong> (Origin Private File System) 優先 → 大容量に対応</li>
   <li>未対応ブラウザでは <strong>IndexedDB</strong> にフォールバック</li>
   <li>Model Library から保存・読み込み・削除</li>
-  <li>自動保存 30 秒間隔 (クラッシュ復旧用、24 時間で自動失効)</li>
+  <li>自動保存 30 秒間隔 (クラッシュ復旧用、24 時間で自動失効)。編集がない周期は差分判定でスキップ</li>
 </ul>
 
 <h3>13.4 プロジェクトファイル (.forge3d)</h3>

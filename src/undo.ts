@@ -11,6 +11,14 @@ export class UndoHistory {
   private redoStack: UndoCommand[] = [];
   private readonly maxSize = 50;
   private onChange: (() => void) | null = null;
+  private _version = 0;
+
+  /**
+   * Monotonic edit counter: bumps on every history mutation (push / undo /
+   * redo / popUndo / clear). Consumers that checkpoint the scene (autosave)
+   * compare it to skip work when nothing changed since their last run.
+   */
+  get version(): number { return this._version; }
 
   setOnChange(cb: () => void): void { this.onChange = cb; }
 
@@ -20,6 +28,7 @@ export class UndoHistory {
       this.undoStack.shift();
     }
     this.redoStack.length = 0;
+    this._version++;
     this.onChange?.();
   }
 
@@ -33,6 +42,7 @@ export class UndoHistory {
     }
     this.redoStack.push(cmd);
     status("Undo: " + cmd.label);
+    this._version++;
     this.onChange?.();
     return true;
   }
@@ -47,6 +57,7 @@ export class UndoHistory {
     }
     this.undoStack.push(cmd);
     status("Redo: " + cmd.label);
+    this._version++;
     this.onChange?.();
     return true;
   }
@@ -54,6 +65,7 @@ export class UndoHistory {
   /** Remove and return the last undo entry without executing it. Used for compound undo grouping. */
   popUndo(): UndoCommand | undefined {
     const cmd = this.undoStack.pop();
+    if (cmd) this._version++;
     this.onChange?.();
     return cmd;
   }
@@ -66,6 +78,7 @@ export class UndoHistory {
   clear(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    this._version++;
     this.onChange?.();
   }
 }

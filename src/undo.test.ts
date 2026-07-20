@@ -183,3 +183,24 @@ describe("UndoHistory", () => {
     expect(onChange).toHaveBeenCalledTimes(6);
   });
 });
+
+describe("version counter (autosave differential skip)", () => {
+  it("bumps on push / undo / redo / popUndo / clear, and only then", () => {
+    const h = new UndoHistory();
+    const v0 = h.version;
+    h.push({ label: "a", undo() {}, redo() {} });
+    expect(h.version).toBe(v0 + 1);
+    h.undo();
+    expect(h.version).toBe(v0 + 2);
+    h.redo();
+    expect(h.version).toBe(v0 + 3);
+    h.popUndo();
+    expect(h.version).toBe(v0 + 4);
+    h.popUndo(); // empty stack — no change happened
+    expect(h.version).toBe(v0 + 4);
+    h.clear();
+    expect(h.version).toBe(v0 + 5);
+    h.undo(); // nothing to undo — counter stays
+    expect(h.version).toBe(v0 + 5);
+  });
+});

@@ -195,6 +195,13 @@ export interface MorphKeyframe {
   /** Morph target influence in [0, 1]. */
   value: number;
   easing?: import("./tools/easing").EasingType;
+  /**
+   * Optional cubic Bezier handles for the single influence channel, same
+   * delta convention as {@link KeyframeChannelTangent}. When both sides of
+   * a segment carry tangents, the runtime uses Bezier interpolation for it
+   * instead of `easing`. Absent → easing behavior (pre-Bezier clips).
+   */
+  tangents?: KeyframeChannelTangent;
 }
 
 /** Influence animation for one morph target of one mesh. */

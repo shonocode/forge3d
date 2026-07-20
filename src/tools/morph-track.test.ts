@@ -67,3 +67,41 @@ describe("findMorphTrack", () => {
     expect(findMorphTrack([a], 2, 0)).toBeNull();
   });
 });
+
+describe("Bezier morph segments (F-M5 拡張)", () => {
+  const track = (kfs: MorphTrack["keyframes"]): MorphTrack =>
+    ({ meshUniqueId: 1, meshName: "m", targetIndex: 0, targetName: "t", keyframes: kfs });
+
+  it("uses Bezier when both keys have tangents, hitting endpoints exactly", () => {
+    const t = track([
+      { frame: 0, value: 0, tangents: { in: [0, 0], out: [5, 0] } },
+      { frame: 10, value: 1, tangents: { in: [-5, 0], out: [0, 0] } },
+    ]);
+    expect(evalMorphTrack(t, 0)).toBeCloseTo(0);
+    expect(evalMorphTrack(t, 10)).toBeCloseTo(1);
+    // Flat-out / flat-in handles make an ease-in-out S-curve: below linear
+    // in the first half.
+    expect(evalMorphTrack(t, 2.5)!).toBeLessThan(0.25);
+    expect(evalMorphTrack(t, 7.5)!).toBeGreaterThan(0.75);
+  });
+
+  it("clamps overshooting handles to the [0,1] influence range", () => {
+    const t = track([
+      { frame: 0, value: 0, tangents: { in: [0, 0], out: [3, 3] } },
+      { frame: 10, value: 1, tangents: { in: [-3, 3], out: [0, 0] } },
+    ]);
+    for (let f = 0; f <= 10; f++) {
+      const v = evalMorphTrack(t, f)!;
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("falls back to easing when either side lacks tangents", () => {
+    const t = track([
+      { frame: 0, value: 0, tangents: { in: [0, 0], out: [5, 0] } },
+      { frame: 10, value: 1 }, // no tangents on the right key
+    ]);
+    expect(evalMorphTrack(t, 5)).toBeCloseTo(0.5); // plain linear
+  });
+});
