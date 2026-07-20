@@ -35,6 +35,30 @@ export interface ProjectMeshEntry {
   sculptMask?: string;
   /** Name of the layer this mesh belongs to. */
   layerName?: string;
+  /**
+   * Paint layer stack (F-M11): every layer's pixels as a PNG data URL plus
+   * its blend metadata, bottom-up (index 0 = Base). Restoring rebuilds the
+   * stack + the composited albedo texture, so layered paintings survive
+   * .forge3d round-trips (plain GLB / autosave only keep the composite).
+   */
+  paintLayers?: {
+    active: number;
+    layers: Array<{
+      name: string;
+      visible: boolean;
+      opacity: number;
+      blend: string;
+      isBase: boolean;
+      png: string;
+    }>;
+  };
+  /** Roughness / metalness channel-paint canvases (PNG data URLs) + bases. */
+  paintChannels?: {
+    baseRough: number;
+    baseMetal: number;
+    roughPng: string;
+    metalPng: string;
+  };
 }
 
 export interface ProjectSidecar {
@@ -185,6 +209,21 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
         ) {
           throw new Error("Sidecar: aim needs enabled + numeric targetX/Y/Z");
         }
+      }
+    }
+  }
+  for (const m of s.meshes as Array<Record<string, unknown>>) {
+    if (typeof m !== "object" || m === null) continue;
+    if (m.paintLayers !== undefined) {
+      const pl = m.paintLayers as { layers?: unknown; active?: unknown };
+      if (typeof pl !== "object" || pl === null || !Array.isArray(pl.layers) || typeof pl.active !== "number") {
+        throw new Error("Sidecar: paintLayers needs a layers array + numeric active");
+      }
+    }
+    if (m.paintChannels !== undefined) {
+      const pc = m.paintChannels as { roughPng?: unknown; metalPng?: unknown };
+      if (typeof pc !== "object" || pc === null || typeof pc.roughPng !== "string" || typeof pc.metalPng !== "string") {
+        throw new Error("Sidecar: paintChannels needs roughPng + metalPng strings");
       }
     }
   }

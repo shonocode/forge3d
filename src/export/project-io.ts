@@ -37,6 +37,29 @@ function sanitizeProjectName(name: string): string {
 }
 
 /** Gather everything the GLB cannot carry into the sidecar. */
+/** Sync PNG data-URL encode (OffscreenCanvas has no toDataURL). */
+function canvasToPngDataUrl(src: OffscreenCanvas): string {
+  const c = document.createElement("canvas");
+  c.width = src.width;
+  c.height = src.height;
+  c.getContext("2d")!.drawImage(src, 0, 0);
+  return c.toDataURL("image/png");
+}
+
+/** Load a PNG data URL into a fresh OffscreenCanvas (natural size). */
+function pngToCanvas(dataUrl: string): Promise<OffscreenCanvas> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = new OffscreenCanvas(img.width || 1, img.height || 1);
+      c.getContext("2d")!.drawImage(img, 0, 0);
+      resolve(c);
+    };
+    img.onerror = () => reject(new Error("PNG decode failed"));
+    img.src = dataUrl;
+  });
+}
+
 function collectSidecar(): ProjectSidecar {
   const layerNameById = new Map(state.layers.map((l) => [l.id, l.name]));
   const meshes: ProjectMeshEntry[] = [];
@@ -54,7 +77,37 @@ function collectSidecar(): ProjectSidecar {
     const layerId = state.meshLayerMap.get(mesh.uniqueId);
     const layerName = layerId ? layerNameById.get(layerId) : undefined;
     if (layerName) entry.layerName = layerName;
-    if (entry.proceduralGraph || entry.sculptMask || entry.layerName) meshes.push(entry);
+
+    // Paint layer stack — each layer's pixels as PNG so the stack (not just
+    // the flattened composite in the GLB) survives the round-trip.
+    const stack = state.paintLayersMap.get(mesh.uniqueId);
+    if (stack) {
+      entry.paintLayers = {
+        active: stack.active,
+        layers: stack.layers.map((l) => ({
+          name: l.name,
+          visible: l.visible,
+          opacity: l.opacity,
+          blend: l.blend,
+          isBase: l.isBase,
+          png: canvasToPngDataUrl(l.canvas),
+        })),
+      };
+    }
+    // Roughness / metalness channel-paint canvases.
+    const channels = state.paintChannelsMap.get(mesh.uniqueId);
+    if (channels) {
+      entry.paintChannels = {
+        baseRough: channels.baseRough,
+        baseMetal: channels.baseMetal,
+        roughPng: canvasToPngDataUrl(channels.rough),
+        metalPng: canvasToPngDataUrl(channels.metal),
+      };
+    }
+
+    if (entry.proceduralGraph || entry.sculptMask || entry.layerName || entry.paintLayers || entry.paintChannels) {
+      meshes.push(entry);
+    }
   }
 
   const sidecar: ProjectSidecar = {
@@ -198,6 +251,17 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
       }
     }
 
+    if (entry.paintLayers) {
+      void restorePaintLayers(mesh, entry.paintLayers).catch((e) => {
+        console.warn("Project: paint layers restore failed for", entry.name, e);
+      });
+    }
+    if (entry.paintChannels) {
+      void restorePaintChannels(mesh, entry.paintChannels).catch((e) => {
+        console.warn("Project: paint channels restore failed for", entry.name, e);
+      });
+    }
+
     if (entry.layerName) {
       const lid = layerIdByName.get(entry.layerName);
       if (lid) assignMeshToLayer(mesh, lid);
@@ -257,6 +321,72 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
 
   updateLayerUI();
   updateHierarchy();
+}
+
+/**
+ * Rebuild a mesh's paint layer stack from sidecar PNGs. The composited
+ * albedo DynamicTexture is created directly (bypassing ensurePaintTexture's
+ * async albedo-seeding, which would race the composite) at the Base PNG's
+ * size, then the stack is composited over it.
+ */
+async function restorePaintLayers(
+  mesh: AbstractMesh,
+  data: NonNullable<ProjectMeshEntry["paintLayers"]>,
+): Promise<void> {
+  if (data.layers.length === 0) return;
+  const { DynamicTexture } = await import("@babylonjs/core/Materials/Textures/dynamicTexture");
+  const { compositePaintLayers, updatePaintLayersUI } = await import("../tools/texture-paint");
+  const { LAYER_BLENDS } = await import("../tools/paint-layers");
+
+  const canvases = await Promise.all(data.layers.map((l) => pngToCanvas(l.png)));
+  const size = canvases[0]!.width;
+
+  const tex = new DynamicTexture("paintTex_" + mesh.uniqueId, size, state.scene, false);
+  const mat = mesh.material as import("@babylonjs/core/Materials/PBR/pbrMaterial").PBRMaterial | null;
+  if (mat && "albedoTexture" in mat) mat.albedoTexture = tex;
+  state.paintTextureMap.set(mesh.uniqueId, tex);
+
+  state.paintLayersMap.set(mesh.uniqueId, {
+    active: Math.max(0, Math.min(data.layers.length - 1, data.active)),
+    layers: data.layers.map((l, i) => ({
+      name: l.name || (i === 0 ? "Base" : `Layer ${i}`),
+      visible: l.visible !== false,
+      opacity: typeof l.opacity === "number" ? Math.max(0, Math.min(1, l.opacity)) : 1,
+      blend: (LAYER_BLENDS as readonly string[]).includes(l.blend) ? (l.blend as import("../tools/paint-layers").LayerBlend) : "normal",
+      isBase: i === 0,
+      canvas: canvases[i]!,
+    })),
+  });
+  compositePaintLayers(mesh.uniqueId);
+  updatePaintLayersUI();
+}
+
+/** Rebuild roughness / metalness channel canvases + the packed MR texture. */
+async function restorePaintChannels(
+  mesh: AbstractMesh,
+  data: NonNullable<ProjectMeshEntry["paintChannels"]>,
+): Promise<void> {
+  const mat = mesh.material as import("@babylonjs/core/Materials/PBR/pbrMaterial").PBRMaterial | null;
+  if (!mat || !("albedoTexture" in mat)) return;
+  const { DynamicTexture } = await import("@babylonjs/core/Materials/Textures/dynamicTexture");
+  const { compositePaintChannels } = await import("../tools/texture-paint");
+
+  const [rough, metal] = await Promise.all([pngToCanvas(data.roughPng), pngToCanvas(data.metalPng)]);
+  const size = rough.width;
+  const tex = new DynamicTexture("paintMR_" + mesh.uniqueId, size, state.scene, false);
+  state.paintChannelsMap.set(mesh.uniqueId, {
+    rough,
+    metal,
+    baseRough: typeof data.baseRough === "number" ? data.baseRough : 0.5,
+    baseMetal: typeof data.baseMetal === "number" ? data.baseMetal : 0,
+    tex,
+  });
+  mat.metallicTexture = tex;
+  mat.useRoughnessFromMetallicTextureGreen = true;
+  mat.useMetallnessFromMetallicTextureBlue = true;
+  mat.metallic = 1;
+  mat.roughness = 1;
+  compositePaintChannels(mesh.uniqueId);
 }
 
 /** Open a .forge3d project file: load the GLB, then restore the sidecar. */

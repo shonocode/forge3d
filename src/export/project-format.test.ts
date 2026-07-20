@@ -141,3 +141,37 @@ describe("boneConstraints sidecar field", () => {
     ).toThrow(/aim/);
   });
 });
+
+describe("paint layers / channels sidecar fields", () => {
+  it("accepts well-formed paintLayers + paintChannels entries", () => {
+    const s: ProjectSidecar = {
+      ...SIDECAR,
+      meshes: [
+        {
+          name: "body",
+          paintLayers: {
+            active: 1,
+            layers: [
+              { name: "Base", visible: true, opacity: 1, blend: "normal", isBase: true, png: "data:image/png;base64,x" },
+              { name: "Layer 1", visible: true, opacity: 0.5, blend: "multiply", isBase: false, png: "data:image/png;base64,y" },
+            ],
+          },
+          paintChannels: { baseRough: 0.5, baseMetal: 0, roughPng: "data:image/png;base64,r", metalPng: "data:image/png;base64,m" },
+        },
+      ],
+    };
+    expect(validateSidecar(structuredClone(s))).toEqual(s);
+  });
+
+  it("rejects paintLayers without a layers array or numeric active", () => {
+    const bad = structuredClone(SIDECAR) as ProjectSidecar & { meshes: Array<Record<string, unknown>> };
+    bad.meshes = [{ name: "body", paintLayers: { active: "0", layers: [] } }];
+    expect(() => validateSidecar(bad)).toThrow(/paintLayers/);
+  });
+
+  it("rejects paintChannels missing the PNG payloads", () => {
+    const bad = structuredClone(SIDECAR) as ProjectSidecar & { meshes: Array<Record<string, unknown>> };
+    bad.meshes = [{ name: "body", paintChannels: { baseRough: 0.5, baseMetal: 0 } }];
+    expect(() => validateSidecar(bad)).toThrow(/paintChannels/);
+  });
+});

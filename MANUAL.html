@@ -616,9 +616,10 @@ Scale で他の島とテクセル密度を揃えると改善する。</div>
   <li><strong>Clear Paint</strong> はアクティブレイヤーだけをクリア</li>
   <li>ストローク Undo / Clear Undo もレイヤー単位で正しく戻る</li>
 </ul>
-<div class="warn"><strong>V1 制限</strong>: レイヤー構成は<strong>セッション内のみ</strong>。
-GLB / .forge3d には<strong>合成結果のテクスチャ</strong>が保存される (開き直すと 1 枚に統合された
-状態から再開)。表示/blend/opacity の変更は Undo 履歴に乗らない (いつでも触り直せる live 値)。</div>
+<div class="note"><strong>保存</strong>: レイヤー構成 (各レイヤーのピクセル + blend / opacity /
+アクティブ) は <strong>.forge3d プロジェクト</strong>に丸ごと保存され、開き直すとスタックごと復元される
+(§13.4)。GLB エクスポートと自動保存には<strong>合成結果のテクスチャ</strong>だけが乗る。
+表示/blend/opacity の変更は Undo 履歴に乗らない (いつでも触り直せる live 値)。</div>
 
 <h3 id="paint-channels">6.2 チャンネルペイント (Roughness / Metallic)</h3>
 <p>Paint Brush の <strong>Channel</strong> セレクタで、色 (Albedo) 以外に
@@ -635,7 +636,8 @@ GLB / .forge3d には<strong>合成結果のテクスチャ</strong>が保存さ
   <li>GLB エクスポートでは metallicRoughnessTexture としてそのまま出力される</li>
 </ul>
 <div class="note">チャンネルペイントは<strong>レイヤー非対応</strong> (フラット 1 枚)。
-レイヤーは Albedo 専用。Metallic スロットに画像をインポートするとチャンネルペイントは破棄される。</div>
+レイヤーは Albedo 専用。Metallic スロットに画像をインポートするとチャンネルペイントは破棄される。
+チャンネルキャンバスも <strong>.forge3d</strong> に保存・復元される (§13.4)。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -1140,7 +1142,9 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
     <strong>Sculpt マスク</strong> / <strong>レイヤー構成と割り当て</strong> /
     <strong>ボーン Roll</strong> (§7.3.1、ボーン名キー) /
     <strong>ボーンコンストレイント</strong> (§7.7、Limit Rotation / Aim、ボーン名キー) /
-    <strong>Shape Key Driver</strong> (§12.1.1、メッシュ / ボーン名で対応付け)</li>
+    <strong>Shape Key Driver</strong> (§12.1.1、メッシュ / ボーン名で対応付け) /
+    <strong>ペイントレイヤースタック + チャンネルペイント</strong> (§6.1 / §6.2、各レイヤーの
+    PNG + blend 設定。ファイルサイズはその分増える)</li>
   <li>開くと通常のモデル読込と同じ流れでシーンに追加され、グラフは自動再ベイク、
     マスクとレイヤーも復元される (メッシュ名で対応付け)</li>
   <li>非可搬なもの (現状): モディファイアスタック (エクスポート時点の評価結果が形状として保存される)</li>
