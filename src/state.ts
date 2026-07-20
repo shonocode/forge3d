@@ -473,6 +473,8 @@ export const state = {
     proportionalRadius: 0.5,
     /** Catmull-Clark crease sharpness applied by Mark Crease (σ ≥ 0; ≥1 = fully sharp). */
     creaseWeight: 1,
+    /** UV unwrap flattening: planar projection vs LSCM conformal. */
+    unwrapMethod: "project" as "project" | "conformal",
   },
 
   // Undo/Redo

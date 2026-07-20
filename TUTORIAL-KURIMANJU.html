@@ -448,9 +448,13 @@ Apply しないと Mirror で生成された左側がマージ後に消える。
 
 <h3>7.2 UV 展開実行</h3>
 <ol class="steps">
+  <li>UV Unwrap セクションの展開方式で <strong>Conformal</strong> を選ぶ（くりまんじゅうは
+    曲面主体なので、角度を保つ LSCM のほうが歪みが少ない。カクカクした機械系なら Project でよい）</li>
   <li>Edit Mode のまま、右パネル「UV Unwrap」→ <strong>Smart UV Project</strong>（または <kbd>U</kbd>）</li>
-  <li>ステータスバーに「Unwrap: NNN verts, NNN faces」と表示されれば成功</li>
+  <li>ステータスバーに「Unwrap [Conformal (LSCM)]: NNN verts, NNN faces」と表示されれば成功</li>
 </ol>
+<div class="tip">展開したら <strong>🗺 UV Editor</strong> を開いて <strong>🌡 ストレッチ表示</strong>で歪みを確認。
+青が多ければ良好、赤い島が残るならシームを足して再展開するか、Conformal に切り替えると改善する。</div>
 
 <div class="warn">UV 展開は<strong>頂点数を増やす</strong>。リギング済みでもボーンウェイトは
 自動で引き継がれるようになったが、頂点が増えるぶんウェイトの塗り直し確認は少なく済ませたいので、

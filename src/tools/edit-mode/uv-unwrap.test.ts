@@ -147,3 +147,26 @@ describe("smartUVProject", () => {
     expect(countIslands(seamed.indices)).toBe(7);
   });
 });
+
+describe("smartUVProject conformal (LSCM)", () => {
+  it("unwraps a cube with the conformal method, UVs in the 0–1 box", () => {
+    const em = buildEditMesh(makeCube())!;
+    const result = smartUVProject(em, { method: "conformal" });
+    // Same clustering / weld topology as planar (6 islands × 4 verts).
+    expect(result.positions.length).toBe(24 * 3);
+    expect(result.indices).toHaveLength(12 * 3);
+    expect(countIslands(result.indices)).toBe(6);
+    for (let i = 0; i < result.uvs.length; i++) {
+      expect(result.uvs[i]!).toBeGreaterThanOrEqual(-1e-6);
+      expect(result.uvs[i]!).toBeLessThanOrEqual(1 + 1e-6);
+    }
+    // No NaNs from the solver.
+    for (const v of result.uvs) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it("is deterministic", () => {
+    const a = smartUVProject(buildEditMesh(makeCube())!, { method: "conformal" });
+    const b = smartUVProject(buildEditMesh(makeCube())!, { method: "conformal" });
+    expect(Array.from(a.uvs)).toEqual(Array.from(b.uvs));
+  });
+});

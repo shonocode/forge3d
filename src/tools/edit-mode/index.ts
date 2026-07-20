@@ -556,7 +556,7 @@ export function unwrapMesh(): void {
   const beforeSel = new Set(state.editSelection.indices);
   const beforeMode = state.editSelection.mode;
 
-  const result = smartUVProject(em);
+  const result = smartUVProject(em, { method: state.editConfig.unwrapMethod });
 
   // Carry skin weights across the rebuild: copy each source vert's 4 influences.
   let afterMI: Float32Array | null = null;
@@ -648,7 +648,8 @@ export function unwrapMesh(): void {
     },
   });
 
-  status(`Unwrap: ${em.vertices.length} verts, ${em.faces.length} faces`);
+  const methodLabel = state.editConfig.unwrapMethod === "conformal" ? "Conformal (LSCM)" : "Project";
+  status(`Unwrap [${methodLabel}]: ${em.vertices.length} verts, ${em.faces.length} faces`);
 }
 
 /**

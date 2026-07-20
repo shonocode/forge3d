@@ -483,6 +483,31 @@ export function buildEditToolsPanel(): void {
   const uvSection = document.createElement("div");
   uvSection.className = "pg";
   uvSection.innerHTML = '<div class="pgt">UV Unwrap</div>';
+
+  // Flatten-method toggle: planar Project (fast) vs LSCM Conformal (low stretch).
+  const methodRow = document.createElement("div");
+  methodRow.style.cssText = "display:flex;gap:4px;margin-bottom:6px;";
+  const methods: Array<{ id: "project" | "conformal"; label: string; title: string }> = [
+    { id: "project", label: "Project", title: "平面投影（速い、平らな面向き）" },
+    { id: "conformal", label: "Conformal", title: "LSCM 共形展開（角度を保つ、曲面の歪みが少ない）" },
+  ];
+  const methodBtns = new Map<string, HTMLButtonElement>();
+  const syncMethod = (): void => {
+    for (const [id, btn] of methodBtns) btn.classList.toggle("on", state.editConfig.unwrapMethod === id);
+  };
+  for (const m of methods) {
+    const mb = document.createElement("button");
+    mb.className = "abtn";
+    mb.textContent = m.label;
+    mb.title = m.title;
+    mb.style.cssText = "flex:1;font-size:10px;padding:3px;";
+    mb.addEventListener("click", () => { state.editConfig.unwrapMethod = m.id; syncMethod(); });
+    methodBtns.set(m.id, mb);
+    methodRow.appendChild(mb);
+  }
+  syncMethod();
+  uvSection.appendChild(methodRow);
+
   const unwrapBtn = document.createElement("button");
   unwrapBtn.className = "abtn";
   unwrapBtn.innerHTML = '<span>Smart UV Project</span><span style="float:right;color:var(--t4);font-size:9px">U</span>';

@@ -1,5 +1,6 @@
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVerts, fanTriangulate, isSeam, type EditMesh } from "./half-edge";
 import { packRects, type PackRect } from "./uv-pack";
+import { computeLSCM } from "./lscm";
 
 /**
  * Smart UV Project — Blender-style.
@@ -45,9 +46,18 @@ export interface UnwrapOptions {
   angleLimit: number;
   /** UV padding between islands, in 0–1 space. */
   islandMargin: number;
+  /**
+   * Per-island flattening:
+   *  - "project"  : planar projection onto the cluster's average normal (fast,
+   *                 but smears curved charts at grazing angles).
+   *  - "conformal": LSCM least-squares conformal map (angle-preserving, far
+   *                 less stretch on curved charts). Falls back to "project" for
+   *                 charts too small / degenerate to solve.
+   */
+  method: "project" | "conformal";
 }
 
-const DEFAULT_OPTIONS: UnwrapOptions = { angleLimit: 66, islandMargin: 0.02 };
+const DEFAULT_OPTIONS: UnwrapOptions = { angleLimit: 66, islandMargin: 0.02, method: "project" };
 
 /** Per-island projection data. `faceUVs` holds 2 floats per face corner. */
 type Island = {
@@ -63,8 +73,10 @@ export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}):
   // 1. Cluster faces.
   const clusters = clusterFaces(em, cosThreshold);
 
-  // 2. Project each cluster to 2D.
-  const islands: Island[] = clusters.map((c) => projectCluster(em, c));
+  // 2. Flatten each cluster to 2D (LSCM when requested, else planar).
+  const islands: Island[] = clusters.map((c) =>
+    options.method === "conformal" ? flattenClusterLSCM(em, c) : projectCluster(em, c),
+  );
 
   // 3. Pack islands (shelf rect-pack — see uv-pack.ts).
   packIslands(islands, options.islandMargin);
@@ -173,6 +185,60 @@ function projectCluster(em: EditMesh, faces: number[]): Island {
     faceUVs.set(f, uvs);
   }
 
+  return { faces, faceUVs, bbox: { minU, minV, maxU, maxV } };
+}
+
+// ── Per-cluster LSCM (conformal) ─────────────────────────────────────────────
+
+/**
+ * Flatten one cluster with LSCM. Welds shared cluster vertices into one chart
+ * vertex (so a shared edge gets one seam-free UV), fan-triangulates the faces,
+ * solves the conformal map, then reprojects to the per-face-corner Island form
+ * every downstream stage (pack / assemble) already consumes. Falls back to
+ * planar projection when the chart is too small / degenerate for LSCM.
+ */
+function flattenClusterLSCM(em: EditMesh, faces: number[]): Island {
+  // Chart-local vertex numbering (weld by global vertex id).
+  const localOf = new Map<number, number>();
+  const chartPos: number[] = [];
+  const localIndex = (v: number): number => {
+    let l = localOf.get(v);
+    if (l === undefined) {
+      l = chartPos.length / 3;
+      localOf.set(v, l);
+      chartPos.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+    }
+    return l;
+  };
+  const tris: number[] = [];
+  for (const f of faces) {
+    const verts = faceVerts(em, f);
+    const locals = verts.map(localIndex);
+    // Fan-triangulate the (possibly n-gon) face in chart-local indices.
+    for (let i = 1; i + 1 < locals.length; i++) tris.push(locals[0]!, locals[i]!, locals[i + 1]!);
+  }
+
+  const solved = computeLSCM(new Float32Array(chartPos), tris);
+  if (!solved) return projectCluster(em, faces); // degenerate → planar fallback
+
+  const faceUVs = new Map<number, number[]>();
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const f of faces) {
+    const verts = faceVerts(em, f);
+    const uv: number[] = new Array(verts.length * 2);
+    for (let i = 0; i < verts.length; i++) {
+      const l = localOf.get(verts[i]!)!;
+      const u = solved.uvs[l * 2]!;
+      const w = solved.uvs[l * 2 + 1]!;
+      uv[i * 2] = u;
+      uv[i * 2 + 1] = w;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (w < minV) minV = w;
+      if (w > maxV) maxV = w;
+    }
+    faceUVs.set(f, uv);
+  }
   return { faces, faceUVs, bbox: { minU, minV, maxU, maxV } };
 }
 
