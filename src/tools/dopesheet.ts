@@ -100,6 +100,9 @@ let _drag: {
   shift: boolean;
 } | null = null;
 
+/** In-progress box select (Shift+drag from empty timeline), null when idle. */
+let _box: { x0: number; y0: number; x1: number; y1: number } | null = null;
+
 /**
  * Hook fired after keys were retimed (drag drop / undo / redo) so the UI
  * layer can refresh the keyframe list + both timeline views. Registered
@@ -313,6 +316,19 @@ export function drawDopesheet(): void {
   ctx.lineTo(playPx, h);
   ctx.stroke();
 
+  // Box-select rubber band (Shift+drag from empty timeline).
+  if (_box) {
+    const bx = Math.min(_box.x0, _box.x1);
+    const by = Math.min(_box.y0, _box.y1);
+    const bw = Math.abs(_box.x1 - _box.x0);
+    const bh = Math.abs(_box.y1 - _box.y0);
+    ctx.fillStyle = "rgba(255,220,80,0.10)";
+    ctx.strokeStyle = "rgba(255,220,80,0.9)";
+    ctx.lineWidth = 1;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+  }
+
   if (_info) {
     const totalKeys =
       clip.tracks.reduce((n, t) => n + t.keyframes.length, 0) +
@@ -392,6 +408,15 @@ function onPointerDown(e: PointerEvent): void {
 
   const hitFrame = keyFrameAtX(row, x, rect.width);
   if (hitFrame === null) {
+    if (e.shiftKey) {
+      // Shift+drag from empty timeline: box select — keys inside the
+      // rectangle are ADDED to the selection on release.
+      _box = { x0: x, y0: y, x1: x, y1: y };
+      _canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      drawDopesheet();
+      return;
+    }
     // Empty timeline: treated as a click on pointerup-equivalent —
     // scrub immediately (V1 behavior) and clear the key selection.
     const timelineW = rect.width - LABEL_GUTTER;
@@ -476,6 +501,13 @@ function clampDeltaToSelection(delta: number, maxFrames: number): number {
 }
 
 function onPointerMove(e: PointerEvent): void {
+  if (_box && _canvas) {
+    const rect = _canvas.getBoundingClientRect();
+    _box.x1 = e.clientX - rect.left;
+    _box.y1 = e.clientY - rect.top;
+    drawDopesheet();
+    return;
+  }
   if (!_drag || !_canvas) return;
   const clip = getActiveClip();
   if (!clip) return;
@@ -492,6 +524,13 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
+  if (_box && _canvas) {
+    try { _canvas.releasePointerCapture(e.pointerId); } catch { /* may not own */ }
+    const box = _box;
+    _box = null;
+    finishBoxSelect(box);
+    return;
+  }
   if (!_canvas || !_drag) return;
   try { _canvas.releasePointerCapture(e.pointerId); } catch { /* may not own */ }
   const drag = _drag;
@@ -508,6 +547,45 @@ function onPointerUp(e: PointerEvent): void {
   }
 
   applyRetime(drag.delta);
+}
+
+/**
+ * Resolve a finished box-select rectangle: every key whose diamond center
+ * falls inside is ADDED to the selection (shift semantics — click empty
+ * timeline first to start fresh).
+ */
+function finishBoxSelect(box: { x0: number; y0: number; x1: number; y1: number }): void {
+  if (!_canvas) return;
+  const clip = getActiveClip();
+  if (!clip) return;
+  const rect = _canvas.getBoundingClientRect();
+  const minX = Math.min(box.x0, box.x1);
+  const maxX = Math.max(box.x0, box.x1);
+  const minY = Math.min(box.y0, box.y1);
+  const maxY = Math.max(box.y0, box.y1);
+  if (maxX - minX < DRAG_THRESHOLD && maxY - minY < DRAG_THRESHOLD) {
+    drawDopesheet();
+    return; // accidental click, not a box
+  }
+
+  const timelineX0 = LABEL_GUTTER;
+  const timelineW = rect.width - LABEL_GUTTER;
+  let added = 0;
+  for (const row of _rowHits) {
+    const yCenter = (row.y0 + row.y1) / 2;
+    if (yCenter < minY || yCenter > maxY) continue;
+    for (const kf of keyframesOfRow(row)) {
+      const px = timelineX0 + (kf.frame / clip.maxFrames) * timelineW;
+      if (px < minX || px > maxX) continue;
+      const id = keyId(rowKeyOf(row), kf.frame);
+      if (!_selectedKeys.has(id)) {
+        _selectedKeys.add(id);
+        added++;
+      }
+    }
+  }
+  status(added > 0 ? `Box select: +${added} keys (計 ${_selectedKeys.size})` : "Box select: 範囲内にキーなし");
+  drawDopesheet();
 }
 
 /**

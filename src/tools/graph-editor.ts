@@ -103,9 +103,41 @@ interface KeyHit {
 let _keyHits: KeyHit[] = [];
 
 /**
+ * Multi-selection of key dots as (keyframe, channel) pairs (F-M7 拡張).
+ * Shift+click toggles membership; dragging any selected dot moves the
+ * whole set rigidly (shared Δframe, shared Δvalue per pair's channel).
+ * Cleared whenever a track snapshot is restored (undo/redo) because the
+ * keyframe object identities change.
+ */
+let _selectedPairs = new Map<KeyframeData, Set<AnimChannel>>();
+
+function isPairSelected(kf: KeyframeData, ch: AnimChannel): boolean {
+  return _selectedPairs.get(kf)?.has(ch) ?? false;
+}
+
+function togglePair(kf: KeyframeData, ch: AnimChannel): void {
+  let set = _selectedPairs.get(kf);
+  if (set?.has(ch)) {
+    set.delete(ch);
+    if (set.size === 0) _selectedPairs.delete(kf);
+  } else {
+    if (!set) { set = new Set(); _selectedPairs.set(kf, set); }
+    set.add(ch);
+  }
+}
+
+function selectedPairCount(): number {
+  let n = 0;
+  for (const set of _selectedPairs.values()) n += set.size;
+  return n;
+}
+
+/**
  * In-progress keyframe drag (time + value). `offsetFrame`/`offsetValue`
  * are the pointer's initial data-space offset from the key, so the key
  * follows the pointer without an initial jump when grabbed off-center.
+ * `frames0` / `values0` snapshot every selected pair at drag start so the
+ * rigid move is re-derived from a stable baseline each tick.
  */
 let _dragKey: {
   kf: KeyframeData;
@@ -115,6 +147,8 @@ let _dragKey: {
   moved: boolean;
   offsetFrame: number;
   offsetValue: number;
+  frames0: Map<KeyframeData, number>;
+  values0: Map<KeyframeData, Map<AnimChannel, number>>;
 } | null = null;
 
 /**
@@ -279,11 +313,12 @@ export function drawGraphEditor(): void {
       }
 
       const isDragged = _dragKey?.kf === kf && _dragKey.channel === ch.id;
+      const isSelected = isPairSelected(kf, ch.id);
       ctx.fillStyle = ch.color;
       ctx.beginPath();
-      ctx.arc(kx, ky, isDragged ? 4 : 2.5, 0, Math.PI * 2);
+      ctx.arc(kx, ky, isDragged || isSelected ? 4 : 2.5, 0, Math.PI * 2);
       ctx.fill();
-      if (isDragged) {
+      if (isDragged || isSelected) {
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -393,10 +428,30 @@ function onPointerDown(e: PointerEvent): void {
   if (bestKey && _lastMapping && state.selectedBoneId) {
     const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
     if (track) {
+      if (e.shiftKey) {
+        // Shift+click: toggle this dot in the multi-selection, no drag.
+        togglePair(bestKey.hit.kf, bestKey.hit.channel);
+        drawGraphEditor();
+        e.preventDefault();
+        return;
+      }
+      // Plain press: an unselected dot becomes the sole selection; a
+      // selected dot keeps the set (the drag moves them all rigidly).
+      if (!isPairSelected(bestKey.hit.kf, bestKey.hit.channel)) {
+        _selectedPairs = new Map([[bestKey.hit.kf, new Set([bestKey.hit.channel])]]);
+      }
       const { w, h, lo, hi, maxFrames } = _lastMapping;
       const ch = CHANNELS.find((c) => c.id === bestKey.hit.channel)!;
       const frameAtX = (x / w) * maxFrames;
       const valueAtY = lo + (1 - y / h) * (hi - lo);
+      const frames0 = new Map<KeyframeData, number>();
+      const values0 = new Map<KeyframeData, Map<AnimChannel, number>>();
+      for (const [kf, chans] of _selectedPairs) {
+        frames0.set(kf, kf.frame);
+        const vals = new Map<AnimChannel, number>();
+        for (const c of chans) vals.set(c, CHANNELS.find((cc) => cc.id === c)!.pick(kf));
+        values0.set(kf, vals);
+      }
       _dragKey = {
         kf: bestKey.hit.kf,
         channel: bestKey.hit.channel,
@@ -405,6 +460,8 @@ function onPointerDown(e: PointerEvent): void {
         moved: false,
         offsetFrame: frameAtX - bestKey.hit.kf.frame,
         offsetValue: valueAtY - ch.pick(bestKey.hit.kf),
+        frames0,
+        values0,
       };
       _canvas.setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -412,7 +469,8 @@ function onPointerDown(e: PointerEvent): void {
     }
   }
 
-  // Background → fall through to V1 scrub behavior.
+  // Background → clear the multi-selection, then V1 scrub behavior.
+  _selectedPairs = new Map();
   const frame = Math.round((x / rect.width) * clip.maxFrames);
   scrubToFrame(Math.max(0, Math.min(clip.maxFrames, frame)));
   drawGraphEditor();
@@ -468,7 +526,12 @@ function onPointerUp(e: PointerEvent): void {
   }
 }
 
-/** Live time+value move of the grabbed keyframe (no history churn). */
+/**
+ * Live rigid move of every selected pair (no history churn). The grabbed
+ * dot defines a shared Δframe / Δvalue from its drag-start baseline; time
+ * shifts apply per keyframe (all channels of a kf move together in time),
+ * value shifts apply per selected (kf, channel) pair.
+ */
 function onKeyDragMove(e: PointerEvent): void {
   if (!_dragKey || !_canvas || !_lastMapping) return;
   const drag = _dragKey;
@@ -477,22 +540,35 @@ function onKeyDragMove(e: PointerEvent): void {
   const y = e.clientY - rect.top;
   const { w, h, lo, hi, maxFrames } = _lastMapping;
 
-  const ch = CHANNELS.find((c) => c.id === drag.channel)!;
-  const kf = drag.kf;
-
+  const grabFrame0 = drag.frames0.get(drag.kf)!;
   const targetFrame = Math.round((x / w) * maxFrames - drag.offsetFrame);
-  const clamped = Math.max(0, Math.min(maxFrames, targetFrame));
-  // Move in time only when the destination frame is free — the graph
-  // editor edits one key at a time, so silently overwriting a neighbor
-  // mid-drag would be surprising. (Retiming with overwrite semantics
-  // lives in the dopesheet.)
-  if (clamped !== kf.frame && !drag.track.keyframes.some((k) => k !== kf && k.frame === clamped)) {
-    kf.frame = clamped;
+  let deltaF = targetFrame - grabFrame0;
+  // Clamp the shared delta so every selected key stays inside the clip.
+  for (const f0 of drag.frames0.values()) {
+    if (f0 + deltaF < 0) deltaF = -f0;
+    if (f0 + deltaF > maxFrames) deltaF = maxFrames - f0;
+  }
+  // Move in time only when every destination frame is free of UNSELECTED
+  // keys — silently overwriting a neighbor mid-drag would be surprising.
+  // (Retiming with overwrite semantics lives in the dopesheet.)
+  const destinations = new Set<number>();
+  for (const f0 of drag.frames0.values()) destinations.add(f0 + deltaF);
+  const blocked = drag.track.keyframes.some(
+    (k) => !drag.frames0.has(k) && destinations.has(k.frame),
+  );
+  if (!blocked) {
+    for (const [kf, f0] of drag.frames0) kf.frame = f0 + deltaF;
     drag.track.keyframes.sort((a, b) => a.frame - b.frame);
   }
 
   const valueAtY = lo + (1 - y / h) * (hi - lo);
-  ch.set(kf, valueAtY - drag.offsetValue);
+  const grabValue0 = drag.values0.get(drag.kf)!.get(drag.channel)!;
+  const deltaV = valueAtY - drag.offsetValue - grabValue0;
+  for (const [kf, vals] of drag.values0) {
+    for (const [chId, v0] of vals) {
+      CHANNELS.find((c) => c.id === chId)!.set(kf, v0 + deltaV);
+    }
+  }
 
   drag.moved = true;
   drawGraphEditor();
@@ -506,19 +582,26 @@ function commitKeyDrag(drag: NonNullable<typeof _dragKey>): void {
 
   const restore = (snap: KeyframeData[]): void => {
     track.keyframes.splice(0, track.keyframes.length, ...structuredClone(snap));
+    // The clones invalidate every selected keyframe reference.
+    _selectedPairs = new Map();
     scrubToFrame(state.currentFrame);
     drawGraphEditor();
     _keyEditedHandler?.();
   };
 
+  const n = selectedPairCount();
   state.history.push({
-    label: "Edit Key",
+    label: n > 1 ? `Edit Keys (${n})` : "Edit Key",
     undo() { restore(before); },
     redo() { restore(after); },
   });
 
-  const ch = CHANNELS.find((c) => c.id === drag.channel)!;
-  status(`Key → frame ${drag.kf.frame}, ${ch.label} ${ch.pick(drag.kf).toFixed(3)}`);
+  if (n > 1) {
+    status(`${n} keys moved (rigid)`);
+  } else {
+    const ch = CHANNELS.find((c) => c.id === drag.channel)!;
+    status(`Key → frame ${drag.kf.frame}, ${ch.label} ${ch.pick(drag.kf).toFixed(3)}`);
+  }
   scrubToFrame(state.currentFrame);
   drawGraphEditor();
   _keyEditedHandler?.();
