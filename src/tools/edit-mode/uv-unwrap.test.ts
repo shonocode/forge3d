@@ -16,6 +16,35 @@ function makeStubMesh(positions: number[], indices: number[]): Mesh {
   } as unknown as Mesh;
 }
 
+/**
+ * Count connected components of the triangle list by shared vertex index.
+ * On welded unwrap output, that equals the island count (island-internal
+ * tris share verts, cross-island tris don't) — packing-layout independent.
+ */
+function countIslands(indices: number[]): number {
+  const parent = new Map<number, number>();
+  const find = (v: number): number => {
+    let r = v;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(v, r);
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i]!, b = indices[i + 1]!, c = indices[i + 2]!;
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    if (!parent.has(c)) parent.set(c, c);
+    union(a, b); union(b, c);
+  }
+  const roots = new Set<number>();
+  for (const v of parent.keys()) roots.add(find(v));
+  return roots.size;
+}
+
 function makeCube(): Mesh {
   const positions = [
     -1, -1, -1,  1, -1, -1,  1, 1, -1,  -1, 1, -1,
@@ -57,10 +86,18 @@ describe("smartUVProject", () => {
     const em = buildEditMesh(makeCube())!;
     const result = smartUVProject(em);
 
-    // V1 ships split-per-face form: 12 tris × 3 verts = 36 positions.
-    expect(result.positions.length).toBe(12 * 3 * 3);
+    // Cluster-welded form (F-M9): each of the 6 face islands welds its 4
+    // shared corners → 6 × 4 = 24 verts (each cube corner is on 3 faces so
+    // it splits 3 ways). Still 12 tris / 36 indices.
+    expect(result.positions.length).toBe(24 * 3);
+    expect(result.uvs.length).toBe(24 * 2);
     expect(result.indices).toHaveLength(12 * 3);
-    expect(result.uvs.length).toBe(12 * 3 * 2);
+    // Every index must reference a real vertex.
+    const vCount = result.positions.length / 3;
+    for (const idx of result.indices) {
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(vCount);
+    }
 
     // All UVs must lie inside [0, 1].
     for (let i = 0; i < result.uvs.length; i++) {
@@ -70,37 +107,29 @@ describe("smartUVProject", () => {
     }
   });
 
+  it("welds cluster-internal verts (fewer than split-per-face)", () => {
+    const em = buildEditMesh(makeCube())!;
+    const result = smartUVProject(em);
+    // Split-per-face would be 36; welding shares each face-quad's diagonal.
+    expect(result.positions.length / 3).toBeLessThan(36);
+    expect(result.positions.length / 3).toBe(24);
+  });
+
   it("clusters all 6 cube faces — coplanar tri pairs share an island", () => {
     const em = buildEditMesh(makeCube())!;
     const result = smartUVProject(em);
-
-    // Each cube face = 2 coplanar tris. Within a cluster, the 4 corner UVs
-    // should form a non-degenerate quad. A simple check: each cluster's UV
-    // bbox area should be roughly the same (cube faces are uniform).
-    // Walk the result triangles and group by the UV cell they occupy.
-    // With 6 islands packed into a 3×2 grid: each cell ≈ 1/3 × 1/2.
-    const cellW = 1 / 3;
-    const cellH = 1 / 2;
-    const cellCounts = new Map<string, number>();
-    for (let f = 0; f < 12; f++) {
-      const u0 = result.uvs[f * 6]!;
-      const v0 = result.uvs[f * 6 + 1]!;
-      const col = Math.floor(u0 / cellW);
-      const row = Math.floor(v0 / cellH);
-      const key = `${col}_${row}`;
-      cellCounts.set(key, (cellCounts.get(key) ?? 0) + 1);
-    }
-    // 6 clusters × 2 tris each = each cell has 2 tris
-    expect(cellCounts.size).toBe(6);
-    for (const [, n] of cellCounts) expect(n).toBe(2);
+    // Islands are welded, so triangles of one island share vertex indices
+    // and different islands don't → connected-component count = island count.
+    // This is packing-layout independent (unlike the old grid-cell check).
+    expect(countIslands(result.indices)).toBe(6);
   });
 
   it("respects seams — adding a seam splits a cluster", () => {
     const em = buildEditMesh(makeCube())!;
-    // Without seams: 6 clusters (cube faces).
     const baseline = smartUVProject(em);
+    expect(countIslands(baseline.indices)).toBe(6);
+
     // Find the diagonal half-edge of the -z face (shared between tris 0 and 1).
-    // It's the canonical edge with both adjacent faces 0 and 1.
     let diagonal = -1;
     forEachEdge(em, (he) => {
       if (diagonal >= 0) return;
@@ -114,27 +143,7 @@ describe("smartUVProject", () => {
     toggleSeams(em, new Set([diagonal]));
 
     const seamed = smartUVProject(em);
-    // Splitting one cluster into 2 → 7 clusters → 7 islands → packed in 3×3 grid.
-    const cellW3 = 1 / 3;
-    const cellH3 = 1 / 3;
-    const seamedCells = new Set<string>();
-    for (let f = 0; f < 12; f++) {
-      const u0 = seamed.uvs[f * 6]!;
-      const v0 = seamed.uvs[f * 6 + 1]!;
-      const col = Math.floor(u0 / cellW3);
-      const row = Math.floor(v0 / cellH3);
-      seamedCells.add(`${col}_${row}`);
-    }
-    expect(seamedCells.size).toBe(7);
-    // Baseline still has 6 clusters
-    const baselineCells = new Set<string>();
-    for (let f = 0; f < 12; f++) {
-      const u0 = baseline.uvs[f * 6]!;
-      const v0 = baseline.uvs[f * 6 + 1]!;
-      const col = Math.floor(u0 / (1 / 3));
-      const row = Math.floor(v0 / (1 / 2));
-      baselineCells.add(`${col}_${row}`);
-    }
-    expect(baselineCells.size).toBe(6);
+    // Splitting one cluster into 2 → 7 islands.
+    expect(countIslands(seamed.indices)).toBe(7);
   });
 });

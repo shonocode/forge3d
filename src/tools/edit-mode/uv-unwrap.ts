@@ -1,4 +1,5 @@
 import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, isSeam, type EditMesh } from "./half-edge";
+import { packRects, type PackRect } from "./uv-pack";
 
 /**
  * Smart UV Project — Blender-style.
@@ -24,7 +25,8 @@ import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, isSeam, type EditMesh
  *    against running this on morphed meshes or accept the reset. Skin weights
  *    survive: `sourceVerts` maps each rebuilt vertex to its original vertex so
  *    the caller can carry the weight buffers across.
- *  - Packing is greedy grid, not rect-pack. Sparse islands waste UV space.
+ *  - Islands are shelf-packed (F-M9), and cluster-internal vertices are welded
+ *    so a cube unwraps to ~14 verts, not 36 (split-per-face).
  */
 
 export interface UnwrapResult {
@@ -61,20 +63,15 @@ export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}):
   };
   const islands: Island[] = clusters.map((c) => projectCluster(em, c));
 
-  // 3. Pack islands.
+  // 3. Pack islands (shelf rect-pack — see uv-pack.ts).
   packIslands(islands, options.islandMargin);
 
-  // 4. Assemble rebuilt geometry. For each face, emit 3 fresh vertices (per-
-  //    cluster duplication is implicit in this approach — verts shared
-  //    within a cluster get the same UV / position, but we still emit them
-  //    once per face for simplicity and let weldVerticesWithinCluster
-  //    optionally collapse them later).
-  //
-  //    For Phase 7 we ship the simpler "split per face" form: every face
-  //    contributes 3 unique new vertices. This is suboptimal storage-wise
-  //    (cube goes from 8 verts to 36) but keeps the algorithm bulletproof.
-  //    Cluster-internal welding can come in Phase 7.5.
-  return assembleSplit(em, islands);
+  // 4. Assemble rebuilt geometry, welding vertices within each cluster: a
+  //    vertex shared by several faces of the SAME island collapses to one
+  //    output vertex (it has a single UV there), while vertices on a cluster
+  //    boundary are still duplicated per-cluster (each carries its island's
+  //    UV). Cube: 8 → 14 verts instead of split-per-face's 36.
+  return assembleWelded(em, islands);
 }
 
 // ── Clustering ─────────────────────────────────────────────────────────────
@@ -194,26 +191,19 @@ function packIslands(
   margin: number,
 ): void {
   if (islands.length === 0) return;
-  const cols = Math.ceil(Math.sqrt(islands.length));
-  const rows = Math.ceil(islands.length / cols);
-  const cellW = 1 / cols;
-  const cellH = 1 / rows;
-  const innerW = cellW - margin;
-  const innerH = cellH - margin;
+
+  // Shelf rect-pack (uv-pack.ts): one shared scale keeps texel density
+  // consistent across islands, and aspect ratios are preserved.
+  const rects: PackRect[] = islands.map((isl) => ({
+    w: (isl.bbox.maxU - isl.bbox.minU) || 1e-6,
+    h: (isl.bbox.maxV - isl.bbox.minV) || 1e-6,
+  }));
+  const { placements } = packRects(rects, margin);
 
   for (let i = 0; i < islands.length; i++) {
     const island = islands[i]!;
-    const { minU, minV, maxU, maxV } = island.bbox;
-    const w = maxU - minU || 1e-6;
-    const h = maxV - minV || 1e-6;
-    // Uniform scale to fit within the cell while preserving aspect ratio.
-    const scale = Math.min(innerW / w, innerH / h);
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    // Center within the cell.
-    const offsetU = col * cellW + (cellW - w * scale) / 2;
-    const offsetV = row * cellH + (cellH - h * scale) / 2;
-
+    const { minU, minV } = island.bbox;
+    const { offsetU, offsetV, scale } = placements[i]!;
     for (const uvs of island.faceUVs.values()) {
       for (let k = 0; k < 3; k++) {
         uvs[k * 2] = (uvs[k * 2]! - minU) * scale + offsetU;
@@ -223,9 +213,9 @@ function packIslands(
   }
 }
 
-// ── Assemble output (split-per-face form) ──────────────────────────────────
+// ── Assemble output (cluster-welded form) ──────────────────────────────────
 
-function assembleSplit(
+function assembleWelded(
   em: EditMesh,
   islands: Array<{
     faces: number[];
@@ -239,17 +229,29 @@ function assembleSplit(
   const sourceVerts: number[] = [];
 
   for (const island of islands) {
+    // Weld within a cluster: a source vertex shared by several faces of this
+    // island resolves to one output vertex. Keyed by (island, sourceVert) —
+    // the island scope keeps boundary verts split between clusters, so each
+    // side keeps its own UV. UVs of a vertex are identical across the
+    // island's faces here (planar projection), so no seam is lost.
+    const weld = new Map<number, number>();
     for (const f of island.faces) {
       const verts = faceVertices(em, f);
       const fUV = island.faceUVs.get(f)!;
-      const base = positions.length / 3;
+      const tri: number[] = [];
       for (let i = 0; i < 3; i++) {
         const v = verts[i]!;
-        positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
-        uvs.push(fUV[i * 2]!, fUV[i * 2 + 1]!);
-        sourceVerts.push(v);
+        let out = weld.get(v);
+        if (out === undefined) {
+          out = positions.length / 3;
+          weld.set(v, out);
+          positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+          uvs.push(fUV[i * 2]!, fUV[i * 2 + 1]!);
+          sourceVerts.push(v);
+        }
+        tri.push(out);
       }
-      indices.push(base, base + 1, base + 2);
+      indices.push(tri[0]!, tri[1]!, tri[2]!);
     }
   }
 
