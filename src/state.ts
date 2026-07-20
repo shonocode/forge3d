@@ -442,6 +442,8 @@ export const state = {
     insetAmount: 0.2,
     /** Bevel split factor along incident edges (0 = no bevel, must stay < 0.5). */
     bevelWidth: 0.15,
+    /** Edge Slide factor per press: sign = side, magnitude = lerp toward the rail. */
+    slideAmount: 0.25,
   },
 
   // Undo/Redo

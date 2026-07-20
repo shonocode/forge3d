@@ -1,4 +1,4 @@
-import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, rebuildHalfEdges, toIndexArray, type EditMesh } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceVertices, rebuildHalfEdges, seamKey, toIndexArray, type EditMesh } from "./half-edge";
 
 /**
  * Topology operators. Each operator mutates `em` in place (rebuilds positions,
@@ -1186,4 +1186,428 @@ function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set
 
   rebuildHalfEdges(em, em.positions, newIndices);
   return new Set([v1, v2]);
+}
+
+// ── Edge Slide (F-M8) ──────────────────────────────────────────────────────
+
+/**
+ * Slide the selected edge loop along its adjacent "rail" edges — Blender's
+ * Edge Slide, the essential follow-up to Loop Cut ("place the new ring where
+ * I actually want it").
+ *
+ * `t` ∈ [-1, 1]: the sign picks the side, the magnitude is the interpolation
+ * factor toward that side's rail neighbor (1 = all the way onto it). Sides
+ * are derived per loop component from a consistent walk order (tangent ×
+ * vertex normal), so one invocation slides the whole loop coherently even
+ * around curved surfaces.
+ *
+ * Topology is unchanged — only positions move. A vertex with no rail on the
+ * requested side (mesh border, pole) stays put. Rail choice per side is the
+ * neighbor whose edge is most perpendicular to the loop tangent, which
+ * filters out the diagonal neighbors triangulated quads introduce.
+ *
+ * Returns the (canonicalized) input edge set — still valid, nothing rebuilt.
+ */
+export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: number): Set<number> {
+  const canonical = new Set<number>();
+  for (const he of selectedEdges) canonical.add(canonicalEdge(em, he));
+  if (canonical.size === 0 || t === 0) return canonical;
+
+  const P = em.positions;
+
+  // Loop vertex set + adjacency INSIDE the loop.
+  const loopVerts = new Set<number>();
+  const loopAdj = new Map<number, number[]>();
+  const addAdj = (a: number, b: number): void => {
+    let l = loopAdj.get(a);
+    if (!l) { l = []; loopAdj.set(a, l); }
+    if (!l.includes(b)) l.push(b);
+  };
+  for (const he of canonical) {
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    loopVerts.add(a);
+    loopVerts.add(b);
+    addAdj(a, b);
+    addAdj(b, a);
+  }
+
+  // Full neighbor map (unique undirected edges).
+  const neighbors = new Map<number, Set<number>>();
+  const nbOf = (v: number): Set<number> => {
+    let s = neighbors.get(v);
+    if (!s) { s = new Set(); neighbors.set(v, s); }
+    return s;
+  };
+  for (let i = 0; i < em.halfEdges.length; i++) {
+    const tw = em.halfEdges[i]!.twin;
+    if (tw >= 0 && i > tw) continue;
+    const a = edgeOrigin(em, i);
+    const b = edgeEnd(em, i);
+    nbOf(a).add(b);
+    nbOf(b).add(a);
+  }
+
+  // Accumulated vertex normals (loop verts only) from incident face normals.
+  const vn = new Map<number, [number, number, number]>();
+  for (let f = 0; f < em.faces.length; f++) {
+    const [a, b, c] = faceVertices(em, f);
+    if (!loopVerts.has(a) && !loopVerts.has(b) && !loopVerts.has(c)) continue;
+    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+    const ux = P[b * 3]! - ax, uy = P[b * 3 + 1]! - ay, uz = P[b * 3 + 2]! - az;
+    const wx = P[c * 3]! - ax, wy = P[c * 3 + 1]! - ay, wz = P[c * 3 + 2]! - az;
+    const nx = uy * wz - uz * wy;
+    const ny = uz * wx - ux * wz;
+    const nz = ux * wy - uy * wx;
+    for (const v of [a, b, c]) {
+      if (!loopVerts.has(v)) continue;
+      const acc = vn.get(v) ?? [0, 0, 0];
+      acc[0] += nx; acc[1] += ny; acc[2] += nz;
+      vn.set(v, acc);
+    }
+  }
+
+  const newPos = new Float32Array(P);
+  const factor = Math.min(1, Math.abs(t));
+
+  // Walk each connected loop component so tangents share one orientation.
+  const visited = new Set<number>();
+  for (const seed of loopVerts) {
+    if (visited.has(seed)) continue;
+
+    // Gather the component, then order it from an endpoint (or anywhere on
+    // a cycle) by walking unvisited loop neighbors.
+    const comp: number[] = [];
+    const stack = [seed];
+    visited.add(seed);
+    while (stack.length) {
+      const v = stack.pop()!;
+      comp.push(v);
+      for (const u of loopAdj.get(v) ?? []) {
+        if (!visited.has(u)) { visited.add(u); stack.push(u); }
+      }
+    }
+    const start = comp.find((v) => (loopAdj.get(v) ?? []).length === 1) ?? comp[0]!;
+    const order: number[] = [start];
+    const inOrder = new Set([start]);
+    let cur = start;
+    for (;;) {
+      const nxt = (loopAdj.get(cur) ?? []).find((u) => !inOrder.has(u));
+      if (nxt === undefined) break;
+      order.push(nxt);
+      inOrder.add(nxt);
+      cur = nxt;
+    }
+    const isCycle =
+      order.length > 2 && (loopAdj.get(order[order.length - 1]!) ?? []).includes(start);
+
+    for (let i = 0; i < order.length; i++) {
+      const v = order[i]!;
+      const prev = i > 0 ? order[i - 1]! : isCycle ? order[order.length - 1]! : v;
+      const next = i < order.length - 1 ? order[i + 1]! : isCycle ? order[0]! : v;
+
+      // Loop tangent at v (walk-oriented so the whole component agrees).
+      let tx = P[next * 3]! - P[prev * 3]!;
+      let ty = P[next * 3 + 1]! - P[prev * 3 + 1]!;
+      let tz = P[next * 3 + 2]! - P[prev * 3 + 2]!;
+      const tl = Math.hypot(tx, ty, tz);
+      if (tl < 1e-12) continue;
+      tx /= tl; ty /= tl; tz /= tl;
+
+      const n = vn.get(v);
+      if (!n) continue;
+      const nl = Math.hypot(n[0], n[1], n[2]);
+      if (nl < 1e-12) continue;
+
+      // Side axis = tangent × normal (in-surface, perpendicular to the loop).
+      let sx = ty * (n[2] / nl) - tz * (n[1] / nl);
+      let sy = tz * (n[0] / nl) - tx * (n[2] / nl);
+      let sz = tx * (n[1] / nl) - ty * (n[0] / nl);
+      const sl = Math.hypot(sx, sy, sz);
+      if (sl < 1e-12) continue;
+      sx /= sl; sy /= sl; sz /= sl;
+
+      // Rails: off-loop neighbors, most-perpendicular one per side.
+      let railPos = -1, railPosDot = Infinity;
+      let railNeg = -1, railNegDot = Infinity;
+      for (const u of nbOf(v)) {
+        if (loopVerts.has(u)) continue;
+        let dx = P[u * 3]! - P[v * 3]!;
+        let dy = P[u * 3 + 1]! - P[v * 3 + 1]!;
+        let dz = P[u * 3 + 2]! - P[v * 3 + 2]!;
+        const dl = Math.hypot(dx, dy, dz);
+        if (dl < 1e-12) continue;
+        dx /= dl; dy /= dl; dz /= dl;
+        const alongLoop = Math.abs(dx * tx + dy * ty + dz * tz);
+        const side = dx * sx + dy * sy + dz * sz;
+        if (side > 1e-6) {
+          if (alongLoop < railPosDot) { railPosDot = alongLoop; railPos = u; }
+        } else if (side < -1e-6) {
+          if (alongLoop < railNegDot) { railNegDot = alongLoop; railNeg = u; }
+        }
+      }
+
+      const target = t > 0 ? railPos : railNeg;
+      if (target < 0) continue;
+      newPos[v * 3] = P[v * 3]! + (P[target * 3]! - P[v * 3]!) * factor;
+      newPos[v * 3 + 1] = P[v * 3 + 1]! + (P[target * 3 + 1]! - P[v * 3 + 1]!) * factor;
+      newPos[v * 3 + 2] = P[v * 3 + 2]! + (P[target * 3 + 2]! - P[v * 3 + 2]!) * factor;
+    }
+  }
+
+  em.positions.set(newPos);
+  return canonical;
+}
+
+// ── Merge / Collapse (F-M8) ────────────────────────────────────────────────
+
+/**
+ * Merge vertex clusters: each cluster's members become ONE vertex at the
+ * cluster centroid. Faces that degenerate (fewer than 3 unique verts) are
+ * dropped, the vertex buffer is compacted (unreferenced verts removed), and
+ * seam keys are remapped across the compaction.
+ *
+ * Returns the merged vertices' NEW (compacted) indices.
+ */
+function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
+  const P = em.positions;
+  const remap = new Map<number, number>();
+  const targets: number[] = [];
+
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+    const target = Math.min(...cluster);
+    targets.push(target);
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of cluster) {
+      cx += P[v * 3]!;
+      cy += P[v * 3 + 1]!;
+      cz += P[v * 3 + 2]!;
+      remap.set(v, target);
+    }
+    P[target * 3] = cx / cluster.length;
+    P[target * 3 + 1] = cy / cluster.length;
+    P[target * 3 + 2] = cz / cluster.length;
+  }
+  if (targets.length === 0) return new Set();
+
+  const mapped = (v: number): number => remap.get(v) ?? v;
+
+  // Rewrite faces, dropping ones that collapsed.
+  const kept: number[] = [];
+  const oldIndices = toIndexArray(em);
+  for (let f = 0; f < em.faces.length; f++) {
+    const a = mapped(oldIndices[f * 3]!);
+    const b = mapped(oldIndices[f * 3 + 1]!);
+    const c = mapped(oldIndices[f * 3 + 2]!);
+    if (a === b || b === c || a === c) continue;
+    kept.push(a, b, c);
+  }
+
+  // Compact the vertex buffer to referenced verts only.
+  const oldToNew = new Map<number, number>();
+  const newPositions: number[] = [];
+  const idxOf = (v: number): number => {
+    let nv = oldToNew.get(v);
+    if (nv === undefined) {
+      nv = newPositions.length / 3;
+      oldToNew.set(v, nv);
+      newPositions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
+    }
+    return nv;
+  };
+  const newIndices = kept.map(idxOf);
+
+  // Seams follow the merge + compaction; edges collapsed to a point vanish.
+  const newSeams = new Set<string>();
+  for (const key of em.seams) {
+    const [a, b] = key.split("_").map(Number);
+    const na = oldToNew.get(mapped(a!));
+    const nb = oldToNew.get(mapped(b!));
+    if (na !== undefined && nb !== undefined && na !== nb) newSeams.add(seamKey(na, nb));
+  }
+
+  rebuildHalfEdges(em, Float32Array.from(newPositions), newIndices);
+  em.seams = newSeams;
+
+  const out = new Set<number>();
+  for (const tgt of targets) {
+    const nv = oldToNew.get(tgt);
+    if (nv !== undefined) out.add(nv);
+  }
+  return out;
+}
+
+/**
+ * Merge every selected vertex into one point at their centroid — Blender's
+ * "Merge At Center". Needs ≥2 selected verts. Returns the merged vertex's
+ * new index (∅ when the merge produced no usable geometry).
+ */
+export function mergeAtCenter(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<number> {
+  if (selectedVerts.size < 2) return new Set();
+  return mergeClusters(em, [[...selectedVerts]]);
+}
+
+/**
+ * Collapse each selected edge to its midpoint (Blender's Edge Collapse).
+ * Edges sharing endpoints collapse together — union-find groups them into
+ * clusters first, so collapsing a connected run of edges yields one vertex.
+ */
+export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  if (selectedEdges.size === 0) return new Set();
+
+  const parent = new Map<number, number>();
+  const find = (v: number): number => {
+    let r = v;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(v, r);
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+
+  for (const heRaw of selectedEdges) {
+    const he = canonicalEdge(em, heRaw);
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    union(a, b);
+  }
+
+  const byRoot = new Map<number, number[]>();
+  for (const v of parent.keys()) {
+    const r = find(v);
+    let l = byRoot.get(r);
+    if (!l) { l = []; byRoot.set(r, l); }
+    l.push(v);
+  }
+  return mergeClusters(em, [...byRoot.values()]);
+}
+
+// ── Bridge Edge Loops (F-M8) ───────────────────────────────────────────────
+
+/**
+ * Connect two boundary edge loops with a band of quads (2 tris each) —
+ * Blender's Bridge Edge Loops, V1 scope:
+ *
+ * - Both loops must be **boundary** loops (every selected edge has no twin);
+ *   bridging interior loops would need face deletion first.
+ * - The selection must split into exactly 2 connected loops with the SAME
+ *   vertex count, both cycles or both open paths.
+ *
+ * Winding: each new quad traverses the A-side boundary edge reversed and the
+ * B loop in reverse walk order, so every new triangle pairs manifold-cleanly
+ * with the existing faces (and B's reversal also gives the geometrically
+ * right pairing for two openings that face each other, e.g. tube ends). For
+ * cycles, the rotation offset minimizing the first vertex pair's distance is
+ * chosen so the band doesn't twist.
+ *
+ * Returns the new face ids (∅ on any precondition failure).
+ */
+export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  // Directed boundary edges a→b straight from the half-edges.
+  const dirEdges: Array<[number, number]> = [];
+  for (const heRaw of selectedEdges) {
+    const he = canonicalEdge(em, heRaw);
+    if (em.halfEdges[he]!.twin >= 0) return new Set(); // interior edge — unsupported
+    dirEdges.push([edgeOrigin(em, he), edgeEnd(em, he)]);
+  }
+  if (dirEdges.length < 2) return new Set();
+
+  // Split into connected components (union-find on endpoints).
+  const parent = new Map<number, number>();
+  const find = (v: number): number => {
+    let r = v;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(v, r);
+    return r;
+  };
+  for (const [a, b] of dirEdges) {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+  const groups = new Map<number, Array<[number, number]>>();
+  for (const e of dirEdges) {
+    const r = find(e[0]);
+    let l = groups.get(r);
+    if (!l) { l = []; groups.set(r, l); }
+    l.push(e);
+  }
+  if (groups.size !== 2) return new Set();
+
+  /** Order a group's directed edges into a vertex walk. Null when branched. */
+  const orderLoop = (edges: Array<[number, number]>): { verts: number[]; cycle: boolean } | null => {
+    const next = new Map<number, number>();
+    const hasIn = new Set<number>();
+    for (const [a, b] of edges) {
+      if (next.has(a)) return null; // branching — not a simple loop
+      next.set(a, b);
+      hasIn.add(b);
+    }
+    let start = -1;
+    for (const a of next.keys()) {
+      if (!hasIn.has(a)) { start = a; break; }
+    }
+    const cycle = start === -1;
+    if (cycle) start = next.keys().next().value!;
+    const verts: number[] = [start];
+    let cur = start;
+    for (let guard = 0; guard <= edges.length; guard++) {
+      const nxt = next.get(cur);
+      if (nxt === undefined) break;
+      if (nxt === start) return { verts, cycle: true };
+      verts.push(nxt);
+      cur = nxt;
+    }
+    if (cycle) return null; // never closed — branched cycle
+    return verts.length === edges.length + 1 ? { verts, cycle: false } : null;
+  };
+
+  const [gA, gB] = [...groups.values()];
+  const A = orderLoop(gA!);
+  const B = orderLoop(gB!);
+  if (!A || !B || A.cycle !== B.cycle || A.verts.length !== B.verts.length) return new Set();
+
+  const n = A.verts.length;
+  const P = em.positions;
+  const bRev = [...B.verts].reverse();
+
+  // Cycle: rotate B so its first paired vertex is nearest A's first.
+  let off = 0;
+  if (A.cycle) {
+    const a0 = A.verts[0]!;
+    let best = Infinity;
+    for (let k = 0; k < n; k++) {
+      const b = bRev[k]!;
+      const dx = P[a0 * 3]! - P[b * 3]!;
+      const dy = P[a0 * 3 + 1]! - P[b * 3 + 1]!;
+      const dz = P[a0 * 3 + 2]! - P[b * 3 + 2]!;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < best) { best = d; off = k; }
+    }
+  }
+
+  const newIndices = toIndexArray(em);
+  const faceStart = newIndices.length / 3;
+  const quads = A.cycle ? n : n - 1;
+  for (let i = 0; i < quads; i++) {
+    const a0 = A.verts[i]!;
+    const a1 = A.verts[(i + 1) % n]!;
+    const b0 = bRev[(off + i) % n]!;
+    const b1 = bRev[(off + i + 1) % n]!;
+    // Quad (a1, a0, b0, b1): crosses A's boundary edge reversed (a1→a0) and
+    // B's boundary edge reversed (b0→b1 in reverse walk) — both manifold.
+    newIndices.push(a1, a0, b0);
+    newIndices.push(a1, b0, b1);
+  }
+
+  rebuildHalfEdges(em, em.positions, newIndices);
+  const out = new Set<number>();
+  for (let f = faceStart; f < newIndices.length / 3; f++) out.add(f);
+  return out;
 }

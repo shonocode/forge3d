@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter } from "./operators";
 import { smartUVProject, toggleSeams } from "./uv-unwrap";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
@@ -493,6 +493,86 @@ export function bevelSelection(): void {
     }
     state.editSelection.mode = "face";
     return newFaces;
+  });
+}
+
+/**
+ * Slide the selected edge loop sideways by `editConfig.slideAmount`
+ * (sign = side). Repeat presses accumulate — nudge, check, nudge again.
+ */
+export function edgeSlideSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  if (state.editSelection.mode !== "edge") {
+    status("⚠ Edge Slide: edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Select edges to slide");
+    return;
+  }
+  const t = state.editConfig.slideAmount;
+  if (t === 0) {
+    status("⚠ Slide Amount が 0 — スライダーで量を設定");
+    return;
+  }
+  const sel = new Set(state.editSelection.indices);
+  applyTopologyOp("Edge Slide", () => edgeSlide(em, sel, t));
+}
+
+/**
+ * Merge selection: vertex mode = Merge At Center (all → centroid), edge
+ * mode = Collapse (each connected edge run → its midpoint). The result is
+ * vertex geometry, so the mode switches to vertex for the follow-up.
+ */
+export function mergeSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  const mode = state.editSelection.mode;
+  if (mode === "face") {
+    status("⚠ Merge: vertex / edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Select components to merge");
+    return;
+  }
+  const sel = new Set(state.editSelection.indices);
+  applyTopologyOp("Merge", () => {
+    const result = mode === "vertex" ? mergeAtCenter(em, sel) : collapseEdges(em, sel);
+    if (result.size === 0) {
+      status("⚠ Merge: 頂点 2 つ以上（または辺）を選択");
+      return new Set<number>();
+    }
+    state.editSelection.mode = "vertex";
+    return result;
+  });
+}
+
+/**
+ * Bridge two boundary edge loops with a quad band. Select all edges of both
+ * loops (same vertex count) first — e.g. box-select both tube ends.
+ */
+export function bridgeSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  if (state.editSelection.mode !== "edge") {
+    status("⚠ Bridge: edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size < 2) {
+    status("⚠ Bridge: 2 つの境界ループの辺をすべて選択");
+    return;
+  }
+  const sel = new Set(state.editSelection.indices);
+  applyTopologyOp("Bridge Loops", () => {
+    const result = bridgeEdgeLoops(em, sel);
+    if (result.size === 0) {
+      status("⚠ Bridge: 同じ頂点数の境界ループ 2 本が必要（内部辺・分岐は不可）");
+      return new Set<number>();
+    }
+    state.editSelection.mode = "face";
+    return result;
   });
 }
 

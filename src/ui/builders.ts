@@ -280,6 +280,24 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).knifeSelection(),
     },
     {
+      label: "Edge Slide",
+      key: "G",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).edgeSlideSelection(),
+    },
+    {
+      label: "Merge",
+      key: "M",
+      modes: ["vertex", "edge"],
+      action: async () => (await import("../tools/edit-mode")).mergeSelection(),
+    },
+    {
+      label: "Bridge Loops",
+      key: "Ctrl+E",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).bridgeSelection(),
+    },
+    {
       label: "Mark Seam",
       key: "Shift+S",
       modes: ["edge"],
@@ -362,6 +380,11 @@ export function buildEditToolsPanel(): void {
   paramSection.appendChild(
     makeSlider("Bevel Width", "em-bevel-width", state.editConfig.bevelWidth, 0, 0.49, 0.01, (v) => {
       state.editConfig.bevelWidth = v;
+    }),
+  );
+  paramSection.appendChild(
+    makeSlider("Slide Amount", "em-slide-amount", state.editConfig.slideAmount, -0.95, 0.95, 0.05, (v) => {
+      state.editConfig.slideAmount = v;
     }),
   );
   el.appendChild(paramSection);

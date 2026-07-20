@@ -351,6 +351,12 @@ GLB エクスポートには含まれないので置きっぱなしで OK。</di
   <li>追加されたループ頂点を Gizmo で少し内側 (Y 方向に -0.02 程度) に動かす</li>
   <li><kbd>Tab</kbd> で Object Mode</li>
 </ol>
+
+<div class="tip">ループの「高さ」を変えたいときは Gizmo で動かすより <strong>Edge Slide</strong> が確実。
+<kbd>2</kbd> で Edge モードに戻してループの辺を選択 → 右パネルの Slide Amount で量を決めて
+<kbd>G</kbd>（マニュアル §4.6.1）。隣の辺に沿って滑るので、表面から浮いたり食い込んだりしない。
+ほかにも頂点をまとめる <strong>Merge</strong>（<kbd>M</kbd>）、筒どうしを繋ぐ
+<strong>Bridge Loops</strong>（<kbd>Ctrl+E</kbd>）が使える（§4.8.1 / §4.8.2）。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -709,6 +715,9 @@ forge3d 内で見えてた状態と一致してれば OK。</p>
   <tr><td>I</td><td>Inset (内側オフセット)</td></tr>
   <tr><td>Ctrl+B</td><td>Bevel (面取り)</td></tr>
   <tr><td>Ctrl+R</td><td>Loop Cut</td></tr>
+  <tr><td>G</td><td>Edge Slide (辺ループ横滑り)</td></tr>
+  <tr><td>M</td><td>Merge (頂点マージ / 辺収縮)</td></tr>
+  <tr><td>Ctrl+E</td><td>Bridge Loops (境界ループ接続)</td></tr>
   <tr><td>K</td><td>Knife (2 頂点直結)</td></tr>
   <tr><td>Shift+S</td><td>Mark Seam</td></tr>
   <tr><td>U</td><td>Smart UV Project</td></tr>

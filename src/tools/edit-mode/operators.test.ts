@@ -524,3 +524,184 @@ describe("delete variants", () => {
     expect(em.faces).toHaveLength(10);
   });
 });
+
+// ── F-M8 batch 1: edgeSlide / merge / bridge ──
+
+import { edgeSlide, mergeAtCenter, collapseEdges, bridgeEdgeLoops } from "./operators";
+import { edgeEnd, edgeOrigin, type EditMesh } from "./half-edge";
+
+/** Canonical half-edge between two vertices, or -1. */
+function edgeBetween(em: EditMesh, a: number, b: number): number {
+  let found = -1;
+  forEachEdge(em, (he) => {
+    const o = edgeOrigin(em, he);
+    const e = edgeEnd(em, he);
+    if ((o === a && e === b) || (o === b && e === a)) found = he;
+  });
+  return found;
+}
+
+/** 3×1 quad strip in the XY plane (verts 0-3 bottom, 4-7 top), CCW from +Z. */
+function makeStrip(): Mesh {
+  const positions = [
+    0, 0, 0,  1, 0, 0,  2, 0, 0,  3, 0, 0,
+    0, 1, 0,  1, 1, 0,  2, 1, 0,  3, 1, 0,
+  ];
+  const indices = [
+    0, 1, 5,  0, 5, 4,
+    1, 2, 6,  1, 6, 5,
+    2, 3, 7,  2, 7, 6,
+  ];
+  return makeStubMesh(positions, indices);
+}
+
+describe("edgeSlide", () => {
+  it("slides a vertical edge along the strip, both verts coherently", () => {
+    const em = buildEditMesh(makeStrip())!;
+    const he = edgeBetween(em, 1, 5);
+    expect(he).toBeGreaterThanOrEqual(0);
+    const sel = edgeSlide(em, new Set([he]), 0.5);
+    expect(sel.size).toBe(1);
+    // Topology unchanged.
+    expect(em.faces).toHaveLength(6);
+    expect(em.vertices).toHaveLength(8);
+    // Both loop verts moved 0.5 along X to the SAME side; Y/Z intact.
+    const x1 = em.positions[1 * 3]!;
+    const x5 = em.positions[5 * 3]!;
+    expect(Math.abs(x1 - 1)).toBeCloseTo(0.5, 5);
+    expect(x5).toBeCloseTo(x1, 5);
+    expect(em.positions[1 * 3 + 1]).toBeCloseTo(0, 5);
+    expect(em.positions[5 * 3 + 1]).toBeCloseTo(1, 5);
+    // Unselected verts untouched.
+    expect(em.positions[2 * 3]).toBeCloseTo(2, 5);
+  });
+
+  it("opposite sign slides to the opposite side", () => {
+    const emA = buildEditMesh(makeStrip())!;
+    const emB = buildEditMesh(makeStrip())!;
+    edgeSlide(emA, new Set([edgeBetween(emA, 1, 5)]), 0.5);
+    edgeSlide(emB, new Set([edgeBetween(emB, 1, 5)]), -0.5);
+    const dxA = emA.positions[1 * 3]! - 1;
+    const dxB = emB.positions[1 * 3]! - 1;
+    expect(dxA * dxB).toBeLessThan(0); // opposite directions
+    expect(Math.abs(dxB)).toBeCloseTo(0.5, 5);
+  });
+
+  it("t=0 or empty selection is a no-op", () => {
+    const em = buildEditMesh(makeStrip())!;
+    const before = new Float32Array(em.positions);
+    edgeSlide(em, new Set([edgeBetween(em, 1, 5)]), 0);
+    edgeSlide(em, new Set(), 0.5);
+    expect([...em.positions]).toEqual([...before]);
+  });
+});
+
+describe("mergeAtCenter / collapseEdges", () => {
+  it("merges two adjacent cube verts, dropping degenerate faces", () => {
+    const em = buildEditMesh(makeCube())!;
+    const sel = mergeAtCenter(em, new Set([0, 1]));
+    expect(sel.size).toBe(1);
+    expect(em.vertices).toHaveLength(7);
+    expect(em.faces).toHaveLength(10); // 2 tris on the shared edge collapsed
+    const v = [...sel][0]!;
+    expect(em.positions[v * 3]).toBeCloseTo(0, 5); // centroid of (-1,-1,-1)/(1,-1,-1)
+    expect(em.positions[v * 3 + 1]).toBeCloseTo(-1, 5);
+    expect(em.positions[v * 3 + 2]).toBeCloseTo(-1, 5);
+  });
+
+  it("merging non-adjacent verts keeps all faces", () => {
+    const em = buildEditMesh(makeCube())!;
+    mergeAtCenter(em, new Set([0, 6]));
+    expect(em.vertices).toHaveLength(7);
+    expect(em.faces).toHaveLength(12);
+  });
+
+  it("needs at least 2 verts", () => {
+    const em = buildEditMesh(makeCube())!;
+    expect(mergeAtCenter(em, new Set([0])).size).toBe(0);
+    expect(em.vertices).toHaveLength(8);
+  });
+
+  it("collapseEdges collapses each selected edge to its midpoint", () => {
+    const em = buildEditMesh(makeCube())!;
+    const he = edgeBetween(em, 0, 1);
+    const sel = collapseEdges(em, new Set([he]));
+    expect(sel.size).toBe(1);
+    expect(em.vertices).toHaveLength(7);
+    expect(em.faces).toHaveLength(10);
+  });
+
+  it("collapseEdges unions shared-endpoint runs into one vertex", () => {
+    const em = buildEditMesh(makeStrip())!;
+    // Bottom edges 0-1 and 1-2 share vertex 1 → single 3-vert cluster.
+    const sel = collapseEdges(em, new Set([edgeBetween(em, 0, 1), edgeBetween(em, 1, 2)]));
+    expect(sel.size).toBe(1);
+    const v = [...sel][0]!;
+    expect(em.positions[v * 3]).toBeCloseTo(1, 5); // centroid x of 0,1,2
+  });
+});
+
+describe("bridgeEdgeLoops", () => {
+  /** Two 1×1 quads facing each other at z=0 and z=1. */
+  function makeFacingQuads(): Mesh {
+    const positions = [
+      0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,
+      0, 0, 1,  1, 0, 1,  1, 1, 1,  0, 1, 1,
+    ];
+    const indices = [
+      0, 1, 2,  0, 2, 3,
+      4, 5, 6,  4, 6, 7,
+    ];
+    return makeStubMesh(positions, indices);
+  }
+
+  function boundaryEdges(em: EditMesh): Set<number> {
+    const out = new Set<number>();
+    forEachEdge(em, (he) => {
+      if (em.halfEdges[he]!.twin < 0) out.add(he);
+    });
+    return out;
+  }
+
+  it("bridges two 4-vert boundary cycles into a closed band", () => {
+    const em = buildEditMesh(makeFacingQuads())!;
+    const sel = boundaryEdges(em);
+    expect(sel.size).toBe(8); // 4 per quad (diagonals are interior)
+    const newFaces = bridgeEdgeLoops(em, sel);
+    expect(newFaces.size).toBe(8); // 4 quads × 2 tris
+    expect(em.faces).toHaveLength(12);
+    // The result is watertight: no boundary edges remain.
+    expect(boundaryEdges(em).size).toBe(0);
+  });
+
+  it("rejects loops with mismatched vertex counts", () => {
+    // Square at z=0, triangle at z=1.
+    const positions = [
+      0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,
+      0, 0, 1,  1, 0, 1,  0.5, 1, 1,
+    ];
+    const indices = [0, 1, 2, 0, 2, 3, 4, 5, 6];
+    const em = buildEditMesh(makeStubMesh(positions, indices))!;
+    const sel = boundaryEdges(em);
+    expect(bridgeEdgeLoops(em, sel).size).toBe(0);
+    expect(em.faces).toHaveLength(3);
+  });
+
+  it("rejects selections containing interior edges", () => {
+    const em = buildEditMesh(makeFacingQuads())!;
+    const sel = boundaryEdges(em);
+    sel.add(edgeBetween(em, 0, 2)); // a diagonal (interior)
+    expect(bridgeEdgeLoops(em, sel).size).toBe(0);
+  });
+
+  it("rejects a selection that isn't exactly two loops", () => {
+    const em = buildEditMesh(makeFacingQuads())!;
+    // Only quad A's boundary — one loop.
+    const sel = new Set<number>();
+    forEachEdge(em, (he) => {
+      if (em.halfEdges[he]!.twin < 0 && edgeOrigin(em, he) < 4 && edgeEnd(em, he) < 4) sel.add(he);
+    });
+    expect(sel.size).toBe(4);
+    expect(bridgeEdgeLoops(em, sel).size).toBe(0);
+  });
+});
