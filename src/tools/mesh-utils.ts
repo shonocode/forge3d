@@ -3,6 +3,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { shadeAutoSmooth } from "./auto-smooth";
 
 /** Default edge style for all meshes in the scene */
 export const DEFAULT_EDGE_COLOR = new Color4(0.2, 0.2, 0.35, 0.1);
@@ -43,6 +44,9 @@ export interface VertexSnapshot {
   positions: Float32Array;
   normals: Float32Array | null;
   indices: number[];
+  uvs: Float32Array | null;
+  matricesIndices: Float32Array | null;
+  matricesWeights: Float32Array | null;
 }
 
 /** Capture current vertex data for undo */
@@ -51,10 +55,16 @@ export function snapshotVertexData(mesh: AbstractMesh): VertexSnapshot | null {
   const normals = mesh.getVerticesData("normal");
   const indices = mesh.getIndices();
   if (!positions || !indices) return null;
+  const uvs = mesh.getVerticesData("uv");
+  const mi = mesh.getVerticesData("matricesIndices");
+  const mw = mesh.getVerticesData("matricesWeights");
   return {
     positions: new Float32Array(positions),
     normals: normals ? new Float32Array(normals) : null,
     indices: Array.from(indices),
+    uvs: uvs ? new Float32Array(uvs) : null,
+    matricesIndices: mi ? new Float32Array(mi) : null,
+    matricesWeights: mw ? new Float32Array(mw) : null,
   };
 }
 
@@ -65,6 +75,11 @@ export function restoreVertexData(mesh: AbstractMesh, snap: VertexSnapshot): voi
   vd.positions = new Float32Array(snap.positions);
   if (snap.normals) vd.normals = new Float32Array(snap.normals);
   vd.indices = snap.indices.slice();
+  if (snap.uvs) vd.uvs = new Float32Array(snap.uvs);
+  if (snap.matricesIndices && snap.matricesWeights) {
+    vd.matricesIndices = new Float32Array(snap.matricesIndices);
+    vd.matricesWeights = new Float32Array(snap.matricesWeights);
+  }
   vd.applyToMesh(m);
 }
 
@@ -159,6 +174,58 @@ export function weldVertices(mesh: AbstractMesh, tolerance = 0.001): boolean {
   if (normals) vd.normals = new Float32Array(newNor);
   vd.indices = newIndices;
   vd.applyToMesh(m);
+  return true;
+}
+
+/**
+ * Rebuild the mesh's normals with an angle threshold (see
+ * `auto-smooth.shadeAutoSmooth`): π = Shade Smooth, ~0 = Shade Flat,
+ * between = Blender's Auto Smooth. Splits vertices only across hard edges;
+ * UVs and skin weights are carried per source vertex.
+ *
+ * Returns false (no-op) when the mesh has morph targets — their per-target
+ * position buffers can't survive a vertex-count change.
+ */
+export function applyShading(mesh: AbstractMesh, angleRad: number): boolean {
+  const positions = mesh.getVerticesData("position");
+  const indices = mesh.getIndices();
+  if (!positions || !indices) return false;
+  if ((mesh as Mesh).morphTargetManager) return false;
+
+  const uvs = mesh.getVerticesData("uv");
+  const mi = mesh.getVerticesData("matricesIndices");
+  const mw = mesh.getVerticesData("matricesWeights");
+
+  const r = shadeAutoSmooth(positions, Array.from(indices), angleRad);
+
+  const vd = new VertexData();
+  vd.positions = r.positions;
+  vd.indices = r.indices.slice();
+  vd.normals = r.normals;
+  const n = r.sourceVerts.length;
+  if (uvs) {
+    const outUV = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const s = r.sourceVerts[i]! * 2;
+      outUV[i * 2] = uvs[s]!;
+      outUV[i * 2 + 1] = uvs[s + 1]!;
+    }
+    vd.uvs = outUV;
+  }
+  if (mi && mw) {
+    const outMI = new Float32Array(n * 4);
+    const outMW = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const s = r.sourceVerts[i]! * 4;
+      for (let k = 0; k < 4; k++) {
+        outMI[i * 4 + k] = mi[s + k]!;
+        outMW[i * 4 + k] = mw[s + k]!;
+      }
+    }
+    vd.matricesIndices = outMI;
+    vd.matricesWeights = outMW;
+  }
+  vd.applyToMesh(mesh as Mesh, true);
   return true;
 }
 

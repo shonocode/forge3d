@@ -286,18 +286,18 @@ export function knifeSelection(): void {
   const em = state.editMesh;
   if (!em) return;
   if (state.editSelection.mode !== "vertex") {
-    status("⚠ Knife: vertex mode only — pick 2 verts in adjacent tris");
+    status("⚠ Flip Diagonal: vertex mode only — pick 2 verts in adjacent tris");
     return;
   }
   if (state.editSelection.indices.size !== 2) {
-    status("⚠ Knife V1: select exactly 2 vertices");
+    status("⚠ Flip Diagonal: select exactly 2 vertices");
     return;
   }
   const sel = new Set(state.editSelection.indices);
-  applyTopologyOp("Knife", () => {
+  applyTopologyOp("Flip Diagonal", () => {
     const result = knife(em, sel);
     if (result.size === 0) {
-      status("⚠ Knife V1: verts must be the 3rd-verts of adjacent triangles");
+      status("⚠ Flip Diagonal: verts must be the 3rd-verts of adjacent triangles");
       return new Set();
     }
     return result;

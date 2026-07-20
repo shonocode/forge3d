@@ -374,8 +374,14 @@ Move / Rotate / Scale を切替（§4.2.1）— リング選択を <kbd>S</kbd> 
 <p>各メッシュごとに：</p>
 <ol class="steps">
   <li>メッシュを選択</li>
-  <li>右パネル「Mesh Tools」→ <strong>Recalc Normals</strong></li>
+  <li>左パネル「Mesh Tools」→ <strong>Recalc Normals</strong></li>
+  <li>くりまんじゅうの本体はなめらかにしたいので <strong>Shade Smooth</strong>。
+    逆に箱っぽいアイテムは <strong>Shade Flat</strong>、耳の付け根など「一部だけ角を立てたい」なら
+    <strong>Auto Smooth ∠</strong>（角度° に 40 前後）で自動振り分け（マニュアル §4.8.3）</li>
 </ol>
+<div class="note">Shade Smooth / Auto Smooth はハードエッジ部分で頂点を分割するので、
+<strong>UV 展開・リギングより前</strong>に済ませておくと後工程がぶれない。
+モーフ（表情）を付けた後は使えない点にも注意。</div>
 
 <h3>6.2 隣接頂点をマージ (オプション)</h3>
 <p>Sculpt で頂点が非常に近接してしまった箇所がある場合：</p>

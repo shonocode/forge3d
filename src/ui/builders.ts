@@ -7,7 +7,7 @@ import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
 import { lastSelected } from "../tools/selection";
 import {
-  recalcNormals, flipNormals, weldVertices, centerOrigin,
+  recalcNormals, flipNormals, weldVertices, centerOrigin, applyShading,
   snapshotVertexData, restoreVertexData,
 } from "../tools/mesh-utils";
 
@@ -160,9 +160,29 @@ export function buildBrushButtons(): void {
 
 export function buildMeshToolButtons(): void {
   const el = E("meshToolBtns");
-  const tools: { label: string; action: (m: import("@babylonjs/core").AbstractMesh) => boolean }[] = [
+  const tools: { label: string; title?: string; action: (m: import("@babylonjs/core").AbstractMesh) => boolean }[] = [
     { label: "Recalc Normals", action: recalcNormals },
     { label: "Flip Normals", action: flipNormals },
+    {
+      label: "Shade Smooth",
+      title: "全面をなめらかにシェーディング（頂点法線を平均化）",
+      action: (m) => applyShading(m, Math.PI),
+    },
+    {
+      label: "Shade Flat",
+      title: "面ごとのフラットシェーディング（ハードエッジで頂点分割）",
+      action: (m) => applyShading(m, 0.02),
+    },
+    {
+      label: "Auto Smooth ∠",
+      title: "下の角度より急な折り目だけハードエッジに（Blender の Auto Smooth 相当）",
+      action: (m) => {
+        const inp = document.getElementById("autoSmoothAngle") as HTMLInputElement | null;
+        const deg = inp ? parseFloat(inp.value) : 30;
+        const clamped = Number.isNaN(deg) ? 30 : Math.max(1, Math.min(180, deg));
+        return applyShading(m, (clamped * Math.PI) / 180);
+      },
+    },
     { label: "Weld Vertices", action: (m) => weldVertices(m) },
     { label: "Center Origin", action: centerOrigin },
   ];
@@ -171,12 +191,13 @@ export function buildMeshToolButtons(): void {
     b.className = "cbtn";
     b.textContent = tool.label;
     b.setAttribute("aria-label", tool.label);
+    if (tool.title) b.title = tool.title;
     b.addEventListener("click", () => {
       const m = lastSelected();
       if (!m) { status("メッシュを選択"); return; }
       const snap = snapshotVertexData(m);
       const ok = tool.action(m);
-      if (!ok) { status("変更なし"); return; }
+      if (!ok) { status("変更なし（モーフ付きメッシュはシェーディング変更不可）"); return; }
       if (snap) {
         state.history.push({
           label: tool.label,
@@ -187,6 +208,27 @@ export function buildMeshToolButtons(): void {
       status(tool.label + " 完了");
     });
     el.appendChild(b);
+
+    // Angle input rides directly under its button.
+    if (tool.label === "Auto Smooth ∠") {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:4px;margin:2px 0 4px;";
+      const lab = document.createElement("span");
+      lab.textContent = "角度°";
+      lab.style.cssText = "font-size:9px;color:var(--t4);";
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.id = "autoSmoothAngle";
+      inp.value = "30";
+      inp.min = "1";
+      inp.max = "180";
+      inp.step = "5";
+      inp.setAttribute("aria-label", "Auto smooth angle (degrees)");
+      inp.style.cssText = "flex:1;font-size:10px;background:var(--bg2);color:var(--t1);border:1px solid var(--bg3);border-radius:3px;padding:1px 4px;";
+      row.appendChild(lab);
+      row.appendChild(inp);
+      el.appendChild(row);
+    }
   }
 }
 
@@ -326,7 +368,8 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).loopCutSelection(),
     },
     {
-      label: "Knife",
+      // 実態は隣接 2 三角形の対角線フリップ — 本物のフリーハンドカットは Knife V2 で。
+      label: "Flip Diagonal",
       key: "K",
       modes: ["vertex"],
       action: async () => (await import("../tools/edit-mode")).knifeSelection(),
