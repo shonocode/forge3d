@@ -152,6 +152,8 @@ export function cleanupMesh(m: AbstractMesh): void {
     morph.manager.dispose();
     state.morphMap.delete(m.uniqueId);
   }
+  // Shape key drivers pointing at this mesh die with it.
+  state.morphDrivers = state.morphDrivers.filter((d) => d.meshUniqueId !== m.uniqueId);
   // Skeleton assignment cleanup
   for (const [, skelData] of state.skeletonMap) {
     if (skelData.assignedMesh === m) {

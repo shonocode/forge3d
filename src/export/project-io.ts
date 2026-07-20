@@ -27,6 +27,7 @@ import {
   bakeProceduralToMesh,
 } from "../materials/procedural-material";
 import { refreshMaskVisual } from "../tools/sculpt";
+import { validateMorphDrivers } from "../tools/morph-driver";
 import { createLayer, toggleLayerVisibility, assignMeshToLayer } from "../tools/layers";
 import { updateLayerUI, updateHierarchy } from "../ui/panels";
 import { openFileDialog } from "../ui/file-input";
@@ -89,6 +90,24 @@ function collectSidecar(): ProjectSidecar {
     }
   }
   if (Object.keys(boneConstraints).length) sidecar.boneConstraints = boneConstraints;
+
+  // Shape key drivers — meshes referenced by name (uniqueIds are per-session).
+  const morphDrivers = state.morphDrivers
+    .map((d) => {
+      const mesh = state.allMeshes.find((m) => m.uniqueId === d.meshUniqueId);
+      if (!mesh) return null;
+      return {
+        enabled: d.enabled,
+        meshName: mesh.name,
+        targetIndex: d.targetIndex,
+        boneName: d.boneName,
+        channel: d.channel,
+        inMin: d.inMin,
+        inMax: d.inMax,
+      };
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null);
+  if (morphDrivers.length) sidecar.morphDrivers = morphDrivers;
 
   return sidecar;
 }
@@ -209,6 +228,30 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
         if (entry.limitRotation) bd.limitRotation = { ...entry.limitRotation };
         if (entry.aim) bd.aimConstraint = { ...entry.aim };
       }
+    }
+  }
+
+  // Shape key drivers — resolve mesh names against the freshly imported
+  // meshes (fallback: whole scene); unresolvable / duplicate entries drop.
+  if (sidecar.morphDrivers) {
+    for (const e of validateMorphDrivers(sidecar.morphDrivers)) {
+      const mesh =
+        imported.find((m) => m.name === e.meshName) ??
+        state.allMeshes.find((m) => m.name === e.meshName);
+      if (!mesh) continue;
+      const exists = state.morphDrivers.some(
+        (d) => d.meshUniqueId === mesh.uniqueId && d.targetIndex === e.targetIndex,
+      );
+      if (exists) continue;
+      state.morphDrivers.push({
+        enabled: e.enabled,
+        meshUniqueId: mesh.uniqueId,
+        targetIndex: e.targetIndex,
+        boneName: e.boneName,
+        channel: e.channel,
+        inMin: e.inMin,
+        inMax: e.inMax,
+      });
     }
   }
 

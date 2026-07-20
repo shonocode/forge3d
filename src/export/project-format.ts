@@ -56,6 +56,13 @@ export interface ProjectSidecar {
    * constraint are stored; absent for projects that pre-date constraints.
    */
   boneConstraints?: Record<string, ProjectBoneConstraintEntry>;
+  /**
+   * Shape key drivers (bone channel → morph influence). Meshes and bones
+   * are referenced by NAME (uniqueIds are session-scoped); entries are
+   * validated by `validateMorphDrivers` on load, so malformed items are
+   * dropped rather than failing the whole project. Absent pre-F-M5-drivers.
+   */
+  morphDrivers?: import("../tools/morph-driver").MorphDriverSidecarEntry[];
 }
 
 /** One bone's constraint payload inside {@link ProjectSidecar.boneConstraints}. */
@@ -180,6 +187,11 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
         }
       }
     }
+  }
+  if (s.morphDrivers !== undefined) {
+    // Per-entry validation (with drop-don't-throw semantics) happens in
+    // validateMorphDrivers at restore time; here only the container shape.
+    if (!Array.isArray(s.morphDrivers)) throw new Error("Sidecar: morphDrivers must be an array");
   }
   return raw as ProjectSidecar;
 }

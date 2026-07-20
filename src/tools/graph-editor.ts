@@ -1,7 +1,8 @@
 import { state, E, status } from "../state";
-import type { AnimChannel, BoneTrack, KeyframeData } from "../state";
+import type { AnimChannel, BoneTrack, KeyframeData, MorphKeyframe, MorphTrack } from "../state";
 import { getActiveClip, interpolateTrack, scrubToFrame } from "./animation-tool";
 import { autoTangentsFor } from "./bezier";
+import { evalMorphTrack } from "./morph-track";
 
 // ── Graph Editor (V2 — Bezier handle editing) ─────────────────
 //
@@ -173,6 +174,38 @@ let _lastMapping: { w: number; h: number; lo: number; hi: number; maxFrames: num
 /** Currently dragged handle, or null if no drag in progress. */
 let _dragging: HandleHit | null = null;
 
+// ── Morph curve mode (F-M5 拡張) ──
+//
+// The "Morphs" toolbar toggle flips the editor from the selected bone's
+// channels to the active clip's morph influence curves (fixed 0–1 axis,
+// teal palette — matching the dopesheet's morph lanes). Keys drag in time
+// and value (clamped to [0,1]); tangents don't apply (morph keys are
+// easing-interpolated only).
+let _morphMode = false;
+
+interface MorphKeyHit {
+  track: MorphTrack;
+  kf: MorphKeyframe;
+  px: number;
+  py: number;
+}
+let _morphKeyHits: MorphKeyHit[] = [];
+
+let _dragMorph: {
+  track: MorphTrack;
+  kf: MorphKeyframe;
+  before: MorphKeyframe[];
+  moved: boolean;
+  offsetFrame: number;
+  offsetValue: number;
+} | null = null;
+
+/** Teal shades keyed by track index — same family as the dopesheet lanes. */
+function morphColor(i: number): string {
+  const l = 45 + ((i * 12) % 30);
+  return `hsl(172, 65%, ${l}%)`;
+}
+
 const HIT_RADIUS = 6;
 const HANDLE_DOT_RADIUS = 3;
 
@@ -204,6 +237,19 @@ export function initGraphEditor(): void {
       });
       _channelBar.appendChild(btn);
     }
+
+    // Morph curve mode toggle — teal to match the dopesheet's morph lanes.
+    const morphBtn = document.createElement("button");
+    morphBtn.className = "abtn";
+    morphBtn.style.cssText = "font-size:9px;padding:1px 6px;border-left:3px solid hsl(172,65%,50%)";
+    morphBtn.textContent = "Morphs";
+    morphBtn.title = "モーフ (表情) の influence カーブを表示・編集";
+    morphBtn.addEventListener("click", () => {
+      _morphMode = !_morphMode;
+      morphBtn.classList.toggle("on", _morphMode);
+      drawGraphEditor();
+    });
+    _channelBar.appendChild(morphBtn);
 
     // "Convert to Bezier" button — appended after channel toggles.
     // Lives in the same toolbar to keep the curve-editing affordances
@@ -246,6 +292,11 @@ export function drawGraphEditor(): void {
     drawEmptyMessage(ctx, w, h, "アクティブなクリップがありません");
     updateInfo("クリップを作成してください");
     _lastMapping = null;
+    return;
+  }
+
+  if (_morphMode) {
+    drawMorphGraph(ctx, w, h, clip.maxFrames, clip.morphTracks ?? []);
     return;
   }
 
@@ -333,6 +384,78 @@ export function drawGraphEditor(): void {
   updateInfo(`Frame ${state.currentFrame} / ${clip.maxFrames}  ·  ${track.keyframes.length} keys (${beziKeys} bezier)  ·  Y: ${lo.toFixed(2)}…${hi.toFixed(2)}`);
 }
 
+/** Render the morph-mode view: every morph track's 0–1 influence curve. */
+function drawMorphGraph(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  maxFrames: number,
+  tracks: readonly MorphTrack[],
+): void {
+  _morphKeyHits = [];
+  drawGrid(ctx, w, h, maxFrames);
+
+  const lo = -0.08;
+  const hi = 1.08;
+  _lastMapping = { w, h, lo, hi, maxFrames };
+
+  if (tracks.length === 0) {
+    drawEmptyMessage(ctx, w, h, "モーフキーがありません (Record Morphs で作成)");
+    drawCurrentFrameLine(ctx, w, h, state.currentFrame, maxFrames);
+    updateInfo(`Morphs: 0 tracks · Frame ${state.currentFrame}/${maxFrames}`);
+    return;
+  }
+
+  // 0 / 1 guide lines for the influence range.
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 1;
+  for (const v of [0, 1]) {
+    const py = Math.floor(mapY(v, lo, hi, h)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, py);
+    ctx.lineTo(w, py);
+    ctx.stroke();
+  }
+
+  let totalKeys = 0;
+  tracks.forEach((track, i) => {
+    if (track.keyframes.length === 0) return;
+    totalKeys += track.keyframes.length;
+    const color = morphColor(i);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let first = true;
+    for (let px = 0; px < w; px++) {
+      const v = evalMorphTrack(track, (px / w) * maxFrames);
+      if (v === null) continue;
+      const py = mapY(v, lo, hi, h);
+      if (first) { ctx.moveTo(px, py); first = false; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    for (const kf of track.keyframes) {
+      const kx = frameToPx(kf.frame, w, maxFrames);
+      const ky = mapY(kf.value, lo, hi, h);
+      const isDragged = _dragMorph?.kf === kf;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(kx, ky, isDragged ? 4 : 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      if (isDragged) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      _morphKeyHits.push({ track, kf, px: kx, py: ky });
+    }
+  });
+
+  drawCurrentFrameLine(ctx, w, h, state.currentFrame, maxFrames);
+  updateInfo(`Morphs: ${tracks.length} tracks · ${totalKeys} keys · Frame ${state.currentFrame}/${maxFrames}`);
+}
+
 // ── Convert-to-Bezier ──
 
 /**
@@ -390,6 +513,11 @@ function onPointerDown(e: PointerEvent): void {
   const rect = _canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
+
+  if (_morphMode) {
+    onMorphPointerDown(e, x, y, rect.width);
+    return;
+  }
 
   // Handle hit-test first — handles are visually small but high-
   // priority targets. We pick the closest handle within the radius
@@ -477,6 +605,7 @@ function onPointerDown(e: PointerEvent): void {
 }
 
 function onPointerMove(e: PointerEvent): void {
+  if (_dragMorph) { onMorphDragMove(e); return; }
   if (_dragKey) { onKeyDragMove(e); return; }
   if (!_dragging || !_canvas || !_lastMapping) return;
   const rect = _canvas.getBoundingClientRect();
@@ -513,10 +642,18 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if ((_dragging || _dragKey) && _canvas) {
+  if ((_dragging || _dragKey || _dragMorph) && _canvas) {
     try { _canvas.releasePointerCapture(e.pointerId); } catch { /* may not own */ }
   }
   _dragging = null;
+
+  if (_dragMorph) {
+    const drag = _dragMorph;
+    _dragMorph = null;
+    if (drag.moved) commitMorphDrag(drag);
+    else drawGraphEditor();
+    return;
+  }
 
   if (_dragKey) {
     const drag = _dragKey;
@@ -524,6 +661,92 @@ function onPointerUp(e: PointerEvent): void {
     if (drag.moved) commitKeyDrag(drag);
     else drawGraphEditor(); // plain click on a key — just clear the highlight
   }
+}
+
+// ── Morph-mode pointer handlers ──
+
+function onMorphPointerDown(e: PointerEvent, x: number, y: number, rectW: number): void {
+  if (!_canvas || !_lastMapping) return;
+  const clip = getActiveClip();
+  if (!clip) return;
+
+  let best: { hit: MorphKeyHit; distSq: number } | null = null;
+  for (const k of _morphKeyHits) {
+    const dx = k.px - x, dy = k.py - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= HIT_RADIUS * HIT_RADIUS && (!best || d2 < best.distSq)) {
+      best = { hit: k, distSq: d2 };
+    }
+  }
+  if (best) {
+    const { w, h, lo, hi, maxFrames } = _lastMapping;
+    const frameAtX = (x / w) * maxFrames;
+    const valueAtY = lo + (1 - y / h) * (hi - lo);
+    _dragMorph = {
+      track: best.hit.track,
+      kf: best.hit.kf,
+      before: structuredClone(best.hit.track.keyframes),
+      moved: false,
+      offsetFrame: frameAtX - best.hit.kf.frame,
+      offsetValue: valueAtY - best.hit.kf.value,
+    };
+    _canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
+  const frame = Math.round((x / rectW) * clip.maxFrames);
+  scrubToFrame(Math.max(0, Math.min(clip.maxFrames, frame)));
+  drawGraphEditor();
+}
+
+/** Live time+value move of the grabbed morph key (value clamped to [0,1]). */
+function onMorphDragMove(e: PointerEvent): void {
+  if (!_dragMorph || !_canvas || !_lastMapping) return;
+  const drag = _dragMorph;
+  const rect = _canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const { w, h, lo, hi, maxFrames } = _lastMapping;
+
+  const targetFrame = Math.round((x / w) * maxFrames - drag.offsetFrame);
+  const clamped = Math.max(0, Math.min(maxFrames, targetFrame));
+  // Same free-slot rule as bone keys: time moves only onto empty frames.
+  if (clamped !== drag.kf.frame && !drag.track.keyframes.some((k) => k !== drag.kf && k.frame === clamped)) {
+    drag.kf.frame = clamped;
+    drag.track.keyframes.sort((a, b) => a.frame - b.frame);
+  }
+
+  const valueAtY = lo + (1 - y / h) * (hi - lo);
+  drag.kf.value = Math.max(0, Math.min(1, valueAtY - drag.offsetValue));
+
+  drag.moved = true;
+  drawGraphEditor();
+}
+
+/** One undo per finished morph-key drag; re-poses the frame + refreshes UI. */
+function commitMorphDrag(drag: NonNullable<typeof _dragMorph>): void {
+  const track = drag.track;
+  const after = structuredClone(track.keyframes);
+  const before = drag.before;
+
+  const restore = (snap: MorphKeyframe[]): void => {
+    track.keyframes.splice(0, track.keyframes.length, ...structuredClone(snap));
+    scrubToFrame(state.currentFrame);
+    drawGraphEditor();
+    _keyEditedHandler?.();
+  };
+
+  state.history.push({
+    label: "Edit Morph Key",
+    undo() { restore(before); },
+    redo() { restore(after); },
+  });
+
+  status(`Morph key → frame ${drag.kf.frame}, influence ${drag.kf.value.toFixed(2)}`);
+  scrubToFrame(state.currentFrame);
+  drawGraphEditor();
+  _keyEditedHandler?.();
 }
 
 /**

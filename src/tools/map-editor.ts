@@ -198,6 +198,7 @@ export function removeMapInstance(instanceId: string): void {
       if (paintTex) { paintTex.dispose(); state.paintTextureMap.delete(mesh.uniqueId); }
       const morph = state.morphMap.get(mesh.uniqueId);
       if (morph) { morph.manager.dispose(); state.morphMap.delete(mesh.uniqueId); }
+      state.morphDrivers = state.morphDrivers.filter((d) => d.meshUniqueId !== mesh.uniqueId);
       for (const [, skelData] of state.skeletonMap) {
         if (skelData.assignedMesh === mesh) skelData.assignedMesh = null;
       }

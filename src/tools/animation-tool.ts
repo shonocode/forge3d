@@ -9,6 +9,7 @@ import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
 import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain, refreshPoseGizmoOrientation, applyAllBoneConstraints } from "./skeleton-tool";
+import { applyMorphDrivers } from "./morph-driver-apply";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
 import { evalMorphTrack, upsertMorphKey, removeMorphKeyAt, findMorphTrack } from "./morph-track";
@@ -808,6 +809,8 @@ export function installIkRenderHook(scene: Scene): void {
     solveAllIKConstraints();
     // Limit Rotation / Aim run after IK so they correct its output too.
     applyAllBoneConstraints();
+    // Shape key drivers read the settled pose (post-IK, post-constraint).
+    applyMorphDrivers();
     updateIkTargetMarker();
   });
 }

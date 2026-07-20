@@ -307,6 +307,8 @@ export const state = {
   painting: false,
   keysDown: new Set<string>(),
   morphMap: new Map<number, MorphData>(),
+  /** Shape key drivers (bone channel → morph influence), applied per frame. */
+  morphDrivers: [] as import("./tools/morph-driver").MorphDriver[],
   sculptConfig: { radius: 0.5, strength: 0.05, falloff: 2, brush: "push", dyntopo: false, detail: 0.1, symX: false, symY: false, symZ: false } as SculptConfig,
   paintConfig: { color: "#ff0000", size: 20, opacity: 1, eraser: false } as PaintConfig,
   paintTextureMap: new Map<number, DynamicTexture>(),
