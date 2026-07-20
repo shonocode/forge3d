@@ -10,8 +10,10 @@ import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
 import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, vertexSlide } from "./operators";
 import { smartUVProject, toggleSeams } from "./uv-unwrap";
+import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { rebuildHalfEdges, toIndexArray } from "./half-edge";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
@@ -301,6 +303,140 @@ export function knifeSelection(): void {
       return new Set();
     }
     return result;
+  });
+}
+
+// ── Knife V2 (freehand cut) ────────────────────────────────────────────────
+
+let knifeSvg: SVGSVGElement | null = null;
+let knifeLine: SVGLineElement | null = null;
+let knifeStart: { x: number; y: number } | null = null;
+
+/**
+ * Arm the interactive Knife: the next drag on the viewport draws a cut line,
+ * and on release every mesh edge crossing the camera-space cutting plane
+ * (within the drawn segment's screen extent) is split — Blender's knife with
+ * cut-through ON (front and back faces are cut alike; no occlusion test).
+ * Returns true if Edit Mode swallowed the keystroke.
+ */
+export function startKnifeCut(): boolean {
+  if (!state.editMesh) return false;
+  const canvas = state.canvas;
+  const onMove = (e: PointerEvent): void => {
+    if (!knifeStart) return;
+    if (!knifeSvg) {
+      knifeSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      knifeSvg.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999;";
+      knifeLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      knifeLine.setAttribute("stroke", "rgba(255,220,80,0.95)");
+      knifeLine.setAttribute("stroke-width", "1.5");
+      knifeLine.setAttribute("stroke-dasharray", "6 4");
+      knifeSvg.appendChild(knifeLine);
+      document.body.appendChild(knifeSvg);
+    }
+    knifeLine!.setAttribute("x1", String(knifeStart.x));
+    knifeLine!.setAttribute("y1", String(knifeStart.y));
+    knifeLine!.setAttribute("x2", String(e.clientX));
+    knifeLine!.setAttribute("y2", String(e.clientY));
+  };
+  const onDown = (e: PointerEvent): void => {
+    knifeStart = { x: e.clientX, y: e.clientY };
+    canvas.addEventListener("pointermove", onMove);
+  };
+  const onUp = (e: PointerEvent): void => {
+    canvas.removeEventListener("pointermove", onMove);
+    canvas.removeEventListener("pointerdown", onDown);
+    canvas.removeEventListener("pointerup", onUp);
+    const start = knifeStart;
+    cleanupKnife();
+    if (!start) return;
+    const rect = state.canvas.getBoundingClientRect();
+    executeKnifeCut(
+      start.x - rect.left,
+      start.y - rect.top,
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+    );
+  };
+  canvas.addEventListener("pointerdown", onDown, { once: true });
+  canvas.addEventListener("pointerup", onUp);
+  status("Knife — ドラッグで切断線を引く（表裏とも切れる）");
+  return true;
+}
+
+function cleanupKnife(): void {
+  knifeSvg?.remove();
+  knifeSvg = null;
+  knifeLine = null;
+  knifeStart = null;
+}
+
+/**
+ * Turn the drawn screen segment (canvas-relative px) into a local-space
+ * cutting plane and run {@link planeCut} through the standard topology-op
+ * pipeline. The plane is spanned by three unprojected points (near₁, far₁,
+ * far₂) — valid for perspective and orthographic cameras alike — and mapped
+ * into mesh-local space before cutting, which stays correct under any affine
+ * mesh transform.
+ */
+function executeKnifeCut(x1: number, y1: number, x2: number, y2: number): void {
+  const em = state.editMesh;
+  if (!em || !currentOverlay || !currentGizmo) return;
+  if (Math.hypot(x2 - x1, y2 - y1) < 8) {
+    status("⚠ Knife: ドラッグで切断線を引く");
+    return;
+  }
+  const scene = state.scene;
+  const camera = scene.activeCamera;
+  if (!camera) return;
+  const engine = scene.getEngine();
+  const w = engine.getRenderWidth();
+  const h = engine.getRenderHeight();
+  const view = scene.getViewMatrix();
+  const proj = scene.getProjectionMatrix();
+  const unproject = (sx: number, sy: number, z: number): Vector3 =>
+    Vector3.Unproject(new Vector3(sx, sy, z), w, h, Matrix.Identity(), view, proj);
+
+  // Plane through the eye containing both pick rays = through (near₁, far₁,
+  // far₂). Mapped to local space point-by-point (affine maps keep planes flat).
+  const invWorld = em.source.getWorldMatrix().clone().invert();
+  const a = Vector3.TransformCoordinates(unproject(x1, y1, 0), invWorld);
+  const b = Vector3.TransformCoordinates(unproject(x1, y1, 1), invWorld);
+  const c = Vector3.TransformCoordinates(unproject(x2, y2, 1), invWorld);
+  const n = Vector3.Cross(b.subtract(a), c.subtract(a));
+  if (n.lengthSquared() < 1e-18) {
+    status("⚠ Knife: 切断線が不正 (線を引き直して)");
+    return;
+  }
+
+  // Accept only cut points whose screen projection falls within the drawn
+  // segment (±2% pad) — the plane itself is infinite.
+  const worldMatrix = em.source.getWorldMatrix();
+  const vp = camera.viewport.toGlobal(w, h);
+  const transform = scene.getTransformMatrix();
+  const segDx = x2 - x1;
+  const segDy = y2 - y1;
+  const segLen2 = segDx * segDx + segDy * segDy;
+  const tmp = new Vector3();
+  const accept = (lx: number, ly: number, lz: number): boolean => {
+    tmp.copyFromFloats(lx, ly, lz);
+    const s = Vector3.Project(tmp, worldMatrix, transform, vp);
+    if (s.z < 0 || s.z > 1) return false;
+    const t = ((s.x - x1) * segDx + (s.y - y1) * segDy) / segLen2;
+    return t >= -0.02 && t <= 1.02;
+  };
+
+  applyTopologyOp("Knife", () => {
+    const result = planeCut(em.positions, toIndexArray(em), [a.x, a.y, a.z], [n.x, n.y, n.z], accept);
+    if (!result) {
+      status("⚠ Knife: 切断線がメッシュの辺を横切っていない");
+      return new Set(state.editSelection.indices);
+    }
+    rebuildHalfEdges(em, result.positions, result.indices);
+    // The fresh cut verts are the natural follow-up selection (drag the new
+    // edge loop into shape) — switch to vertex mode.
+    state.editSelection.mode = "vertex";
+    return result.newVerts;
   });
 }
 

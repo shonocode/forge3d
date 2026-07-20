@@ -368,9 +368,15 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).loopCutSelection(),
     },
     {
-      // 実態は隣接 2 三角形の対角線フリップ — 本物のフリーハンドカットは Knife V2 で。
-      label: "Flip Diagonal",
+      label: "Knife",
       key: "K",
+      modes: ["vertex", "edge", "face"],
+      action: async () => { (await import("../tools/edit-mode")).startKnifeCut(); },
+    },
+    {
+      // 実態は隣接 2 三角形の対角線フリップ（本物のカットは Knife）。
+      label: "Flip Diagonal",
+      key: "F",
       modes: ["vertex"],
       action: async () => (await import("../tools/edit-mode")).knifeSelection(),
     },

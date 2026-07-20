@@ -97,7 +97,7 @@ footer{margin-top:80px;padding-top:24px;border-top:1px solid var(--bd);
       <li><a href="#edit-inset">4.4 Inset</a></li>
       <li><a href="#edit-bevel">4.5 Bevel</a></li>
       <li><a href="#edit-loopcut">4.6 Loop Cut / Edge Slide</a></li>
-      <li><a href="#edit-knife">4.7 Flip Diagonal</a></li>
+      <li><a href="#edit-knife">4.7 Knife / Flip Diagonal</a></li>
       <li><a href="#edit-delete">4.8 Delete / Merge / Bridge / 法線制御</a></li>
       <li><a href="#edit-seam">4.9 Seam / UV Unwrap</a></li>
     </ol>
@@ -372,20 +372,34 @@ quad メッシュでも対角線に引っ張られない。トポロジは変わ
 </ol>
 <p>トポロジは変わらない (位置のみ)。辺で繋がっていない 2 頂点を選ぶとエラー。</p>
 
-<h3 id="edit-knife">4.7 Flip Diagonal (対角線フリップ)</h3>
+<h3 id="edit-knife">4.7 Knife / Flip Diagonal</h3>
+
+<h4 id="edit-knife-cut">4.7.1 Knife (ナイフカット)</h4>
+<p>画面上にドラッグで線を引き、その線が横切るメッシュの辺をすべて切断して面を再分割する。
+Blender の Knife (cut through ON) 相当。<strong>キー: <kbd>K</kbd></strong> (どの選択モードでも可)</p>
+<ol>
+  <li><kbd>K</kbd> → ナイフモードに入る (ステータスバーに案内表示)</li>
+  <li>ビューポート上で<strong>切りたい場所を横切るようにドラッグ</strong> (黄色の破線がプレビュー)</li>
+  <li>離すと切断実行 — 線が横切った辺すべてに新しい頂点が挿入され、面が分割される</li>
+  <li>実行後は Vertex モードに自動切替、切断線上の新頂点が選択状態 → そのまま Gizmo で動かせる</li>
+</ol>
+<p>切断はカメラと切断線が成す<strong>平面</strong>で行われ、<strong>手前の面も奥の面も両方切れる</strong>
+(cut through)。切断範囲は引いた線分の画面上の長さに限定される (線を短く引けば部分カット)。
+新しい頂点の UV / ボーンウェイトは切断された辺の両端から自動補間される (§4.9.4)。</p>
+<div class="warn">オクルージョン判定はない (裏側の面も必ず切れる)。
+手前だけ切りたい場合はビューを工夫して線の長さで範囲を絞る。1 カット = 1 Undo。</div>
+
+<h4 id="edit-flip-diagonal">4.7.2 Flip Diagonal (対角線フリップ)</h4>
 <p>隣接 2 三角形の共有辺 (対角線) を、反対側の 2 頂点を結ぶ辺に張り替える。
-<strong>キー: <kbd>K</kbd></strong></p>
-<div class="note">以前は「Knife」という名称だったが、実態は<strong>対角線フリップ</strong>
-(任意の線分でメッシュを切る本来の Knife ではない) なので、名称を実態に合わせた。
-本物のフリーハンド Knife (線分 × 辺の交差計算) は将来 Knife V2 として別途実装予定。</div>
+<strong>キー: <kbd>F</kbd></strong></p>
+<div class="note">以前は「Knife」の名前で K キーに割り当てられていたが、本物の Knife (§4.7.1)
+実装に伴い <kbd>F</kbd> = Flip へ移動した。</div>
 <ol>
   <li>Vertex モードで <strong>ちょうど 2 つ</strong>の頂点を選択</li>
   <li>2 頂点が「隣接 2 三角形の各 off-edge vertex」になっているとき有効</li>
-  <li><kbd>K</kbd> → 共有辺が消えて、2 頂点を直結する新しい辺に置換 (= edge flip)</li>
+  <li><kbd>F</kbd> → 共有辺が消えて、2 頂点を直結する新しい辺に置換 (= edge flip)</li>
 </ol>
 <p>三角化の整理に重宝。Bevel / Inset の後で対角線の向きを変えたい時など。</p>
-<div class="warn"><strong>V1 制限</strong>: 隣接でない 2 頂点を選んだ場合はエラー。
-本来のフリーハンド Knife (任意の線分でメッシュを切る) は V2 (線分 × 辺の交差計算が必要) で別途実装予定。</div>
 
 <h3 id="edit-delete">4.8 Delete</h3>
 <p>選択した要素を削除。<strong>キー: <kbd>X</kbd> / <kbd>Delete</kbd> / <kbd>Backspace</kbd></strong></p>
@@ -1050,7 +1064,8 @@ glTF 標準の metallic-roughness テクスチャ（R=AO / G=roughness / B=metal
   <tr><td>Shift+V</td><td>Edit / vertex</td><td>Vertex Slide (アンカー → 動かす頂点の順に 2 選択)</td></tr>
   <tr><td>M</td><td>Edit / vertex,edge</td><td>Merge (頂点マージ / 辺収縮)</td></tr>
   <tr><td>Ctrl+E</td><td>Edit / edge</td><td>Bridge Loops (境界ループ 2 本を接続)</td></tr>
-  <tr><td>K</td><td>Edit / vertex</td><td>Flip Diagonal (対角線フリップ、2 頂点)</td></tr>
+  <tr><td>K</td><td>Edit</td><td>Knife (ドラッグで切断線 → 辺を切断)</td></tr>
+  <tr><td>F</td><td>Edit / vertex</td><td>Flip Diagonal (対角線フリップ、2 頂点)</td></tr>
   <tr><td>Shift+S</td><td>Edit / edge</td><td>Mark Seam (UV 展開用シーム)</td></tr>
   <tr><td>U</td><td>Edit</td><td>Smart UV Project (UV 展開)</td></tr>
   <tr><td>X / Delete</td><td>Edit</td><td>削除</td></tr>
@@ -1104,7 +1119,8 @@ glTF 標準の metallic-roughness テクスチャ（R=AO / G=roughness / B=metal
   <tr><td>Inset / インセット</td><td>面の内側にスケールしたコピーを作る。ボタン形状の起点。</td></tr>
   <tr><td>Bevel / 面取り</td><td>辺を「斜めに削った面」に置換。角を丸める。</td></tr>
   <tr><td>Loop Cut / ループカット</td><td>メッシュをぐるりと一周する辺ループを追加。関節用ループなどに。</td></tr>
-  <tr><td>Flip Diagonal / 対角線フリップ</td><td>隣接 2 三角形の共有辺を反対側の 2 頂点を結ぶ辺に張り替える操作。旧「Knife」を実態に合わせて改称。§4.7 参照。</td></tr>
+  <tr><td>Knife / ナイフ</td><td>画面上に引いた線でメッシュの辺を切断し、面を再分割する操作。カメラと線が成す平面で表裏とも切れる (cut through)。§4.7.1 参照。</td></tr>
+  <tr><td>Flip Diagonal / 対角線フリップ</td><td>隣接 2 三角形の共有辺を反対側の 2 頂点を結ぶ辺に張り替える操作。§4.7.2 参照。</td></tr>
   <tr><td>Shade Smooth / Flat</td><td>面をなめらか / フラットにシェーディングする法線制御。§4.8.3 参照。</td></tr>
   <tr><td>Auto Smooth / 自動スムーズ</td><td>指定角度より急な折り目だけハードエッジにし、ゆるやかな面はなめらかに繋ぐ法線制御。§4.8.3 参照。</td></tr>
   <tr><td>Edge Slide / エッジスライド</td><td>辺ループを隣の辺 (レール) に沿って横滑りさせる操作。Loop Cut 後のループ位置決めに使う。§4.6.1 参照。</td></tr>
