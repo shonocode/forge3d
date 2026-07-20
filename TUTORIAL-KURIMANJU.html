@@ -438,8 +438,19 @@ Apply しないと Mirror で生成された左側がマージ後に消える。
 <strong>リギング前に展開しておくのが引き続きおすすめ</strong>。Morph Target 付きは展開不可
 （モーフ作成前に展開すること）。</div>
 
-<div class="note">展開結果の 2D ビューはまだ無いので、ペイント時に「あ、ここの UV が伸びてる」と
-気付いてから手直しする流れ。Phase 2 で 2D UV エディタを実装予定。</div>
+<h3>7.3 UV レイアウトの確認と調整（UV Editor）</h3>
+<ol class="steps">
+  <li>右パネル「UV Unwrap」→ <strong>🗺 UV Editor</strong> で 2D UV ビューを開く</li>
+  <li><strong>🌡 ストレッチ表示</strong>をオンにして、赤くなる島がないか確認
+    （青=均一、赤=テクスチャが伸びる場所）</li>
+  <li>顔を描く正面の島が小さい場合は、島をクリック → <kbd>S</kbd> でドラッグ拡大
+    （顔にテクセル密度を多く割り当てると目や口がくっきり描ける）</li>
+  <li>島の位置が重なりそうなら <kbd>G</kbd> でドラッグ移動、<kbd>R</kbd> で回転</li>
+  <li><strong>Apply &amp; Close</strong> で確定（3D ビューにもライブ反映されるので塗り上がりを見ながら調整できる）</li>
+</ol>
+
+<div class="tip">赤い島はシーム不足のサイン。Cancel で閉じてシームを追加 → 再展開 → もう一度
+UV Editor で確認、のループが Blender 流の正攻法。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -730,10 +741,19 @@ forge3d 内で見えてた状態と一致してれば OK。</p>
   <tr><td>G</td><td>Edge Slide (辺ループ横滑り)</td></tr>
   <tr><td>M</td><td>Merge (頂点マージ / 辺収縮)</td></tr>
   <tr><td>Ctrl+E</td><td>Bridge Loops (境界ループ接続)</td></tr>
-  <tr><td>K</td><td>Knife (2 頂点直結)</td></tr>
+  <tr><td>K</td><td>Flip Diagonal (対角線フリップ)</td></tr>
   <tr><td>Shift+S</td><td>Mark Seam</td></tr>
   <tr><td>U</td><td>Smart UV Project</td></tr>
   <tr><td>X / Del</td><td>削除</td></tr>
+</table>
+
+<h3>UV Editor</h3>
+<table>
+  <tr><th>キー</th><th>動作</th></tr>
+  <tr><td>I / V</td><td>Island / Vertex モード</td></tr>
+  <tr><td>G / R / S</td><td>島の Move / Rotate / Scale</td></tr>
+  <tr><td>ホイール / 中・右ドラッグ</td><td>ズーム / パン</td></tr>
+  <tr><td>Esc</td><td>キャンセルして閉じる</td></tr>
 </table>
 
 <h3>ツール切替</h3>

@@ -455,9 +455,19 @@ export function buildEditToolsPanel(): void {
     void import("../tools/edit-mode").then((mod) => mod.unwrapMesh());
   });
   uvSection.appendChild(unwrapBtn);
+  const uvEditorBtn = document.createElement("button");
+  uvEditorBtn.className = "abtn";
+  uvEditorBtn.innerHTML = "<span>🗺 UV Editor</span>";
+  uvEditorBtn.title = "2D UV ビューで島の移動 / 回転 / 拡縮、頂点編集、ストレッチ可視化";
+  uvEditorBtn.style.cssText = "text-align:left;display:block;width:100%;";
+  uvEditorBtn.addEventListener("click", () => {
+    void import("./uv-editor").then((mod) => mod.openUVEditor());
+  });
+  uvSection.appendChild(uvEditorBtn);
   const seamHelp = document.createElement("div");
   seamHelp.style.cssText = "font-size:9px;color:var(--t4);line-height:1.5;margin-top:6px;";
   seamHelp.innerHTML = "Edge mode で辺を選び <b>Mark Seam</b> でシーム指定 → <b>Smart UV Project</b><br>" +
+    "展開後は <b>🗺 UV Editor</b> でレイアウト調整<br>" +
     "<span style=\"color:var(--red)\">⚠ rig 済みメッシュには使えない</span>";
   uvSection.appendChild(seamHelp);
   el.appendChild(uvSection);
