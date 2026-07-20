@@ -354,6 +354,11 @@ export const state = {
   // Animation state
   animClips: [] as AnimClipData[],
   activeClipId: null as string | null,
+  /**
+   * Onion-skin ghosts: wire skeletons at ±offset frames around the
+   * playhead (previous = green, next = red). Persisted via prefs.
+   */
+  onionSkin: { enabled: false, offset: 5 },
   currentFrame: 0,
   isPlaying: false,
   animClipCounter: 0,

@@ -681,14 +681,42 @@ Pose モードでボーンの回転ドラッグを終えるたびに、そのボ
 
 <h3>9.3 編集</h3>
 <ul>
-  <li><strong>Dopesheet</strong>: キーフレーム一覧を時間軸上で表示・編集</li>
-  <li><strong>Graph Editor</strong>: 個別チャンネルの Bezier カーブ編集</li>
+  <li><strong>Dopesheet</strong>: キーフレーム一覧を時間軸上で表示・編集 (§9.3.1)</li>
+  <li><strong>Graph Editor</strong>: 個別チャンネルのカーブ表示、キーの移動 (§9.3.2)、Bezier タンジェント編集</li>
   <li><strong>Easing</strong>: Linear / Ease In/Out/InOut の組み合わせを各キーに設定可能</li>
   <li>キーフレームのコピー / ペースト / 削除</li>
 </ul>
 
+<h4>9.3.1 Dopesheet のキー編集 (リタイミング)</h4>
+<p>ドープシートのキー (◆) は<strong>ドラッグで時間移動</strong>できる。</p>
+<ul>
+  <li><strong>クリック</strong>: そのキーへスクラブ + そのキーを単独選択 (行のボーンも選択される)</li>
+  <li><strong>Shift+クリック</strong>: 複数選択のトグル。<strong>行をまたいだ選択も可</strong>
+    (腕と脚のキーをまとめて動かす等)。モーフレーンのキーも選択できる</li>
+  <li><strong>ドラッグ</strong>: 選択中の全キーを剛体移動 (相対間隔を保ったまま)。ドラッグ中は
+    移動先に半透明ゴーストが表示され、ステータス行に Δフレームが出る。全キーが 0〜Max Frames に
+    収まるよう自動クランプ</li>
+  <li><strong>ドロップ</strong>: 1 回のドラッグ = 1 Undo (Retime Keys)。移動先に別の (未選択)
+    キーがあった場合は<strong>上書き</strong>される (Blender 等と同じ)</li>
+  <li>空白部分のクリックは従来通りスクラブ + キー選択解除</li>
+</ul>
+
+<h4>9.3.2 Graph Editor のキー移動</h4>
+<p>カーブ上のキー (●) を<strong>ドラッグで時間と値を同時に編集</strong>できる (1 ドラッグ = 1 Undo)。
+タンジェントハンドル (○) が優先でヒットし、次にキー、どちらでもなければスクラブ。
+移動先フレームに既存キーがある場合、時間は動かず値だけ変わる (上書きしたいときは
+ドープシート §9.3.1 で)。ドラッグ中のキーは白枠付きの大きい点で表示される。</p>
+
 <h3>9.4 再生</h3>
 <p>Timeline 下の Play ボタンで再生プレビュー。Loop Mode を Cycle / Constant で切替。</p>
+
+<h4>9.4.1 オニオンスキン (👻 Onion Skin)</h4>
+<p>Timeline セクションの <strong>👻 Onion Skin</strong> を ON にすると、現在フレームの
+<strong>±Offset フレーム</strong>のポーズがゴースト骨格 (ワイヤ) として表示される —
+<strong>前 = 緑、次 = 赤</strong>。ポーズの来し方と行き先が見えるので、動きの緩急やアークの
+確認がスクラブなしでできる。Offset (1〜20f) はスライダーで調整。ゴーストはクリップの
+キーフレームデータから純粋に計算されるので、実際のボーン / メッシュには影響しない。
+設定はブラウザに保存され次回起動時も維持される。</p>
 
 <h3>9.5 エクスポート</h3>
 <p>クリップ単位で JSON 出力。GLB エクスポート時も AnimationGroup として埋め込まれる。</p>
@@ -935,6 +963,8 @@ glTF 標準の metallic-roughness テクスチャ（R=AO / G=roughness / B=metal
   <tr><td>Aim / Damped Track</td><td>ボーンの軸をターゲットへ向け続けるコンストレイント。Blender の Damped Track 相当。視線・砲塔などに。§7.7 参照。</td></tr>
   <tr><td>Keyframe</td><td>時間軸上の「ここでこの値」を記録する点。間は補間される。</td></tr>
   <tr><td>Easing</td><td>キーフレーム間の補間カーブ。Linear (一定) / Ease In/Out など。</td></tr>
+  <tr><td>Retiming / リタイミング</td><td>キーフレームの時間位置を変えてアニメの緩急を調整すること。Forge3D ではドープシートのキーをドラッグ。§9.3.1 参照。</td></tr>
+  <tr><td>Onion Skin / オニオンスキン</td><td>前後フレームのポーズを半透明ゴーストで重ね表示するアニメ確認手法。前=緑 / 次=赤。§9.4.1 参照。</td></tr>
   <tr><td>Bezier handle</td><td>キーフレームの前後に出ている曲線制御点。Graph Editor で操作。</td></tr>
   <tr><td>Morph Target / Shape Key</td><td>頂点位置の差分セット。「笑い顔」「怒り顔」などを複数登録して混合できる。</td></tr>
   <tr><td>Modifier</td><td>メッシュを非破壊的に変形する Stack 操作。Subdivision / Mirror / Array など。</td></tr>

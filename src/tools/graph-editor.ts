@@ -24,7 +24,8 @@ import { autoTangentsFor } from "./bezier";
 // Hit zones (canvas-space, in priority order — checked top to bottom
 // on pointerdown):
 //   1. Handle endpoints (drag → edit tangent for that channel/end)
-//   2. Keyframe centers (left-click → scrub + select; future: drag → edit time/value)
+//   2. Keyframe centers (drag → move the key in time AND value on that
+//      channel; one undo entry per drag — F-M7)
 //   3. Background (click → scrub to frame, V1 behavior)
 //
 // Convert-to-Bezier UX: the "B" button below the channel toggles
@@ -91,6 +92,42 @@ interface HandleHit {
   py: number;
 }
 let _handleHits: HandleHit[] = [];
+
+/** Keyframe-dot hit target (kept separate from handles — lower priority). */
+interface KeyHit {
+  kf: KeyframeData;
+  channel: AnimChannel;
+  px: number;
+  py: number;
+}
+let _keyHits: KeyHit[] = [];
+
+/**
+ * In-progress keyframe drag (time + value). `offsetFrame`/`offsetValue`
+ * are the pointer's initial data-space offset from the key, so the key
+ * follows the pointer without an initial jump when grabbed off-center.
+ */
+let _dragKey: {
+  kf: KeyframeData;
+  channel: AnimChannel;
+  track: BoneTrack;
+  before: KeyframeData[];
+  moved: boolean;
+  offsetFrame: number;
+  offsetValue: number;
+} | null = null;
+
+/**
+ * Hook fired after a key drag lands (or is undone) so the UI layer can
+ * refresh the keyframe list + dopesheet. Registered from bindings to
+ * avoid an import cycle with panels.ts / dopesheet.ts.
+ */
+let _keyEditedHandler: (() => void) | null = null;
+
+/** Register the callback fired after a graph-editor key edit lands. */
+export function setKeyEditedHandler(fn: () => void): void {
+  _keyEditedHandler = fn;
+}
 
 /**
  * Cached data → canvas mapping from the last render, used to convert
@@ -168,6 +205,7 @@ export function drawGraphEditor(): void {
   const ctx = _ctx;
   ctx.clearRect(0, 0, w, h);
   _handleHits = [];
+  _keyHits = [];
 
   const clip = getActiveClip();
   if (!clip) {
@@ -240,10 +278,17 @@ export function drawGraphEditor(): void {
         _handleHits.push({ kf, channel: ch.id, side: "out", px: ohx, py: ohy });
       }
 
+      const isDragged = _dragKey?.kf === kf && _dragKey.channel === ch.id;
       ctx.fillStyle = ch.color;
       ctx.beginPath();
-      ctx.arc(kx, ky, 2.5, 0, Math.PI * 2);
+      ctx.arc(kx, ky, isDragged ? 4 : 2.5, 0, Math.PI * 2);
       ctx.fill();
+      if (isDragged) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      _keyHits.push({ kf, channel: ch.id, px: kx, py: ky });
     }
   }
 
@@ -331,15 +376,50 @@ function onPointerDown(e: PointerEvent): void {
     return;
   }
 
-  // No handle under cursor → fall through to V1 scrub behavior.
   const clip = getActiveClip();
   if (!clip) return;
+
+  // Keyframe-dot hit-test — same closest-within-radius policy as the
+  // handles so overlapping channels' keys stay individually grabbable.
+  let bestKey: { hit: KeyHit; distSq: number } | null = null;
+  for (const k of _keyHits) {
+    const dx = k.px - x, dy = k.py - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= HIT_RADIUS * HIT_RADIUS && (!bestKey || d2 < bestKey.distSq)) {
+      bestKey = { hit: k, distSq: d2 };
+    }
+  }
+
+  if (bestKey && _lastMapping && state.selectedBoneId) {
+    const track = clip.tracks.find((t) => t.boneId === state.selectedBoneId);
+    if (track) {
+      const { w, h, lo, hi, maxFrames } = _lastMapping;
+      const ch = CHANNELS.find((c) => c.id === bestKey.hit.channel)!;
+      const frameAtX = (x / w) * maxFrames;
+      const valueAtY = lo + (1 - y / h) * (hi - lo);
+      _dragKey = {
+        kf: bestKey.hit.kf,
+        channel: bestKey.hit.channel,
+        track,
+        before: structuredClone(track.keyframes),
+        moved: false,
+        offsetFrame: frameAtX - bestKey.hit.kf.frame,
+        offsetValue: valueAtY - ch.pick(bestKey.hit.kf),
+      };
+      _canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // Background → fall through to V1 scrub behavior.
   const frame = Math.round((x / rect.width) * clip.maxFrames);
   scrubToFrame(Math.max(0, Math.min(clip.maxFrames, frame)));
   drawGraphEditor();
 }
 
 function onPointerMove(e: PointerEvent): void {
+  if (_dragKey) { onKeyDragMove(e); return; }
   if (!_dragging || !_canvas || !_lastMapping) return;
   const rect = _canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
@@ -375,10 +455,73 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if (_dragging && _canvas) {
+  if ((_dragging || _dragKey) && _canvas) {
     try { _canvas.releasePointerCapture(e.pointerId); } catch { /* may not own */ }
   }
   _dragging = null;
+
+  if (_dragKey) {
+    const drag = _dragKey;
+    _dragKey = null;
+    if (drag.moved) commitKeyDrag(drag);
+    else drawGraphEditor(); // plain click on a key — just clear the highlight
+  }
+}
+
+/** Live time+value move of the grabbed keyframe (no history churn). */
+function onKeyDragMove(e: PointerEvent): void {
+  if (!_dragKey || !_canvas || !_lastMapping) return;
+  const drag = _dragKey;
+  const rect = _canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const { w, h, lo, hi, maxFrames } = _lastMapping;
+
+  const ch = CHANNELS.find((c) => c.id === drag.channel)!;
+  const kf = drag.kf;
+
+  const targetFrame = Math.round((x / w) * maxFrames - drag.offsetFrame);
+  const clamped = Math.max(0, Math.min(maxFrames, targetFrame));
+  // Move in time only when the destination frame is free — the graph
+  // editor edits one key at a time, so silently overwriting a neighbor
+  // mid-drag would be surprising. (Retiming with overwrite semantics
+  // lives in the dopesheet.)
+  if (clamped !== kf.frame && !drag.track.keyframes.some((k) => k !== kf && k.frame === clamped)) {
+    kf.frame = clamped;
+    drag.track.keyframes.sort((a, b) => a.frame - b.frame);
+  }
+
+  const valueAtY = lo + (1 - y / h) * (hi - lo);
+  ch.set(kf, valueAtY - drag.offsetValue);
+
+  drag.moved = true;
+  drawGraphEditor();
+}
+
+/** Push one undo entry for a finished key drag and refresh the pose/UI. */
+function commitKeyDrag(drag: NonNullable<typeof _dragKey>): void {
+  const track = drag.track;
+  const after = structuredClone(track.keyframes);
+  const before = drag.before;
+
+  const restore = (snap: KeyframeData[]): void => {
+    track.keyframes.splice(0, track.keyframes.length, ...structuredClone(snap));
+    scrubToFrame(state.currentFrame);
+    drawGraphEditor();
+    _keyEditedHandler?.();
+  };
+
+  state.history.push({
+    label: "Edit Key",
+    undo() { restore(before); },
+    redo() { restore(after); },
+  });
+
+  const ch = CHANNELS.find((c) => c.id === drag.channel)!;
+  status(`Key → frame ${drag.kf.frame}, ${ch.label} ${ch.pick(drag.kf).toFixed(3)}`);
+  scrubToFrame(state.currentFrame);
+  drawGraphEditor();
+  _keyEditedHandler?.();
 }
 
 // ── Drawing primitives ─────────────────────────────────────

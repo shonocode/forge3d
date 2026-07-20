@@ -15,6 +15,7 @@ import { evalMorphTrack, upsertMorphKey, removeMorphKeyAt, findMorphTrack } from
 import type { MorphKeyframe, MorphTrack } from "../state";
 import { evaluateBezierSegment } from "./bezier";
 import type { AnimChannel } from "../state";
+import { updateOnionSkin } from "./onion-skin";
 
 // Scratch vectors for decomposition
 const _scratchScale = new Vector3();
@@ -299,7 +300,10 @@ export function scrubToFrame(frame: number): void {
   }
   state.currentFrame = frame;
 
-  if (!clip) return;
+  if (!clip) {
+    updateOnionSkin(null, interpolateTrack);
+    return;
+  }
 
   // Unkeyed pose edits are about to be overwritten by the clip pose — warn
   // once so the user knows to Record (or turn Auto-Key on) next time.
@@ -334,6 +338,15 @@ export function scrubToFrame(frame: number): void {
   }
 
   syncBoneVisuals();
+  updateOnionSkin(clip, interpolateTrack);
+}
+
+/**
+ * Redraw onion-skin ghosts against the current frame/clip. UI toggles
+ * call this so enabling/disabling doesn't need a scrub to take effect.
+ */
+export function refreshOnionSkin(): void {
+  updateOnionSkin(getActiveClip(), interpolateTrack);
 }
 
 // ── Morph (blend-shape) animation ──

@@ -23,6 +23,7 @@ interface Prefs {
   viewportMode?: string;
   envPreset?: string;
   poseRotationSpace?: "local" | "world";
+  onionSkin?: { enabled: boolean; offset: number };
 }
 
 function collectPrefs(): Prefs {
@@ -34,6 +35,7 @@ function collectPrefs(): Prefs {
     weight: { ...state.weightConfig },
     autoKey: state.autoKey,
     poseRotationSpace: state.poseRotationSpace,
+    onionSkin: { ...state.onionSkin },
     ...(shadeBtn?.dataset.mode ? { viewportMode: shadeBtn.dataset.mode } : {}),
     ...(envSel?.value ? { envPreset: envSel.value } : {}),
   };
@@ -46,6 +48,12 @@ function applyPrefs(p: Prefs): void {
   if (typeof p.autoKey === "boolean") state.autoKey = p.autoKey;
   if (p.poseRotationSpace === "local" || p.poseRotationSpace === "world") {
     state.poseRotationSpace = p.poseRotationSpace;
+  }
+  if (p.onionSkin && typeof p.onionSkin.enabled === "boolean") {
+    state.onionSkin.enabled = p.onionSkin.enabled;
+    if (typeof p.onionSkin.offset === "number") {
+      state.onionSkin.offset = Math.max(1, Math.min(20, p.onionSkin.offset));
+    }
   }
   if (p.viewportMode) {
     try {
@@ -104,6 +112,8 @@ function syncControls(): void {
 
   chk("autoKey", state.autoKey);
   chk("poseLocalAxes", state.poseRotationSpace === "local");
+  chk("onionSkin", state.onionSkin.enabled);
+  num("onionOffset", state.onionSkin.offset, "onionOffV");
 }
 
 function save(): void {

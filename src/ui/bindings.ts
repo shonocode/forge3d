@@ -14,13 +14,14 @@ import {
   scrubToFrame, playPreview, stopPreview, exportClipAsJSON,
   copyKeyframe, pasteKeyframe, setKeyframeEasing,
   setPlaybackTickCallback, updateIkTargetMarker, notifyPoseEdited,
+  refreshOnionSkin,
 } from "../tools/animation-tool";
 import { EASING_TYPES } from "../tools/easing";
 import type { EasingType } from "../tools/easing";
 import { findBoneById, selectBone as selectBoneFn, setPoseEditedHandler } from "../tools/skeleton-tool";
 import type { LimitRotationConstraint } from "../tools/bone-constraints";
-import { drawGraphEditor } from "../tools/graph-editor";
-import { drawDopesheet } from "../tools/dopesheet";
+import { drawGraphEditor, setKeyEditedHandler } from "../tools/graph-editor";
+import { drawDopesheet, setKeysRetimedHandler } from "../tools/dopesheet";
 import {
   exportSceneLayout, importSceneLayout, clearAllMapInstances, loadModelLibrary,
 } from "../tools/map-editor";
@@ -216,9 +217,24 @@ export function bindActionButtons(): void {
   // Auto-Key / dirty-pose hook (registered here to avoid an import cycle
   // between skeleton-tool and animation-tool).
   setPoseEditedHandler(notifyPoseEdited);
+  // Timeline-edit hooks — refresh the anim panel (keyframe list, counts)
+  // after a dopesheet retime / graph-editor key drag lands or is undone.
+  setKeysRetimedHandler(updateAnimUI);
+  setKeyEditedHandler(updateAnimUI);
   E("autoKey").addEventListener("change", function () {
     state.autoKey = (this as HTMLInputElement).checked;
     status("Auto-Key: " + (state.autoKey ? "ON" : "OFF"));
+  });
+  E("onionSkin").addEventListener("change", function () {
+    state.onionSkin.enabled = (this as HTMLInputElement).checked;
+    refreshOnionSkin();
+    status("Onion Skin: " + (state.onionSkin.enabled ? "ON" : "OFF"));
+  });
+  E("onionOffset").addEventListener("input", function () {
+    const v = +(this as HTMLInputElement).value;
+    E("onionOffV").textContent = String(v);
+    state.onionSkin.offset = v;
+    refreshOnionSkin();
   });
   E("animClipSel").addEventListener("change", function () {
     setActiveClip((this as HTMLSelectElement).value);
