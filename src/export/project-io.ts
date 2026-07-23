@@ -17,7 +17,9 @@ import {
   unpackProject,
   float32ToBase64,
   base64ToFloat32,
+  validateModifierEntry,
 } from "./project-format";
+import type { Modifier } from "../state";
 import type { ProjectSidecar, ProjectMeshEntry, ProjectBoneConstraintEntry } from "./project-format";
 import { serializeSceneToGlb, loadFileDirectly } from "./gltf-exporter";
 import { serializeGraph, deserializeGraph } from "../materials/graph-io";
@@ -121,10 +123,26 @@ export function collectSidecar(): ProjectSidecar {
       if (Array.isArray(uvPins) && uvPins.length > 0) entry.editUVPins = uvPins as number[];
     }
 
+    // Modifier stack + pre-modifier base geometry — GLB only holds the
+    // evaluated mesh; this keeps the stack editable after reopening.
+    const mods = state.modifierMap.get(mesh.uniqueId);
+    const origGeo = state.originalGeometryMap.get(mesh.uniqueId);
+    if (mods && mods.length > 0 && origGeo) {
+      entry.modifiers = {
+        original: {
+          positions: float32ToBase64(origGeo.positions),
+          normals: origGeo.normals ? float32ToBase64(origGeo.normals) : null,
+          indices: origGeo.indices.slice(),
+        },
+        stack: mods.map((m) => ({ ...m })),
+      };
+    }
+
     if (
       entry.proceduralGraph || entry.sculptMask || entry.layerName ||
       entry.paintLayers || entry.paintChannels ||
-      entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins
+      entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins ||
+      entry.modifiers
     ) {
       meshes.push(entry);
     }
@@ -298,6 +316,36 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
       if (entry.editCreases) meta[CREASE_METADATA_KEY] = entry.editCreases;
       if (entry.editUVPins) meta[UV_PIN_METADATA_KEY] = entry.editUVPins;
       mesh.metadata = meta;
+    }
+
+    // Modifier stack: rebuild the pre-modifier base geometry + typed stack.
+    // The GLB already holds the EVALUATED result, so we deliberately do NOT
+    // re-evaluate here — the next parameter tweak / toggle re-runs the stack.
+    // Malformed entries drop individually (validateModifierEntry).
+    if (entry.modifiers) {
+      try {
+        const positions = base64ToFloat32(entry.modifiers.original.positions);
+        const normals = entry.modifiers.original.normals
+          ? base64ToFloat32(entry.modifiers.original.normals)
+          : null;
+        const indices = entry.modifiers.original.indices.slice();
+        const numV = positions.length / 3;
+        const stack: Modifier[] = [];
+        for (const raw of entry.modifiers.stack) {
+          const mod = validateModifierEntry(raw);
+          if (!mod) continue;
+          // Stored ids are session-scoped — reissue to avoid collisions.
+          state.modifierCounter++;
+          mod.id = "mod_" + state.modifierCounter;
+          stack.push(mod);
+        }
+        if (stack.length > 0 && numV >= 3 && indices.every((v) => v < numV)) {
+          state.originalGeometryMap.set(mesh.uniqueId, { positions, normals, indices });
+          state.modifierMap.set(mesh.uniqueId, stack);
+        }
+      } catch (e) {
+        console.warn("Project: modifier stack restore failed for", entry.name, e);
+      }
     }
   }
 

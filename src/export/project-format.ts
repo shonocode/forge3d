@@ -72,6 +72,51 @@ export interface ProjectMeshEntry {
   editCreases?: Array<[string, number]>;
   /** UV Editor pin vertex indices — held fixed by ⚓ Re-unwrap (LSCM). */
   editUVPins?: number[];
+  /**
+   * Modifier stack (.forge3d v2): the GLB only holds the EVALUATED mesh, so
+   * without this the stack collapses into baked geometry on reopen. `original`
+   * is the pre-modifier base geometry (positions/normals base64 Float32 +
+   * triangle indices); `stack` is the modifier definitions in evaluation
+   * order. On restore the evaluated GLB geometry is kept as-is (identical to
+   * re-evaluating) and the stack becomes editable again.
+   */
+  modifiers?: {
+    original: { positions: string; normals: string | null; indices: number[] };
+    stack: Array<Record<string, unknown>>;
+  };
+}
+
+/**
+ * Validate one serialized modifier into a typed {@link Modifier} — returns
+ * null on anything malformed (drop-don't-throw, like morph drivers). Numeric
+ * params are clamped to the UI's ranges so a hand-edited file can't smuggle a
+ * memory bomb (subdivision level ≤ 2 quadruples tris per level; array ≤ 10).
+ */
+export function validateModifierEntry(raw: unknown): import("../state").Modifier | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const m = raw as Record<string, unknown>;
+  if (typeof m.enabled !== "boolean") return null;
+  const id = typeof m.id === "string" ? m.id : "";
+  switch (m.type) {
+    case "subdivision": {
+      if (typeof m.level !== "number" || !Number.isFinite(m.level)) return null;
+      const level = Math.min(2, Math.max(1, Math.round(m.level)));
+      return { id, type: "subdivision", enabled: m.enabled, level };
+    }
+    case "mirror": {
+      if (m.axis !== "x" && m.axis !== "y" && m.axis !== "z") return null;
+      if (typeof m.merge !== "boolean" || typeof m.mergeTolerance !== "number" || !Number.isFinite(m.mergeTolerance)) return null;
+      return { id, type: "mirror", enabled: m.enabled, axis: m.axis, merge: m.merge, mergeTolerance: Math.abs(m.mergeTolerance) };
+    }
+    case "array": {
+      if (typeof m.count !== "number" || !Number.isFinite(m.count)) return null;
+      if (typeof m.offsetX !== "number" || typeof m.offsetY !== "number" || typeof m.offsetZ !== "number") return null;
+      const count = Math.min(10, Math.max(2, Math.round(m.count)));
+      return { id, type: "array", enabled: m.enabled, count, offsetX: m.offsetX, offsetY: m.offsetY, offsetZ: m.offsetZ };
+    }
+    default:
+      return null;
+  }
 }
 
 export interface ProjectSidecar {
@@ -264,6 +309,22 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
       if (!Array.isArray(m.editUVPins) || !m.editUVPins.every((v) => Number.isInteger(v) && (v as number) >= 0)) {
         throw new Error("Sidecar: editUVPins must be an array of non-negative ints");
       }
+    }
+    if (m.modifiers !== undefined) {
+      // Container shape only — per-entry validation (drop-don't-throw) happens
+      // in validateModifierEntry at restore time.
+      const mo = m.modifiers as { original?: unknown; stack?: unknown };
+      if (typeof mo !== "object" || mo === null) throw new Error("Sidecar: modifiers must be an object");
+      const orig = mo.original as { positions?: unknown; normals?: unknown; indices?: unknown } | undefined;
+      if (
+        typeof orig !== "object" || orig === null ||
+        typeof orig.positions !== "string" ||
+        (orig.normals !== null && typeof orig.normals !== "string") ||
+        !Array.isArray(orig.indices) || !orig.indices.every((v) => Number.isInteger(v) && (v as number) >= 0)
+      ) {
+        throw new Error("Sidecar: modifiers.original needs base64 positions, normals|null, int indices");
+      }
+      if (!Array.isArray(mo.stack)) throw new Error("Sidecar: modifiers.stack must be an array");
     }
   }
   if (s.morphDrivers !== undefined) {

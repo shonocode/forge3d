@@ -3,6 +3,7 @@ import {
   packProject,
   unpackProject,
   validateSidecar,
+  validateModifierEntry,
   float32ToBase64,
   base64ToFloat32,
   type ProjectSidecar,
@@ -233,5 +234,77 @@ describe("edit structure sidecar fields (half-edge V2 persistence)", () => {
     expect(sidecar.meshes[0]!.editUVPins).toEqual([0, 5, 12]);
     expect(() => validateSidecar({ ...SIDECAR, meshes: [{ name: "x", editUVPins: [1.5] }] })).toThrow(/editUVPins/);
     expect(() => validateSidecar({ ...SIDECAR, meshes: [{ name: "x", editUVPins: [-1] }] })).toThrow(/editUVPins/);
+  });
+});
+
+describe("modifier stack sidecar field (.forge3d v2)", () => {
+  const ORIGINAL = {
+    positions: float32ToBase64(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])),
+    normals: null,
+    indices: [0, 1, 2],
+  };
+  const STACK = [
+    { id: "mod_1", type: "subdivision", enabled: true, level: 2 },
+    { id: "mod_2", type: "mirror", enabled: false, axis: "x", merge: true, mergeTolerance: 0.001 },
+    { id: "mod_3", type: "array", enabled: true, count: 3, offsetX: 2, offsetY: 0, offsetZ: 0 },
+  ];
+
+  it("round-trips a modifier stack through pack/unpack", () => {
+    const withMods: ProjectSidecar = {
+      ...SIDECAR,
+      meshes: [{ name: "cube", modifiers: { original: ORIGINAL, stack: STACK } }],
+    };
+    const packed = packProject(withMods, new Uint8Array([1, 2]));
+    const { sidecar } = unpackProject(packed);
+    const mo = sidecar.meshes[0]!.modifiers!;
+    expect(mo.original).toEqual(ORIGINAL);
+    expect(mo.stack).toEqual(STACK);
+    // Base geometry decodes byte-exact.
+    expect(Array.from(base64ToFloat32(mo.original.positions))).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  });
+
+  it("rejects malformed modifiers containers", () => {
+    const bad1 = { ...SIDECAR, meshes: [{ name: "x", modifiers: { stack: [] } }] };
+    expect(() => validateSidecar(bad1)).toThrow(/modifiers/);
+    const bad2 = {
+      ...SIDECAR,
+      meshes: [{ name: "x", modifiers: { original: { positions: 5, normals: null, indices: [] }, stack: [] } }],
+    };
+    expect(() => validateSidecar(bad2)).toThrow(/modifiers/);
+    const bad3 = {
+      ...SIDECAR,
+      meshes: [{ name: "x", modifiers: { original: ORIGINAL, stack: "no" } }],
+    };
+    expect(() => validateSidecar(bad3)).toThrow(/stack/);
+  });
+});
+
+describe("validateModifierEntry", () => {
+  it("accepts well-formed subdivision / mirror / array entries", () => {
+    expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 2 })).toEqual({
+      id: "m", type: "subdivision", enabled: true, level: 2,
+    });
+    expect(validateModifierEntry({ id: "m", type: "mirror", enabled: false, axis: "z", merge: false, mergeTolerance: 0.01 })).toEqual({
+      id: "m", type: "mirror", enabled: false, axis: "z", merge: false, mergeTolerance: 0.01,
+    });
+    expect(validateModifierEntry({ id: "m", type: "array", enabled: true, count: 4, offsetX: 1, offsetY: 2, offsetZ: 3 })).toEqual({
+      id: "m", type: "array", enabled: true, count: 4, offsetX: 1, offsetY: 2, offsetZ: 3,
+    });
+  });
+
+  it("clamps numeric params to safe UI ranges (memory-bomb guard)", () => {
+    const sub = validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 99 });
+    expect(sub).toMatchObject({ level: 2 });
+    const arr = validateModifierEntry({ id: "m", type: "array", enabled: true, count: 5000, offsetX: 0, offsetY: 0, offsetZ: 0 });
+    expect(arr).toMatchObject({ count: 10 });
+  });
+
+  it("returns null on unknown types and malformed params", () => {
+    expect(validateModifierEntry(null)).toBeNull();
+    expect(validateModifierEntry({ id: "m", type: "bend", enabled: true })).toBeNull();
+    expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: "yes", level: 1 })).toBeNull();
+    expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: Infinity })).toBeNull();
+    expect(validateModifierEntry({ id: "m", type: "mirror", enabled: true, axis: "w", merge: true, mergeTolerance: 0.1 })).toBeNull();
+    expect(validateModifierEntry({ id: "m", type: "array", enabled: true, count: 3, offsetX: "1", offsetY: 0, offsetZ: 0 })).toBeNull();
   });
 });
