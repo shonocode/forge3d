@@ -6,7 +6,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
 import type { BrushId } from "../state";
-import { refineWithinRadii, remapAttribute } from "./dyntopo";
+import { collapseWithinRadii, refineWithinRadii, remapAttribute, remapAttributeBySources } from "./dyntopo";
 import { symmetricCenters } from "./sculpt-symmetry";
 import { createMask, paintMask } from "./sculpt-mask";
 import { applyDelta } from "./sculpt-delta";
@@ -151,31 +151,53 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
   let mask = state.sculptMaskMap.get(mesh.uniqueId) ?? null;
   let topologyChanged = false;
 
-  // Dyntopo: subdivide long edges under the brush before deforming, so there are
-  // fresh vertices to push. Mask + UVs are carried through the topology change.
+  // Dyntopo: adapt topology under the brush before deforming — collapse edges
+  // that shrank below the detail target (smoothed-out regions coarsen back),
+  // then subdivide edges that exceed it (fresh vertices to push). Mask + UVs
+  // are carried through both passes.
   // Skipped on skinned meshes — rebuilding geometry would drop bone weights.
   if (cfg.dyntopo && mesh.isVerticesDataPresent(VertexBuffer.MatricesWeightsKind)) {
     status("Dyntopo unavailable on skinned meshes — sculpt before rigging");
   } else if (cfg.dyntopo) {
-    const res = refineWithinRadii(pos, indices, centers, R, cfg.detail);
-    if (res.changed) {
-      const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
-      const newNor = new Float32Array(res.positions.length);
-      VertexData.ComputeNormals(res.positions, res.indices, newNor);
-      const vd = new VertexData();
-      vd.positions = res.positions;
-      vd.indices = res.indices as unknown as number[];
-      vd.normals = newNor;
-      if (uvs) vd.uvs = remapAttribute(uvs, res.parents, 2);
-      vd.applyToMesh(mesh as Mesh, true);
-      if (mask) {
-        mask = remapAttribute(mask, res.parents, 1);
-        state.sculptMaskMap.set(mesh.uniqueId, mask);
-      }
-      pos = res.positions as unknown as number[];
-      nor = newNor as unknown as number[];
-      indices = res.indices as unknown as number[];
+    let curPos: ArrayLike<number> = pos;
+    let curIdx: ArrayLike<number> = indices;
+    let uvs: Float32Array | null = null;
+    const rawUV = mesh.getVerticesData(VertexBuffer.UVKind);
+    if (rawUV) uvs = new Float32Array(rawUV);
+
+    const col = collapseWithinRadii(curPos, curIdx, centers, R, cfg.detail);
+    if (col.changed) {
+      if (uvs) uvs = remapAttributeBySources(uvs, col.sources, 2);
+      if (mask) mask = remapAttributeBySources(mask, col.sources, 1);
+      curPos = col.positions;
+      curIdx = col.indices;
       topologyChanged = true;
+    }
+
+    const res = refineWithinRadii(curPos, curIdx, centers, R, cfg.detail);
+    if (res.changed) {
+      if (uvs) uvs = remapAttribute(uvs, res.parents, 2);
+      if (mask) mask = remapAttribute(mask, res.parents, 1);
+      curPos = res.positions;
+      curIdx = res.indices;
+      topologyChanged = true;
+    }
+
+    if (topologyChanged) {
+      const newPos = curPos instanceof Float32Array ? curPos : Float32Array.from(curPos);
+      const newIdx = Array.from(curIdx);
+      const newNor = new Float32Array(newPos.length);
+      VertexData.ComputeNormals(newPos, newIdx, newNor);
+      const vd = new VertexData();
+      vd.positions = newPos;
+      vd.indices = newIdx;
+      vd.normals = newNor;
+      if (uvs) vd.uvs = uvs;
+      vd.applyToMesh(mesh as Mesh, true);
+      if (mask) state.sculptMaskMap.set(mesh.uniqueId, mask);
+      pos = newPos as unknown as number[];
+      nor = newNor as unknown as number[];
+      indices = newIdx;
     }
   }
 

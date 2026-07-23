@@ -2,16 +2,24 @@
  * Dyntopo — adaptive topology refinement for sculpting.
  *
  * Pure and headless-testable: operates on plain position/index arrays and
- * returns new geometry plus a `parents` map so the caller can interpolate any
+ * returns new geometry plus a source map so the caller can interpolate any
  * per-vertex attribute (normals, UVs, mask) through the topology change.
  *
- * Strategy: edge-split subdivision. Within the brush radius, any triangle edge
- * longer than `detail` is split at its midpoint. Midpoints are shared via a
- * global edge map, so adjacent triangles stay watertight (no T-junctions). Each
- * triangle is then re-triangulated by how many of its three edges were split
- * (1 → 2 tris, 2 → 3 tris, 3 → 4 tris). One refinement level per call; repeated
- * strokes refine progressively. Subdivide-only — edge collapse / decimation is a
- * roadmap F-M3 follow-up.
+ * Two complementary passes, both scoped to the brush radius:
+ *
+ *  - **Subdivide** ({@link refineWithinRadii}): any edge longer than `detail`
+ *    is split at its midpoint. Midpoints are shared via a global edge map, so
+ *    adjacent triangles stay watertight (no T-junctions). Each triangle is
+ *    re-triangulated by how many of its three edges were split (1 → 2 tris,
+ *    2 → 3 tris, 3 → 4 tris).
+ *  - **Collapse** ({@link collapseWithinRadii}): any edge shorter than
+ *    `detail · COLLAPSE_FACTOR` merges to its midpoint, so smoothed-out or
+ *    compressed regions coarsen back instead of accumulating density forever.
+ *    Per pass only an INDEPENDENT edge set collapses (no shared endpoints) and
+ *    the classic link condition guards against non-manifold pinches.
+ *
+ * One level per call in each direction; repeated strokes refine/coarsen
+ * progressively toward the `detail` target — true adaptive topology.
  */
 
 export interface RefineResult {
@@ -166,6 +174,189 @@ export function remapAttribute(
     const dst = (origCount + i) * comps;
     for (let k = 0; k < comps; k++) {
       out[dst + k] = (old[pa * comps + k]! + old[pb * comps + k]!) / 2;
+    }
+  }
+  return out;
+}
+
+// ── Edge collapse (decimation) ─────────────────────────────────────────────
+
+/** Edges shorter than `detail · COLLAPSE_FACTOR` are collapse candidates. */
+export const COLLAPSE_FACTOR = 0.4;
+
+export interface CollapseResult {
+  positions: Float32Array;
+  indices: Uint32Array;
+  /**
+   * For each OUTPUT vertex: its source pair `[pa, pb]` in the INPUT vertex
+   * numbering. Untouched vertices have `pa === pb`; a collapse survivor lists
+   * the two merged endpoints (its attributes = their average — see
+   * {@link remapAttributeBySources}). Empty when `changed` is false.
+   */
+  sources: Array<[number, number]>;
+  /** True when at least one edge collapsed (geometry differs from the input). */
+  changed: boolean;
+}
+
+/**
+ * Collapse edges shorter than `detail · COLLAPSE_FACTOR` that lie within
+ * `radius` of any brush center. Pure: inputs are never mutated.
+ *
+ * Safety per pass:
+ *  - Only an INDEPENDENT edge set collapses (endpoints used at most once), so
+ *    chains of tiny edges shrink progressively instead of telescoping to a
+ *    point in one dab.
+ *  - The classic link condition (common vertex neighbors of the endpoints ==
+ *    2 for interior edges / 1 for boundary edges) rejects collapses that would
+ *    pinch the surface non-manifold.
+ *  - Edges with >2 incident faces (already non-manifold) are left alone.
+ *
+ * The survivor vertex moves to the edge midpoint; triangles that degenerate
+ * are dropped and the vertex buffer is compacted (ascending input order, so
+ * the mapping is deterministic).
+ */
+export function collapseWithinRadii(
+  positions: ArrayLike<number>,
+  indices: ArrayLike<number>,
+  centers: ReadonlyArray<readonly [number, number, number]>,
+  radius: number,
+  detail: number,
+): CollapseResult {
+  const n = positions.length / 3;
+  const thresh2 = detail * COLLAPSE_FACTOR * (detail * COLLAPSE_FACTOR);
+  const r2 = radius * radius;
+
+  const vertInRadius = (vi: number): boolean => {
+    const x = positions[vi * 3]!;
+    const y = positions[vi * 3 + 1]!;
+    const z = positions[vi * 3 + 2]!;
+    for (const c of centers) {
+      const dx = x - c[0];
+      const dy = y - c[1];
+      const dz = z - c[2];
+      if (dx * dx + dy * dy + dz * dz <= r2) return true;
+    }
+    return false;
+  };
+
+  // Adjacency + incident-face count per undirected edge.
+  const key = (a: number, b: number): number => (a < b ? a * n + b : b * n + a);
+  const nbr: Array<Set<number>> = Array.from({ length: n }, () => new Set<number>());
+  const edgeFaces = new Map<number, number>();
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t]!, b = indices[t + 1]!, c = indices[t + 2]!;
+    for (const [u, v] of [[a, b], [b, c], [c, a]] as const) {
+      nbr[u]!.add(v);
+      nbr[v]!.add(u);
+      const k = key(u, v);
+      edgeFaces.set(k, (edgeFaces.get(k) ?? 0) + 1);
+    }
+  }
+
+  // Greedy independent selection in deterministic (triangle-order) edge order.
+  const used = new Uint8Array(n);
+  const partner = new Int32Array(n).fill(-1); // survivor a → removed b
+  const target = new Int32Array(n).fill(-1);  // removed b → survivor a
+  const seen = new Set<number>();
+  let any = false;
+
+  for (let t = 0; t < indices.length; t += 3) {
+    const a0 = indices[t]!, b0 = indices[t + 1]!, c0 = indices[t + 2]!;
+    for (const [a, b] of [[a0, b0], [b0, c0], [c0, a0]] as const) {
+      const k = key(a, b);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const fc = edgeFaces.get(k)!;
+      if (fc > 2) continue; // non-manifold edge — leave alone
+      const dx = positions[a * 3]! - positions[b * 3]!;
+      const dy = positions[a * 3 + 1]! - positions[b * 3 + 1]!;
+      const dz = positions[a * 3 + 2]! - positions[b * 3 + 2]!;
+      if (dx * dx + dy * dy + dz * dz >= thresh2) continue;
+      if (!vertInRadius(a) && !vertInRadius(b)) continue;
+      if (used[a] || used[b]) continue;
+      // Link condition: interior edge → exactly 2 common neighbors, boundary → 1.
+      let common = 0;
+      for (const v of nbr[a]!) if (nbr[b]!.has(v)) common++;
+      if (common !== (fc === 2 ? 2 : 1)) continue;
+      used[a] = used[b] = 1;
+      partner[a] = b;
+      target[b] = a;
+      any = true;
+    }
+  }
+
+  if (!any) {
+    return {
+      positions: Float32Array.from(positions as ArrayLike<number>),
+      indices: Uint32Array.from(indices as ArrayLike<number>),
+      sources: [],
+      changed: false,
+    };
+  }
+
+  // Survivors move to the edge midpoint.
+  const pos = Float32Array.from(positions as ArrayLike<number>);
+  for (let a = 0; a < n; a++) {
+    const b = partner[a]!;
+    if (b < 0) continue;
+    pos[a * 3] = (pos[a * 3]! + positions[b * 3]!) / 2;
+    pos[a * 3 + 1] = (pos[a * 3 + 1]! + positions[b * 3 + 1]!) / 2;
+    pos[a * 3 + 2] = (pos[a * 3 + 2]! + positions[b * 3 + 2]!) / 2;
+  }
+
+  // Remap removed → survivor, drop degenerate faces.
+  const mapped = (v: number): number => (target[v]! >= 0 ? target[v]! : v);
+  const keptTris: number[] = [];
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = mapped(indices[t]!);
+    const b = mapped(indices[t + 1]!);
+    const c = mapped(indices[t + 2]!);
+    if (a === b || b === c || c === a) continue;
+    keptTris.push(a, b, c);
+  }
+
+  // Compact to referenced vertices (ascending input order = deterministic).
+  const oldToNew = new Int32Array(n).fill(-1);
+  const referenced: number[] = [];
+  for (const v of keptTris) {
+    if (oldToNew[v]! < 0) {
+      oldToNew[v] = 0; // mark; numbered in the ordered pass below
+      referenced.push(v);
+    }
+  }
+  referenced.sort((p, q) => p - q);
+  const outPos = new Float32Array(referenced.length * 3);
+  const sources: Array<[number, number]> = new Array(referenced.length);
+  for (let i = 0; i < referenced.length; i++) {
+    const o = referenced[i]!;
+    oldToNew[o] = i;
+    outPos[i * 3] = pos[o * 3]!;
+    outPos[i * 3 + 1] = pos[o * 3 + 1]!;
+    outPos[i * 3 + 2] = pos[o * 3 + 2]!;
+    const b = partner[o]!;
+    sources[i] = b >= 0 ? [o, b] : [o, o];
+  }
+  const outIdx = new Uint32Array(keptTris.length);
+  for (let i = 0; i < keptTris.length; i++) outIdx[i] = oldToNew[keptTris[i]!]!;
+
+  return { positions: outPos, indices: outIdx, sources, changed: true };
+}
+
+/**
+ * Rebuild a per-vertex attribute array after a collapse. Each output vertex
+ * takes the average of its {@link CollapseResult.sources} pair (identical
+ * pair = value passes through verbatim).
+ */
+export function remapAttributeBySources(
+  old: ArrayLike<number>,
+  sources: ReadonlyArray<readonly [number, number]>,
+  comps: number,
+): Float32Array {
+  const out = new Float32Array(sources.length * comps);
+  for (let i = 0; i < sources.length; i++) {
+    const [pa, pb] = sources[i]!;
+    for (let k = 0; k < comps; k++) {
+      out[i * comps + k] = (old[pa * comps + k]! + old[pb * comps + k]!) / 2;
     }
   }
   return out;
