@@ -417,6 +417,12 @@ export function buildEditToolsPanel(): void {
       action: async () => (await import("../tools/edit-mode")).markCreaseSelection(),
     },
     {
+      label: "Set Crease σ",
+      key: "Ctrl+Shift+E",
+      modes: ["edge"],
+      action: async () => (await import("../tools/edit-mode")).setCreaseSelection(),
+    },
+    {
       label: "Tris to Quads",
       key: "J",
       modes: ["vertex", "edge", "face"],

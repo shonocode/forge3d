@@ -9,12 +9,12 @@ import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from ".
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
 import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, quadsToTris, subdivideCatmullClark, trisToQuads, vertexSlide } from "./operators";
-import { smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
+import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
+import { creaseOf, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
 import { refreshEditToolsUI } from "../../ui/builders";
@@ -524,6 +524,45 @@ export function markCreaseSelection(): void {
 }
 
 /**
+ * Assign the Crease Weight slider value EXACTLY to the selected edges — unlike
+ * Mark Crease (Shift+E, toggle) this overwrites their current σ, and σ = 0
+ * clears the crease. The precision tool for per-edge sharpness.
+ */
+export function setCreaseSelection(): void {
+  const em = state.editMesh;
+  if (!em || !currentOverlay) return;
+  if (state.editSelection.mode !== "edge") {
+    status("⚠ Set Crease: edge mode only");
+    return;
+  }
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Select edges to set crease σ");
+    return;
+  }
+  const sigma = state.editConfig.creaseWeight;
+  const sel = new Set(state.editSelection.indices);
+  const before = new Map(em.creases);
+  setCreases(em, sel, sigma);
+  const after = new Map(em.creases);
+  writeEdgeAttrMetadata(em);
+  rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  const restore = (m: Map<string, number>): void => {
+    em.creases.clear();
+    for (const [k, v] of m) em.creases.set(k, v);
+    writeEdgeAttrMetadata(em);
+    if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  };
+  state.history.push({
+    label: "Set Crease",
+    undo() { restore(before); },
+    redo() { restore(after); },
+  });
+  status(sigma > 0
+    ? `Crease σ = ${sigma}: ${sel.size} edge(s)`
+    : `Crease cleared: ${sel.size} edge(s)`);
+}
+
+/**
  * Run Smart UV Project on the active EditMesh, rebuild the Babylon mesh with
  * the new UVs (vertex count grows: each face becomes 3 unique verts in V1),
  * and re-enter Edit Mode on the rebuilt geometry.
@@ -940,6 +979,12 @@ export function handleEditModePointerDown(screenX: number, screenY: number, addi
   } else {
     state.editSelection.indices.clear();
     state.editSelection.indices.add(picked);
+  }
+  // Edge readout: surface the picked edge's crease σ so per-edge sharpness is
+  // inspectable (Set Crease σ / Crease Weight slider edits it).
+  if (state.editSelection.mode === "edge") {
+    const sigma = creaseOf(em, picked);
+    if (sigma > 0) status(`Crease σ = ${sigma}`);
   }
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   currentGizmo.refresh(em, state.editSelection);

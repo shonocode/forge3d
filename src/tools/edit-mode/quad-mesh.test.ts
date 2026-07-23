@@ -239,6 +239,39 @@ describe("trisToQuads / quadsToTris", () => {
     expect(quadsToTris(em, null).size).toBe(0);
     expect(em.faces).toHaveLength(12);
   });
+
+  it("shape scoring merges a triangulated grid into axis-aligned squares (no diamonds)", () => {
+    // 3×3 vertex grid, 2×2 cells, each cell split with the same diagonal.
+    // Cross-cell "diamond" pairs are also coplanar candidates (normal dot = 1),
+    // so only corner-angle scoring keeps the result a clean quad grid.
+    const P: number[] = [];
+    const at = (r: number, c: number): number => r * 3 + c;
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) P.push(c, r, 0);
+    const idx: number[] = [];
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 2; c++) {
+        const a = at(r, c), b = at(r, c + 1), d = at(r + 1, c), e = at(r + 1, c + 1);
+        idx.push(a, b, e, a, e, d);
+      }
+    }
+    const em = buildEditMesh(makeStubMesh(P, idx))!;
+    const quads = trisToQuads(em, null);
+    expect(quads.size).toBe(4); // every cell merges — no leftover tris
+    expect(em.faces).toHaveLength(4);
+    // Every quad is a unit square: all four side lengths exactly 1.
+    for (let f = 0; f < 4; f++) {
+      const vs = faceVerts(em, f);
+      expect(vs).toHaveLength(4);
+      for (let i = 0; i < 4; i++) {
+        const a = vs[i]!, b = vs[(i + 1) % 4]!;
+        const len = Math.hypot(
+          em.positions[a * 3]! - em.positions[b * 3]!,
+          em.positions[a * 3 + 1]! - em.positions[b * 3 + 1]!,
+        );
+        expect(len).toBeCloseTo(1, 6);
+      }
+    }
+  });
 });
 
 describe("polygon-aware operators on a quad cube", () => {

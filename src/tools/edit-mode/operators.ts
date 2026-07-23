@@ -1622,10 +1622,13 @@ export function vertexSlide(em: EditMesh, anchor: number, mover: number, t: numb
  *
  * Candidate = every interior edge whose two faces are both triangles (and
  * inside `selectedFaces` when given). A pair qualifies when the face normals
- * agree within `maxAngleDeg` AND the resulting quad is convex; candidates are
- * greedily merged best-normal-alignment first, each triangle used at most
- * once (so a fully triangulated grid merges into a clean quad grid rather
- * than a zigzag).
+ * agree within `maxAngleDeg` AND the resulting quad is convex. Candidates are
+ * greedily merged **best shape first**: primary key = corner-angle deviation
+ * from 90° (rectangles win), tie-break = normal alignment. On a uniformly
+ * triangulated grid every cell diagonal scores 0 error while the cross-cell
+ * "diamond" pairs score high, so the grid merges into clean axis-aligned
+ * quads instead of a zigzag (pre-shape-scoring behavior depended on edge
+ * iteration order). Each triangle is used at most once.
  *
  * Quad winding: for shared edge a→b (in tri1) with off-edge verts x (tri1)
  * and y (tri2), the merged CCW cycle is (b, x, a, y) — both source windings
@@ -1642,7 +1645,7 @@ export function trisToQuads(
   const inScope = (f: number): boolean =>
     faceVertexCount(em, f) === 3 && (!selectedFaces || selectedFaces.has(f));
 
-  type Cand = { f1: number; f2: number; score: number; quad: number[] };
+  type Cand = { f1: number; f2: number; err: number; dot: number; quad: number[] };
   const cands: Cand[] = [];
   forEachEdge(em, (he) => {
     const t = em.halfEdges[he]!.twin;
@@ -1661,10 +1664,10 @@ export function trisToQuads(
     if (x < 0 || y < 0 || x === y) return;
     const quad = [b, x, a, y];
     if (!isConvexQuad(em.positions, quad)) return;
-    cands.push({ f1, f2, score: dot, quad });
+    cands.push({ f1, f2, err: quadAngleError(em.positions, quad), dot, quad });
   });
   if (cands.length === 0) return new Set();
-  cands.sort((p, q) => q.score - p.score);
+  cands.sort((p, q) => (p.err - q.err) || (q.dot - p.dot));
 
   const used = new Set<number>();
   const merged: number[][] = [];
@@ -1688,6 +1691,32 @@ export function trisToQuads(
   const out = new Set<number>();
   for (let f = quadStart; f < newPolys.length; f++) out.add(f);
   return out;
+}
+
+/**
+ * Shape-quality metric for a candidate quad: total corner-angle deviation
+ * from 90° (radians). 0 = perfect rectangle; a "diamond" pairing across two
+ * grid cells scores ~π/3 per corner. Degenerate corners count as worst-case.
+ */
+function quadAngleError(P: Float32Array, quad: readonly number[]): number {
+  let err = 0;
+  for (let i = 0; i < 4; i++) {
+    const p0 = quad[(i + 3) % 4]!;
+    const p1 = quad[i]!;
+    const p2 = quad[(i + 1) % 4]!;
+    const ux = P[p0 * 3]! - P[p1 * 3]!;
+    const uy = P[p0 * 3 + 1]! - P[p1 * 3 + 1]!;
+    const uz = P[p0 * 3 + 2]! - P[p1 * 3 + 2]!;
+    const vx = P[p2 * 3]! - P[p1 * 3]!;
+    const vy = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
+    const vz = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
+    const lu = Math.hypot(ux, uy, uz);
+    const lv = Math.hypot(vx, vy, vz);
+    if (lu < 1e-12 || lv < 1e-12) { err += Math.PI / 2; continue; }
+    const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (lu * lv)));
+    err += Math.abs(Math.acos(cos) - Math.PI / 2);
+  }
+  return err;
 }
 
 /** Convexity test: every corner turn agrees with the quad's Newell normal. */

@@ -328,6 +328,22 @@ export function toggleSeams(em: EditMesh, selectedEdges: ReadonlySet<number>): v
 }
 
 /**
+ * Set the Catmull-Clark crease sharpness of every selected edge to exactly
+ * `weight` — unlike {@link toggleCreases} this overwrites whatever σ the edges
+ * had (0 clears the crease). Used by the "Set Crease σ" operator for dialing
+ * per-edge sharpness precisely.
+ */
+export function setCreases(em: EditMesh, selectedEdges: ReadonlySet<number>, weight: number): void {
+  for (const he of selectedEdges) {
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    if (weight > 0) em.creases.set(key, weight);
+    else em.creases.delete(key);
+  }
+}
+
+/**
  * Toggle the Catmull-Clark crease flag for every selected edge. If ANY selected
  * edge is uncreased, all get set to `weight` (so a mixed selection becomes fully
  * creased); otherwise all are cleared. Returns the resulting count for status.
