@@ -474,6 +474,12 @@ Apply しないと Mirror で生成された左側がマージ後に消える。
 
 <div class="tip">赤い島はシーム不足のサイン。Cancel で閉じてシームを追加 → 再展開 → もう一度
 UV Editor で確認、のループが Blender 流の正攻法。</div>
+
+<div class="tip"><strong>島の形をピンで手直し</strong>：再展開まではいらないけど島の一部だけ
+直したい、というときは Vertex モードで動かしたくない頂点を選んで <kbd>P</kbd>（📌 Pin、赤ダイヤ）
+→ 直したい頂点をドラッグで好きな位置へ → その頂点も <kbd>P</kbd> でピン → <strong>⚓ Re-unwrap</strong>。
+ピンを固定したまま島の残りが角度を保って再配置される（LSCM）。顔の島の輪郭だけ整えて、
+中身は自動で追従させる、という使い方ができる。</div>
 </section>
 
 <!-- =================================================================== -->
@@ -784,6 +790,7 @@ forge3d 内で見えてた状態と一致してれば OK。</p>
   <tr><th>キー</th><th>動作</th></tr>
   <tr><td>I / V</td><td>Island / Vertex モード</td></tr>
   <tr><td>G / R / S</td><td>島の Move / Rotate / Scale</td></tr>
+  <tr><td>P</td><td>選択 UV 頂点をピン留め（⚓ Re-unwrap で固定）</td></tr>
   <tr><td>ホイール / 中・右ドラッグ</td><td>ズーム / パン</td></tr>
   <tr><td>Esc</td><td>キャンセルして閉じる</td></tr>
 </table>

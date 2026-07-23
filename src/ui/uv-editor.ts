@@ -19,6 +19,8 @@ import {
   weldUVs,
   type UVIslands,
 } from "../tools/edit-mode/uv-edit";
+import { computeLSCM } from "../tools/edit-mode/lscm";
+import { UV_PIN_METADATA_KEY } from "../tools/edit-mode/build";
 
 /**
  * 2D UV editor (F-M9) — full-screen overlay with a canvas view of the UV
@@ -79,6 +81,19 @@ export function openUVEditor(): void {
   let faceStretch: Float32Array | null = null;
   let selIsland = -1;
   const selVerts = new Set<number>();
+
+  // UV pins (Blender's P): pinned verts keep their UVs through ⚓ Re-unwrap.
+  // Restored from mesh metadata (written on Apply), validated by vertex range.
+  const pins = new Set<number>();
+  {
+    const meta = (mesh.metadata ?? null) as Record<string, unknown> | null;
+    const raw = meta?.[UV_PIN_METADATA_KEY];
+    if (Array.isArray(raw)) {
+      for (const v of raw) {
+        if (Number.isInteger(v) && v >= 0 && v < vertexCount) pins.add(v as number);
+      }
+    }
+  }
 
   // View transform: screen = (ox + u·viewScale, oy − v·viewScale).
   let viewScale = 400;
@@ -220,6 +235,74 @@ export function openUVEditor(): void {
       return true;
     }),
   ];
+  // Pin toggle: mixed selection pins everything; fully-pinned selection unpins.
+  const togglePins = (): boolean => {
+    if (editorMode !== "vertex" || selVerts.size === 0) {
+      status("⚠ Pin: Vertex モードで UV 頂点を選択してから (P)");
+      return false;
+    }
+    const anyUnpinned = [...selVerts].some((v) => !pins.has(v));
+    for (const v of selVerts) {
+      if (anyUnpinned) pins.add(v);
+      else pins.delete(v);
+    }
+    status(`📌 Pins: ${pins.size} 頂点`);
+    return true;
+  };
+
+  /**
+   * Re-unwrap every island that has ≥1 pinned vertex with LSCM, holding the
+   * pinned verts at their current draft UVs. Islands without pins are left
+   * untouched; degenerate charts are skipped.
+   */
+  const reUnwrap = (): boolean => {
+    if (pins.size === 0) {
+      status("⚠ Re-unwrap: 📌 ピンがない — Vertex モードで頂点を選び P");
+      return false;
+    }
+    let done = 0;
+    for (let isl = 0; isl < islandData.islands.length; isl++) {
+      const verts = islandData.islands[isl]!;
+      const islandPins = verts.filter((v) => pins.has(v));
+      if (islandPins.length === 0) continue;
+
+      // Chart-local numbering for the solver.
+      const localOf = new Map<number, number>();
+      const chartPos: number[] = [];
+      for (const v of verts) {
+        localOf.set(v, chartPos.length / 3);
+        chartPos.push(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+      }
+      const chartTris: number[] = [];
+      for (let f = 0; f < indices.length / 3; f++) {
+        if (islandData.islandOfVert[indices[f * 3]!] !== isl) continue;
+        chartTris.push(
+          localOf.get(indices[f * 3]!)!,
+          localOf.get(indices[f * 3 + 1]!)!,
+          localOf.get(indices[f * 3 + 2]!)!,
+        );
+      }
+      const localPins = new Map<number, readonly [number, number]>();
+      for (const v of islandPins) {
+        localPins.set(localOf.get(v)!, [draft[v * 2]!, draft[v * 2 + 1]!]);
+      }
+      const solved = computeLSCM(new Float32Array(chartPos), chartTris, { pins: localPins });
+      if (!solved) continue;
+      for (const v of verts) {
+        const l = localOf.get(v)!;
+        draft[v * 2] = solved.uvs[l * 2]!;
+        draft[v * 2 + 1] = solved.uvs[l * 2 + 1]!;
+      }
+      done++;
+    }
+    if (done === 0) {
+      status("⚠ Re-unwrap: 解ける島がない（退化チャート）");
+      return false;
+    }
+    status(`⚓ Re-unwrap (LSCM): ${done} island(s) — ピン ${pins.size} 頂点を固定`);
+    return true;
+  };
+
   const vertexOpBtns = [
     makeAction("Weld", "選択 UV 頂点を重心へ溶接 (シームの継ぎ目消しに)", () => {
       if (!needVerts()) return false;
@@ -237,9 +320,14 @@ export function openUVEditor(): void {
       alignUVs(draft, [...selVerts], "v");
       return true;
     }),
+    makeAction("📌 Pin", "選択 UV 頂点のピンをトグル (P) — Re-unwrap で固定される", togglePins),
   ];
   bar.appendChild(group(islandOpBtns));
   bar.appendChild(group(vertexOpBtns));
+  // Re-unwrap works from either mode (it operates island-by-island on pins).
+  bar.appendChild(group([
+    makeAction("⚓ Re-unwrap", "ピンを固定して LSCM 再展開 (ピンのある島のみ)", reUnwrap),
+  ]));
 
   const snapRow = document.createElement("label");
   snapRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:10px;margin-left:10px;color:var(--t3,#9aa);cursor:pointer;";
@@ -407,16 +495,31 @@ export function openUVEditor(): void {
       ctx.stroke();
     }
 
-    // Vertex dots.
+    // Vertex dots. Pinned verts draw as red diamonds in both modes (they act
+    // through Re-unwrap regardless of the active mode).
     if (editorMode === "vertex") {
       for (let v = 0; v < vertexCount; v++) {
         if (islandData.islandOfVert[v]! < 0) continue;
+        if (pins.has(v)) continue; // drawn in the pin pass below
         const [x, y] = uvToScreen(draft[v * 2]!, draft[v * 2 + 1]!);
         ctx.fillStyle = selVerts.has(v) ? "#ffd24d" : "#9fb0c8";
         ctx.beginPath();
         ctx.arc(x, y, selVerts.has(v) ? 4 : 2.5, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+    for (const v of pins) {
+      if (islandData.islandOfVert[v]! < 0) continue;
+      const [x, y] = uvToScreen(draft[v * 2]!, draft[v * 2 + 1]!);
+      const r = editorMode === "vertex" && selVerts.has(v) ? 6 : 4.5;
+      ctx.fillStyle = editorMode === "vertex" && selVerts.has(v) ? "#ff9d5e" : "#ff5e51";
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
@@ -605,7 +708,9 @@ export function openUVEditor(): void {
     else if (k === "s") setXform("scale");
     else if (k === "i") setEditorMode("island");
     else if (k === "v") setEditorMode("vertex");
-    else return;
+    else if (k === "p") {
+      if (togglePins()) draw();
+    } else return;
     e.preventDefault();
   };
 
@@ -616,17 +721,34 @@ export function openUVEditor(): void {
     overlay.remove();
   };
 
+  /** Write the pin set into mesh metadata (delete the key when empty). */
+  const writePins = (list: number[] | null): void => {
+    const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+    if (list && list.length > 0) meta[UV_PIN_METADATA_KEY] = list;
+    else delete meta[UV_PIN_METADATA_KEY];
+    mesh.metadata = meta;
+  };
+
   const apply = (): void => {
     const final = new Float32Array(draft);
     const before = new Float32Array(orig);
+    const metaBefore = (mesh.metadata ?? null) as Record<string, unknown> | null;
+    const rawPins = metaBefore?.[UV_PIN_METADATA_KEY];
+    const pinsBefore = Array.isArray(rawPins) ? ([...rawPins] as number[]) : null;
+    const pinsAfter = pins.size > 0 ? [...pins].sort((a, b) => a - b) : null;
     mesh.updateVerticesData(VertexBuffer.UVKind, final);
+    writePins(pinsAfter);
     state.history.push({
       label: "Edit UVs",
       undo() {
-        if (!mesh.isDisposed()) mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(before));
+        if (mesh.isDisposed()) return;
+        mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(before));
+        writePins(pinsBefore);
       },
       redo() {
-        if (!mesh.isDisposed()) mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(final));
+        if (mesh.isDisposed()) return;
+        mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(final));
+        writePins(pinsAfter);
       },
     });
     close();

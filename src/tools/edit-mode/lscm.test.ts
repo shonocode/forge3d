@@ -76,6 +76,64 @@ describe("computeLSCM", () => {
     expect(Array.from(a.uvs)).toEqual(Array.from(b.uvs));
   });
 
+  it("honors 2 user pins exactly (pinned verts keep their UVs)", () => {
+    const pos = new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]);
+    const tris = [0, 1, 2, 0, 2, 3];
+    const pins = new Map<number, readonly [number, number]>([
+      [0, [0.25, 0.25]],
+      [2, [0.75, 0.75]],
+    ]);
+    const res = computeLSCM(pos, tris, { pins })!;
+    expect(res.uvs[0]).toBeCloseTo(0.25, 6);
+    expect(res.uvs[1]).toBeCloseTo(0.25, 6);
+    expect(res.uvs[2 * 2]).toBeCloseTo(0.75, 6);
+    expect(res.uvs[2 * 2 + 1]).toBeCloseTo(0.75, 6);
+    // Chart still spans (didn't collapse onto the pin segment).
+    let maxD = 0;
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++) maxD = Math.max(maxD, uvDist(res.uvs, a, b));
+    expect(maxD).toBeGreaterThan(0.3);
+    for (const v of res.uvs) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it("honors 3+ user pins exactly (over-determined pins stay fixed)", () => {
+    const pos = new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]);
+    const tris = [0, 1, 2, 0, 2, 3];
+    const pins = new Map<number, readonly [number, number]>([
+      [0, [0, 0]],
+      [1, [1, 0]],
+      [3, [0, 1]],
+    ]);
+    const res = computeLSCM(pos, tris, { pins })!;
+    for (const [v, uv] of pins) {
+      expect(res.uvs[v * 2]).toBeCloseTo(uv[0], 6);
+      expect(res.uvs[v * 2 + 1]).toBeCloseTo(uv[1], 6);
+    }
+    // The free vertex (2) should land near (1,1) — the flat square's corner.
+    expect(res.uvs[2 * 2]).toBeCloseTo(1, 1);
+    expect(res.uvs[2 * 2 + 1]).toBeCloseTo(1, 1);
+  });
+
+  it("a single user pin translates the auto-pinned solve onto it", () => {
+    const pos = new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]);
+    const tris = [0, 1, 2, 0, 2, 3];
+    const pins = new Map<number, readonly [number, number]>([[2, [5, 7]]]);
+    const res = computeLSCM(pos, tris, { pins })!;
+    expect(res.uvs[2 * 2]).toBeCloseTo(5, 5);
+    expect(res.uvs[2 * 2 + 1]).toBeCloseTo(7, 5);
+    // Shape identical to the unpinned solve (just translated): edge ratios hold.
+    const base = computeLSCM(pos, tris)!;
+    expect(uvDist(res.uvs, 0, 1)).toBeCloseTo(uvDist(base.uvs, 0, 1), 5);
+  });
+
+  it("returns null when all user pins are out of range", () => {
+    const pos = new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0]);
+    const pins = new Map<number, readonly [number, number]>([
+      [99, [0, 0]],
+      [100, [1, 0]],
+    ]);
+    expect(computeLSCM(pos, [0, 1, 2], { pins })).toBeNull();
+  });
+
   it("unwraps a curved chart (bent quad) with lower stretch than planar projection", () => {
     // A quad bent along its middle (a shallow roof). Planar projection onto the
     // average normal squashes one half; LSCM should keep both halves' edge

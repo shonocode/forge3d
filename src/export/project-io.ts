@@ -31,7 +31,7 @@ import { validateMorphDrivers } from "../tools/morph-driver";
 import { createLayer, toggleLayerVisibility, assignMeshToLayer } from "../tools/layers";
 import { updateLayerUI, updateHierarchy } from "../ui/panels";
 import { openFileDialog } from "../ui/file-input";
-import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "../tools/edit-mode/build";
+import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY, UV_PIN_METADATA_KEY } from "../tools/edit-mode/build";
 
 function sanitizeProjectName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, "_").replace(/^\.+/, "_").trim() || "project";
@@ -117,12 +117,14 @@ export function collectSidecar(): ProjectSidecar {
       if (Array.isArray(seams) && seams.length > 0) entry.editSeams = seams as string[];
       const creases = meta[CREASE_METADATA_KEY];
       if (Array.isArray(creases) && creases.length > 0) entry.editCreases = creases as Array<[string, number]>;
+      const uvPins = meta[UV_PIN_METADATA_KEY];
+      if (Array.isArray(uvPins) && uvPins.length > 0) entry.editUVPins = uvPins as number[];
     }
 
     if (
       entry.proceduralGraph || entry.sculptMask || entry.layerName ||
       entry.paintLayers || entry.paintChannels ||
-      entry.editPolys || entry.editSeams || entry.editCreases
+      entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins
     ) {
       meshes.push(entry);
     }
@@ -289,11 +291,12 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     // the next Edit Mode entry (buildEditMesh) restores quads / seams / creases.
     // build.ts validates polys against the index buffer and drops stale keys,
     // so a vertex-order mismatch degrades gracefully to triangles.
-    if (entry.editPolys || entry.editSeams || entry.editCreases) {
+    if (entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins) {
       const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
       if (entry.editPolys) meta[POLY_METADATA_KEY] = entry.editPolys;
       if (entry.editSeams) meta[SEAM_METADATA_KEY] = entry.editSeams;
       if (entry.editCreases) meta[CREASE_METADATA_KEY] = entry.editCreases;
+      if (entry.editUVPins) meta[UV_PIN_METADATA_KEY] = entry.editUVPins;
       mesh.metadata = meta;
     }
   }

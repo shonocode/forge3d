@@ -70,6 +70,8 @@ export interface ProjectMeshEntry {
   editSeams?: string[];
   /** Catmull-Clark creases as [edgeKey, sharpness] pairs — see Mark Crease. */
   editCreases?: Array<[string, number]>;
+  /** UV Editor pin vertex indices — held fixed by ⚓ Re-unwrap (LSCM). */
+  editUVPins?: number[];
 }
 
 export interface ProjectSidecar {
@@ -256,6 +258,11 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
         if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "number") {
           throw new Error("Sidecar: each editCreases entry must be [string, number]");
         }
+      }
+    }
+    if (m.editUVPins !== undefined) {
+      if (!Array.isArray(m.editUVPins) || !m.editUVPins.every((v) => Number.isInteger(v) && (v as number) >= 0)) {
+        throw new Error("Sidecar: editUVPins must be an array of non-negative ints");
       }
     }
   }

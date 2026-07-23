@@ -11,13 +11,17 @@
  *    the discrete Cauchy-Riemann (conformality) condition as two real linear
  *    equations in the unknown per-vertex (u, v).
  *  - The map is defined only up to a similarity (translation + rotation +
- *    scale), so TWO vertices are pinned to remove that 4-DOF null space. We pin
- *    the two most distant vertices along the U axis, spaced by their 3D
- *    distance, so the result keeps roughly the chart's real scale.
+ *    scale), so at least TWO vertices must be pinned to remove that 4-DOF null
+ *    space. By default we pin the two most distant vertices along the U axis,
+ *    spaced by their 3D distance, so the result keeps roughly the chart's real
+ *    scale. Callers may instead supply their own pins (UV Editor pinning):
+ *    pinned vertices keep their exact given UVs and the rest of the chart
+ *    relaxes conformally around them.
  *  - The resulting least-squares system A·x = b (A: 2·|T| rows, 2·|free| cols)
  *    is solved with CGLS (conjugate gradient on the normal equations) — matrix
  *    free, so no dense factorization and it scales to a few thousand verts.
- *  - A final orientation check flips V if the map came out mirrored.
+ *  - A final orientation check flips V if the map came out mirrored — only in
+ *    auto-pin mode (user pins define the orientation; flipping would move them).
  *
  * Pure and headless. Returns per-vertex UVs (length = vertexCount·2). Returns
  * null when the chart is too small / degenerate to pin (caller falls back to
@@ -29,27 +33,54 @@ export interface LSCMResult {
   uvs: Float32Array;
 }
 
+export interface LSCMOptions {
+  /**
+   * User pins: chart-local vertex index → fixed UV. With ≥2 pins the map is
+   * fully determined by them; with fewer, auto pins fill in (a single user pin
+   * still keeps its exact UV — the auto-pinned solve is translated onto it).
+   */
+  pins?: ReadonlyMap<number, readonly [number, number]>;
+}
+
 /**
  * @param positions chart-local 3D vertex positions (length = n*3)
  * @param triangles flat triangle index list into `positions` (CCW)
  */
-export function computeLSCM(positions: Float32Array, triangles: readonly number[]): LSCMResult | null {
+export function computeLSCM(
+  positions: Float32Array,
+  triangles: readonly number[],
+  opts: LSCMOptions = {},
+): LSCMResult | null {
   const n = positions.length / 3;
   if (n < 3 || triangles.length < 3) return null;
 
-  const pins = pickPins(positions, n);
-  if (!pins) return null;
-  const [p0, p1] = pins;
-
-  // Pin the two farthest verts along U, spaced by their 3D distance.
-  const dist = Math.hypot(
-    positions[p1 * 3]! - positions[p0 * 3]!,
-    positions[p1 * 3 + 1]! - positions[p0 * 3 + 1]!,
-    positions[p1 * 3 + 2]! - positions[p0 * 3 + 2]!,
-  );
+  const userPins = opts.pins ?? new Map<number, readonly [number, number]>();
   const pinUV = new Map<number, [number, number]>();
-  pinUV.set(p0, [0, 0]);
-  pinUV.set(p1, [dist > 1e-9 ? dist : 1, 0]);
+  let autoPinned = false;
+  /** Single user pin to translate the auto-pinned solve onto afterwards. */
+  let translateTo: { v: number; u: number; w: number } | null = null;
+
+  if (userPins.size >= 2) {
+    for (const [v, uv] of userPins) {
+      if (v >= 0 && v < n) pinUV.set(v, [uv[0], uv[1]]);
+    }
+    if (pinUV.size < 2) return null; // pins referenced out-of-range verts
+  } else {
+    // Auto pins: the two farthest verts along U, spaced by their 3D distance.
+    const pins = pickPins(positions, n);
+    if (!pins) return null;
+    const [p0, p1] = pins;
+    const dist = Math.hypot(
+      positions[p1 * 3]! - positions[p0 * 3]!,
+      positions[p1 * 3 + 1]! - positions[p0 * 3 + 1]!,
+      positions[p1 * 3 + 2]! - positions[p0 * 3 + 2]!,
+    );
+    pinUV.set(p0, [0, 0]);
+    pinUV.set(p1, [dist > 1e-9 ? dist : 1, 0]);
+    autoPinned = true;
+    const single = [...userPins].find(([v]) => v >= 0 && v < n);
+    if (single) translateTo = { v: single[0], u: single[1][0], w: single[1][1] };
+  }
 
   // Free-unknown numbering: each free vertex owns 2 consecutive columns.
   const freeCol = new Int32Array(n).fill(-1);
@@ -127,10 +158,22 @@ export function computeLSCM(positions: Float32Array, triangles: readonly number[
   }
 
   // Orientation: if the map is globally mirrored (negative total signed UV
-  // area), flip V so texturing isn't back-to-front. Pins sit on V=0, so the
-  // flip keeps them valid.
-  if (signedUVArea(uvs, triangles) < 0) {
+  // area), flip V so texturing isn't back-to-front. Auto pins sit on V=0, so
+  // the flip keeps them valid. User pins define their own orientation — never
+  // second-guess it (flipping would move the pinned UVs).
+  if (autoPinned && signedUVArea(uvs, triangles) < 0) {
     for (let v = 0; v < n; v++) uvs[v * 2 + 1] = -uvs[v * 2 + 1]!;
+  }
+
+  // Single user pin in auto-pin mode: rigid-translate the solve so that pin
+  // lands exactly on its requested UV (rotation/scale stay solver-chosen).
+  if (translateTo) {
+    const du = translateTo.u - uvs[translateTo.v * 2]!;
+    const dv = translateTo.w - uvs[translateTo.v * 2 + 1]!;
+    for (let v = 0; v < n; v++) {
+      uvs[v * 2] = uvs[v * 2]! + du;
+      uvs[v * 2 + 1] = uvs[v * 2 + 1]! + dv;
+    }
   }
 
   return { uvs };

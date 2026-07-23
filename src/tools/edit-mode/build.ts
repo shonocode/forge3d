@@ -8,6 +8,8 @@ export const POLY_METADATA_KEY = "forge3dPolys";
 export const SEAM_METADATA_KEY = "forge3dSeams";
 /** Metadata key holding Catmull-Clark creases ([key, σ] pairs). */
 export const CREASE_METADATA_KEY = "forge3dCreases";
+/** Metadata key holding UV Editor pin vertex indices (number[]). */
+export const UV_PIN_METADATA_KEY = "forge3dUVPins";
 
 /**
  * Build an EditMesh from a Babylon Mesh.

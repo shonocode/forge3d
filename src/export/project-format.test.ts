@@ -222,4 +222,16 @@ describe("edit structure sidecar fields (half-edge V2 persistence)", () => {
     const bad = { ...SIDECAR, meshes: [{ name: "x", editSeams: [12] }] };
     expect(() => validateSidecar(bad)).toThrow(/editSeams/);
   });
+
+  it("round-trips editUVPins and rejects malformed entries", () => {
+    const withPins: ProjectSidecar = {
+      ...SIDECAR,
+      meshes: [{ name: "cube", editUVPins: [0, 5, 12] }],
+    };
+    const packed = packProject(withPins, new Uint8Array([1]));
+    const { sidecar } = unpackProject(packed);
+    expect(sidecar.meshes[0]!.editUVPins).toEqual([0, 5, 12]);
+    expect(() => validateSidecar({ ...SIDECAR, meshes: [{ name: "x", editUVPins: [1.5] }] })).toThrow(/editUVPins/);
+    expect(() => validateSidecar({ ...SIDECAR, meshes: [{ name: "x", editUVPins: [-1] }] })).toThrow(/editUVPins/);
+  });
 });
