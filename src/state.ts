@@ -238,6 +238,8 @@ export type ModifierType = "subdivision" | "mirror" | "array";
 export interface OriginalGeometry {
   positions: Float32Array;
   normals: Float32Array | null;
+  /** Per-vertex UVs (2 floats each) — carried through modifier evaluation. */
+  uvs: Float32Array | null;
   indices: number[];
 }
 

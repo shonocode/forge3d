@@ -263,6 +263,32 @@ describe("modifier stack sidecar field (.forge3d v2)", () => {
     expect(Array.from(base64ToFloat32(mo.original.positions))).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   });
 
+  it("round-trips original UVs and accepts pre-UV files (uvs absent)", () => {
+    const withUV: ProjectSidecar = {
+      ...SIDECAR,
+      meshes: [{
+        name: "cube",
+        modifiers: {
+          original: { ...ORIGINAL, uvs: float32ToBase64(new Float32Array([0, 0, 1, 0, 0.5, 1])) },
+          stack: STACK,
+        },
+      }],
+    };
+    const { sidecar } = unpackProject(packProject(withUV, new Uint8Array([1])));
+    expect(Array.from(base64ToFloat32(sidecar.meshes[0]!.modifiers!.original.uvs!)))
+      .toEqual([0, 0, 1, 0, 0.5, 1]);
+    // `uvs` absent (older file) still validates.
+    expect(() => validateSidecar({
+      ...SIDECAR,
+      meshes: [{ name: "x", modifiers: { original: ORIGINAL, stack: [] } }],
+    })).not.toThrow();
+    // Wrong type rejects.
+    expect(() => validateSidecar({
+      ...SIDECAR,
+      meshes: [{ name: "x", modifiers: { original: { ...ORIGINAL, uvs: 5 }, stack: [] } }],
+    })).toThrow(/modifiers/);
+  });
+
   it("rejects malformed modifiers containers", () => {
     const bad1 = { ...SIDECAR, meshes: [{ name: "x", modifiers: { stack: [] } }] };
     expect(() => validateSidecar(bad1)).toThrow(/modifiers/);

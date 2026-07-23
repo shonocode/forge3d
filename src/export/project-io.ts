@@ -132,6 +132,7 @@ export function collectSidecar(): ProjectSidecar {
         original: {
           positions: float32ToBase64(origGeo.positions),
           normals: origGeo.normals ? float32ToBase64(origGeo.normals) : null,
+          uvs: origGeo.uvs ? float32ToBase64(origGeo.uvs) : null,
           indices: origGeo.indices.slice(),
         },
         stack: mods.map((m) => ({ ...m })),
@@ -328,6 +329,10 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
         const normals = entry.modifiers.original.normals
           ? base64ToFloat32(entry.modifiers.original.normals)
           : null;
+        // Absent in pre-UV files — modifiers then evaluate without UVs (as before).
+        const uvs = entry.modifiers.original.uvs
+          ? base64ToFloat32(entry.modifiers.original.uvs)
+          : null;
         const indices = entry.modifiers.original.indices.slice();
         const numV = positions.length / 3;
         const stack: Modifier[] = [];
@@ -340,7 +345,7 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
           stack.push(mod);
         }
         if (stack.length > 0 && numV >= 3 && indices.every((v) => v < numV)) {
-          state.originalGeometryMap.set(mesh.uniqueId, { positions, normals, indices });
+          state.originalGeometryMap.set(mesh.uniqueId, { positions, normals, uvs, indices });
           state.modifierMap.set(mesh.uniqueId, stack);
         }
       } catch (e) {

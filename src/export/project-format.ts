@@ -81,7 +81,8 @@ export interface ProjectMeshEntry {
    * re-evaluating) and the stack becomes editable again.
    */
   modifiers?: {
-    original: { positions: string; normals: string | null; indices: number[] };
+    /** `uvs` absent in files written before UV-through-modifiers support. */
+    original: { positions: string; normals: string | null; uvs?: string | null; indices: number[] };
     stack: Array<Record<string, unknown>>;
   };
 }
@@ -315,11 +316,12 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
       // in validateModifierEntry at restore time.
       const mo = m.modifiers as { original?: unknown; stack?: unknown };
       if (typeof mo !== "object" || mo === null) throw new Error("Sidecar: modifiers must be an object");
-      const orig = mo.original as { positions?: unknown; normals?: unknown; indices?: unknown } | undefined;
+      const orig = mo.original as { positions?: unknown; normals?: unknown; uvs?: unknown; indices?: unknown } | undefined;
       if (
         typeof orig !== "object" || orig === null ||
         typeof orig.positions !== "string" ||
         (orig.normals !== null && typeof orig.normals !== "string") ||
+        (orig.uvs !== undefined && orig.uvs !== null && typeof orig.uvs !== "string") ||
         !Array.isArray(orig.indices) || !orig.indices.every((v) => Number.isInteger(v) && (v as number) >= 0)
       ) {
         throw new Error("Sidecar: modifiers.original needs base64 positions, normals|null, int indices");
