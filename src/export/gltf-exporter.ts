@@ -18,6 +18,7 @@ import { applyDefaultEdges } from "../tools/mesh-utils";
 import { addShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
 import { createBoneVisualForImport, updateHierarchyVisualization, getActiveSkeleton } from "../tools/skeleton-tool";
+import { adoptImportedClips } from "../tools/animation-tool";
 import { assignToActiveLayer } from "../tools/layers";
 import { openFileDialog } from "../ui/file-input";
 import { prepareExportRig, disposeExportRig } from "./skeleton-export-bridge";
@@ -302,6 +303,12 @@ export async function loadFileDirectly(file: File): Promise<void> {
         for (const ag of result.animationGroups) {
           ag.stop();
         }
+        // Also adopt them as editable clips. The groups themselves stay for
+        // playback and re-export; this is what puts the same animation in
+        // front of the dopesheet and the graph editor, which is the only way
+        // an imported clip can actually be tuned here. Runs after the skeleton
+        // loop above because tracks are matched to bones by name.
+        adoptImportedClips(result.animationGroups);
       }
     }
 

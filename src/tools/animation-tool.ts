@@ -5,6 +5,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import type { Scene } from "@babylonjs/core/scene";
+import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
@@ -17,6 +18,7 @@ import type { MorphKeyframe, MorphTrack } from "../state";
 import { evaluateBezierSegment } from "./bezier";
 import type { AnimChannel } from "../state";
 import { updateOnionSkin } from "./onion-skin";
+import { clipsFromAnimationGroups } from "./anim-import";
 
 // Scratch vectors for decomposition
 const _scratchScale = new Vector3();
@@ -42,6 +44,44 @@ export function createClip(name?: string): AnimClipData {
   state.currentFrame = 0;
   status("Clip created: " + clip.name);
   return clip;
+}
+
+/**
+ * Take animation that arrived with an imported model and make it editable.
+ *
+ * A GLB's animation lands in `state.importedAnimGroups`, which the UI can play
+ * and re-export but nothing can open — the dopesheet and the graph editor work
+ * on `state.animClips`. Without this step a clip authored elsewhere can be
+ * watched in forge3d and not touched, which is the difference between having
+ * an animation editor and being able to tune the game's punch with it.
+ *
+ * Tracks are matched to bones by name against the active skeleton, so this has
+ * to run after the skeleton is built. Anything that does not match a bone is
+ * dropped rather than guessed at.
+ *
+ * Returns the clips adopted, newest last.
+ */
+export function adoptImportedClips(groups: readonly AnimationGroup[]): AnimClipData[] {
+  const skeleton = state.activeSkeletonId ? state.skeletonMap.get(state.activeSkeletonId) : null;
+  if (!skeleton) return [];
+
+  const byName = new Map(skeleton.bones.map((b) => [b.name, b]));
+  const clips = clipsFromAnimationGroups(
+    groups,
+    (name) => {
+      const bone = byName.get(name);
+      return bone ? { boneId: bone.id, boneName: bone.name } : null;
+    },
+    () => "clip_" + ++state.animClipCounter,
+  ).filter((clip) => clip.tracks.length > 0);
+
+  if (clips.length === 0) return [];
+
+  state.animClips.push(...clips);
+  state.activeClipId = clips[0]!.id;
+  state.currentFrame = 0;
+  status(`Imported ${clips.length} clip(s): ${clips.map((c) => c.name).join(", ")}`);
+  return clips;
 }
 
 export function getActiveClip(): AnimClipData | null {

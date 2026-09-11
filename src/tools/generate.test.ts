@@ -213,6 +213,34 @@ describe("sweep", () => {
     expect(open.polys).toHaveLength(1 * TRIM.length + 2);
   });
 
+  it("winds outward for a profile drawn counterclockwise in (side, up)", () => {
+    // A capped straight run is a closed solid, so its signed volume is the
+    // section area times the length — and positive only if the normals face
+    // out. This is the check that caught the round generators being inside
+    // out, and sweep was wrong the same way.
+    const m = sweep({ profile: TRIM, path: [[0, 0, 0], [2, 0, 0]] });
+    expect(signedVolume(m)).toBeCloseTo(0.06 * 0.1 * 2, 6);
+  });
+
+  it("winds outward around a closed loop too", () => {
+    // A square ring of trim: outer 2m box minus the inner hole, 100mm tall.
+    const m = sweep({
+      profile: TRIM,
+      path: [
+        [0, 0, 0],
+        [2, 0, 0],
+        [2, 0, 2],
+        [0, 0, 2],
+      ],
+      closedPath: true,
+    });
+    // Not perimeter x section: the mitre makes the ring a square annulus, so
+    // the corners are counted once rather than twice. The path square is 2m
+    // and the trim sits 60mm inside it, leaving a 1.88m hole — which is only
+    // true because the corners are properly mitred.
+    expect(signedVolume(m)).toBeCloseTo((2 * 2 - 1.88 * 1.88) * 0.1, 5);
+  });
+
   it("returns an empty mesh for a degenerate path", () => {
     expect(sweep({ profile: TRIM, path: [[0, 0, 0]] }).polys).toHaveLength(0);
   });

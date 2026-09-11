@@ -413,19 +413,22 @@ export function sweep(opts: SweepOptions): MeshData {
     loops.push(loop);
   }
 
+  // Winding follows the profile: drawn counterclockwise in its own (side, up)
+  // plane — the way a section is drawn on paper — the tube's normals point
+  // out. Same convention as `revolve`.
   const spans = closed ? n : n - 1;
   for (let i = 0; i < spans; i++) {
     const a = loops[i]!;
     const c = loops[(i + 1) % n]!;
     for (let j = 0; j < prof.length; j++) {
       const k = (j + 1) % prof.length;
-      b.face(a[j]!, a[k]!, c[k]!, c[j]!);
+      b.face(a[j]!, c[j]!, c[k]!, a[k]!);
     }
   }
 
   if (!closed && (opts.caps ?? true)) {
-    b.face(...[...loops[0]!].reverse());
-    b.face(...loops[n - 1]!);
+    b.face(...loops[0]!);
+    b.face(...[...loops[n - 1]!].reverse());
   }
   return b.build();
 }
