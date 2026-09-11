@@ -1,0 +1,431 @@
+/**
+ * Parametric geometry generators, as plain data.
+ *
+ * `tools/primitives.ts` makes primitives for the *editor*: it calls
+ * `MeshBuilder`, touches `state`, assigns a material and selects the result.
+ * None of that can be called from a build script, and what it produces is
+ * triangles — which `catmullClark` cannot refine usefully.
+ *
+ * This module is the pure half. Every function returns {@link MeshData} made
+ * of **quads**, wound CCW outward, so the output feeds straight into
+ * `meshFromData` and the operator set, or into `catmullClark` for a rounded
+ * version of the same shape.
+ *
+ * ```ts
+ * import { box, sweep, creaseAll, meshFromData, catmullClark } from "forge3d";
+ *
+ * const top = box({ size: [1.2, 0.04, 0.6], pivot: "base" });
+ * creaseAll(top, 1);                       // keep it hard-surface
+ * const trim = sweep({ profile: OGEE, path: roomPerimeter, closedPath: true });
+ * ```
+ *
+ * Pure and headless — Vitest-pinned.
+ */
+import type { MeshData } from "../lib/mesh";
+
+export type Vec2 = readonly [number, number];
+export type Vec3 = readonly [number, number, number];
+
+/** Accumulates positions and polygons, welding vertices that coincide. */
+class Builder {
+  positions: number[] = [];
+  polys: number[][] = [];
+  private index = new Map<string, number>();
+  private weld: boolean;
+
+  constructor(weld = true) {
+    this.weld = weld;
+  }
+
+  vert(x: number, y: number, z: number): number {
+    if (this.weld) {
+      // 1e-5 m — a hundredth of a millimetre. Tight enough that deliberately
+      // close geometry survives, loose enough to catch float drift from the
+      // trig in the round generators.
+      const key = `${Math.round(x * 1e5)},${Math.round(y * 1e5)},${Math.round(z * 1e5)}`;
+      const hit = this.index.get(key);
+      if (hit !== undefined) return hit;
+      const id = this.positions.length / 3;
+      this.positions.push(x, y, z);
+      this.index.set(key, id);
+      return id;
+    }
+    const id = this.positions.length / 3;
+    this.positions.push(x, y, z);
+    return id;
+  }
+
+  face(...verts: number[]): void {
+    // A degenerate ring (a pole quad collapsing to a triangle, a zero-radius
+    // cap) would break the half-edge build, so drop repeats here instead.
+    const ring: number[] = [];
+    for (const v of verts) if (ring[ring.length - 1] !== v) ring.push(v);
+    if (ring.length > 2 && ring[0] === ring[ring.length - 1]) ring.pop();
+    if (ring.length >= 3) this.polys.push(ring);
+  }
+
+  build(): MeshData {
+    return { positions: new Float32Array(this.positions), polys: this.polys };
+  }
+}
+
+/** Emit a quad grid spanning `u` x `v` from `origin`; normal is u × v. */
+function gridFace(
+  b: Builder,
+  origin: Vec3,
+  u: Vec3,
+  v: Vec3,
+  su: number,
+  sv: number,
+): void {
+  const id: number[][] = [];
+  for (let i = 0; i <= su; i++) {
+    const row: number[] = [];
+    const fu = i / su;
+    for (let j = 0; j <= sv; j++) {
+      const fv = j / sv;
+      row.push(
+        b.vert(
+          origin[0] + u[0] * fu + v[0] * fv,
+          origin[1] + u[1] * fu + v[1] * fv,
+          origin[2] + u[2] * fu + v[2] * fv,
+        ),
+      );
+    }
+    id.push(row);
+  }
+  for (let i = 0; i < su; i++)
+    for (let j = 0; j < sv; j++)
+      b.face(id[i]![j]!, id[i + 1]![j]!, id[i + 1]![j + 1]!, id[i]![j + 1]!);
+}
+
+export interface BoxOptions {
+  /** Extent on x, y, z. Default [1, 1, 1]. */
+  size?: Vec3;
+  /** Quads per axis. Default [1, 1, 1]. */
+  segments?: Vec3;
+  /** Where the box sits relative to the origin. Default [0, 0, 0]. */
+  at?: Vec3;
+  /**
+   * `"center"` puts the origin at the middle; `"base"` puts it at the centre
+   * of the bottom face, which is what you want for anything standing on a
+   * floor — most of a room, in practice.
+   */
+  pivot?: "center" | "base";
+}
+
+/** An axis-aligned box of quads. */
+export function box(opts: BoxOptions = {}): MeshData {
+  const [sx, sy, sz] = opts.size ?? [1, 1, 1];
+  const [nx, ny, nz] = opts.segments ?? [1, 1, 1];
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+  const yOff = opts.pivot === "base" ? sy / 2 : 0;
+
+  const x0 = ax - sx / 2;
+  const y0 = ay - sy / 2 + yOff;
+  const z0 = az - sz / 2;
+  const x1 = x0 + sx;
+  const y1 = y0 + sy;
+  const z1 = z0 + sz;
+
+  const b = new Builder();
+  gridFace(b, [x1, y0, z0], [0, sy, 0], [0, 0, sz], ny, nz); // +X
+  gridFace(b, [x0, y0, z0], [0, 0, sz], [0, sy, 0], nz, ny); // -X
+  gridFace(b, [x0, y1, z0], [0, 0, sz], [sx, 0, 0], nz, nx); // +Y
+  gridFace(b, [x0, y0, z0], [sx, 0, 0], [0, 0, sz], nx, nz); // -Y
+  gridFace(b, [x0, y0, z1], [sx, 0, 0], [0, sy, 0], nx, ny); // +Z
+  gridFace(b, [x0, y0, z0], [0, sy, 0], [sx, 0, 0], ny, nx); // -Z
+  return b.build();
+}
+
+export interface PlaneOptions {
+  /** Extent along the plane's two axes. Default [1, 1]. */
+  size?: Vec2;
+  /** Quads along each axis. Default [1, 1]. */
+  segments?: Vec2;
+  /** Which way the plane faces. Default "+y" (a floor). */
+  facing?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  at?: Vec3;
+}
+
+/** A single-sided quad grid. */
+export function plane(opts: PlaneOptions = {}): MeshData {
+  const [sa, sb] = opts.size ?? [1, 1];
+  const [na, nb] = opts.segments ?? [1, 1];
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+  const facing = opts.facing ?? "+y";
+
+  // origin / u / v per facing, chosen so u × v is the stated normal.
+  const table: Record<string, [Vec3, Vec3, Vec3]> = {
+    "+y": [[-sa / 2, 0, -sb / 2], [0, 0, sb], [sa, 0, 0]],
+    "-y": [[-sa / 2, 0, -sb / 2], [sa, 0, 0], [0, 0, sb]],
+    "+z": [[-sa / 2, -sb / 2, 0], [sa, 0, 0], [0, sb, 0]],
+    "-z": [[-sa / 2, -sb / 2, 0], [0, sb, 0], [sa, 0, 0]],
+    "+x": [[0, -sb / 2, -sa / 2], [0, sb, 0], [0, 0, sa]],
+    "-x": [[0, -sb / 2, -sa / 2], [0, 0, sa], [0, sb, 0]],
+  } as Record<string, [Vec3, Vec3, Vec3]>;
+
+  const [o, u, v] = table[facing]!;
+  const su = facing === "+y" || facing === "-y" ? (facing === "+y" ? nb : na) : na;
+  const sv = facing === "+y" || facing === "-y" ? (facing === "+y" ? na : nb) : nb;
+
+  const b = new Builder();
+  gridFace(b, [o[0] + ax, o[1] + ay, o[2] + az], u, v, su, sv);
+  return b.build();
+}
+
+export interface CylinderOptions {
+  /** Bottom radius. Default 0.5. */
+  radius?: number;
+  /** Top radius — set 0 for a cone, or differ for a taper. Defaults to `radius`. */
+  radiusTop?: number;
+  height?: number;
+  /** Segments around. Default 16. */
+  radial?: number;
+  /** Segments along the height. Default 1. */
+  rings?: number;
+  /** `"ngon"` closes each end with one polygon, `"none"` leaves it open. */
+  caps?: "ngon" | "none";
+  at?: Vec3;
+  pivot?: "center" | "base";
+}
+
+/** A cylinder, cone or truncated cone, around the Y axis. */
+export function cylinder(opts: CylinderOptions = {}): MeshData {
+  const r0 = opts.radius ?? 0.5;
+  const r1 = opts.radiusTop ?? r0;
+  const h = opts.height ?? 1;
+  const radial = Math.max(3, opts.radial ?? 16);
+  const rings = Math.max(1, opts.rings ?? 1);
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+  const yBase = ay - (opts.pivot === "base" ? 0 : h / 2);
+
+  const b = new Builder();
+  const loops: number[][] = [];
+  for (let j = 0; j <= rings; j++) {
+    const t = j / rings;
+    const r = r0 + (r1 - r0) * t;
+    const y = yBase + h * t;
+    const loop: number[] = [];
+    for (let i = 0; i < radial; i++) {
+      const a = (i / radial) * Math.PI * 2;
+      loop.push(b.vert(ax + Math.cos(a) * r, y, az + Math.sin(a) * r));
+    }
+    loops.push(loop);
+  }
+  // Rings run counterclockwise in XZ, which reads as *clockwise* looking down
+  // the +Y axis — so the side quads go up-then-around, and the top cap is the
+  // reversed ring, to put every normal on the outside.
+  for (let j = 0; j < rings; j++)
+    for (let i = 0; i < radial; i++) {
+      const n = (i + 1) % radial;
+      b.face(loops[j]![i]!, loops[j + 1]![i]!, loops[j + 1]![n]!, loops[j]![n]!);
+    }
+
+  if ((opts.caps ?? "ngon") === "ngon") {
+    if (r1 > 0) b.face(...[...loops[rings]!].reverse());
+    if (r0 > 0) b.face(...loops[0]!);
+  }
+  return b.build();
+}
+
+export interface SphereOptions {
+  radius?: number;
+  /** Segments around the equator. Default 24. */
+  segments?: number;
+  /** Segments pole to pole. Default 12. */
+  rings?: number;
+  at?: Vec3;
+}
+
+/** A UV sphere: quads everywhere, collapsing to triangles at the two poles. */
+export function sphere(opts: SphereOptions = {}): MeshData {
+  const r = opts.radius ?? 0.5;
+  const seg = Math.max(3, opts.segments ?? 24);
+  const rings = Math.max(2, opts.rings ?? 12);
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+
+  const b = new Builder();
+  const loops: number[][] = [];
+  for (let j = 0; j <= rings; j++) {
+    const phi = (j / rings) * Math.PI;
+    const y = Math.cos(phi) * r;
+    const rr = Math.sin(phi) * r;
+    const loop: number[] = [];
+    for (let i = 0; i < seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      loop.push(b.vert(ax + Math.cos(a) * rr, ay + y, az + Math.sin(a) * rr));
+    }
+    loops.push(loop);
+  }
+  // Top ring is at phi=0, so its verts all weld to the pole; `face` drops the
+  // repeats and the quad becomes the triangle it geometrically is.
+  for (let j = 0; j < rings; j++)
+    for (let i = 0; i < seg; i++) {
+      const n = (i + 1) % seg;
+      b.face(loops[j]![i]!, loops[j]![n]!, loops[j + 1]![n]!, loops[j + 1]![i]!);
+    }
+  return b.build();
+}
+
+export interface RevolveOptions {
+  /**
+   * Half-section in the XY plane: x is the radius, y the height. Spun around
+   * the Y axis. Points at x = 0 land on the axis and weld into a pole.
+   */
+  profile: readonly Vec2[];
+  /** Segments around. Default 24. */
+  segments?: number;
+  /** Sweep angle in radians. Default 2π. A partial revolve is left open. */
+  angle?: number;
+  at?: Vec3;
+}
+
+/**
+ * Spin a half-section around the Y axis — a lathe.
+ *
+ * This is how you get the shapes a box cannot fake: a vase, a wine glass, a
+ * turned leg, a faucet spout, a pendant shade.
+ */
+export function revolve(opts: RevolveOptions): MeshData {
+  const prof = opts.profile;
+  const seg = Math.max(3, opts.segments ?? 24);
+  const angle = opts.angle ?? Math.PI * 2;
+  const closed = Math.abs(angle - Math.PI * 2) < 1e-6;
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+
+  const b = new Builder();
+  const steps = closed ? seg : seg + 1;
+  const loops: number[][] = [];
+  for (let i = 0; i < steps; i++) {
+    const a = (i / seg) * angle;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const loop: number[] = [];
+    for (const p of prof) loop.push(b.vert(ax + ca * p[0], ay + p[1], az + sa * p[0]));
+    loops.push(loop);
+  }
+  // Outward normals assume the profile is ordered bottom-to-top with x > 0,
+  // the way a half-section is drawn. Reverse the profile for an inside-out
+  // shell (a bowl seen from within).
+  for (let i = 0; i < (closed ? steps : steps - 1); i++) {
+    const n = (i + 1) % steps;
+    for (let j = 0; j < prof.length - 1; j++)
+      b.face(loops[i]![j]!, loops[i]![j + 1]!, loops[n]![j + 1]!, loops[n]![j]!);
+  }
+  return b.build();
+}
+
+export interface SweepOptions {
+  /**
+   * Closed 2D cross-section. `x` runs along the path's side vector, `y` along
+   * up. For trim, draw it the way you would on a shop drawing: x out from the
+   * wall, y up from the floor.
+   */
+  profile: readonly Vec2[];
+  /** Centre line the profile rides along. */
+  path: readonly Vec3[];
+  /** Join the last path point back to the first. Default false. */
+  closedPath?: boolean;
+  /** Which way the profile's +y points. Default [0, 1, 0]. */
+  up?: Vec3;
+  /** Cap the two ends when the path is open. Default true. */
+  caps?: boolean;
+}
+
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const cross = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]);
+  return l < 1e-12 ? [0, 0, 0] : [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/**
+ * Sweep a cross-section along a path — mouldings, skirting, rails, handles.
+ *
+ * ## Why the miter matters
+ *
+ * The naive version puts the profile in the plane perpendicular to each
+ * segment, which pinches the section at every corner: run a 60mm cornice into
+ * a 90° room corner and it comes out 42mm across the diagonal. Here each joint
+ * sits in the bisector plane and the profile's side offset is divided by
+ * `cos(θ/2)`, so the section stays its true width all the way round — the same
+ * thing a miter saw does.
+ *
+ * The compensation is exact for a path that turns only about `up` (every
+ * architectural run: a room perimeter, a plinth, a worktop edge). A path that
+ * also climbs will join cleanly but the section is measured in the bisector
+ * plane, so a very steep turn thins slightly.
+ */
+export function sweep(opts: SweepOptions): MeshData {
+  const prof = opts.profile;
+  const path = opts.path;
+  const closed = opts.closedPath ?? false;
+  const up = norm(opts.up ?? [0, 1, 0]);
+  if (path.length < 2 || prof.length < 2) return { positions: new Float32Array(), polys: [] };
+
+  const n = path.length;
+  const loops: number[][] = [];
+  // Welding would fuse the two ends of a closed run and the seam of a profile
+  // that doubles back; the sweep already emits each ring once.
+  const b = new Builder(false);
+
+  for (let i = 0; i < n; i++) {
+    const prev = i > 0 ? path[i - 1]! : closed ? path[n - 1]! : null;
+    const next = i < n - 1 ? path[i + 1]! : closed ? path[0]! : null;
+    const tIn = prev ? norm(sub(path[i]!, prev)) : null;
+    const tOut = next ? norm(sub(next, path[i]!)) : null;
+
+    const tangent = norm(
+      tIn && tOut ? add(tIn, tOut) : ((tIn ?? tOut) as Vec3),
+    );
+    // Side is horizontal-ish: perpendicular to both the run and up. When the
+    // run is vertical there is no such direction, so fall back to any normal.
+    let side = norm(cross(tangent, up));
+    if (Math.hypot(side[0], side[1], side[2]) < 1e-9) {
+      side = norm(cross(tangent, [1, 0, 0]));
+      if (Math.hypot(side[0], side[1], side[2]) < 1e-9) side = norm(cross(tangent, [0, 0, 1]));
+    }
+    const vUp = norm(cross(side, tangent));
+
+    // 1 / cos(half turn). Clamped: a hairpin would otherwise blow up.
+    const cosHalf = tIn && tOut ? Math.max(0.15, dot(tIn, tangent)) : 1;
+    const miter = 1 / cosHalf;
+
+    const p = path[i]!;
+    const loop: number[] = [];
+    for (const s of prof) {
+      const sx = s[0] * miter;
+      loop.push(
+        b.vert(
+          p[0] + side[0] * sx + vUp[0] * s[1],
+          p[1] + side[1] * sx + vUp[1] * s[1],
+          p[2] + side[2] * sx + vUp[2] * s[1],
+        ),
+      );
+    }
+    loops.push(loop);
+  }
+
+  const spans = closed ? n : n - 1;
+  for (let i = 0; i < spans; i++) {
+    const a = loops[i]!;
+    const c = loops[(i + 1) % n]!;
+    for (let j = 0; j < prof.length; j++) {
+      const k = (j + 1) % prof.length;
+      b.face(a[j]!, a[k]!, c[k]!, c[j]!);
+    }
+  }
+
+  if (!closed && (opts.caps ?? true)) {
+    b.face(...[...loops[0]!].reverse());
+    b.face(...loops[n - 1]!);
+  }
+  return b.build();
+}

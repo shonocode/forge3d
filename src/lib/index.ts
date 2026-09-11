@@ -68,6 +68,42 @@ export {
   fanTriangulate,
 } from "../tools/edit-mode/half-edge";
 
+// ── Generators ─────────────────────────────────────────────────────────────
+// Parameters in, quads out. Quads matter: these feed `catmullClark` directly,
+// which is what `tools/primitives.ts` (MeshBuilder, triangles, scene-bound)
+// cannot do.
+export {
+  box,
+  plane,
+  cylinder,
+  sphere,
+  revolve,
+  sweep,
+  type BoxOptions,
+  type PlaneOptions,
+  type CylinderOptions,
+  type SphereOptions,
+  type RevolveOptions,
+  type SweepOptions,
+  type Vec2,
+  type Vec3,
+} from "../tools/generate";
+
+// ── Assembly ───────────────────────────────────────────────────────────────
+// Placing, repeating and combining meshes, with creases and seams carried
+// through so a creased box survives being mirrored into a scene.
+export {
+  mergeMeshes,
+  transformMesh,
+  mirrorMesh,
+  arrayMesh,
+  instanceMesh,
+  weldMesh,
+  boundsOf,
+  type TransformOptions,
+  type MirrorOptions,
+} from "../tools/mesh-ops";
+
 // ── Topology operators ─────────────────────────────────────────────────────
 // Each mutates the mesh and returns the faces it created or touched.
 export {
@@ -89,6 +125,40 @@ export {
   quadsToTris,
   subdivideCatmullClark,
 } from "../tools/edit-mode/operators";
+
+// ── Moving a face selection ────────────────────────────────────────────────
+// `extrudeFaces` duplicates and stitches but does not move — in the editor the
+// user drags a gizmo next. These supply the missing half for code, plus a way
+// to pick faces by direction when there is no mouse to pick with.
+export {
+  moveFaces,
+  offsetFaces,
+  scaleFaces,
+  averageNormal,
+  facesFacing,
+  extrudeFacesBy,
+  insetFacesByWidth,
+} from "../tools/edit-mode/face-transform";
+
+// ── Choosing a face selection ──────────────────────────────────────────────
+// The operators take a `Set<faceIndex>`, which is what a mouse produces and
+// what a build script has no way to know. These turn a description — "the
+// outward side of the torso, level with the shoulder" — into that set, and
+// compose, so one selection can answer to several conditions at once.
+export {
+  selectFaces,
+  faceCentroid,
+  faceNormal,
+  facing,
+  centroidWhere,
+  withinBounds,
+  hasSides,
+  and,
+  or,
+  not,
+  nearestFaces,
+  type FacePredicate,
+} from "../tools/select";
 
 // ── Subdivision ────────────────────────────────────────────────────────────
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp
