@@ -3,6 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "description": "Browser DCC, and a headless modelling library. See src/lib/index.ts.",
+  "exports": {
+    ".": "./src/lib/index.ts",
+    "./lib": "./src/lib/index.ts"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

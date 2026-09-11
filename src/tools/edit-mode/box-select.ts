@@ -1,6 +1,6 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
-import { edgeEnd, edgeOrigin, faceVerts, forEachEdge, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, faceVerts, forEachEdge, sourceMesh, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 /**
@@ -22,7 +22,7 @@ export function collectBoxSelection(
 
   const engine = scene.getEngine();
   const vp = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
-  const worldMatrix = em.source.getWorldMatrix();
+  const worldMatrix = sourceMesh(em).getWorldMatrix();
   const transform = scene.getTransformMatrix();
   const v = new Vector3();
 

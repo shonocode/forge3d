@@ -1,6 +1,6 @@
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
-import { toPolygons, triangulateFaces, type EditMesh } from "./half-edge";
+import { sourceMesh, toPolygons, triangulateFaces, type EditMesh } from "./half-edge";
 import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "./build";
 import { transferAttribute, transferSkinWeights } from "./attribute-transfer";
 
@@ -12,7 +12,7 @@ import { transferAttribute, transferSkinWeights } from "./attribute-transfer";
  * (Extrude / Delete / etc.), use `commitTopology` instead.
  */
 export function commitPositions(em: EditMesh): void {
-  const mesh = em.source;
+  const mesh = sourceMesh(em);
   mesh.updateVerticesData(VertexBuffer.PositionKind, em.positions);
 
   const indices = mesh.getIndices();
@@ -40,7 +40,7 @@ export function commitPositions(em: EditMesh): void {
  * bevel/loop-cut split existing edges), so the transfer is exact.
  */
 export function commitTopology(em: EditMesh): void {
-  const mesh = em.source;
+  const mesh = sourceMesh(em);
   const tri = triangulateFaces(em);
   em.triToFace = tri.triToFace;
 
@@ -82,7 +82,7 @@ export function commitTopology(em: EditMesh): void {
  * leaving Edit Mode and .forge3d round-trips (the sidecar reads these keys).
  */
 export function writePolyMetadata(em: EditMesh): void {
-  const mesh = em.source;
+  const mesh = sourceMesh(em);
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   meta[POLY_METADATA_KEY] = toPolygons(em);
   writeEdgeAttrMetadataInto(em, meta);
@@ -94,7 +94,7 @@ export function writePolyMetadata(em: EditMesh): void {
  * Mark Crease, which change these without a topology commit.
  */
 export function writeEdgeAttrMetadata(em: EditMesh): void {
-  const mesh = em.source;
+  const mesh = sourceMesh(em);
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   writeEdgeAttrMetadataInto(em, meta);
   mesh.metadata = meta;

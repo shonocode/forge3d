@@ -38,8 +38,15 @@ export interface EditVertex {
 }
 
 export interface EditMesh {
-  /** Source Babylon mesh — positions are written back here on commit. */
-  source: Mesh;
+  /**
+   * Source Babylon mesh — positions are written back here on commit.
+   *
+   * Null when the mesh was built from plain arrays rather than entered from
+   * the viewport (see `lib/mesh.ts`). Every operator works on the half-edge
+   * data alone; only commit, picking, overlay and the gizmos need a scene
+   * object to talk to, and those are viewport paths that always have one.
+   */
+  source: Mesh | null;
   vertices: EditVertex[];
   faces: EditFace[];
   halfEdges: HalfEdge[];
@@ -69,6 +76,22 @@ export interface EditMesh {
 
 /** Cycle guard for face walks — no sane face has more sides than this. */
 const MAX_FACE_ARITY = 4096;
+
+/**
+ * The source mesh, for code paths that genuinely need a scene object —
+ * commit, picking, overlays, gizmos.
+ *
+ * Throws rather than returning null because every caller is a viewport path
+ * reached from `enterEditMode(mesh)`, where a source always exists. A mesh
+ * built from plain arrays hitting one of these is a programming error, and a
+ * named failure beats a null dereference three frames later.
+ */
+export function sourceMesh(em: EditMesh): Mesh {
+  if (!em.source) {
+    throw new Error("EditMesh has no source mesh — this operation needs one from the viewport");
+  }
+  return em.source;
+}
 
 /** Build a stable, direction-agnostic key for an edge between two vertices. */
 export function seamKey(v1: number, v2: number): string {

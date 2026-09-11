@@ -14,7 +14,7 @@ import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { creaseOf, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
+import { creaseOf, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
 import { refreshEditToolsUI } from "../../ui/builders";
@@ -412,7 +412,7 @@ function executeKnifeCut(x1: number, y1: number, x2: number, y2: number): void {
 
   // Plane through the eye containing both pick rays = through (near₁, far₁,
   // far₂). Mapped to local space point-by-point (affine maps keep planes flat).
-  const invWorld = em.source.getWorldMatrix().clone().invert();
+  const invWorld = sourceMesh(em).getWorldMatrix().clone().invert();
   const a = Vector3.TransformCoordinates(unproject(x1, y1, 0), invWorld);
   const b = Vector3.TransformCoordinates(unproject(x1, y1, 1), invWorld);
   const c = Vector3.TransformCoordinates(unproject(x2, y2, 1), invWorld);
@@ -424,7 +424,7 @@ function executeKnifeCut(x1: number, y1: number, x2: number, y2: number): void {
 
   // Accept only cut points whose screen projection falls within the drawn
   // segment (±2% pad) — the plane itself is infinite.
-  const worldMatrix = em.source.getWorldMatrix();
+  const worldMatrix = sourceMesh(em).getWorldMatrix();
   const vp = camera.viewport.toGlobal(w, h);
   const transform = scene.getTransformMatrix();
   const segDx = x2 - x1;
@@ -575,7 +575,7 @@ export function setCreaseSelection(): void {
 export function unwrapMesh(): void {
   const em = state.editMesh;
   if (!em || !currentOverlay || !currentGizmo) return;
-  const mesh = em.source;
+  const mesh = sourceMesh(em);
   if (mesh.morphTargetManager) {
     status("⚠ Unwrap: mesh has morph targets — clear them first");
     return;
@@ -643,7 +643,7 @@ export function unwrapMesh(): void {
   state.history.push({
     label: "Unwrap",
     undo() {
-      const m = em.source;
+      const m = sourceMesh(em);
       const vd2 = new VertexData();
       vd2.positions = new Float32Array(beforePos);
       vd2.indices = beforeIdx.slice();
@@ -665,7 +665,7 @@ export function unwrapMesh(): void {
       refreshEditToolsUI();
     },
     redo() {
-      const m = em.source;
+      const m = sourceMesh(em);
       const vd2 = new VertexData();
       vd2.positions = new Float32Array(afterPos);
       vd2.indices = afterIdx.slice();
@@ -752,7 +752,7 @@ export function quadsToTrisSelection(): void {
 export function subdivideSelection(): void {
   const em = state.editMesh;
   if (!em) return;
-  if (em.source.morphTargetManager) {
+  if (sourceMesh(em).morphTargetManager) {
     status("⚠ Subdivide: モーフターゲット付きは不可（頂点数が変わるため、モーフ作成前に）");
     return;
   }

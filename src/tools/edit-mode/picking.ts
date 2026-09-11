@@ -1,7 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
-import { edgeEnd, edgeOrigin, forEachEdge, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, forEachEdge, sourceMesh, type EditMesh } from "./half-edge";
 import { isMobile } from "../../state";
 
 // Pick radii scale up on touch devices so fingers can actually hit a vertex
@@ -29,7 +29,7 @@ export function pickVertex(scene: Scene, em: EditMesh, screenX: number, screenY:
   const engine = scene.getEngine();
   const w = engine.getRenderWidth();
   const h = engine.getRenderHeight();
-  const worldMatrix = em.source.getWorldMatrix();
+  const worldMatrix = sourceMesh(em).getWorldMatrix();
   const vp = camera.viewport.toGlobal(w, h);
   const transform = scene.getTransformMatrix();
 
@@ -63,7 +63,7 @@ export function pickEdge(scene: Scene, em: EditMesh, screenX: number, screenY: n
   if (!camera) return -1;
   const engine = scene.getEngine();
   const vp = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
-  const worldMatrix = em.source.getWorldMatrix();
+  const worldMatrix = sourceMesh(em).getWorldMatrix();
   const transform = scene.getTransformMatrix();
   const va = new Vector3();
   const vb = new Vector3();
@@ -117,7 +117,7 @@ function pointSegmentDistSq(
  * tri-only meshes).
  */
 export function pickFace(scene: Scene, em: EditMesh, screenX: number, screenY: number): number {
-  const result = scene.pick(screenX, screenY, (m) => m === em.source);
+  const result = scene.pick(screenX, screenY, (m) => m === sourceMesh(em));
   if (!result?.hit || result.faceId < 0) return -1;
   const face = em.triToFace[result.faceId];
   if (face === undefined || face >= em.faces.length) return -1;
