@@ -106,39 +106,39 @@ describe("plane", () => {
 
 describe("cylinder", () => {
   it("caps both ends with an n-gon", () => {
-    const m = cylinder({ radial: 8 });
+    const m = cylinder({ uSegments: 8 });
     expect(vertCount(m)).toBe(16);
     expect(m.polys.filter((p) => p.length === 8)).toHaveLength(2);
     expect(m.polys.filter((p) => p.length === 4)).toHaveLength(8);
   });
 
   it("approaches πr²h as the radial count rises", () => {
-    const v = signedVolume(cylinder({ radius: 1, height: 2, radial: 256 }));
+    const v = signedVolume(cylinder({ radius1: 1, depth: 2, uSegments: 256 }));
     expect(v).toBeCloseTo(Math.PI * 2, 2);
     expect(v).toBeGreaterThan(0);
   });
 
   it("welds a zero top radius into a single apex", () => {
-    const m = cylinder({ radius: 1, radiusTop: 0, height: 1, radial: 8 });
+    const m = cylinder({ radius1: 1, radius2: 0, depth: 1, uSegments: 8 });
     expect(vertCount(m)).toBe(9); // 8 around the base + 1 apex
     expect(m.polys.filter((p) => p.length === 3)).toHaveLength(8);
   });
 
   it("omits caps on request", () => {
-    const m = cylinder({ radial: 6, caps: "none" });
+    const m = cylinder({ uSegments: 6, caps: "none" });
     expect(m.polys.every((p) => p.length === 4)).toBe(true);
   });
 });
 
 describe("sphere", () => {
   it("collapses the pole quads into triangles", () => {
-    const m = sphere({ segments: 8, rings: 4 });
+    const m = sphere({ uSegments: 8, vSegments: 4 });
     expect(m.polys.filter((p) => p.length === 3)).toHaveLength(16); // 8 per pole
     expect(vertCount(m)).toBe(8 * 3 + 2);
   });
 
   it("approaches 4/3 πr³, wound outward", () => {
-    const v = signedVolume(sphere({ radius: 1, segments: 128, rings: 64 }));
+    const v = signedVolume(sphere({ radius: 1, uSegments: 128, vSegments: 64 }));
     expect(v).toBeCloseTo((4 / 3) * Math.PI, 2);
   });
 });
@@ -152,17 +152,49 @@ describe("revolve", () => {
         [1, 2],
         [0, 2],
       ],
-      segments: 256,
+      steps: 256,
     });
     expect(signedVolume(m)).toBeCloseTo(Math.PI * 2, 2);
   });
 
   it("leaves a partial revolve open", () => {
-    const full = revolve({ profile: [[1, 0], [1, 1]], segments: 8 });
-    const half = revolve({ profile: [[1, 0], [1, 1]], segments: 8, angle: Math.PI });
+    const full = revolve({ profile: [[1, 0], [1, 1]], steps: 8 });
+    const half = revolve({ profile: [[1, 0], [1, 1]], steps: 8, angle: Math.PI });
     expect(full.polys).toHaveLength(8);
     expect(half.polys).toHaveLength(8);
     expect(vertCount(half)).toBe(18); // 9 rings, not wrapped
+  });
+
+  /**
+   * Every case above draws its half-section bottom-to-top, which is how one is
+   * usually drawn and why this went unnoticed through two rooms. A recessed
+   * downlight is drawn the other way — from the ceiling down into the can —
+   * and produced an inside-out shell. Babylon hid it, because it shades from
+   * the normals and those had already been flipped outward elsewhere; it
+   * surfaced the first time the asset met a renderer that uses the geometric
+   * normal.
+   */
+  it("winds outward whichever way the profile runs", () => {
+    const up = revolve({
+      profile: [[0, 0], [0.075, 0], [0.075, 0.05], [0.058, 0.05]],
+      steps: 16,
+    });
+    const down = revolve({
+      profile: [[0.075, 0], [0.075, -0.01], [0.058, -0.01], [0.058, -0.05], [0, -0.05]],
+      steps: 16,
+    });
+    expect(signedVolume(up)).toBeGreaterThan(0);
+    expect(signedVolume(down)).toBeGreaterThan(0);
+  });
+
+  it("gives a descending profile the same volume as its mirror", () => {
+    // Closed both times: signed volume only means anything for a closed
+    // surface, and the first attempt at this test compared two open shells and
+    // failed for that reason rather than for the one it was written to catch.
+    const up = revolve({ profile: [[0, 0], [1, 0], [1, 2], [0, 2]], steps: 128 });
+    const down = revolve({ profile: [[0, 0], [1, 0], [1, -2], [0, -2]], steps: 128 });
+    expect(signedVolume(up)).toBeCloseTo(Math.PI * 2, 2);
+    expect(signedVolume(down)).toBeCloseTo(Math.PI * 2, 2);
   });
 });
 

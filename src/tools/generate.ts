@@ -114,7 +114,14 @@ export interface BoxOptions {
   pivot?: "center" | "base";
 }
 
-/** An axis-aligned box of quads. */
+/**
+ * An axis-aligned box of quads.
+ *
+ * Blender's nearest is `bmesh.ops.create_cube(size=, matrix=)`, but that is a
+ * true cube — one scalar edge length, one quad per face. Per-axis `size` and
+ * `segments` have no equivalent there; in Blender you would scale the matrix
+ * and run `subdivide_edges` afterwards.
+ */
 export function box(opts: BoxOptions = {}): MeshData {
   const [sx, sy, sz] = opts.size ?? [1, 1, 1];
   const [nx, ny, nz] = opts.segments ?? [1, 1, 1];
@@ -139,16 +146,22 @@ export function box(opts: BoxOptions = {}): MeshData {
 }
 
 export interface PlaneOptions {
-  /** Extent along the plane's two axes. Default [1, 1]. */
+  /** Extent along the plane's two axes — Blender's `size`, but per-axis. Default [1, 1]. */
   size?: Vec2;
-  /** Quads along each axis. Default [1, 1]. */
+  /** Quads along each axis — Blender's `x_segments` / `y_segments`. Default [1, 1]. */
   segments?: Vec2;
-  /** Which way the plane faces. Default "+y" (a floor). */
+  /** Which way the plane faces. Default "+y" (a floor). Blender does this with `matrix`. */
   facing?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
 }
 
-/** A single-sided quad grid. */
+/**
+ * A single-sided quad grid.
+ *
+ * Blender: `bmesh.ops.create_grid(x_segments=, y_segments=, size=)`, whose
+ * `size` is one scalar where this takes an extent per axis.
+ */
 export function plane(opts: PlaneOptions = {}): MeshData {
   const [sa, sb] = opts.size ?? [1, 1];
   const [na, nb] = opts.segments ?? [1, 1];
@@ -175,28 +188,48 @@ export function plane(opts: PlaneOptions = {}): MeshData {
 }
 
 export interface CylinderOptions {
-  /** Bottom radius. Default 0.5. */
-  radius?: number;
-  /** Top radius — set 0 for a cone, or differ for a taper. Defaults to `radius`. */
-  radiusTop?: number;
-  height?: number;
-  /** Segments around. Default 16. */
-  radial?: number;
-  /** Segments along the height. Default 1. */
-  rings?: number;
-  /** `"ngon"` closes each end with one polygon, `"none"` leaves it open. */
+  /** Bottom radius — Blender's `radius1`. Default 0.5. */
+  radius1?: number;
+  /** Top radius — Blender's `radius2`. 0 makes a cone. Defaults to `radius1`. */
+  radius2?: number;
+  /** Extent along Y — Blender's `depth`. Default 1. */
+  depth?: number;
+  /** Segments around — Blender's `segments`. Default 16. */
+  uSegments?: number;
+  /**
+   * Segments along the axis. Default 1.
+   *
+   * No Blender equivalent: `create_cone` is always one ring tall and you
+   * subdivide afterwards. Named `v` to agree with `sphere`, where u runs
+   * around and v runs along.
+   */
+  vSegments?: number;
+  /**
+   * `"ngon"` closes each end with one polygon, `"none"` leaves it open.
+   *
+   * Blender spells this `cap_ends` / `cap_tris`: `"ngon"` is
+   * `cap_ends=True, cap_tris=False`, `"none"` is `cap_ends=False`. A triangle
+   * fan cap (`cap_tris=True`) is not implemented.
+   */
   caps?: "ngon" | "none";
+  /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
   pivot?: "center" | "base";
 }
 
-/** A cylinder, cone or truncated cone, around the Y axis. */
+/**
+ * A cylinder, cone or truncated cone, around the Y axis.
+ *
+ * Blender: `bmesh.ops.create_cone(radius1=, radius2=, depth=, segments=,
+ * cap_ends=, cap_tris=)`. Argument names match apart from `uSegments`
+ * (Blender's `segments`) and the two extras documented above.
+ */
 export function cylinder(opts: CylinderOptions = {}): MeshData {
-  const r0 = opts.radius ?? 0.5;
-  const r1 = opts.radiusTop ?? r0;
-  const h = opts.height ?? 1;
-  const radial = Math.max(3, opts.radial ?? 16);
-  const rings = Math.max(1, opts.rings ?? 1);
+  const r0 = opts.radius1 ?? 0.5;
+  const r1 = opts.radius2 ?? r0;
+  const h = opts.depth ?? 1;
+  const radial = Math.max(3, opts.uSegments ?? 16);
+  const rings = Math.max(1, opts.vSegments ?? 1);
   const [ax, ay, az] = opts.at ?? [0, 0, 0];
   const yBase = ay - (opts.pivot === "base" ? 0 : h / 2);
 
@@ -231,18 +264,23 @@ export function cylinder(opts: CylinderOptions = {}): MeshData {
 
 export interface SphereOptions {
   radius?: number;
-  /** Segments around the equator. Default 24. */
-  segments?: number;
-  /** Segments pole to pole. Default 12. */
-  rings?: number;
+  /** Segments around the equator — Blender's `u_segments`. Default 24. */
+  uSegments?: number;
+  /** Segments pole to pole — Blender's `v_segments`. Default 12. */
+  vSegments?: number;
+  /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
 }
 
-/** A UV sphere: quads everywhere, collapsing to triangles at the two poles. */
+/**
+ * A UV sphere: quads everywhere, collapsing to triangles at the two poles.
+ *
+ * Blender: `bmesh.ops.create_uvsphere(u_segments=, v_segments=, radius=)`.
+ */
 export function sphere(opts: SphereOptions = {}): MeshData {
   const r = opts.radius ?? 0.5;
-  const seg = Math.max(3, opts.segments ?? 24);
-  const rings = Math.max(2, opts.rings ?? 12);
+  const seg = Math.max(3, opts.uSegments ?? 24);
+  const rings = Math.max(2, opts.vSegments ?? 12);
   const [ax, ay, az] = opts.at ?? [0, 0, 0];
 
   const b = new Builder();
@@ -274,10 +312,11 @@ export interface RevolveOptions {
    * the Y axis. Points at x = 0 land on the axis and weld into a pole.
    */
   profile: readonly Vec2[];
-  /** Segments around. Default 24. */
-  segments?: number;
-  /** Sweep angle in radians. Default 2π. A partial revolve is left open. */
+  /** Segments around — Blender's `steps`. Default 24. */
+  steps?: number;
+  /** Sweep angle in radians — Blender's `angle`. Default 2π, left open if partial. */
   angle?: number;
+  /** Where to put it. Blender's `cent`. */
   at?: Vec3;
 }
 
@@ -286,18 +325,22 @@ export interface RevolveOptions {
  *
  * This is how you get the shapes a box cannot fake: a vase, a wine glass, a
  * turned leg, a faucet spout, a pendant shade.
+ *
+ * Blender: `bmesh.ops.spin(geom=, cent=, axis=, angle=, steps=)`. The axis is
+ * fixed to +Y here, and `spin`'s `dvec` (which turns the revolve into a screw)
+ * has no equivalent — `sweep` is the way to get a helix.
  */
 export function revolve(opts: RevolveOptions): MeshData {
   const prof = opts.profile;
-  const seg = Math.max(3, opts.segments ?? 24);
+  const seg = Math.max(3, opts.steps ?? 24);
   const angle = opts.angle ?? Math.PI * 2;
   const closed = Math.abs(angle - Math.PI * 2) < 1e-6;
   const [ax, ay, az] = opts.at ?? [0, 0, 0];
 
   const b = new Builder();
-  const steps = closed ? seg : seg + 1;
+  const stations = closed ? seg : seg + 1;
   const loops: number[][] = [];
-  for (let i = 0; i < steps; i++) {
+  for (let i = 0; i < stations; i++) {
     const a = (i / seg) * angle;
     const ca = Math.cos(a);
     const sa = Math.sin(a);
@@ -305,13 +348,29 @@ export function revolve(opts: RevolveOptions): MeshData {
     for (const p of prof) loop.push(b.vert(ax + ca * p[0], ay + p[1], az + sa * p[0]));
     loops.push(loop);
   }
-  // Outward normals assume the profile is ordered bottom-to-top with x > 0,
-  // the way a half-section is drawn. Reverse the profile for an inside-out
-  // shell (a bowl seen from within).
-  for (let i = 0; i < (closed ? steps : steps - 1); i++) {
-    const n = (i + 1) % steps;
-    for (let j = 0; j < prof.length - 1; j++)
-      b.face(loops[i]![j]!, loops[i]![j + 1]!, loops[n]![j + 1]!, loops[n]![j]!);
+  // A profile drawn downwards produces an inside-out shell, so it is turned
+  // back the right way here rather than left to the caller.
+  //
+  // This used to be documented and not handled — "assumes the profile is
+  // ordered bottom-to-top" — and a half-section is usually drawn that way, so
+  // it held for two rooms. The exceptions were the recessed downlight housings
+  // and a lamp shade, whose profiles descend from the ceiling because that is
+  // how those objects are drawn, and all four came out inside out. Nothing
+  // caught it: Babylon shades from the normals, which `computeVertexNormals`
+  // had already flipped outward, so the file was self-consistent and wrong
+  // only to a renderer that uses the geometric normal.
+  //
+  // A generator's contract should be that its output faces outward. Wanting a
+  // shell seen from within is a legitimate thing to want, and mirroring is the
+  // honest way to ask for it.
+  const descending = prof.length > 1 && prof[prof.length - 1]![1] < prof[0]![1];
+  for (let i = 0; i < (closed ? stations : stations - 1); i++) {
+    const n = (i + 1) % stations;
+    for (let j = 0; j < prof.length - 1; j++) {
+      const [a0, a1, b1, b0] = [loops[i]![j]!, loops[i]![j + 1]!, loops[n]![j + 1]!, loops[n]![j]!];
+      if (descending) b.face(a0, b0, b1, a1);
+      else b.face(a0, a1, b1, b0);
+    }
   }
   return b.build();
 }

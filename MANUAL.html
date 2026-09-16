@@ -335,8 +335,15 @@ Face モードの押し出しでも、選択面の周囲スカートは<strong>�
 <ol>
   <li>Edge モードで辺を選択（複数可）</li>
   <li><kbd>Ctrl+B</kbd> → 選択辺が chamfer (面取り) の<strong>四角形</strong>に置換される (half-edge V2 以降。旧: 三角形 ×2)</li>
-  <li>幅は右パネルの <strong>Bevel Width</strong> スライダー (0〜0.49)</li>
+  <li>量は右パネルの <strong>Bevel Offset %</strong> スライダー (0〜49)</li>
 </ol>
+<div class="note"><strong>単位が変わった</strong> (旧: Bevel Width、0〜0.49)。数値は
+<strong>隣接する辺に沿った割合のパーセント</strong>で、Blender の
+<code>bevel(offset_type='PERCENT')</code> と同じ規約・同じ数値になった。25 と入れれば
+Blender に 25 と入れたのと同じ面取りが出る。<br>
+旧称が罠だったのは、Blender に <code>offset_type='WIDTH'</code> という<strong>別物</strong>
+（面取り面そのものの絶対幅）があるため。同じ単語で違うものを指していた上に、数値も
+100 倍ずれていた。実測は <code>tools/modeling/parity/compare-bevel.ts</code>。</div>
 <p>内部的には頂点ファンを分割し、暗黙のコーナー三角キャップで manifold を保つ高度な処理を行っている。
 面取りの本体は 1 枚の quad、端点のキャップだけ三角形。</p>
 <div class="warn"><strong>V2 制限</strong>: 1 頂点に同時に面取りできる辺は 1 本。共有頂点を持つ選択

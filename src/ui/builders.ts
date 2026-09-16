@@ -378,7 +378,7 @@ export function buildEditToolsPanel(): void {
       label: "Flip Diagonal",
       key: "F",
       modes: ["vertex"],
-      action: async () => (await import("../tools/edit-mode")).knifeSelection(),
+      action: async () => (await import("../tools/edit-mode")).flipDiagonalSelection(),
     },
     {
       label: "Edge Slide",
@@ -550,8 +550,8 @@ export function buildEditToolsPanel(): void {
     }),
   );
   paramSection.appendChild(
-    makeSlider("Bevel Width", "em-bevel-width", state.editConfig.bevelWidth, 0, 0.49, 0.01, (v) => {
-      state.editConfig.bevelWidth = v;
+    makeSlider("Bevel Offset %", "em-bevel-offset", state.editConfig.bevelOffset, 0, 49, 1, (v) => {
+      state.editConfig.bevelOffset = v;
     }),
   );
   paramSection.appendChild(

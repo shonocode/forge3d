@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut, mergeAtCenter, quadsToTris, subdivideCatmullClark, trisToQuads, vertexSlide } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, quadsToTris, subdivideCatmullClark, trisToQuads, vertexSlide } from "./operators";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -297,7 +297,7 @@ export function insetSelection(): void {
   applyTopologyOp("Inset", () => insetFaces(em, sel, state.editConfig.insetAmount));
 }
 
-export function knifeSelection(): void {
+export function flipDiagonalSelection(): void {
   const em = state.editMesh;
   if (!em) return;
   if (state.editSelection.mode !== "vertex") {
@@ -310,7 +310,7 @@ export function knifeSelection(): void {
   }
   const sel = new Set(state.editSelection.indices);
   applyTopologyOp("Flip Diagonal", () => {
-    const result = knife(em, sel);
+    const result = flipDiagonalByVerts(em, sel);
     if (result.size === 0) {
       status("⚠ Flip Diagonal: verts must be the 3rd-verts of adjacent triangles");
       return new Set();
@@ -813,7 +813,7 @@ export function bevelSelection(): void {
   // immediately see and tweak the resulting chamfer with the standard gizmo.
   applyTopologyOp("Bevel", () => {
     const info = { skipped: 0 };
-    const newFaces = bevelEdges(em, sel, state.editConfig.bevelWidth, info);
+    const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset }, info);
     if (newFaces.size === 0) {
       status("⚠ Bevel: no beveleable edges in selection (boundary / quad-adjacent edges are skipped)");
       return new Set();

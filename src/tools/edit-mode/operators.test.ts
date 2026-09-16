@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
 import { canonicalEdge, faceVertices, forEachEdge } from "./half-edge";
-import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, knife, loopCut } from "./operators";
+import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads } from "./operators";
 
 /** Same stub mesh as half-edge.test.ts — just the surface we touch. */
 function makeStubMesh(positions: number[], indices: number[]): Mesh {
@@ -227,10 +227,10 @@ function makeQuadPair(): Mesh {
 describe("bevelEdges", () => {
   it("is a no-op on empty selection or zero width", () => {
     const em = buildEditMesh(makeQuadPair())!;
-    expect(bevelEdges(em, new Set(), 0.15).size).toBe(0);
+    expect(bevelEdges(em, new Set(), { offset: 15 }).size).toBe(0);
     let firstEdge = -1;
     forEachEdge(em, (he) => { if (firstEdge < 0) firstEdge = he; });
-    const noop = bevelEdges(em, new Set([firstEdge]), 0);
+    const noop = bevelEdges(em, new Set([firstEdge]), { offset: 0 });
     expect(em.faces).toHaveLength(2);
     expect(noop.has(firstEdge)).toBe(true);
   });
@@ -249,7 +249,7 @@ describe("bevelEdges", () => {
       return o === a || d === a;
     })!;
     const info = { skipped: 0 };
-    const result = bevelEdges(em, new Set([first, second]), 0.15, info);
+    const result = bevelEdges(em, new Set([first, second]), { offset: 15 }, info);
     // One edge beveled (1 chamfer quad in V2), the shared-vertex one skipped.
     expect(result.size).toBe(1);
     expect(info.skipped).toBe(1);
@@ -262,7 +262,7 @@ describe("bevelEdges", () => {
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin >= 0 && diagonal < 0) diagonal = he; });
     expect(diagonal).toBeGreaterThanOrEqual(0);
 
-    const result = bevelEdges(em, new Set([diagonal]), 0.2);
+    const result = bevelEdges(em, new Set([diagonal]), { offset: 20 });
     // 2 original tris (remapped) + 1 chamfer quad (V2) = 3 (no caps because
     // the fan around each endpoint has only F1+F2, so no implicit split).
     expect(em.faces).toHaveLength(3);
@@ -277,7 +277,7 @@ describe("bevelEdges", () => {
     // endpoint — the V2 algorithm has to split those fans correctly.
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    const result = bevelEdges(em, new Set([target]), 0.2);
+    const result = bevelEdges(em, new Set([target]), { offset: 20 });
 
     // Topology delta:
     //   - 12 original tris remapped (no faces removed)
@@ -293,7 +293,7 @@ describe("bevelEdges", () => {
     const em = buildEditMesh(makeCube())!;
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    bevelEdges(em, new Set([target]), 0.2);
+    bevelEdges(em, new Set([target]), { offset: 20 });
     let boundaries = 0;
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
     expect(boundaries).toBe(0);
@@ -303,7 +303,7 @@ describe("bevelEdges", () => {
     const em = buildEditMesh(makeCube())!;
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    bevelEdges(em, new Set([target]), 0.2);
+    bevelEdges(em, new Set([target]), { offset: 20 });
     for (let i = 0; i < em.halfEdges.length; i++) {
       const t = em.halfEdges[i]!.twin;
       if (t >= 0) expect(em.halfEdges[t]!.twin).toBe(i);
@@ -355,12 +355,12 @@ describe("extrudeEdges", () => {
   });
 });
 
-describe("knife", () => {
+describe("flipDiagonalByVerts", () => {
   it("returns empty on wrong selection size", () => {
     const em = buildEditMesh(makeCube())!;
-    expect(knife(em, new Set()).size).toBe(0);
-    expect(knife(em, new Set([0])).size).toBe(0);
-    expect(knife(em, new Set([0, 1, 2])).size).toBe(0);
+    expect(flipDiagonalByVerts(em, new Set()).size).toBe(0);
+    expect(flipDiagonalByVerts(em, new Set([0])).size).toBe(0);
+    expect(flipDiagonalByVerts(em, new Set([0, 1, 2])).size).toBe(0);
   });
 
   it("flips the diagonal between two adjacent triangles", () => {
@@ -370,7 +370,7 @@ describe("knife", () => {
     // The 2 tris share diagonal 0-2. The "3rd verts" are 1 (in tri 0) and 3 (in tri 1).
     // Knife between vert 1 and vert 3 should flip the diagonal from 0-2 to 1-3.
     const before = toArr(em);
-    const result = knife(em, new Set([1, 3]));
+    const result = flipDiagonalByVerts(em, new Set([1, 3]));
     expect(result.size).toBe(2);
     const after = toArr(em);
     // Same face count, same vertex count.
@@ -384,9 +384,9 @@ describe("knife", () => {
     expect(containsEdge(before, 0, 2)).toBe(true);
   });
 
-  it("knife preserves manifold structure", () => {
+  it("flipDiagonalByVerts preserves manifold structure", () => {
     const em = buildEditMesh(makeQuadPair())!;
-    knife(em, new Set([1, 3]));
+    flipDiagonalByVerts(em, new Set([1, 3]));
     // For an open mesh: should keep the same boundary edge count as before
     // (= 4, the quad's outer perimeter). The flip changes interior topology,
     // not the boundary.
@@ -400,9 +400,78 @@ describe("knife", () => {
     // Verts 3 and 5 — none of vertex 3's incident faces (1, 6, 7, 9) has a
     // direct edge-neighbor face that contains vertex 5. Confirmed manually
     // by walking the cube's tri adjacency from this triangulation.
-    const result = knife(em, new Set([3, 5]));
+    const result = flipDiagonalByVerts(em, new Set([3, 5]));
     expect(result.size).toBe(0);
     expect(em.faces).toHaveLength(12);
+  });
+});
+
+describe("rotateEdges", () => {
+  /** The half-edge whose endpoints are `a` and `b`, in either order. */
+  function edgeBetween(em: import("./half-edge").EditMesh, a: number, b: number): number {
+    let found = -1;
+    forEachEdge(em, (he) => {
+      const x = em.halfEdges[he]!.v;
+      const y = em.halfEdges[em.halfEdges[he]!.next]!.v;
+      if ((x === a && y === b) || (x === b && y === a)) found = he;
+    });
+    return found;
+  }
+
+  it("rotates the shared edge onto the other diagonal", () => {
+    const em = buildEditMesh(makeQuadPair())!;
+    // Two tris [0,1,2] and [0,2,3] sharing 0-2. Rotating it gives 1-3.
+    const shared = edgeBetween(em, 0, 2);
+    expect(shared).toBeGreaterThanOrEqual(0);
+
+    const touched = rotateEdges(em, new Set([shared]));
+    expect(touched.size).toBe(2);
+
+    const after = toArr(em);
+    expect(containsEdge(after, 1, 3)).toBe(true);
+    expect(containsEdge(after, 0, 2)).toBe(false);
+    expect(em.faces).toHaveLength(2);
+    expect(em.vertices).toHaveLength(4);
+  });
+
+  it("agrees with the vertex-picked form on the same edge", () => {
+    const byEdge = buildEditMesh(makeQuadPair())!;
+    rotateEdges(byEdge, new Set([edgeBetween(byEdge, 0, 2)]));
+
+    const byVerts = buildEditMesh(makeQuadPair())!;
+    flipDiagonalByVerts(byVerts, new Set([1, 3]));
+
+    expect(toArr(byEdge)).toEqual(toArr(byVerts));
+  });
+
+  it("rotating twice returns the original diagonal", () => {
+    const em = buildEditMesh(makeQuadPair())!;
+    const before = toArr(em);
+    rotateEdges(em, new Set([edgeBetween(em, 0, 2)]));
+    rotateEdges(em, new Set([edgeBetween(em, 1, 3)]));
+    expect(containsEdge(toArr(em), 0, 2)).toBe(true);
+    expect(toArr(em)).toHaveLength(before.length);
+  });
+
+  it("skips edges whose faces are not both triangles", () => {
+    // A cube merged into 6 quads: a quad has no diagonal to rotate, so every
+    // edge is held by the wrong kind of face and nothing should move.
+    const em = buildEditMesh(makeCube())!;
+    trisToQuads(em, null);
+    expect(em.faces).toHaveLength(6);
+
+    const all = new Set<number>();
+    forEachEdge(em, (he) => all.add(he));
+    expect(rotateEdges(em, all).size).toBe(0);
+    expect(em.faces).toHaveLength(6);
+  });
+
+  it("skips boundary edges and empty input", () => {
+    const em = buildEditMesh(makeQuadPair())!;
+    expect(rotateEdges(em, new Set()).size).toBe(0);
+    // 0-1 is on the perimeter: one side has no face to re-triangulate against.
+    expect(rotateEdges(em, new Set([edgeBetween(em, 0, 1)])).size).toBe(0);
+    expect(em.faces).toHaveLength(2);
   });
 });
 

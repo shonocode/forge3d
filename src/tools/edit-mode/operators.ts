@@ -272,13 +272,59 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
  *    slide-toward-third-vertex math is triangle-specific. Edges whose F1/F2
  *    is a quad / n-gon are skipped (reported via `outInfo.skipped`). Other
  *    faces in the fans may be any arity (their corner refs are just remapped).
+ *
+ * Blender: `bmesh.ops.bevel(geom=, offset=, offset_type='PERCENT', segments=1,
+ * affect='EDGES')`. `offset` is in the same units as Blender's, measured the
+ * same way — `tools/modeling/parity/compare-bevel.ts` ran all four
+ * `offset_type` conventions against this and PERCENT was the match at 1.02mm
+ * where the next-closest was 9.8mm.
+ *
+ * The parameter used to be called `width` and used to be a fraction (0.15
+ * rather than 15). That was the worst of both: Blender has an `offset_type`
+ * literally named `WIDTH` meaning something else entirely (the absolute width
+ * of the chamfer face), so the old name pointed a reader at the wrong
+ * convention *and* the number did not transfer.
  */
+export interface BevelOptions {
+  /**
+   * Blender's `offset`, in the units `offsetType` selects. For PERCENT that is
+   * a percentage of each adjacent edge, clamped to 0.1..49.
+   */
+  offset: number;
+  /**
+   * Only `'PERCENT'` is implemented. The others are listed so the failure is a
+   * named one rather than a silently different chamfer.
+   */
+  offsetType?: "PERCENT" | "OFFSET" | "WIDTH" | "DEPTH";
+  /**
+   * Only `1` is implemented — a single chamfer face. Blender's default is 1
+   * too; more segments round the edge into an arc, which this cannot produce.
+   */
+  segments?: number;
+}
+
 export function bevelEdges(
   em: EditMesh,
   selectedEdges: ReadonlySet<number>,
-  width: number,
+  opts: BevelOptions,
   outInfo?: { skipped: number },
 ): Set<number> {
+  const offsetType = opts.offsetType ?? "PERCENT";
+  if (offsetType !== "PERCENT")
+    throw new Error(
+      `bevelEdges: offsetType '${offsetType}' is not implemented — only 'PERCENT'. ` +
+        `Blender's ${offsetType} measures the chamfer differently, so silently ` +
+        `treating it as PERCENT would produce a wrong-sized bevel.`,
+    );
+  const segments = opts.segments ?? 1;
+  if (segments !== 1)
+    throw new Error(
+      `bevelEdges: segments=${segments} is not implemented — only a single ` +
+        `chamfer face (segments=1). Rounding an edge into an arc needs the ` +
+        `multi-segment profile this operator does not have.`,
+    );
+
+  const width = opts.offset / 100;
   if (selectedEdges.size === 0 || width <= 0) return new Set(selectedEdges);
 
   // Canonicalize selection (always work with min(he, twin)).
@@ -1064,20 +1110,84 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
   return newSel;
 }
 
-// ── Flip Diagonal (two selected vertices, tri-only) ────────────────────────
+// ── Rotate Edges / Flip Diagonal (tri-only) ────────────────────────────────
 
 /**
- * Connect 2 selected vertices with a new edge — handles only the "adjacent
- * tri" case where the verts are the two "off-edge" vertices of two TRIANGLES
- * sharing an edge. The operation is then a diagonal flip: the shared edge a-b
- * is replaced by v1-v2. Quad / n-gon faces are skipped (quads have no
- * diagonal to flip — use Quads to Tris first if you need one).
+ * Rotate the shared edge of two adjacent triangles — Blender's
+ * `bmesh.ops.rotate_edges(edges=)`, "Rotate Edge" in the Edge menu.
  *
- * Returns the (unchanged) input vert set so the user's selection persists
- * across the operation; the new edge is visible in the edge overlay since
- * the topology rebuild repopulates the line buffer.
+ * The edge a-b held by triangles (a, b, c) and (b, a, d) is replaced by c-d,
+ * re-triangulating the quad they cover along its other diagonal. Edges whose
+ * two faces are not both triangles are skipped: a quad has no diagonal to
+ * rotate, so run `quadsToTris` first if that is what you meant.
+ *
+ * Takes half-edge indices, canonicalised internally, and returns the faces it
+ * re-triangulated — the same contract as the other operators here.
+ *
+ * Blender's `use_ccw` is not implemented. With two triangles there is only one
+ * other diagonal, so the direction only decides which of the two resulting
+ * triangles is listed first, which nothing downstream here reads.
+ *
+ * > This used to be exported as `knife`, which was wrong twice over: Blender's
+ * > Knife is the interactive cut tool (forge3d's is `planeCut` in `knife.ts`),
+ * > and the operation is a diagonal flip, not a cut. The editor's own label
+ * > said "Flip Diagonal" while the library said `knife`.
  */
-export function knife(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<number> {
+export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  // Resolve every target to a vertex pair BEFORE touching anything: each flip
+  // rebuilds the polygon list, which invalidates half-edge indices.
+  const pairs: Array<[number, number]> = [];
+  for (const he of selectedEdges) {
+    const h = em.halfEdges[he];
+    if (!h || h.twin < 0) continue;
+    const a = h.v;
+    const b = em.halfEdges[h.next]!.v;
+    pairs.push(a < b ? [a, b] : [b, a]);
+  }
+
+  const touched = new Set<number>();
+  for (const [a, b] of pairs) {
+    // Re-find the edge: an earlier flip in this batch may have removed it.
+    let found = -1;
+    for (let he = 0; he < em.halfEdges.length && found < 0; he++) {
+      const h = em.halfEdges[he]!;
+      if (h.twin < 0) continue;
+      const x = h.v;
+      const y = em.halfEdges[h.next]!.v;
+      if ((x === a && y === b) || (x === b && y === a)) found = he;
+    }
+    if (found < 0) continue;
+
+    const f1 = em.halfEdges[found]!.face;
+    const f2 = em.halfEdges[em.halfEdges[found]!.twin]!.face;
+    if (faceVertexCount(em, f1) !== 3 || faceVertexCount(em, f2) !== 3) continue;
+
+    // The two off-edge verts are what the flip connects.
+    const c = faceVertices(em, f1).find((v) => v !== a && v !== b);
+    const d = faceVertices(em, f2).find((v) => v !== a && v !== b);
+    if (c === undefined || d === undefined || c === d) continue;
+
+    if (flipDiagonal(em, found, c, d).size > 0) {
+      touched.add(f1);
+      touched.add(f2);
+    }
+  }
+  return touched;
+}
+
+/**
+ * Rotate an edge picked out by the two vertices it will connect — the editor's
+ * entry point, where the user has a vertex selection rather than an edge one.
+ *
+ * Handles only the "adjacent tri" case: the two verts must be the off-edge
+ * vertices of two triangles sharing an edge. Returns the (unchanged) input
+ * vert set so the user's selection survives the operation; the new edge shows
+ * up because the topology rebuild repopulates the line buffer.
+ *
+ * Not part of the public library API — `rotateEdges` is, and takes edges the
+ * way Blender's `rotate_edges` does.
+ */
+export function flipDiagonalByVerts(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<number> {
   if (selectedVerts.size !== 2) return new Set();
   const [v1, v2] = [...selectedVerts];
   if (v1 === undefined || v2 === undefined) return new Set();

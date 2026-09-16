@@ -111,8 +111,9 @@ export {
   extrudeEdges,
   insetFaces,
   bevelEdges,
+  type BevelOptions,
   loopCut,
-  knife,
+  rotateEdges,
   edgeSlide,
   vertexSlide,
   bridgeEdgeLoops,
@@ -159,6 +160,18 @@ export {
   nearestFaces,
   type FacePredicate,
 } from "../tools/select";
+
+// ── Repair ─────────────────────────────────────────────────────────────────
+// Making generated geometry well-formed before the next stage sees it. Both
+// are Blender operators, and both are here because a generator can emit a mesh
+// that is wrong in a way nothing downstream reports: a shell wound inward, or
+// a concave n-gon that Catmull-Clark will fold.
+export {
+  recalcFaceNormals,
+  connectVertsConcave,
+  type RecalcFaceNormalsReport,
+  type ConnectVertsConcaveReport,
+} from "../tools/mesh-repair";
 
 // ── Subdivision ────────────────────────────────────────────────────────────
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp

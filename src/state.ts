@@ -466,7 +466,7 @@ export const state = {
     /** Per-face inset interpolation toward centroid (0 = no inset, 0.5 = halfway). */
     insetAmount: 0.2,
     /** Bevel split factor along incident edges (0 = no bevel, must stay < 0.5). */
-    bevelWidth: 0.15,
+    bevelOffset: 15,
     /** Edge Slide factor per press: sign = side, magnitude = lerp toward the rail. */
     slideAmount: 0.25,
     /** Proportional editing (soft select): gizmo transforms also pull nearby verts. */
