@@ -613,3 +613,222 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     seams,
   };
 }
+
+// ── Symmetrize ─────────────────────────────────────────────────────────────
+
+/** Options for {@link symmetrize}. */
+export interface SymmetrizeOptions {
+  /**
+   * Which half to keep, and therefore which way it is copied. Blender's
+   * `direction`, spelled exactly as Blender spells it — `'-X'` keeps the
+   * negative side, `'X'` keeps the positive one. Measured: there is no `'+X'`,
+   * and the two are easy to get backwards from the name alone.
+   */
+  direction: "-X" | "-Y" | "-Z" | "X" | "Y" | "Z";
+  /** Weld distance across the mirror plane. Blender's `dist`. Default 1e-4. */
+  dist?: number;
+}
+
+/**
+ * Make a mesh symmetric by keeping one half and reflecting it — Blender's
+ * `bmesh.ops.symmetrize(input=, direction=, dist=)`.
+ *
+ * Cut at the plane, throw the other side away, mirror what is left, weld the
+ * seam. Exactly the three operations it looks like, and it is built from them
+ * here — {@link bisectPlane} then {@link mirrorMesh} — so the parity already
+ * measured for those carries over.
+ *
+ * What it is *for* is worth stating: a character modelled loosely on both sides
+ * becomes exactly symmetric, and a rig mirrored onto it lands on matching
+ * geometry. Modelling one half and symmetrizing is cheaper than keeping two
+ * halves in step.
+ */
+export function symmetrize(data: MeshData, opts: SymmetrizeOptions): MeshData {
+  const negative = opts.direction.startsWith("-");
+  const letter = opts.direction[opts.direction.length - 1]!.toLowerCase() as "x" | "y" | "z";
+  const axisIndex = letter === "x" ? 0 : letter === "y" ? 1 : 2;
+  const planeNo: Vec3 =
+    axisIndex === 0 ? [1, 0, 0] : axisIndex === 1 ? [0, 1, 0] : [0, 0, 1];
+
+  // `clearOuter` drops the side the normal points to, so keeping the negative
+  // half means clearing the outer one.
+  const half = bisectPlane(data, {
+    planeCo: [0, 0, 0],
+    planeNo,
+    clearOuter: negative,
+    clearInner: !negative,
+  });
+
+  return mirrorMesh(half, letter, { weld: opts.dist ?? 1e-4 });
+}
+
+// ── Convex hull ────────────────────────────────────────────────────────────
+
+/** What {@link convexHull} found. */
+export interface ConvexHullReport {
+  /** Input points strictly inside the hull, which the result does not contain. */
+  interior: number;
+  /**
+   * True when the points have no volume — all on a line or a plane — so there
+   * is no hull to build and the result is empty.
+   */
+  degenerate: boolean;
+}
+
+/**
+ * The convex hull of a mesh's vertices — Blender's
+ * `bmesh.ops.convex_hull(input=)`.
+ *
+ * Triangles, wound outward. The obvious use is a collision shape: a physics
+ * engine wants the smallest convex solid that contains a prop, and computing
+ * it from the render mesh beats authoring it by hand.
+ *
+ * Differs from Blender in one way worth knowing. `bmesh.ops.convex_hull`
+ * mutates the mesh and leaves the interior vertices in it, unused, reporting
+ * them in `geom_interior`. A function that returns a mesh has no reason to
+ * carry them, so the result holds only the hull's own vertices and the count
+ * goes in `report.interior`.
+ *
+ * Incremental construction: start from a tetrahedron, then for each remaining
+ * point delete the faces it can see and stitch it to the horizon that leaves.
+ */
+export function convexHull(
+  data: MeshData,
+  report: ConvexHullReport = { interior: 0, degenerate: false },
+): MeshData {
+  const P = data.positions;
+  const n = P.length / 3;
+  const at = (i: number): Vec3 => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!];
+  if (n < 4) {
+    report.degenerate = true;
+    return { positions: new Float32Array(), polys: [] };
+  }
+
+  // Scale the tolerance to the cloud, or a millimetre-sized prop and a
+  // kilometre-sized one cannot both be right.
+  let extent = 0;
+  const lo: number[] = [...at(0)];
+  const hi: number[] = [...at(0)];
+  for (let i = 1; i < n; i++) {
+    const p = at(i);
+    for (let k = 0; k < 3; k++) {
+      if (p[k]! < lo[k]!) lo[k] = p[k]!;
+      if (p[k]! > hi[k]!) hi[k] = p[k]!;
+    }
+  }
+  for (let k = 0; k < 3; k++) extent = Math.max(extent, hi[k]! - lo[k]!);
+  const eps = Math.max(extent, 1) * 1e-9;
+
+  const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const cross = (a: Vec3, b: Vec3): Vec3 => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+  // Four points with volume between them. Taking the first four in order fails
+  // the moment a mesh starts with a flat face, which most do.
+  let i0 = 0;
+  let i1 = -1;
+  for (let i = 1; i < n && i1 < 0; i++)
+    if (Math.hypot(...sub(at(i), at(i0))) > eps) i1 = i;
+  if (i1 < 0) {
+    report.degenerate = true;
+    return { positions: new Float32Array(), polys: [] };
+  }
+  let i2 = -1;
+  for (let i = 0; i < n && i2 < 0; i++) {
+    if (i === i0 || i === i1) continue;
+    if (Math.hypot(...cross(sub(at(i1), at(i0)), sub(at(i), at(i0)))) > eps) i2 = i;
+  }
+  if (i2 < 0) {
+    report.degenerate = true;
+    return { positions: new Float32Array(), polys: [] };
+  }
+  const base = cross(sub(at(i1), at(i0)), sub(at(i2), at(i0)));
+  let i3 = -1;
+  let best = eps;
+  for (let i = 0; i < n; i++) {
+    if (i === i0 || i === i1 || i === i2) continue;
+    const d = Math.abs(dot(base, sub(at(i), at(i0))));
+    if (d > best) {
+      best = d;
+      i3 = i;
+    }
+  }
+  if (i3 < 0) {
+    report.degenerate = true;
+    return { positions: new Float32Array(), polys: [] };
+  }
+
+  // Seed tetrahedron, every face wound outward.
+  let faces: Array<[number, number, number]> =
+    dot(base, sub(at(i3), at(i0))) < 0
+      ? [
+          [i0, i1, i2],
+          [i0, i2, i3],
+          [i0, i3, i1],
+          [i1, i3, i2],
+        ]
+      : [
+          [i0, i2, i1],
+          [i0, i1, i3],
+          [i0, i3, i2],
+          [i1, i2, i3],
+        ];
+
+  const faceNormal = (f: readonly [number, number, number]): Vec3 =>
+    cross(sub(at(f[1]), at(f[0])), sub(at(f[2]), at(f[0])));
+
+  for (let p = 0; p < n; p++) {
+    if (p === i0 || p === i1 || p === i2 || p === i3) continue;
+    const point = at(p);
+
+    const visible: Array<[number, number, number]> = [];
+    const hidden: Array<[number, number, number]> = [];
+    for (const f of faces) {
+      const nrm = faceNormal(f);
+      const len = Math.hypot(...nrm);
+      const d = len > 0 ? dot(nrm, sub(point, at(f[0]))) / len : 0;
+      (d > eps ? visible : hidden).push(f);
+    }
+    if (visible.length === 0) continue; // inside the hull so far
+
+    // The horizon is the edges of the visible set that the hidden set shares.
+    const count = new Map<string, [number, number]>();
+    for (const f of visible)
+      for (let k = 0; k < 3; k++) {
+        const a = f[k]!;
+        const b = f[(k + 1) % 3]!;
+        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+        if (count.has(key)) count.delete(key);
+        else count.set(key, [a, b]);
+      }
+
+    faces = hidden;
+    for (const [a, b] of count.values()) faces.push([a, b, p]);
+  }
+
+  // Keep only the vertices the hull actually uses.
+  const remap = new Map<number, number>();
+  const positions: number[] = [];
+  const polys: number[][] = [];
+  for (const f of faces) {
+    const poly: number[] = [];
+    for (const v of f) {
+      let m = remap.get(v);
+      if (m === undefined) {
+        m = positions.length / 3;
+        remap.set(v, m);
+        positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
+      }
+      poly.push(m);
+    }
+    polys.push(poly);
+  }
+
+  report.interior = n - remap.size;
+  report.degenerate = polys.length === 0;
+  return { positions: new Float32Array(positions), polys };
+}

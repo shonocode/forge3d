@@ -101,10 +101,14 @@ export {
   weldMesh,
   boundsOf,
   solidify,
+  symmetrize,
+  convexHull,
   bisectPlane,
   type TransformOptions,
   type MirrorOptions,
   type SolidifyOptions,
+  type SymmetrizeOptions,
+  type ConvexHullReport,
   type BisectPlaneOptions,
 } from "../tools/mesh-ops";
 
@@ -132,6 +136,33 @@ export {
   quadsToTris,
   subdivideCatmullClark,
 } from "../tools/edit-mode/operators";
+
+// ── Dissolve ───────────────────────────────────────────────────────────────
+// Taking edges away without leaving a hole. `dissolveLimit` is the one that
+// earns its keep on generated geometry: a room built from boxes arrives with
+// thousands of coplanar quads that exist because of how it was made.
+export {
+  dissolveFaces,
+  dissolveEdges,
+  dissolveLimit,
+  type DissolveReport,
+  type DissolveLimitOptions,
+} from "../tools/edit-mode/dissolve";
+
+// ── Refine ─────────────────────────────────────────────────────────────────
+// Adding detail, relaxing it, closing what is left open. Three of the four
+// have a Blender default that does the opposite of what a reader expects; the
+// JSDoc on each says which.
+export {
+  poke,
+  subdivideEdges,
+  smoothVert,
+  holesFill,
+  type PokeOptions,
+  type SubdivideEdgesOptions,
+  type SmoothVertOptions,
+  type HolesFillOptions,
+} from "../tools/edit-mode/refine";
 
 // ── Moving a face selection ────────────────────────────────────────────────
 // `extrudeFaces` duplicates and stitches but does not move — in the editor the
