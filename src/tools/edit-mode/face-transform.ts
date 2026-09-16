@@ -169,6 +169,14 @@ export function facesFacing(
  * frame does. Planar convex faces (every panel, every worktop) are exact; a
  * concave face insets correctly until the offset would cross itself.
  *
+ * This is exactly Blender's `bmesh.ops.inset_individual(thickness=width,
+ * use_even_offset=True)` — measured, not assumed: on a cube face inset by 0.2,
+ * even offset lands the ring at 0.8 where the default bisector offset lands it
+ * at 0.8586 and relative offset at 0.7172. `width` is Blender's `thickness`.
+ *
+ * For the *region* form — one ring around a whole selection rather than one per
+ * face — see `insetRegion`, which is what Blender's Inset tool does by default.
+ *
  * Returns the new inner cap faces, like `insetFaces`.
  */
 export function insetFacesByWidth(

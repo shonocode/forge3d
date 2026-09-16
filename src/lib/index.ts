@@ -114,6 +114,8 @@ export {
   extrudeFaces,
   extrudeEdges,
   insetFaces,
+  insetRegion,
+  type InsetRegionOptions,
   bevelEdges,
   type BevelOptions,
   loopCut,
