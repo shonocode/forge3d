@@ -88,6 +88,35 @@ describe("dijkstra", () => {
     expect(dist[g.vertexToNode[1]!]).toBeCloseTo(1.5, 6);
     expect(dist[g.vertexToNode[2]!]).toBeCloseTo(2.5, 6);
   });
+
+  /**
+   * The case above passes with a broken sweep, because 0.5, 1.5 and 2.5 are
+   * exactly representable in binary32 and so nothing ever rounds. Real geometry
+   * never has that property. Held with a `Float32Array` of distances and a
+   * full-precision heap, the staleness check dropped roughly every other node
+   * and its whole subtree: on a 6962-node character mesh, seeded with a 13 mm
+   * offset, one node was reached. So the property to assert is reachability on
+   * a graph whose edge lengths are ordinary irrational numbers.
+   */
+  it("reaches every node of a connected graph with unrepresentable edge lengths", () => {
+    const STEPS = 400;
+    const ribbon = buildRibbon(
+      Array.from({ length: STEPS }, (_, i) => [i * 0.1 + Math.sin(i) * 0.013, Math.cos(i) * 0.017]),
+    );
+    const g = buildMeshGraph(ribbon.positions, ribbon.indices);
+    expect(g.nodeCount).toBe(STEPS * 2);
+
+    const dist = dijkstra(g, 0, 0.0133);
+    const reached = [...dist].filter((d) => Number.isFinite(d)).length;
+    expect(reached).toBe(g.nodeCount);
+
+    // And the distances are shortest paths, not merely finite: the far rim
+    // vertex is at least the centerline length away and no more than that plus
+    // the ribbon's width.
+    const far = dist[g.vertexToNode[STEPS * 2 - 1]!]!;
+    expect(far).toBeGreaterThan(0.1 * (STEPS - 1) * 0.9);
+    expect(far).toBeLessThan(0.1 * (STEPS - 1) * 1.4);
+  });
 });
 
 describe("computeAutoWeightsGeodesic", () => {

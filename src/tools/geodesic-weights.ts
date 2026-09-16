@@ -153,9 +153,28 @@ class MinHeap {
  * Single-source shortest path (Dijkstra) over the mesh graph. `startOffset`
  * seeds the source distance (the Euclidean gap from the bone to the seed node),
  * so geodesic distances are measured from the bone surface, not from zero.
+ *
+ * ## The distance array is Float64Array, and that is load-bearing
+ *
+ * It used to be a `Float32Array`, and the sweep stopped after a handful of
+ * nodes. The heap carries full-precision JS numbers while the array rounds
+ * them, so the staleness check `d > dist[node]` compared an unrounded key
+ * against a rounded store. Whenever the rounding went *down* — about half the
+ * time, for any distance that is not exactly representable — the entry looked
+ * stale and the node was dropped along with everything behind it.
+ *
+ * It is not a small error. On a 6962-node character mesh, seeded at a node with
+ * a 13 mm start offset, the sweep reached **one** node; with an offset of
+ * exactly zero it reached 91. Every other node came back `Infinity`, which
+ * `computeAutoWeightsGeodesic` reads as "this bone is on a disconnected
+ * island" — so the bones silently contributed nothing and the weights fell
+ * through to whichever one or two bones happened to survive.
+ *
+ * The unit test below passed throughout, because its distances are 0.5, 1.5 and
+ * 2.5: exactly representable in binary32, so nothing ever rounded.
  */
-export function dijkstra(graph: MeshGraph, source: number, startOffset: number): Float32Array {
-  const dist = new Float32Array(graph.nodeCount).fill(Infinity);
+export function dijkstra(graph: MeshGraph, source: number, startOffset: number): Float64Array {
+  const dist = new Float64Array(graph.nodeCount).fill(Infinity);
   dist[source] = startOffset;
   const heap = new MinHeap();
   heap.push(source, startOffset);
@@ -198,7 +217,7 @@ export function computeAutoWeightsGeodesic(
   const vertexCount = Math.floor(positions.length / 3);
 
   // Per bone: seed at the node nearest its segment, sweep geodesic distances.
-  const boneGeo: Float32Array[] = [];
+  const boneGeo: Float64Array[] = [];
   const np = new Vector3();
   for (const seg of segments) {
     let bestNode = -1;
@@ -213,7 +232,7 @@ export function computeAutoWeightsGeodesic(
     }
     boneGeo.push(
       bestNode < 0
-        ? new Float32Array(graph.nodeCount).fill(Infinity)
+        ? new Float64Array(graph.nodeCount).fill(Infinity)
         : dijkstra(graph, bestNode, bestD)
     );
   }
