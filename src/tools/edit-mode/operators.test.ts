@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
-import { canonicalEdge, faceVertices, forEachEdge } from "./half-edge";
+import { canonicalEdge, faceVertices, faceVerts, forEachEdge } from "./half-edge";
+import { meshFromData } from "../../lib/mesh";
 import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads } from "./operators";
 
 /** Same stub mesh as half-edge.test.ts — just the surface we touch. */
@@ -267,7 +268,10 @@ describe("bevelEdges", () => {
     // the fan around each endpoint has only F1+F2, so no implicit split).
     expect(em.faces).toHaveLength(3);
     expect(result.size).toBe(1);
-    expect(em.vertices).toHaveLength(8);
+    // 4 original, both beveled ends replaced by two rails each: 4 - 2 + 4 = 6.
+    // This used to say 8, from when the operator left the beveled vertices in
+    // the buffer unreferenced. Blender counts them gone, and so does this now.
+    expect(em.vertices).toHaveLength(6);
   });
 
   it("bevels a cube edge — proper vertex-fan split + tri caps", () => {
@@ -285,8 +289,65 @@ describe("bevelEdges", () => {
     //   - +2 corner cap tris (one per endpoint)
     expect(em.faces).toHaveLength(12 + 1 + 2);
     expect(result.size).toBe(1);
-    // +4 new vertices (a1, a2 at vertex a; b1, b2 at vertex b)
-    expect(em.vertices).toHaveLength(8 + 4);
+    // 8 original, the two beveled ends replaced by two rails each: 8 - 2 + 4.
+    expect(em.vertices).toHaveLength(10);
+  });
+
+  it("bevels an edge held by quads — a cube, which it could not do before", () => {
+    // Every edge of a quad cube is held by two quads, and the operator used to
+    // require triangles, so this whole shape was unbevelable. Measured against
+    // Blender: 8 verts and 6 faces become 10 and 7, exactly.
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+    });
+    let target = -1;
+    forEachEdge(em, (he) => {
+      const a = edgeOrigin(em, he);
+      const b = edgeEnd(em, he);
+      if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
+    });
+    const info = { skipped: 0 };
+    bevelEdges(em, new Set([target]), { offset: 20 }, info);
+
+    expect(info.skipped).toBe(0);
+    expect(em.vertices).toHaveLength(10);
+    expect(em.faces).toHaveLength(7);
+    // No corner caps: the one face between F1 and F2 at each end absorbs the
+    // whole rail run, which is what Blender does — the two quads at those
+    // corners come back as pentagons.
+    const arities = Array.from({ length: em.faces.length }, (_, f) => faceVerts(em, f).length).sort();
+    expect(arities).toEqual([4, 4, 4, 4, 4, 5, 5]);
+  });
+
+  it("segments and profile follow Blender's counts", () => {
+    // Measured: n segments give 8 + 2n verts and 6 + n faces on a cube.
+    for (const [segments, verts, faces] of [
+      [1, 10, 7],
+      [2, 12, 8],
+      [3, 14, 9],
+      [4, 16, 10],
+    ] as const) {
+      const em = meshFromData({
+        positions: new Float32Array([
+          -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+          -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+        ]),
+        polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+      });
+      let target = -1;
+      forEachEdge(em, (he) => {
+        const a = edgeOrigin(em, he);
+        const b = edgeEnd(em, he);
+        if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
+      });
+      bevelEdges(em, new Set([target]), { offset: 20, segments });
+      expect(em.vertices).toHaveLength(verts);
+      expect(em.faces).toHaveLength(faces);
+    }
   });
 
   it("bevel preserves manifold closure (no new boundaries)", () => {

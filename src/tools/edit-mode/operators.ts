@@ -309,10 +309,69 @@ export interface BevelOptions {
    */
   offsetType?: "PERCENT" | "OFFSET" | "WIDTH" | "DEPTH";
   /**
-   * Only `1` is implemented — a single chamfer face. Blender's default is 1
-   * too; more segments round the edge into an arc, which this cannot produce.
+   * How many faces across the chamfer. Blender's `segments`, default 1.
+   *
+   * Each beveled vertex splits into `segments + 1` rail vertices and the
+   * chamfer becomes that many quads — measured on a cube, where one edge
+   * beveled with n segments gives 8 + 2n vertices and 6 + n faces.
    */
   segments?: number;
+  /**
+   * The shape of the chamfer in cross-section, 0..1. Blender's `profile`,
+   * default 0.5.
+   *
+   * It selects a superellipse. In coordinates measured from the *outer* corner
+   * of the chamfer's bounding square, the curve is `s^r + t^r = 1` with
+   *
+   *     r = 2 * ln(0.5) / ln(profile)
+   *
+   * which was derived rather than assumed: the midpoint of the chamfer sits at
+   * `sqrt(profile)` along both diagonals, measured at nineteen values of
+   * `profile` and exact at every one. So 0.25 is a straight chamfer (r = 1),
+   * **0.5 is a circular fillet** (r = 2), below 0.25 it bulges outward and
+   * above 0.5 it hugs the original corner.
+   */
+  profile?: number;
+}
+
+/** Points along the superellipse `s^r + t^r = 1`, at equal arc length. */
+function profileCurve(r: number, segments: number): Array<[number, number]> {
+  if (segments <= 1) return [[1, 0], [0, 1]];
+
+  // The superellipse is defined in coordinates measured from the **outer**
+  // corner of the square the two slide directions span, so it is built there
+  // and converted at the end. Building it in corner coordinates instead gives
+  // the right endpoints and wrong everything between them, which is exactly
+  // what happened first: segments=1 matched Blender and segments=2 did not.
+  const N = 4096;
+  const dense: Array<[number, number]> = [];
+  for (let i = 0; i <= N; i++) {
+    const sOuter = i / N;
+    const tOuter = Math.pow(Math.max(0, 1 - Math.pow(sOuter, r)), 1 / r);
+    dense.push([1 - sOuter, 1 - tOuter]);
+  }
+
+  const cum = [0];
+  for (let i = 1; i < dense.length; i++)
+    cum.push(
+      cum[i - 1]! + Math.hypot(dense[i]![0] - dense[i - 1]![0], dense[i]![1] - dense[i - 1]![1]),
+    );
+  const total = cum[cum.length - 1]!;
+
+  const out: Array<[number, number]> = [];
+  let cursor = 1;
+  for (let k = 0; k <= segments; k++) {
+    const want = (k / segments) * total;
+    while (cursor < cum.length - 1 && cum[cursor]! < want) cursor++;
+    const lo = cum[cursor - 1]!;
+    const hi = cum[cursor]!;
+    const f = hi > lo ? (want - lo) / (hi - lo) : 0;
+    out.push([
+      dense[cursor - 1]![0] + (dense[cursor]![0] - dense[cursor - 1]![0]) * f,
+      dense[cursor - 1]![1] + (dense[cursor]![1] - dense[cursor - 1]![1]) * f,
+    ]);
+  }
+  return out;
 }
 
 export function bevelEdges(
@@ -328,13 +387,8 @@ export function bevelEdges(
         `Blender's ${offsetType} measures the chamfer differently, so silently ` +
         `treating it as PERCENT would produce a wrong-sized bevel.`,
     );
-  const segments = opts.segments ?? 1;
-  if (segments !== 1)
-    throw new Error(
-      `bevelEdges: segments=${segments} is not implemented — only a single ` +
-        `chamfer face (segments=1). Rounding an edge into an arc needs the ` +
-        `multi-segment profile this operator does not have.`,
-    );
+  const segments = Math.max(1, Math.floor(opts.segments ?? 1));
+  const profile = Math.min(0.999, Math.max(0.001, opts.profile ?? 0.5));
 
   const width = opts.offset / 100;
   if (selectedEdges.size === 0 || width <= 0) return new Set(selectedEdges);
@@ -348,44 +402,35 @@ export function bevelEdges(
   }
   if (all.size === 0) return new Set();
 
-  // Drop edges whose holding faces aren't triangles (see V2 restrictions).
-  const triOk = new Set<number>();
-  for (const he of all) {
-    const f1 = em.halfEdges[he]!.face;
-    const f2 = em.halfEdges[em.halfEdges[he]!.twin]!.face;
-    if (faceVertexCount(em, f1) === 3 && faceVertexCount(em, f2) === 3) triOk.add(he);
-  }
-
-  // V2 isolation constraint: each endpoint vertex may host at most one bevel.
-  // Selecting a whole edge loop (the most common bevel gesture) violates this
-  // for every vertex, and the old all-or-nothing guard silently no-opped.
-  // Instead keep a greedy maximal subset with disjoint endpoints and bevel
-  // that — an alternating half of a loop — and report how many were skipped
-  // so the caller can tell the user to repeat for the rest.
-  const usedVerts = new Set<number>();
+  // At most one bevel edge per vertex: two meeting at a vertex would split its
+  // fan into four or more arcs and chain several corner polygons together —
+  // Blender's "branch" case, and still deferred.
+  const used = new Set<number>();
   const canonical = new Set<number>();
-  for (const he of triOk) {
+  for (const he of all) {
     const a = edgeOrigin(em, he);
     const b = edgeEnd(em, he);
-    if (usedVerts.has(a) || usedVerts.has(b)) continue;
-    usedVerts.add(a);
-    usedVerts.add(b);
+    if (used.has(a) || used.has(b)) continue;
+    used.add(a);
+    used.add(b);
     canonical.add(he);
   }
   if (outInfo) outInfo.skipped = all.size - canonical.size;
   if (canonical.size === 0) return new Set();
 
   const t01 = Math.max(0.001, Math.min(0.49, width));
+  const r = (2 * Math.log(0.5)) / Math.log(profile);
+  const curve = profileCurve(r, segments);
 
   type FanInfo = {
     role: "origin" | "destination";
-    v1Pos: [number, number, number];
-    v2Pos: [number, number, number];
-    v1Idx: number;
-    v2Idx: number;
+    railPos: Array<[number, number, number]>;
+    railIdx: number[];
     arcF1: Set<number>;
     arcF2: Set<number>;
-    capX: number; // -1 when the fan has no intermediates (size = 2)
+    /** The one face between F1 and F2 that takes the whole rail run, or -1. */
+    absorb: number;
+    capX: number; // -1 when there is nothing to cap
   };
 
   const vertInfo = new Map<number, FanInfo>();
@@ -397,12 +442,20 @@ export function bevelEdges(
     const twin = em.halfEdges[he]!.twin;
     const f1 = em.halfEdges[he]!.face;
     const f2 = em.halfEdges[twin]!.face;
-    const x = thirdVertex(em, f1, a, b);
-    const y = thirdVertex(em, f2, a, b);
-    if (x < 0 || y < 0) return new Set();
 
-    const infoA = computeFanInfo(em, a, f1, f2, x, y, t01, "origin");
-    const infoB = computeFanInfo(em, b, f1, f2, x, y, t01, "destination");
+    // Where each end slides to, per face. For a triangle this is the third
+    // vertex, which is what this used to require; for any other arity it is
+    // simply the neighbour along that face that is not the other end. Lifting
+    // the restriction was that one line — a cube could not be beveled at all
+    // before it, because every edge of one is held by quads.
+    const ax = slideTarget(em, f1, a, b);
+    const ay = slideTarget(em, f2, a, b);
+    const bx = slideTarget(em, f1, b, a);
+    const by = slideTarget(em, f2, b, a);
+    if (ax < 0 || ay < 0 || bx < 0 || by < 0) return new Set();
+
+    const infoA = computeFanInfo(em, a, f1, f2, ax, ay, t01, "origin", curve);
+    const infoB = computeFanInfo(em, b, f1, f2, bx, by, t01, "destination", curve);
     if (!infoA || !infoB) return new Set();
 
     vertInfo.set(a, infoA);
@@ -414,66 +467,165 @@ export function bevelEdges(
   const newPositions: number[] = Array.from(em.positions);
   let nextV = em.vertices.length;
   for (const info of vertInfo.values()) {
-    info.v1Idx = nextV++;
-    newPositions.push(info.v1Pos[0], info.v1Pos[1], info.v1Pos[2]);
-    info.v2Idx = nextV++;
-    newPositions.push(info.v2Pos[0], info.v2Pos[1], info.v2Pos[2]);
+    info.railIdx = info.railPos.map((p) => {
+      const idx = nextV++;
+      newPositions.push(p[0], p[1], p[2]);
+      return idx;
+    });
   }
-
-  // Remap every face's vertices according to the per-vertex arc assignment.
-  const remap = (v: number, f: number): number => {
-    const info = vertInfo.get(v);
-    if (!info) return v;
-    if (info.arcF1.has(f)) return info.v1Idx;
-    if (info.arcF2.has(f)) return info.v2Idx;
-    return v; // face not in either arc — leave it (shouldn't happen)
-  };
 
   const polys = toPolygons(em);
   const newPolys: number[][] = [];
   for (let f = 0; f < polys.length; f++) {
-    newPolys.push(polys[f]!.map((v) => remap(v, f)));
+    const poly = polys[f]!;
+    const grown: number[] = [];
+    for (const v of poly) {
+      const info = vertInfo.get(v);
+      if (!info) {
+        grown.push(v);
+        continue;
+      }
+      const last = info.railIdx.length - 1;
+      if (info.absorb === f) {
+        // The face between F1 and F2 takes the whole run. Which way round is
+        // decided by which of its neighbours at `v` F1 holds — measured
+        // against Blender, where a cube's third face goes from quad to
+        // (4 + segments)-gon and no corner cap is added at all.
+        const run = absorbOrder(em, f, v, info) ? info.railIdx : [...info.railIdx].reverse();
+        grown.push(...run);
+      } else if (info.arcF1.has(f)) grown.push(info.railIdx[0]!);
+      else if (info.arcF2.has(f)) grown.push(info.railIdx[last]!);
+      else grown.push(v);
+    }
+    newPolys.push(grown);
   }
 
-  // Emit chamfer quads (these are the new selection).
+  // Chamfer: `segments` quads spanning the two rail runs.
   const chamferStart = newPolys.length;
   for (const { a, b } of bevels) {
     const ia = vertInfo.get(a)!;
     const ib = vertInfo.get(b)!;
-    // CCW from outside: one real quad (a1, a2, b2, b1).
-    newPolys.push([ia.v1Idx, ia.v2Idx, ib.v2Idx, ib.v1Idx]);
+    for (let k = 0; k < segments; k++)
+      newPolys.push([
+        ia.railIdx[k]!,
+        ia.railIdx[k + 1]!,
+        ib.railIdx[k + 1]!,
+        ib.railIdx[k]!,
+      ]);
   }
   const chamferEnd = newPolys.length;
 
-  // Emit corner caps. Winding differs by endpoint role:
-  //   origin (vertex a):      cap CCW = (v2, v1, capX)
-  //   destination (vertex b): cap CCW = (v1, v2, capX)
+  // Corner caps, only where the rails could not be absorbed. Winding differs
+  // by endpoint role, as it did when this was always a triangle.
   for (const info of vertInfo.values()) {
-    if (info.capX < 0) continue;
-    if (info.role === "origin") {
-      newPolys.push([info.v2Idx, info.v1Idx, info.capX]);
-    } else {
-      newPolys.push([info.v1Idx, info.v2Idx, info.capX]);
-    }
+    if (info.capX < 0 || info.absorb >= 0) continue;
+    const run = info.railIdx;
+    if (info.role === "origin") newPolys.push([...run].reverse().concat(info.capX));
+    else newPolys.push([...run, info.capX]);
   }
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  // The beveled vertices themselves are gone — every face that used one now
+  // uses a rail instead. Compacting says so: Blender reports a cube's single
+  // beveled edge as 8 verts becoming 10, not 12 with two unreferenced, and an
+  // orphan would travel all the way into the glTF.
+  const referenced = new Set<number>();
+  for (const poly of newPolys) for (const v of poly) referenced.add(v);
+  const remap = new Int32Array(newPositions.length / 3).fill(-1);
+  const kept: number[] = [];
+  for (let v = 0; v < newPositions.length / 3; v++) {
+    if (!referenced.has(v)) continue;
+    remap[v] = kept.length / 3;
+    kept.push(newPositions[v * 3]!, newPositions[v * 3 + 1]!, newPositions[v * 3 + 2]!);
+  }
+
+  rebuildPolygons(
+    em,
+    new Float32Array(kept),
+    newPolys.map((poly) => poly.map((v) => remap[v]!)),
+  );
 
   const newSel = new Set<number>();
   for (let i = chamferStart; i < chamferEnd; i++) newSel.add(i);
   return newSel;
 }
 
+/**
+ * The vertex `a` slides toward along face `f`: its neighbour in `f` that is
+ * not `b`.
+ *
+ * For a triangle this is the third vertex, which is all the old
+ * implementation could handle. For a quad or an n-gon it is still exactly one
+ * vertex, which is why the triangle restriction turned out to be a property of
+ * the helper rather than of the algorithm.
+ */
+function slideTarget(em: EditMesh, f: number, a: number, b: number): number {
+  const verts = faceVerts(em, f);
+  const i = verts.indexOf(a);
+  if (i < 0) return -1;
+  const prev = verts[(i + verts.length - 1) % verts.length]!;
+  const next = verts[(i + 1) % verts.length]!;
+  if (next !== b) return next;
+  if (prev !== b) return prev;
+  return -1;
+}
+
+/**
+ * True when face `f`'s rail run should read forward (rail 0 first).
+ *
+ * The run has to enter the face from the side F1 is on, or the polygon crosses
+ * itself. `arcF1`'s side is the one whose shared edge at `v` leads to F1.
+ */
+function absorbOrder(em: EditMesh, f: number, v: number, info: { arcF1: Set<number> }): boolean {
+  const verts = faceVerts(em, f);
+  const i = verts.indexOf(v);
+  if (i < 0) return true;
+  const prev = verts[(i + verts.length - 1) % verts.length]!;
+  // The face sharing edge (prev, v) with `f`: if that is in arcF1, the run
+  // enters from rail 0.
+  for (let he = 0; he < em.halfEdges.length; he++) {
+    const h = em.halfEdges[he]!;
+    if (h.face !== f) continue;
+    if (h.v !== prev || em.halfEdges[h.next]!.v !== v) continue;
+    if (h.twin < 0) return true;
+    return info.arcF1.has(em.halfEdges[h.twin]!.face);
+  }
+  return true;
+}
+
 // ── Bevel helpers ──────────────────────────────────────────────────────────
+
+/** What {@link computeFanInfo} hands back for one end of a beveled edge. */
+interface FanInfoOut {
+  role: "origin" | "destination";
+  railPos: Array<[number, number, number]>;
+  railIdx: number[];
+  arcF1: Set<number>;
+  arcF2: Set<number>;
+  absorb: number;
+  capX: number;
+}
 
 /**
  * Compute fan info for a vertex `v` belonging to a bevel with F1/F2.
- * Returns null if the fan is open (boundary) or otherwise unsupported.
+ * Returns null if the fan is unsupported.
  *
  * Fan walking: CCW around `v` via `twin.next`. F1 and F2 are always adjacent
  * in the fan (they share the bevel edge), so exactly one of the two CCW arcs
- * (F1→F2 or F2→F1) is empty. The non-empty arc gets halved to place the
- * implicit split.
+ * (F1→F2 or F2→F1) is empty.
+ *
+ * What happens to that arc is the one place forge3d and Blender part company,
+ * and it depends on how many faces are in it:
+ *
+ *  - **exactly one** — the usual case, and every vertex of a box. That face
+ *    absorbs the whole rail run and no corner polygon is added, which is what
+ *    Blender does: measured on a cube, where the third face at the vertex goes
+ *    from a quad to a `(4 + segments)`-gon and the face count rises by exactly
+ *    the number of chamfer quads.
+ *  - **two or more** — the arc is halved, each half taking one end of the run,
+ *    and the gap is sealed with a corner polygon. Blender instead absorbs the
+ *    rails into the surrounding faces. The octahedron case in
+ *    `parity/compare-bevel.ts` measures the difference: same vertex and face
+ *    counts, 2.3% more area, the chamfer itself in the right place.
  */
 function computeFanInfo(
   em: EditMesh,
@@ -484,7 +636,8 @@ function computeFanInfo(
   y: number,
   w: number,
   role: "origin" | "destination",
-): { role: "origin" | "destination"; v1Pos: [number, number, number]; v2Pos: [number, number, number]; v1Idx: number; v2Idx: number; arcF1: Set<number>; arcF2: Set<number>; capX: number } | null {
+  curve: ReadonlyArray<readonly [number, number]>,
+): FanInfoOut | null {
   const walk = walkFanFull(em, v, f1);
   if (!walk) return null;
   const { fan, closed } = walk;
@@ -492,17 +645,29 @@ function computeFanInfo(
   const f2idx = fan.indexOf(f2);
   if (f1idx < 0 || f2idx < 0) return null;
 
-  const v1Pos = lerpPos(em, v, x, w);
-  const v2Pos = lerpPos(em, v, y, w);
+  // The rail run, laid out on the profile curve in the corner's own plane.
+  // `curve` is in coordinates measured from the outer corner of the square the
+  // two slide directions span, so (1,0) is the F1 rail end and (0,1) the F2 one.
+  const p0 = lerpPos(em, v, x, w);
+  const p1 = lerpPos(em, v, y, w);
+  const vx = em.positions[v * 3]!;
+  const vy = em.positions[v * 3 + 1]!;
+  const vz = em.positions[v * 3 + 2]!;
+  const railPos: Array<[number, number, number]> = curve.map(([s, t]) => [
+    vx + (p0[0] - vx) * s + (p1[0] - vx) * t,
+    vy + (p0[1] - vy) * s + (p1[1] - vy) * t,
+    vz + (p0[2] - vz) * s + (p1[2] - vz) * t,
+  ]);
+
   const arcF1 = new Set<number>([f1]);
   const arcF2 = new Set<number>([f2]);
   let capX = -1;
+  let absorb = -1;
 
   if (!closed) {
-    // Open fan: v lies on the mesh boundary. F1 and F2 must be adjacent
-    // (they share the bevel edge); the fan splits at the bevel edge into two
-    // contiguous arcs that each terminate at a mesh boundary. No implicit
-    // split — boundaries already seal the open ends.
+    // Open fan: v lies on the mesh boundary. The fan splits at the bevel edge
+    // into two contiguous arcs that each terminate at a boundary, so there is
+    // no gap to seal.
     if (Math.abs(f1idx - f2idx) !== 1) return null;
     if (f1idx < f2idx) {
       for (let i = 0; i <= f1idx; i++) arcF1.add(fan[i]!);
@@ -511,18 +676,16 @@ function computeFanInfo(
       for (let i = 0; i <= f2idx; i++) arcF2.add(fan[i]!);
       for (let i = f1idx; i < fan.length; i++) arcF1.add(fan[i]!);
     }
-    return { role, v1Pos, v2Pos, v1Idx: -1, v2Idx: -1, arcF1, arcF2, capX };
+    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
   }
 
-  // Closed fan: F1 sits at index 0 (we started the CCW walk from it).
-  // ccwArcA: intermediates strictly between F1 and F2 (CCW from F1).
-  // ccwArcB: intermediates strictly between F2 and F1 (CCW from F2).
+  // Closed fan: F1 sits at index 0 (the CCW walk started from it).
   const ccwArcA = fan.slice(1, f2idx);
   const ccwArcB = fan.slice(f2idx + 1);
 
   if (ccwArcA.length === 0 && ccwArcB.length === 0) {
-    // Fan size 2 — fully closed but with no intermediates. No cap.
-    return { role, v1Pos, v2Pos, v1Idx: -1, v2Idx: -1, arcF1, arcF2, capX };
+    // Fan of two: nothing between F1 and F2, so nothing to absorb or cap.
+    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
   }
 
   let intermediates: number[];
@@ -547,6 +710,11 @@ function computeFanInfo(
     return null;
   }
 
+  if (intermediates.length === 1) {
+    absorb = intermediates[0]!;
+    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
+  }
+
   const half = Math.floor(intermediates.length / 2);
   for (let i = 0; i < half; i++) firstHalfArc.add(intermediates[i]!);
   for (let i = half; i < intermediates.length; i++) secondHalfArc.add(intermediates[i]!);
@@ -556,7 +724,7 @@ function computeFanInfo(
   capX = sharedNonVertex(em, left, right, v);
 
   if (capX < 0) return null;
-  return { role, v1Pos, v2Pos, v1Idx: -1, v2Idx: -1, arcF1, arcF2, capX };
+  return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
 }
 
 /**

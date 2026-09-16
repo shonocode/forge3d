@@ -350,6 +350,14 @@ Blender に 25 と入れたのと同じ面取りが出る。<br>
 （エッジループ全選択など）は、<strong>端点が重ならない交互のサブセットだけ面取り</strong>され、
 スキップ数がステータスに表示される。<strong>もう一度 Bevel を実行すると残りが面取りされる</strong>。
 複雑なコーナー (Blender の "Branch" ケース) は V3 へ繰越。</div>
+<div class="note"><strong>2026-09-16: 三角形制限が外れた。</strong> 以前は「面取りする辺を
+四角形が保持していると skip」という制限があり、<strong>立方体は1辺も面取りできなかった</strong>。
+どの arity でも面取りできる。<br>
+コードから呼ぶ場合は <code>segments</code>（チャンファの段数）と <code>profile</code>
+（断面の形。0.25 で直線、<strong>0.5 で円弧</strong>、それ以上は元の角に寄る）も指定できる ―
+<code>bevelEdges(em, edges, { offset: 20, segments: 4, profile: 0.5 })</code>。
+GUI は今のところ segments=1 / profile=0.5 固定。立方体の1辺は Blender と
+<strong>0.0000mm で一致</strong>する（<code>tools/modeling/parity/README.md</code>）。</div>
 
 <h3 id="edit-loopcut">4.6 Loop Cut (ループカット)</h3>
 <p>メッシュをぐるりと一周する辺のループを追加する。関節用ループや細部用ループの挿入に。<strong>キー: <kbd>Ctrl+R</kbd></strong></p>
