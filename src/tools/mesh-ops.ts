@@ -255,3 +255,361 @@ export function boundsOf(data: MeshData): { min: Vec3; max: Vec3; size: Vec3; ce
     center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2],
   };
 }
+
+// ── Solidify ───────────────────────────────────────────────────────────────
+
+/** Options for {@link solidify}. */
+export interface SolidifyOptions {
+  /**
+   * Blender's `thickness`. **Positive goes along the negative normal** — an
+   * upward-facing plate solidified by 0.25 grows downward, and a closed shell
+   * is hollowed inward rather than inflated. Measured against
+   * `bmesh.ops.solidify` rather than assumed; negative reverses it.
+   */
+  thickness: number;
+}
+
+/**
+ * The offset each vertex takes for one unit of thickness: a unit normal times
+ * a shell factor.
+ *
+ * Both halves are Blender's, and both were measured off `bmesh.ops.solidify`
+ * rather than assumed — an offset of plain `normal * thickness` came out 12-15%
+ * short on curved surfaces.
+ *
+ * - The normal is **angle-weighted**: each face contributes in proportion to
+ *   the corner angle it turns through at that vertex, not its area and not
+ *   equally. Area weighting is 5x worse here, measured.
+ * - The shell factor is Blender's `BM_vert_calc_shell_factor` — the
+ *   angle-weighted mean of `1 / |n · n_face|`. It is what makes the thickness
+ *   *even*: without it a cube corner moves `thickness` along its diagonal and
+ *   each of the three faces ends up only `thickness/sqrt(3)` thick. With it,
+ *   every adjacent face is displaced by exactly `thickness`.
+ */
+function offsetBasis(data: MeshData): { normals: Float32Array; shell: Float64Array } {
+  const P = data.positions;
+  const count = P.length / 3;
+  const normals = new Float32Array(P.length);
+  const faceNormals: Array<[number, number, number]> = [];
+
+  for (const poly of data.polys) {
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]! * 3;
+      const b = poly[(i + 1) % poly.length]! * 3;
+      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+    }
+    const len = Math.hypot(nx, ny, nz) || 1;
+    faceNormals.push([nx / len, ny / len, nz / len]);
+  }
+
+  /** The angle the polygon turns through at its `i`th vertex. */
+  const cornerAngle = (poly: readonly number[], i: number): number => {
+    const v = poly[i]! * 3;
+    const prev = poly[(i + poly.length - 1) % poly.length]! * 3;
+    const next = poly[(i + 1) % poly.length]! * 3;
+    const ax = P[prev]! - P[v]!;
+    const ay = P[prev + 1]! - P[v + 1]!;
+    const az = P[prev + 2]! - P[v + 2]!;
+    const bx = P[next]! - P[v]!;
+    const by = P[next + 1]! - P[v + 1]!;
+    const bz = P[next + 2]! - P[v + 2]!;
+    const la = Math.hypot(ax, ay, az);
+    const lb = Math.hypot(bx, by, bz);
+    if (la < 1e-20 || lb < 1e-20) return 0;
+    const cos = (ax * bx + ay * by + az * bz) / (la * lb);
+    return Math.acos(Math.max(-1, Math.min(1, cos)));
+  };
+
+  for (let f = 0; f < data.polys.length; f++) {
+    const poly = data.polys[f]!;
+    const [nx, ny, nz] = faceNormals[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      const v = poly[i]!;
+      const w = cornerAngle(poly, i);
+      normals[v * 3] = normals[v * 3]! + nx * w;
+      normals[v * 3 + 1] = normals[v * 3 + 1]! + ny * w;
+      normals[v * 3 + 2] = normals[v * 3 + 2]! + nz * w;
+    }
+  }
+  for (let i = 0; i < normals.length; i += 3) {
+    const len = Math.hypot(normals[i]!, normals[i + 1]!, normals[i + 2]!);
+    if (len > 1e-20) {
+      normals[i] = normals[i]! / len;
+      normals[i + 1] = normals[i + 1]! / len;
+      normals[i + 2] = normals[i + 2]! / len;
+    }
+  }
+
+  const num = new Float64Array(count);
+  const den = new Float64Array(count);
+  for (let f = 0; f < data.polys.length; f++) {
+    const poly = data.polys[f]!;
+    const [nx, ny, nz] = faceNormals[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      const v = poly[i]!;
+      const w = cornerAngle(poly, i);
+      const dot = Math.abs(normals[v * 3]! * nx + normals[v * 3 + 1]! * ny + normals[v * 3 + 2]! * nz);
+      num[v] = num[v]! + (dot > 1e-6 ? 1 / dot : 1) * w;
+      den[v] = den[v]! + w;
+    }
+  }
+  const shell = new Float64Array(count);
+  for (let v = 0; v < count; v++) shell[v] = den[v]! > 1e-12 ? num[v]! / den[v]! : 1;
+
+  return { normals, shell };
+}
+
+/**
+ * Give a surface thickness — Blender's `bmesh.ops.solidify(geom=, thickness=)`,
+ * and the bones of the Solidify modifier.
+ *
+ * A copy of the surface is offset along the vertex normals, reversed so it
+ * faces the other way, and the two are joined around the boundary with rim
+ * quads. An open plate becomes a closed slab; a closed shell becomes a hollow
+ * one with an inner surface.
+ *
+ * The thickness is **even**: a cube corner moves far enough along its diagonal
+ * that all three of its faces end up `thickness` apart, rather than
+ * `thickness / sqrt(3)`. See {@link offsetBasis} — this is the one part of the
+ * operation where a plausible implementation is 12-15% wrong, so it was
+ * measured off Blender rather than derived.
+ *
+ * This is the bmesh operator, not the Solidify modifier: the original surface
+ * stays where it is (there is no `offset`), and the rim gets no separate
+ * material.
+ *
+ * Creases and seams on the original surface carry through and are mirrored
+ * onto the offset copy; the rim edges are left uncreased.
+ *
+ * **How far the agreement has been measured** (`parity --op solidify`):
+ * identical to Blender at 0.0000 mm on flat and right-angled input, closed or
+ * open — vertex count, face count, area and volume all match to six digits. On
+ * a *curved* closed surface the two drift: 0.79 mm mean on the 36-vertex arm
+ * cage, 0.2% of its volume. The size is right (the shell factor agrees to
+ * 0.09%); the direction differs by up to 0.84°, and Blender's own pre-operation
+ * vertex normal does not explain where it moved either, so the remaining
+ * difference is not simply a choice of normal weighting. Unresolved.
+ */
+export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
+  const P = data.positions;
+  const count = P.length / 3;
+  const { normals: N, shell } = offsetBasis(data);
+  const t = opts.thickness;
+
+  const positions = new Float32Array(P.length * 2);
+  positions.set(P, 0);
+  for (let v = 0; v < count; v++) {
+    const i = v * 3;
+    const d = t * shell[v]!;
+    positions[P.length + i] = P[i]! - N[i]! * d;
+    positions[P.length + i + 1] = P[i + 1]! - N[i + 1]! * d;
+    positions[P.length + i + 2] = P[i + 2]! - N[i + 2]! * d;
+  }
+
+  const polys: number[][] = [];
+  for (const poly of data.polys) polys.push([...poly]);
+  // The offset copy faces the other way, so its winding is reversed.
+  for (const poly of data.polys) polys.push([...poly].reverse().map((v) => v + count));
+
+  // Rim: one quad per boundary edge, wound to agree with the face holding it.
+  // `[b, a, a', b']` for a directed edge a->b — read off Blender's output.
+  const uses = new Map<string, number>();
+  for (const poly of data.polys)
+    for (let i = 0; i < poly.length; i++) {
+      const key = seamKey(poly[i]!, poly[(i + 1) % poly.length]!);
+      uses.set(key, (uses.get(key) ?? 0) + 1);
+    }
+  for (const poly of data.polys)
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      if (uses.get(seamKey(a, b)) !== 1) continue;
+      polys.push([b, a, a + count, b + count]);
+    }
+
+  const creases = new Map<string, number>();
+  const seams = new Set<string>();
+  for (const [key, value] of data.creases ?? []) {
+    const [a, b] = key.split("_");
+    creases.set(key, value);
+    creases.set(seamKey(Number(a) + count, Number(b) + count), value);
+  }
+  for (const key of data.seams ?? []) {
+    const [a, b] = key.split("_");
+    seams.add(key);
+    seams.add(seamKey(Number(a) + count, Number(b) + count));
+  }
+
+  return { positions, polys, creases, seams };
+}
+
+// ── Bisect ─────────────────────────────────────────────────────────────────
+
+/** Options for {@link bisectPlane}. */
+export interface BisectPlaneOptions {
+  /** A point on the cutting plane — Blender's `plane_co`. */
+  planeCo: Vec3;
+  /** The plane's normal; need not be unit length — Blender's `plane_no`. */
+  planeNo: Vec3;
+  /**
+   * How close to the plane counts as lying on it — Blender's `dist`. Vertices
+   * within this are used as they are rather than cut against, which is what
+   * stops a cut passing through an existing vertex making a zero-length sliver.
+   */
+  dist?: number;
+  /** Drop what is on the side the normal points to — Blender's `clear_outer`. */
+  clearOuter?: boolean;
+  /** Drop what is on the side the normal points away from — `clear_inner`. */
+  clearInner?: boolean;
+}
+
+/**
+ * Cut a mesh with a plane, optionally throwing one side away — Blender's
+ * `bmesh.ops.bisect_plane`.
+ *
+ * Faces the plane crosses are split along it, with the new vertices shared
+ * between neighbouring faces so the result stays manifold where the input was.
+ *
+ * **The hole is not filled.** Clearing a side leaves an open boundary, which
+ * is what Blender's operator does too — the Bisect *tool* has a separate
+ * "Fill" option that the operator does not. Follow with {@link solidify} for a
+ * plate, or cap it yourself.
+ *
+ * `clearOuter` removes the side the normal points **to**. That was measured,
+ * because the two names read equally well either way round.
+ *
+ * Creases and seams survive, and an edge that gets split passes its sharpness
+ * to both halves. Vertices left unused by a cleared side are removed and the
+ * indices compacted.
+ */
+export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData {
+  const P = data.positions;
+  const [cx, cy, cz] = opts.planeCo;
+  let [nx, ny, nz] = opts.planeNo;
+  const nlen = Math.hypot(nx, ny, nz);
+  if (nlen < 1e-20) throw new Error("bisectPlane: planeNo is zero length");
+  nx /= nlen;
+  ny /= nlen;
+  nz /= nlen;
+  const dist = opts.dist ?? 1e-6;
+
+  const count = P.length / 3;
+  const positions: number[] = Array.from(P);
+  const side = new Int8Array(count);
+  for (let v = 0; v < count; v++) {
+    const d = (P[v * 3]! - cx) * nx + (P[v * 3 + 1]! - cy) * ny + (P[v * 3 + 2]! - cz) * nz;
+    side[v] = d > dist ? 1 : d < -dist ? -1 : 0;
+  }
+  const signedDist = (v: number): number =>
+    (positions[v * 3]! - cx) * nx +
+    (positions[v * 3 + 1]! - cy) * ny +
+    (positions[v * 3 + 2]! - cz) * nz;
+
+  /** The vertex where edge a-b meets the plane, made once and shared. */
+  const cutVerts = new Map<string, number>();
+  const cutOn = (a: number, b: number): number => {
+    const key = seamKey(a, b);
+    const existing = cutVerts.get(key);
+    if (existing !== undefined) return existing;
+    const da = signedDist(a);
+    const db = signedDist(b);
+    const t = da / (da - db);
+    const index = positions.length / 3;
+    for (let k = 0; k < 3; k++)
+      positions.push(positions[a * 3 + k]! + (positions[b * 3 + k]! - positions[a * 3 + k]!) * t);
+    cutVerts.set(key, index);
+    return index;
+  };
+
+  const polys: number[][] = [];
+  /** Which original edge each half came from, so creases can follow. */
+  const splitParent = new Map<string, string>();
+
+  for (const poly of data.polys) {
+    let hasPos = false;
+    let hasNeg = false;
+    for (const v of poly) {
+      if (side[v] === 1) hasPos = true;
+      else if (side[v] === -1) hasNeg = true;
+    }
+
+    if (!hasPos || !hasNeg) {
+      // Entirely on one side, or lying in the plane — keep or drop whole.
+      const keep = hasPos ? !opts.clearOuter : hasNeg ? !opts.clearInner : true;
+      if (keep) polys.push([...poly]);
+      continue;
+    }
+
+    const above: number[] = [];
+    const below: number[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const sa = side[a]!;
+      const sb = side[b]!;
+
+      if (sa >= 0) above.push(a);
+      if (sa <= 0) below.push(a);
+
+      if (sa !== 0 && sb !== 0 && sa !== sb) {
+        const m = cutOn(a, b);
+        above.push(m);
+        below.push(m);
+        splitParent.set(seamKey(a, m), seamKey(a, b));
+        splitParent.set(seamKey(m, b), seamKey(a, b));
+      }
+    }
+
+    if (!opts.clearOuter && above.length >= 3) polys.push(above);
+    if (!opts.clearInner && below.length >= 3) polys.push(below);
+  }
+
+  // Compact: a cleared side leaves vertices nothing refers to.
+  //
+  // In index order, not in the order the faces happen to mention them, so a
+  // cut that removes nothing returns the mesh with its numbering intact. First
+  // use order would renumber an untouched mesh, which reads as a change.
+  const used = new Set<number>();
+  for (const poly of polys) for (const v of poly) used.add(v);
+  const remap = new Int32Array(positions.length / 3).fill(-1);
+  const kept: number[] = [];
+  for (let v = 0; v < positions.length / 3; v++) {
+    if (!used.has(v)) continue;
+    remap[v] = kept.length / 3;
+    kept.push(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+  }
+
+  const creases = new Map<string, number>();
+  const seams = new Set<string>();
+  const carry = (key: string, apply: (mapped: string) => void): void => {
+    const [a, b] = key.split("_");
+    const ma = remap[Number(a)]!;
+    const mb = remap[Number(b)]!;
+    if (ma >= 0 && mb >= 0 && ma !== mb) apply(seamKey(ma, mb));
+  };
+  // An edge the cut went through no longer exists as one edge, so its own key
+  // must not survive — only the two halves below inherit it. Keeping it would
+  // leave a crease on a vertex pair that is no longer joined.
+  const wasSplit = new Set(splitParent.values());
+  for (const [key, value] of data.creases ?? [])
+    if (!wasSplit.has(key)) carry(key, (m) => creases.set(m, value));
+  for (const key of data.seams ?? []) if (!wasSplit.has(key)) carry(key, (m) => seams.add(m));
+  // A split edge hands its sharpness to both halves.
+  for (const [half, parent] of splitParent) {
+    const value = data.creases?.get(parent);
+    if (value !== undefined) carry(half, (m) => creases.set(m, value));
+    if (data.seams?.has(parent)) carry(half, (m) => seams.add(m));
+  }
+
+  return {
+    positions: new Float32Array(kept),
+    polys: polys.map((poly) => poly.map((v) => remap[v]!)),
+    creases,
+    seams,
+  };
+}

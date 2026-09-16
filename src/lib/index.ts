@@ -100,8 +100,12 @@ export {
   instanceMesh,
   weldMesh,
   boundsOf,
+  solidify,
+  bisectPlane,
   type TransformOptions,
   type MirrorOptions,
+  type SolidifyOptions,
+  type BisectPlaneOptions,
 } from "../tools/mesh-ops";
 
 // ── Topology operators ─────────────────────────────────────────────────────
