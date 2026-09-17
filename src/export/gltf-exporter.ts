@@ -8,6 +8,7 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { Animation } from "@babylonjs/core/Animations/animation";
 import { state, status, showLoading, hideLoading } from "../state";
 import type { SkeletonData } from "../state";
 import { modelStore } from "../storage/model-store";
@@ -31,14 +32,62 @@ function sanitizeFilename(name: string): string {
     .trim() || "model";
 }
 
-function shouldExportNode(node: import("@babylonjs/core").Node): boolean {
-  if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
-  // Reference images are modeling aids, never assets.
-  if (node.name.startsWith("refimg_")) return false;
-  // Linked TransformNodes belonging to bones must be emitted so the
-  // GLTF skin references valid joint nodes.
-  if (node.name.startsWith("boneTN_")) return true;
-  return state.allMeshes.includes(node as never);
+/**
+ * Emit each clip once.
+ *
+ * After a GLB is imported, the same animation exists twice in the scene: the
+ * `AnimationGroup`s the loader made (`state.importedAnimGroups`), and the ones
+ * `prepareExportRig` synthesises from `state.animClips`, which is where
+ * `adoptImportedClips` put an editable copy. Exporting everything wrote both,
+ * so a file that went in with 14 clips came back with 28 — every name
+ * duplicated, and the edits in only one of each pair.
+ *
+ * That is worse than it sounds downstream. chiikawa-reign matches clips by
+ * group name (`appendMissingProceduralAnimations`), so a duplicated name is
+ * two groups competing to drive the same bones, and the one that wins is
+ * whichever the loader happened to list first — which may be the copy that was
+ * never edited.
+ *
+ * So an imported group is skipped when an authored clip has claimed its name.
+ * A group that failed to adopt — bones that matched no skeleton, say — has no
+ * editable twin and is still written, because dropping it would lose it.
+ *
+ * The exporter's hook is per **`Animation`**, not per group, so the groups are
+ * flattened to the animations they own first. Writing it against the group
+ * type compiles to a predicate that is never true and silently changes
+ * nothing — which is how the duplicates survived one round of this fix.
+ *
+ * Built per export, because both lists change while the app is open.
+ */
+function makeShouldExportAnimation(): (animation: Animation) => boolean {
+  const excluded = new Set<Animation>();
+  for (const group of state.importedAnimGroups) {
+    if (!state.animClips.some((clip) => clip.name === group.name)) continue;
+    for (const targeted of group.targetedAnimations) excluded.add(targeted.animation);
+  }
+  return (animation) => !excluded.has(animation);
+}
+
+/**
+ * Which nodes reach the file.
+ *
+ * The rig's linked TransformNodes are recognised by **identity**, not by a
+ * name prefix. They used to be called `boneTN_<id>` and matched on that, which
+ * tied "is this a joint" to "is it named like one" — and the name is the one
+ * thing that has to change, because in glTF the node name *is* the bone name
+ * (see `skeleton-export-bridge.ts`). Passing the rig in keeps the two apart.
+ */
+function makeShouldExportNode(rig: ExportRig | null) {
+  const joints = new Set<unknown>(rig?.transformNodes ?? []);
+  return (node: import("@babylonjs/core").Node): boolean => {
+    if (node.name.startsWith("bone_visual_") || node.name === "bone_hierarchy_lines") return false;
+    // Reference images are modeling aids, never assets.
+    if (node.name.startsWith("refimg_")) return false;
+    // Linked TransformNodes belonging to bones must be emitted so the
+    // GLTF skin references valid joint nodes.
+    if (joints.has(node)) return true;
+    return state.allMeshes.includes(node as never);
+  };
 }
 
 /**
@@ -62,8 +111,8 @@ export async function exportGLB(): Promise<void> {
     // morph-influence AnimationGroups synthesized for export.
     rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, name, {
-      shouldExportNode,
-      shouldExportAnimation: () => true,
+      shouldExportNode: makeShouldExportNode(rig),
+      shouldExportAnimation: makeShouldExportAnimation(),
       animationSampleRate: 30,
     });
     const glbFile = result.glTFFiles[name + ".glb"];
@@ -102,8 +151,8 @@ export async function serializeSceneToGlb(): Promise<ArrayBuffer | null> {
     // morph-influence AnimationGroups synthesized for export.
     rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, "model", {
-      shouldExportNode,
-      shouldExportAnimation: () => true,
+      shouldExportNode: makeShouldExportNode(rig),
+      shouldExportAnimation: makeShouldExportAnimation(),
       animationSampleRate: 30,
     });
     const glbFile = result.glTFFiles["model.glb"];
@@ -131,8 +180,8 @@ export async function saveToLibrary(): Promise<void> {
     // morph-influence AnimationGroups synthesized for export.
     rig = prepareExportRig(skelData && skelData.bones.length > 0 ? skelData : null, state.scene);
     const result = await GLTF2Export.GLBAsync(state.scene, "model", {
-      shouldExportNode,
-      shouldExportAnimation: () => true,
+      shouldExportNode: makeShouldExportNode(rig),
+      shouldExportAnimation: makeShouldExportAnimation(),
       animationSampleRate: 30,
     });
     const glbFile = result.glTFFiles["model.glb"];

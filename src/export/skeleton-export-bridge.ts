@@ -56,6 +56,7 @@ export function prepareExportRig(
 ): ExportRig {
   const transformNodes: TransformNode[] = [];
   const tnByBoneId = new Map<string, TransformNode>();
+  const used = new Set<string>();
 
   // Refresh absolute transforms so we link with the current resting pose.
   // skelData may be null for morph-only scenes — clips still export their
@@ -63,7 +64,23 @@ export function prepareExportRig(
   skelData?.skeleton.computeAbsoluteTransforms();
 
   for (const bd of skelData?.bones ?? []) {
-    const tn = new TransformNode("boneTN_" + bd.id, scene);
+    // **Named after the bone, not after its id.** glTF has no separate notion
+    // of a bone name — a joint *is* the node, so this node's name is the bone
+    // name in the exported file and in everything downstream of it. Exporting
+    // them as `boneTN_bone_7` renamed the whole skeleton on the way out, which
+    // does not look like anything in forge3d (the panels read `bd.name`) and
+    // silently breaks every consumer: chiikawa-reign resolves clip tracks and
+    // the weapon socket by bone name, so a round-tripped character loses its
+    // animation and its weapon hand at once.
+    //
+    // Uniqueness is not enforced anywhere — `renameBone` will happily make two
+    // bones `spine` — and two joints with one name is a file whose clips bind
+    // to whichever the importer saw last. So a repeat falls back to the id,
+    // which keeps the file loadable and leaves one of the pair readable.
+    let name = bd.name;
+    if (used.has(name)) name = `${bd.name}_${bd.id}`;
+    used.add(name);
+    const tn = new TransformNode(name, scene);
 
     // Decompose the bone's local matrix into the TransformNode so the
     // exported node has TRS that round-trips to glTF cleanly.
