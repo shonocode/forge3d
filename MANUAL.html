@@ -1086,7 +1086,10 @@ Pose モードでボーンの回転ドラッグを終えるたびに、そのボ
 設定はブラウザに保存され次回起動時も維持される。</p>
 
 <h3>9.5 エクスポート</h3>
-<p>クリップ単位で JSON 出力。GLB エクスポート時も AnimationGroup として埋め込まれる。</p>
+<p><strong>⬇ Export JSON</strong> は<strong>アクティブなクリップ1本</strong>を JSON にする。
+ボーンごとに <code>_rotation</code> と <code>_position</code> の2トラックが出る
+（<code>type</code> は 1 = <code>ANIMATIONTYPE_VECTOR3</code>、<code>loopMode</code> は
+1 = Cycle / 2 = Constant）。GLB エクスポート時も AnimationGroup として埋め込まれる。</p>
 <div class="note"><strong>読み込んだ GLB のアニメも編集できる。</strong>
 GLB をインポートすると、そのアニメーションは「Imported Animations」で再生できるだけでなく、
 <strong>クリップとして Dopesheet / Graph Editor に入る</strong>（§9.1 のクリップ選択に出る）。

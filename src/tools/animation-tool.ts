@@ -934,7 +934,9 @@ export function exportClipAsJSON(): void {
       boneName: track.boneName,
       property: "rotation",
       fps: clip.frameRate,
-      type: 2, // Animation.ANIMATIONTYPE_VECTOR3
+      type: 1, // Animation.ANIMATIONTYPE_VECTOR3. Was 2, which is QUATERNION —
+      // the comment was right and the number was wrong, and the number is what
+      // a consumer pasting this into a Babylon Animation would believe.
       loopMode: loopModeNum,
       keys: track.keyframes.map((kf) => ({
         frame: kf.frame,
@@ -948,7 +950,7 @@ export function exportClipAsJSON(): void {
       boneName: track.boneName,
       property: "position",
       fps: clip.frameRate,
-      type: 2,
+      type: 1,
       loopMode: loopModeNum,
       keys: track.keyframes.map((kf) => ({
         frame: kf.frame,
