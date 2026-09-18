@@ -304,8 +304,15 @@ export interface BevelOptions {
    */
   offset: number;
   /**
-   * Only `'PERCENT'` is implemented. The others are listed so the failure is a
-   * named one rather than a silently different chamfer.
+   * `'PERCENT'` (the default) measures `offset` as a percentage of each
+   * adjacent edge; `'OFFSET'` measures it as a distance in model units.
+   * `'WIDTH'` and `'DEPTH'` are named so their absence is a named failure
+   * rather than a silently different chamfer.
+   *
+   * On a unit cube the two implemented modes describe the same chamfer —
+   * 25% of a 1.0 edge is 0.25 — and Blender agrees at every vertex except a
+   * branch one, where its PERCENT path applies no offset at all and leaves the
+   * original vertex in place. See {@link bevelEdges} on branches.
    */
   offsetType?: "PERCENT" | "OFFSET" | "WIDTH" | "DEPTH";
   /**
@@ -381,17 +388,21 @@ export function bevelEdges(
   outInfo?: { skipped: number },
 ): Set<number> {
   const offsetType = opts.offsetType ?? "PERCENT";
-  if (offsetType !== "PERCENT")
+  if (offsetType !== "PERCENT" && offsetType !== "OFFSET")
     throw new Error(
-      `bevelEdges: offsetType '${offsetType}' is not implemented — only 'PERCENT'. ` +
-        `Blender's ${offsetType} measures the chamfer differently, so silently ` +
-        `treating it as PERCENT would produce a wrong-sized bevel.`,
+      `bevelEdges: offsetType '${offsetType}' is not implemented — only 'PERCENT' ` +
+        `and 'OFFSET'. Blender's ${offsetType} measures the chamfer differently, so ` +
+        `silently treating it as one of these would produce a wrong-sized bevel.`,
     );
   const segments = Math.max(1, Math.floor(opts.segments ?? 1));
   const profile = Math.min(0.999, Math.max(0.001, opts.profile ?? 0.5));
 
-  const width = opts.offset / 100;
-  if (selectedEdges.size === 0 || width <= 0) return new Set(selectedEdges);
+  // PERCENT arrives as 0..49 and becomes a fraction; OFFSET is already a
+  // distance and passes through. Both reach `computeFanInfo` as one number
+  // plus the mode, because how far along an edge to go is the only thing that
+  // differs between them.
+  const amount = offsetType === "PERCENT" ? opts.offset / 100 : opts.offset;
+  if (selectedEdges.size === 0 || amount <= 0) return new Set(selectedEdges);
 
   // Canonicalize selection (always work with min(he, twin)).
   const all = new Set<number>();
@@ -418,7 +429,10 @@ export function bevelEdges(
   if (outInfo) outInfo.skipped = all.size - canonical.size;
   if (canonical.size === 0) return new Set();
 
-  const t01 = Math.max(0.001, Math.min(0.49, width));
+  const reach =
+    offsetType === "PERCENT"
+      ? ({ kind: "PERCENT", amount: Math.max(0.001, Math.min(0.49, amount)) } as const)
+      : ({ kind: "OFFSET", amount } as const);
   const r = (2 * Math.log(0.5)) / Math.log(profile);
   const curve = profileCurve(r, segments);
 
@@ -445,8 +459,8 @@ export function bevelEdges(
     const by = slideTarget(em, f2, b, a);
     if (ax < 0 || ay < 0 || bx < 0 || by < 0) return new Set();
 
-    const infoA = computeFanInfo(em, a, f1, f2, ax, ay, t01, "origin", curve);
-    const infoB = computeFanInfo(em, b, f1, f2, bx, by, t01, "destination", curve);
+    const infoA = computeFanInfo(em, a, f1, f2, ax, ay, b, reach, "origin", curve);
+    const infoB = computeFanInfo(em, b, f1, f2, bx, by, a, reach, "destination", curve);
     if (!infoA || !infoB) return new Set();
 
     vertInfo.set(a, infoA);
@@ -694,7 +708,9 @@ function computeFanInfo(
   f2: number,
   x: number,
   y: number,
-  w: number,
+  /** The beveled edge's other end, which OFFSET measures perpendicular to. */
+  other: number,
+  reach: { kind: "PERCENT" | "OFFSET"; amount: number },
   role: "origin" | "destination",
   curve: ReadonlyArray<readonly [number, number]>,
 ): FanInfoOut | null {
@@ -705,14 +721,57 @@ function computeFanInfo(
   const f2idx = fan.indexOf(f2);
   if (f1idx < 0 || f2idx < 0) return null;
 
-  // The rail run, laid out on the profile curve in the corner's own plane.
-  // `curve` is in coordinates measured from the outer corner of the square the
-  // two slide directions span, so (1,0) is the F1 rail end and (0,1) the F2 one.
-  const p0 = lerpPos(em, v, x, w);
-  const p1 = lerpPos(em, v, y, w);
   const vx = em.positions[v * 3]!;
   const vy = em.positions[v * 3 + 1]!;
   const vz = em.positions[v * 3 + 2]!;
+  const edgeLen = (to: number): number =>
+    Math.hypot(
+      em.positions[to * 3]! - vx,
+      em.positions[to * 3 + 1]! - vy,
+      em.positions[to * 3 + 2]! - vz,
+    );
+  const lenX = edgeLen(x);
+  const lenY = edgeLen(y);
+  // PERCENT walks the same *fraction* of each of the two edges, so on edges of
+  // different lengths it lands at different distances; OFFSET walks the same
+  // distance along both. The interior slides then take a distance either way —
+  // measured, see the note above.
+  //
+  // In OFFSET the amount is *not* a distance along the adjacent edge: Blender
+  // measures it perpendicular to the beveled edge, so the walk along an edge
+  // meeting it at an angle has to be divided by the sine of that angle.
+  // Measured on the bipyramid, where the two differ by a factor of 1.053 and
+  // the direction is identical. The interior slides, in the same run, sit at
+  // the amount *along* their own edges — the two kinds of new vertex do not
+  // use the same measure, which is not something the names suggest.
+  const unit = (to: number): [number, number, number] => {
+    const d: [number, number, number] = [
+      em.positions[to * 3]! - vx,
+      em.positions[to * 3 + 1]! - vy,
+      em.positions[to * 3 + 2]! - vz,
+    ];
+    const l = Math.hypot(d[0], d[1], d[2]) || 1;
+    return [d[0] / l, d[1] / l, d[2] / l];
+  };
+  const alongBevel = unit(other);
+  const sineTo = (to: number): number => {
+    const u = unit(to);
+    const c = u[0] * alongBevel[0] + u[1] * alongBevel[1] + u[2] * alongBevel[2];
+    return Math.sqrt(Math.max(1e-12, 1 - c * c));
+  };
+  const along = (len: number, to: number): number =>
+    reach.kind === "PERCENT"
+      ? reach.amount
+      : len > 1e-12
+        ? reach.amount / (len * sineTo(to))
+        : 0;
+  const dist = reach.kind === "PERCENT" ? (reach.amount * (lenX + lenY)) / 2 : reach.amount;
+
+  // The rail run, laid out on the profile curve in the corner's own plane.
+  // `curve` is in coordinates measured from the outer corner of the square the
+  // two slide directions span, so (1,0) is the F1 rail end and (0,1) the F2 one.
+  const p0 = lerpPos(em, v, x, along(lenX, x));
+  const p1 = lerpPos(em, v, y, along(lenY, y));
   const railPos: Array<[number, number, number]> = curve.map(([s, t]) => [
     vx + (p0[0] - vx) * s + (p1[0] - vx) * t,
     vy + (p0[1] - vy) * s + (p1[1] - vy) * t,
@@ -745,7 +804,7 @@ function computeFanInfo(
   // an interior edge of a different length — see the note on the bipyramid
   // above. When the two differ their mean is used, which is not measured:
   // every case so far has had them equal.
-  const reach = (from: number, to: number): [number, number, number] => {
+  const slideAlong = (from: number, to: number): [number, number, number] => {
     const len = Math.hypot(
       em.positions[to * 3]! - em.positions[from * 3]!,
       em.positions[to * 3 + 1]! - em.positions[from * 3 + 1]!,
@@ -753,13 +812,6 @@ function computeFanInfo(
     );
     return lerpPos(em, from, to, len > 1e-12 ? dist / len : 0);
   };
-  const lenX = Math.hypot(
-    em.positions[x * 3]! - vx, em.positions[x * 3 + 1]! - vy, em.positions[x * 3 + 2]! - vz,
-  );
-  const lenY = Math.hypot(
-    em.positions[y * 3]! - vx, em.positions[y * 3 + 1]! - vy, em.positions[y * 3 + 2]! - vz,
-  );
-  const dist = (w * (lenX + lenY)) / 2;
 
   if (!closed) {
     // Open fan: v lies on the mesh boundary. The fan splits at the bevel edge
@@ -801,7 +853,7 @@ function computeFanInfo(
     const nb = sharedNonVertex(em, intermediates[i]!, intermediates[i + 1]!, v);
     if (nb < 0) return null;
     ringNeighbours.push(nb);
-    slidePos.set(nb, reach(v, nb));
+    slidePos.set(nb, slideAlong(v, nb));
   }
   return base;
 }
