@@ -8,13 +8,37 @@ export interface CameraPreset {
   beta: number;
 }
 
+/**
+ * Camera positions, named for what the viewer ends up looking at.
+ *
+ * **The alphas are a quarter turn from the obvious ones, on purpose.**
+ * Babylon's `ArcRotateCamera` places the camera at
+ * `(cos α · sin β, cos β, sin α · sin β)`, so `α = 0` puts it on **+X** — off
+ * to the model's side. A character faces down Z, so `α = 0` is a flank and
+ * `α = π/2` is the one that shows the face.
+ *
+ * They were the obvious ones until 2026-09-18, which left every horizontal
+ * button mislabelled by 90°: **F** gave a side view and **R** gave the face.
+ * Confusing alone, and worse next to the glTF loader's mirrored root — "the
+ * front view shows the back" and "left and right are swapped" are the two
+ * conclusions it invites, and neither was true.
+ *
+ * Verified by screenshot after the change: **F** shows the face square on,
+ * **L** the tail. Front/back is the pair worth re-checking if these ever move
+ * again — the character is near enough symmetric that left/right cannot be
+ * read off a picture, only off the arithmetic (`α = 0` is +X, and `rightHand`
+ * lives at +x).
+ */
 export const PRESETS: Record<string, CameraPreset> = {
-  front:  { name: "Front",  alpha: 0,            beta: Math.PI / 2 },
-  back:   { name: "Back",   alpha: Math.PI,      beta: Math.PI / 2 },
-  right:  { name: "Right",  alpha: Math.PI / 2,  beta: Math.PI / 2 },
-  left:   { name: "Left",   alpha: -Math.PI / 2, beta: Math.PI / 2 },
-  top:    { name: "Top",    alpha: 0,            beta: 0.01 },
-  bottom: { name: "Bottom", alpha: 0,            beta: Math.PI - 0.01 },
+  front:  { name: "Front",  alpha: Math.PI / 2,  beta: Math.PI / 2 },
+  back:   { name: "Back",   alpha: -Math.PI / 2, beta: Math.PI / 2 },
+  right:  { name: "Right",  alpha: 0,            beta: Math.PI / 2 },
+  left:   { name: "Left",   alpha: Math.PI,      beta: Math.PI / 2 },
+  // Looking straight down or up, `alpha` only decides which way "up" falls on
+  // screen. Matching `front` keeps the model's face toward the bottom of the
+  // frame in both, so the two read as a pair.
+  top:    { name: "Top",    alpha: Math.PI / 2,  beta: 0.01 },
+  bottom: { name: "Bottom", alpha: Math.PI / 2,  beta: Math.PI - 0.01 },
 };
 
 const ANIM_FRAMES = 10;
