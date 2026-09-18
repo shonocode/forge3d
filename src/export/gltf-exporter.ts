@@ -8,6 +8,8 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Animation } from "@babylonjs/core/Animations/animation";
 import { state, status, showLoading, hideLoading } from "../state";
 import type { SkeletonData } from "../state";
@@ -88,6 +90,52 @@ function makeShouldExportNode(rig: ExportRig | null) {
     if (joints.has(node)) return true;
     return state.allMeshes.includes(node as never);
   };
+}
+
+/**
+ * Point the camera at what was just imported, and pull in to fit it.
+ *
+ * Without this the camera keeps the defaults it was built with — target
+ * `Vector3.Zero()`, radius 14 — and both are wrong for an imported character
+ * in a way that reads as a bug rather than as a framing problem:
+ *
+ *  - **Size.** A game character is around 0.75 m. Seen from 14 m on a 1 m
+ *    grid it is a speck, and nothing on screen says the camera is simply far
+ *    away.
+ *  - **Pivot.** This is the one that gets reported. A primitive is *centred*
+ *    on the origin, so orbiting looks like the box spinning in place. A
+ *    character *stands* on the origin — feet at y = 0 — so the pivot is at its
+ *    feet and the body swings around its own base like a flagpole. That looks
+ *    exactly like "the model is moving too", and the model has not moved.
+ *
+ * Aiming at the bounding centre puts the pivot inside the subject, which is
+ * what every DCC does on import and what the `F` key already did here for a
+ * selected mesh. Radius is 2.5× the bounding radius: close enough to fill the
+ * frame, far enough not to clip into it.
+ *
+ * `__root__` is skipped — the glTF loader's wrapper node has no geometry of
+ * its own, and including it drags the bounds toward the origin.
+ */
+function frameOnCamera(meshes: readonly AbstractMesh[]): void {
+  const real = meshes.filter((m) => m.name !== "__root__" && m.getTotalVertices() > 0);
+  if (real.length === 0 || !state.camera) return;
+
+  let min: Vector3 | null = null;
+  let max: Vector3 | null = null;
+  for (const mesh of real) {
+    mesh.computeWorldMatrix(true);
+    const box = mesh.getBoundingInfo().boundingBox;
+    min = min ? Vector3.Minimize(min, box.minimumWorld) : box.minimumWorld.clone();
+    max = max ? Vector3.Maximize(max, box.maximumWorld) : box.maximumWorld.clone();
+  }
+  if (!min || !max) return;
+
+  const centre = min.add(max).scale(0.5);
+  const radius = Vector3.Distance(min, max) / 2;
+  state.camera.setTarget(centre);
+  // A degenerate import (a single point, a plane on edge) would otherwise ask
+  // for radius 0 and put the camera inside the subject.
+  state.camera.radius = Math.max(radius * 2.5, 0.5);
 }
 
 /**
@@ -360,6 +408,8 @@ export async function loadFileDirectly(file: File): Promise<void> {
         adoptImportedClips(result.animationGroups);
       }
     }
+
+    frameOnCamera(result.meshes);
 
     updateHierarchy();
     updateBoneUI();
