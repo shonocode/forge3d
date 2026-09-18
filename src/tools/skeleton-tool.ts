@@ -34,6 +34,58 @@ const BONE_VISUAL_PREFIX = "bone_visual_";
 const HIERARCHY_LINES_NAME = "bone_hierarchy_lines";
 const BONE_VISUAL_SIZE = 0.06;
 
+/**
+ * How big a joint marker is, relative to the skeleton it belongs to.
+ *
+ * `BONE_VISUAL_SIZE` is a world radius, and a world radius cannot be right for
+ * two skeletons of different sizes. At 0.06 it suits a roughly human-scaled
+ * rig; on a 0.75 m game character — twenty joints inside a 0.65 m ball — the
+ * markers are wider than the gaps between them and the character disappears
+ * behind a heap of blue.
+ *
+ * So the marker is sized from the rig instead: a fraction of the **median**
+ * distance between connected joints. Median rather than mean because a rig
+ * usually has one long bone (hip to spine, or a tail) among many short ones,
+ * and a mean lets that one bone inflate everything else.
+ *
+ * `state.boneDisplay.size` still multiplies on top, so the slider keeps
+ * meaning "bigger or smaller than the fitted default" rather than an absolute.
+ */
+const BONE_VISUAL_SPAN_RATIO = 0.35;
+
+/** Multiplier applied on top of `BONE_VISUAL_SIZE` to fit the current rig. */
+let _boneVisualFit = 1;
+
+/**
+ * Refit `_boneVisualFit` to a skeleton.
+ *
+ * Falls back to 1 — today's fixed size — when there is nothing to measure: a
+ * single bone, or a rig whose joints all sit on one point. Guessing from a
+ * degenerate rig would be worse than leaving it alone.
+ */
+function fitBoneVisualScale(skelData: SkeletonData): void {
+  const spans: number[] = [];
+  for (const bd of skelData.bones) {
+    if (!bd.parentId) continue;
+    const parent = skelData.bones.find((b) => b.id === bd.parentId);
+    if (!parent) continue;
+    const span = Vector3.Distance(getBoneWorldPosition(parent), getBoneWorldPosition(bd));
+    if (span > 1e-6) spans.push(span);
+  }
+  if (spans.length === 0) {
+    _boneVisualFit = 1;
+    return;
+  }
+  spans.sort((a, b) => a - b);
+  const median = spans[Math.floor(spans.length / 2)]!;
+  _boneVisualFit = (median * BONE_VISUAL_SPAN_RATIO) / BONE_VISUAL_SIZE;
+}
+
+/** The scale a bone visual should carry right now. */
+function boneVisualScale(): number {
+  return state.boneDisplay.size * _boneVisualFit;
+}
+
 let boneMaterial: StandardMaterial | null = null;
 let selectedBoneMaterial: StandardMaterial | null = null;
 
@@ -241,12 +293,21 @@ function createBoneVisual(boneId: string, position: Vector3): AbstractMesh {
   mesh.metadata = { boneId };
   // Inherit current display config so newly-created bones match the active
   // size / X-ray settings without needing a manual refresh.
-  mesh.scaling.setAll(state.boneDisplay.size);
+  mesh.scaling.setAll(boneVisualScale());
   mesh.renderingGroupId = state.boneDisplay.xray ? 1 : 0;
   return mesh;
 }
 
 export function updateHierarchyVisualization(skelData: SkeletonData): void {
+  // Refit the joint markers first. This runs after every add, import and
+  // topology change, which is exactly when the right size can change — and it
+  // has to be after, not during, creation: an import builds every visual in a
+  // loop and only then has a skeleton to measure.
+  fitBoneVisualScale(skelData);
+  for (const bd of skelData.bones) {
+    if (bd.visual) bd.visual.scaling.setAll(boneVisualScale());
+  }
+
   // Build line segments for parent→child connections
   const lines: Vector3[][] = [];
   for (const bd of skelData.bones) {
@@ -307,7 +368,7 @@ export function applyBoneDisplayConfig(): void {
   for (const [, skelData] of state.skeletonMap) {
     for (const bd of skelData.bones) {
       if (!bd.visual) continue;
-      bd.visual.scaling.setAll(size);
+      bd.visual.scaling.setAll(size * _boneVisualFit);
       bd.visual.renderingGroupId = xray ? 1 : 0;
     }
     if (skelData.hierarchyLines) {
