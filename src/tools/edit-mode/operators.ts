@@ -411,7 +411,14 @@ export function bevelEdges(
     if (t < 0) continue; // boundary bevel edge — skip (no F2 to chamfer against)
     all.add(he < t ? he : t);
   }
-  if (all.size === 0) return new Set();
+  // Asked to bevel, and able to bevel none of it. Returning an empty set here
+  // reads to a caller exactly like "there was nothing to do", which is how a
+  // rim comes back unbeveled with no error and the next step runs on it.
+  if (all.size === 0)
+    throw new Error(
+      `bevelEdges: all ${selectedEdges.size} selected edge(s) are on a boundary, ` +
+        `so there is no second face to chamfer against. Nothing was beveled.`,
+    );
 
   // At most one bevel edge per vertex: two meeting at a vertex would split its
   // fan into four or more arcs and chain several corner polygons together —
@@ -426,8 +433,25 @@ export function bevelEdges(
     used.add(b);
     canonical.add(he);
   }
-  if (outInfo) outInfo.skipped = all.size - canonical.size;
-  if (canonical.size === 0) return new Set();
+  const skipped = all.size - canonical.size;
+  if (outInfo) outInfo.skipped = skipped;
+  // The branch case, still deferred. A loop of edges is the usual way to ask
+  // for it — every vertex of one carries two selected edges — and the greedy
+  // matching above then bevels every other edge and drops the rest. Measured
+  // on a revolved rim: 12 of 24.
+  //
+  // The editor opts into that by passing `outInfo` and showing the count; a
+  // caller that does not look at it gets a named failure instead of a mesh
+  // that is half beveled and says nothing.
+  if (skipped > 0 && !outInfo)
+    throw new Error(
+      `bevelEdges: ${skipped} of ${all.size} selected edges meet another selected ` +
+        `edge at a vertex (Blender's "branch" case), and only a non-adjacent subset ` +
+        `can be beveled today. Pass the third argument \`{ skipped: 0 }\` to accept ` +
+        `the partial result and read how many were dropped.`,
+    );
+  if (canonical.size === 0)
+    throw new Error(`bevelEdges: every selected edge was dropped. Nothing was beveled.`);
 
   const reach =
     offsetType === "PERCENT"
@@ -457,11 +481,20 @@ export function bevelEdges(
     const ay = slideTarget(em, f2, a, b);
     const bx = slideTarget(em, f1, b, a);
     const by = slideTarget(em, f2, b, a);
-    if (ax < 0 || ay < 0 || bx < 0 || by < 0) return new Set();
+    if (ax < 0 || ay < 0 || bx < 0 || by < 0)
+      throw new Error(
+        `bevelEdges: edge ${a}-${b} has a face that does not give it a slide ` +
+          `direction — the face may be degenerate or wound inconsistently.`,
+      );
 
     const infoA = computeFanInfo(em, a, f1, f2, ax, ay, b, reach, "origin", curve);
     const infoB = computeFanInfo(em, b, f1, f2, bx, by, a, reach, "destination", curve);
-    if (!infoA || !infoB) return new Set();
+    if (!infoA || !infoB)
+      throw new Error(
+        `bevelEdges: the vertex fan at ${!infoA ? a : b} is not one this operator ` +
+          `handles — it is non-manifold, or the two faces holding edge ${a}-${b} are ` +
+          `not adjacent in it. Nothing was beveled.`,
+      );
 
     vertInfo.set(a, infoA);
     vertInfo.set(b, infoB);

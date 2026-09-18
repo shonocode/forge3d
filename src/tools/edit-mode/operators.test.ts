@@ -274,6 +274,35 @@ describe("bevelEdges", () => {
     expect(em.vertices).toHaveLength(6);
   });
 
+  it("refuses a branch selection rather than beveling half of it", () => {
+    const em = buildEditMesh(makeCube())!;
+    // Two edges sharing a vertex. This is what asking for a loop looks like
+    // from the inside, and the greedy matching can only take one of them.
+    let first = -1;
+    let second = -1;
+    forEachEdge(em, (he) => {
+      if (first < 0) { first = he; return; }
+      if (second >= 0) return;
+      const a = edgeOrigin(em, first);
+      const b = edgeEnd(em, first);
+      const c = edgeOrigin(em, he);
+      const d = edgeEnd(em, he);
+      if (c === a || c === b || d === a || d === b) second = he;
+    });
+    expect(second).toBeGreaterThanOrEqual(0);
+
+    // Silent until 2026-09-18: half the selection was beveled and the caller
+    // was handed a Set with no way to know. A brazier's rim came back with 12
+    // of its 24 edges chamfered and nothing said so.
+    expect(() => bevelEdges(em, new Set([first, second]), { offset: 15 })).toThrow(/branch/);
+
+    // Opting in still works, and still reports.
+    const em2 = buildEditMesh(makeCube())!;
+    const info = { skipped: 0 };
+    bevelEdges(em2, new Set([first, second]), { offset: 15 }, info);
+    expect(info.skipped).toBe(1);
+  });
+
   it("bevels a cube edge — one new vertex per non-beveled edge, ring closes the corner", () => {
     const em = buildEditMesh(makeCube())!;
     // Pick the first canonical edge. In this cube triangulation it is an
