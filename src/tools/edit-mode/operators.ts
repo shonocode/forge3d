@@ -1,5 +1,6 @@
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
 import { catmullClark } from "./subdivide";
+import { walkEdgeRing } from "./edge-walk";
 
 /**
  * Topology operators. Each operator mutates `em` in place (rebuilds positions,
@@ -1326,7 +1327,10 @@ export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
   if (twin < 0) return new Set(); // boundary — no loop possible
 
   const seedCanonical = canonicalEdge(em, seedEdge);
-  const loop = findEdgeLoop(em, seedCanonical);
+  // A loop cut walks the *ring* — the faces the new loop will be cut into —
+  // and the triangle-pair rule below is what lets it cross a triangulated
+  // cage. `selectEdgeRing` without that option is Blender's ring select.
+  const loop = walkEdgeRing(em, seedCanonical, { throughTrianglePairs: true }).edges;
   if (loop.length === 0) return new Set();
 
   // Insert one midpoint per loop edge.
@@ -1435,107 +1439,6 @@ function cycleSlice(aug: readonly number[], from: number, to: number): number[] 
     if (k === to) break;
   }
   return out;
-}
-
-/**
- * Walk the edge loop in both directions from `seedEdge`. Returns loop edges
- * in CCW order if closed; in walk order otherwise. Returns just `[seedEdge]`
- * if both directions fail to extend (degenerate seed).
- */
-function findEdgeLoop(em: EditMesh, seedEdge: number): number[] {
-  const forward = walkLoopDirection(em, seedEdge, em.halfEdges[seedEdge]!.face);
-  const backward = walkLoopDirection(em, seedEdge, em.halfEdges[em.halfEdges[seedEdge]!.twin]!.face);
-
-  // Forward stops when revisits seedEdge (closed) or hits boundary (open).
-  if (forward.closed) return forward.edges;
-  // Open chain: combine backward (reversed, dropping the seed) + forward.
-  const back = backward.edges.slice(1).reverse();
-  return [...back, ...forward.edges];
-}
-
-function walkLoopDirection(em: EditMesh, seedEdge: number, startIncomingFace: number): { edges: number[]; closed: boolean } {
-  const edges: number[] = [seedEdge];
-  const visited = new Set<number>([seedEdge]);
-  let cur = seedEdge;
-  let incoming = startIncomingFace;
-  let guard = 0;
-  while (guard++ < 4096) {
-    const step = nextLoopEdge(em, cur, incoming);
-    if (!step) return { edges, closed: false };
-    if (step.nextEdge === seedEdge) return { edges, closed: true };
-    if (visited.has(step.nextEdge)) return { edges, closed: false };
-    visited.add(step.nextEdge);
-    edges.push(step.nextEdge);
-    cur = step.nextEdge;
-    incoming = step.partnerFace;
-  }
-  return { edges, closed: false };
-}
-
-/**
- * From canonical edge `cur` entered via `incomingFace`, find the next edge in
- * the loop.
- *
- * Outgoing face = the OTHER face adjacent to `cur`:
- *  - Quad → the opposite edge of the quad (2 steps around the cycle);
- *    `partnerFace` is the quad itself.
- *  - Triangle → V1 implicit-quad rule: pick the tri's "quad partner" — the
- *    neighbor across the edge whose face normal is most coplanar — and exit
- *    through the partner's edge not touching `cur`.
- *  - Other arity → null (loop stops).
- */
-function nextLoopEdge(em: EditMesh, cur: number, incomingFace: number): { nextEdge: number; partnerFace: number } | null {
-  const twin = em.halfEdges[cur]!.twin;
-  if (twin < 0) return null;
-  const f1 = em.halfEdges[cur]!.face;
-  const f2 = em.halfEdges[twin]!.face;
-  const outgoingFace = f1 === incomingFace ? f2 : f1;
-
-  const outHEs = faceHalfEdges(em, outgoingFace);
-
-  if (outHEs.length === 4) {
-    // Real quad: exit through the opposite edge.
-    const curHE = outHEs.find((h) => canonicalEdge(em, h) === cur);
-    if (curHE === undefined) return null;
-    const exitHE = em.halfEdges[em.halfEdges[curHE]!.next]!.next;
-    return { nextEdge: canonicalEdge(em, exitHE), partnerFace: outgoingFace };
-  }
-  if (outHEs.length !== 3) return null; // n-gon ≥5 — stop the loop
-
-  // Triangle: pick the diagonal candidate among the 2 edges not on `cur`.
-  const outNormal = facePolyNormal(em, outgoingFace);
-  const COPLANAR_THRESHOLD = 0.7; // cos(45°) — coarse but covers cube faces (1.0) and rejects orthogonal neighbors (0.0).
-
-  let bestDiagonalHE = -1;
-  let bestDot = COPLANAR_THRESHOLD;
-  for (const h of outHEs) {
-    if (canonicalEdge(em, h) === cur) continue;
-    const t = em.halfEdges[h]!.twin;
-    if (t < 0) continue;
-    const neighbor = em.halfEdges[t]!.face;
-    if (faceVertexCount(em, neighbor) !== 3) continue;
-    const neighborNormal = facePolyNormal(em, neighbor);
-    const dot = dot3(outNormal, neighborNormal);
-    if (dot > bestDot) {
-      bestDot = dot;
-      bestDiagonalHE = h;
-    }
-  }
-  if (bestDiagonalHE < 0) return null;
-
-  const partnerFace = em.halfEdges[em.halfEdges[bestDiagonalHE]!.twin]!.face;
-
-  // Find the partner's edge that doesn't share a vertex with `cur`.
-  const a = edgeOrigin(em, cur);
-  const b = edgeEnd(em, cur);
-  for (const ph of faceHalfEdges(em, partnerFace)) {
-    const pa = em.halfEdges[ph]!.v;
-    const pb = em.halfEdges[em.halfEdges[ph]!.next]!.v;
-    if (pa !== a && pa !== b && pb !== a && pb !== b) {
-      return { nextEdge: canonicalEdge(em, ph), partnerFace };
-    }
-  }
-  return null;
 }
 
 function sharedFaceBetweenEdges(em: EditMesh, e1: number, e2: number): number {

@@ -137,6 +137,19 @@ export {
   subdivideCatmullClark,
 } from "../tools/edit-mode/operators";
 
+// ── Choosing an edge selection ─────────────────────────────────────────────
+// Bevel, bridge and loop cut take edges, and a build script has no way to know
+// which integers those are. These are the two walks a modeller means by "the
+// ring around the rim": through the vertices (loop) or across the faces
+// (ring). Both match Blender 5.1.1 — the rules were measured, not read.
+export {
+  selectEdgeLoop,
+  selectEdgeRing,
+  walkEdgeRing,
+  edgesAtVertex,
+  type EdgeRingOptions,
+} from "../tools/edit-mode/edge-walk";
+
 // ── Dissolve ───────────────────────────────────────────────────────────────
 // Taking edges away without leaving a hole. `dissolveLimit` is the one that
 // earns its keep on generated geometry: a room built from boxes arrives with
@@ -195,7 +208,12 @@ export {
   or,
   not,
   nearestFaces,
+  selectEdges,
+  edgeMidpoint,
+  edgeAlong,
+  nearestEdges,
   type FacePredicate,
+  type EdgePredicate,
 } from "../tools/select";
 
 // ── Repair ─────────────────────────────────────────────────────────────────

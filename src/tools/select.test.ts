@@ -15,6 +15,10 @@ import {
   or,
   not,
   nearestFaces,
+  selectEdges,
+  edgeAlong,
+  edgeMidpoint,
+  nearestEdges,
 } from "./select";
 
 /** A unit cube centred on the origin: six quads, one per axis direction. */
@@ -178,5 +182,37 @@ describe("selection driving a transform", () => {
     for (const v of data.polys[[...grown][0]!]!) {
       expect(Math.abs(data.positions[v * 3 + 1]!)).toBeCloseTo(0.6, 5);
     }
+  });
+});
+
+describe("edge selection", () => {
+  it("test_every_edge_of_a_cube_is_found_once", () => {
+    const em = cube();
+    expect(selectEdges(em, () => true).size).toBe(12);
+  });
+
+  it("test_edgeAlong_splits_a_cube_into_its_three_directions", () => {
+    const em = cube();
+    for (const axis of [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const) {
+      // Four edges run along each axis, and `edgeAlong` is unsigned, so the
+      // ones pointing backwards count too.
+      expect(selectEdges(em, edgeAlong(axis, 10)).size).toBe(4);
+    }
+  });
+
+  it("test_nearestEdges_picks_the_edge_the_point_sits_on", () => {
+    const em = cube();
+    // The midpoint of the cube's top-front edge, exactly.
+    const [edge] = nearestEdges(em, [0, 1, 1]);
+    expect(edgeMidpoint(em, edge!)).toEqual([0, 1, 1]);
+  });
+
+  it("test_a_predicate_changes_which_edge_is_nearest", () => {
+    const em = cube();
+    // Nearest to a corner is ambiguous between the three edges meeting there,
+    // so the direction is what names the one meant — the mechanism that makes
+    // "click on the rim" work on a bowl.
+    const [vertical] = nearestEdges(em, [1, 1, 1], 1, edgeAlong([0, 1, 0], 10));
+    expect(edgeMidpoint(em, vertical!)).toEqual([1, 0, 1]);
   });
 });

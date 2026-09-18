@@ -1,5 +1,5 @@
 /**
- * Declarative face selection.
+ * Declarative selection — faces, and the edges at the bottom of the file.
  *
  * The Edit Mode operators take a `Set<faceIndex>`, which is the natural shape
  * when a person is clicking faces in a viewport. From a build script it is the
@@ -22,10 +22,22 @@
  * Selection only. Once you have the set, `edit-mode/face-transform` moves it —
  * `extrudeFacesBy`, `offsetFaces`, `scaleFaces`.
  *
+ * Edges work the same way, except that the selection a modeller usually wants
+ * is a *walk* rather than a predicate — "the loop around the rim", not "every
+ * edge at this height". `nearestEdges` here names the one edge to start from
+ * and `edit-mode/edge-walk` does the walking.
+ *
  * Pure and headless — no scene, no picking, no selection state.
  */
 import type { EditMesh } from "./edit-mode/half-edge";
-import { faceVerts, facePolyNormal } from "./edit-mode/half-edge";
+import {
+  faceVerts,
+  facePolyNormal,
+  canonicalEdge,
+  edgeEnd,
+  edgeOrigin,
+  forEachEdge,
+} from "./edit-mode/half-edge";
 
 export type Vec3 = readonly [number, number, number];
 
@@ -147,4 +159,84 @@ export function nearestFaces(
 
   scored.sort((a, b) => a.d2 - b.d2);
   return scored.slice(0, count).map((s) => s.face);
+}
+
+// ── Edges ──────────────────────────────────────────────────────────────────
+
+/** A test applied to one edge, identified by its canonical half-edge index. */
+export type EdgePredicate = (em: EditMesh, edge: number) => boolean;
+
+/** Midpoint of an edge's two vertices. */
+export function edgeMidpoint(em: EditMesh, edge: number): Vec3 {
+  const a = edgeOrigin(em, edge);
+  const b = edgeEnd(em, edge);
+  return [
+    (em.positions[a * 3]! + em.positions[b * 3]!) / 2,
+    (em.positions[a * 3 + 1]! + em.positions[b * 3 + 1]!) / 2,
+    (em.positions[a * 3 + 2]! + em.positions[b * 3 + 2]!) / 2,
+  ];
+}
+
+/**
+ * Edges running within `withinDegrees` of `direction`, either way along it.
+ *
+ * The edge answer to `facing`, and the one that makes "click here" work on a
+ * rim: at the lip of a bowl the nearest edge to any point near the rim is the
+ * little one crossing the wall thickness, not the one running round. They
+ * point in different directions, which is the only thing that separates them.
+ */
+export function edgeAlong(direction: Vec3, withinDegrees = 45): EdgePredicate {
+  const len = Math.hypot(...direction) || 1;
+  const dx = direction[0] / len, dy = direction[1] / len, dz = direction[2] / len;
+  const limit = Math.cos((withinDegrees * Math.PI) / 180) - 1e-9;
+
+  return (em, edge) => {
+    const a = edgeOrigin(em, edge);
+    const b = edgeEnd(em, edge);
+    const ex = em.positions[b * 3]! - em.positions[a * 3]!;
+    const ey = em.positions[b * 3 + 1]! - em.positions[a * 3 + 1]!;
+    const ez = em.positions[b * 3 + 2]! - em.positions[a * 3 + 2]!;
+    const elen = Math.hypot(ex, ey, ez);
+    if (elen === 0) return false;
+    // Unsigned: an edge has no direction of travel, only an axis.
+    return Math.abs((ex * dx + ey * dy + ez * dz) / elen) >= limit;
+  };
+}
+
+/** Every edge passing `predicate`, as canonical edge ids. */
+export function selectEdges(em: EditMesh, predicate: EdgePredicate): Set<number> {
+  const out = new Set<number>();
+  forEachEdge(em, (he) => {
+    const edge = canonicalEdge(em, he);
+    if (predicate(em, edge)) out.add(edge);
+  });
+  return out;
+}
+
+/**
+ * The `count` edges closest to `point`, nearest first.
+ *
+ * This is the missing half of `selectEdgeLoop`: a loop is named by one edge on
+ * it, and in the editor that edge comes from a click. From code the nearest
+ * thing to a click is a position — "the rim, out at the front" — and picking
+ * by coordinate comparison instead is how `brazier/brazier.ts` ended up with a
+ * rim selector that only works on shapes with exactly one ring at that height.
+ */
+export function nearestEdges(
+  em: EditMesh,
+  point: Vec3,
+  count = 1,
+  predicate?: EdgePredicate,
+): number[] {
+  const scored: { edge: number; d2: number }[] = [];
+  forEachEdge(em, (he) => {
+    const edge = canonicalEdge(em, he);
+    if (predicate && !predicate(em, edge)) return;
+    const m = edgeMidpoint(em, edge);
+    const dx = m[0] - point[0], dy = m[1] - point[1], dz = m[2] - point[2];
+    scored.push({ edge, d2: dx * dx + dy * dy + dz * dz });
+  });
+
+  scored.sort((a, b) => a.d2 - b.d2);
+  return scored.slice(0, count).map((s) => s.edge);
 }
