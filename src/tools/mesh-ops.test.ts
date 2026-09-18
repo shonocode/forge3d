@@ -9,6 +9,7 @@ import {
   radialArray,
   arrayAlongPath,
   weldMesh,
+  wireframe,
   boundsOf,
 } from "./mesh-ops";
 import { creaseAll, meshFromData, meshToData } from "../lib/mesh";
@@ -296,5 +297,51 @@ describe("arrayAlongPath", () => {
     };
     expect(width(0)).toBeCloseTo(1, 5);
     expect(width(8)).toBeCloseTo(0.1, 5);
+  });
+});
+
+describe("wireframe", () => {
+  it("test_a_cube_becomes_forty_vertices_and_forty_eight_bars", () => {
+    // Every count here was read off Blender first: two points per vertex, one
+    // per face corner, four quads per edge side.
+    const m = wireframe(box({ size: [1, 1, 1] }), { thickness: 0.1, boundary: false });
+    expect(vertCount(m)).toBe(40);
+    expect(m.polys).toHaveLength(48);
+    for (const poly of m.polys) expect(poly).toHaveLength(4);
+  });
+
+  it("test_a_sheet_keeps_its_rim_only_with_boundary_on", () => {
+    // 3x3 quads: 16 vertices, 24 edges, 12 of them on the border.
+    const sheet = plane({ size: [3, 3], segments: [3, 3] });
+    const open = wireframe(sheet, { thickness: 0.1, boundary: false });
+    const closed = wireframe(sheet, { thickness: 0.1, boundary: true });
+    // The border edges gain their outer half: one point per border vertex,
+    // two quads per border edge.
+    expect(vertCount(closed) - vertCount(open)).toBe(12);
+    expect(closed.polys.length - open.polys.length).toBe(24);
+  });
+
+  it("test_the_bars_are_the_thickness_asked_for", () => {
+    // A flat sheet wireframes into bars standing `thickness` tall, because the
+    // two per-vertex points sit half that either side of the surface.
+    const m = wireframe(plane({ size: [2, 2], segments: [2, 2] }), { thickness: 0.2 });
+    const bb = boundsOf(m)!;
+    expect(bb.size[1]).toBeCloseTo(0.2, 6);
+  });
+
+  it("test_the_middle_is_gone", () => {
+    // The point of it: faces are replaced, not decorated. Nothing in the
+    // output sits at the centre of what was a face.
+    const m = wireframe(plane({ size: [2, 2], segments: [2, 2] }), { thickness: 0.1 });
+    const centres = m.polys.map((poly) => {
+      let x = 0, z = 0;
+      for (const v of poly) {
+        x += m.positions[v * 3]!;
+        z += m.positions[v * 3 + 2]!;
+      }
+      return [x / poly.length, z / poly.length];
+    });
+    // (0.5, 0.5) is the middle of one of the four quads.
+    for (const [x, z] of centres) expect(Math.hypot(x! - 0.5, z! - 0.5)).toBeGreaterThan(0.05);
   });
 });

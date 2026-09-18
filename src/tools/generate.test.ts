@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { box, plane, cylinder, sphere, revolve, sweep } from "./generate";
-import type { MeshData } from "../lib/mesh";
+import { box, plane, cylinder, sphere, circle, circleProfile, torus, revolve, sweep } from "./generate";
+import { meshFromData, type MeshData } from "../lib/mesh";
+import { facePolyNormal } from "./edit-mode/half-edge";
 
 /**
  * Signed volume via the divergence theorem. Positive means the polygons are
@@ -281,5 +282,72 @@ describe("sweep", () => {
     const m = sweep({ profile: TRIM, path: [[0, 0, 0], [0, 1, 0]] });
     expect(m.polys.length).toBeGreaterThan(0);
     for (let i = 0; i < vertCount(m); i++) expect(Number.isFinite(vert(m, i)[0])).toBe(true);
+  });
+});
+
+describe("circle", () => {
+  it("test_lies_flat_and_faces_up", () => {
+    const m = circle({ radius: 0.2, segments: 8 });
+    expect(m.positions.length / 3).toBe(8);
+    expect(m.polys).toHaveLength(1);
+    for (let v = 0; v < 8; v++) {
+      expect(m.positions[v * 3 + 1]).toBeCloseTo(0, 6);
+      expect(Math.hypot(m.positions[v * 3]!, m.positions[v * 3 + 2]!)).toBeCloseTo(0.2, 6);
+    }
+    // Wound so the disc's normal is +y, the way `plane`'s default is.
+    const em = meshFromData(m);
+    expect(facePolyNormal(em, 0)[1]).toBeGreaterThan(0);
+  });
+
+  it("test_no_cap_keeps_the_ring_without_claiming_a_surface", () => {
+    const m = circle({ segments: 6, caps: "none" });
+    expect(m.positions.length / 3).toBe(6);
+    expect(m.polys).toHaveLength(0);
+  });
+
+  it("test_circleProfile_is_the_same_ring_in_2d", () => {
+    const ring = circleProfile(0.2, 8);
+    expect(ring).toHaveLength(8);
+    for (const [x, y] of ring) expect(Math.hypot(x, y)).toBeCloseTo(0.2, 6);
+  });
+});
+
+describe("torus", () => {
+  it("test_is_a_closed_quad_surface_of_the_stated_size", () => {
+    const m = torus({ majorRadius: 0.2, minorRadius: 0.05, majorSegments: 8, minorSegments: 6 });
+    expect(m.positions.length / 3).toBe(48);
+    expect(m.polys).toHaveLength(48);
+    for (const poly of m.polys) expect(poly).toHaveLength(4);
+
+    // Every vertex sits `minor` from the ring of radius `major`.
+    for (let v = 0; v < 48; v++) {
+      const x = m.positions[v * 3]!, y = m.positions[v * 3 + 1]!, z = m.positions[v * 3 + 2]!;
+      const fromAxis = Math.hypot(x, z) - 0.2;
+      expect(Math.hypot(fromAxis, y)).toBeCloseTo(0.05, 5);
+    }
+  });
+
+  it("test_is_wound_outward", () => {
+    // The first version was inside out and measured 0.0000mm against Blender
+    // all the same — a surface distance cannot see winding, only the signed
+    // volume can.
+    const m = torus({ majorRadius: 0.2, minorRadius: 0.05, majorSegments: 12, minorSegments: 8 });
+    expect(signedVolume(m)).toBeGreaterThan(0);
+  });
+
+  it("test_the_axis_turns_it", () => {
+    const flat = torus({ majorRadius: 0.2, minorRadius: 0.05, axis: "y" });
+    const upright = torus({ majorRadius: 0.2, minorRadius: 0.05, axis: "z" });
+    const spread = (m: { positions: Float32Array }, k: number): number => {
+      let min = Infinity, max = -Infinity;
+      for (let v = 0; v < m.positions.length / 3; v++) {
+        min = Math.min(min, m.positions[v * 3 + k]!);
+        max = Math.max(max, m.positions[v * 3 + k]!);
+      }
+      return max - min;
+    };
+    // Lying flat, the thin direction is y; stood on its edge, it is z.
+    expect(spread(flat, 1)).toBeCloseTo(0.1, 5);
+    expect(spread(upright, 2)).toBeCloseTo(0.1, 5);
   });
 });

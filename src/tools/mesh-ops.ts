@@ -692,6 +692,225 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
 // ── Bisect ─────────────────────────────────────────────────────────────────
 
 /** Options for {@link bisectPlane}. */
+export interface WireframeOptions {
+  /** The bar's full thickness — Blender's `thickness`. */
+  thickness: number;
+  /**
+   * Put bars along open edges too — Blender's `use_boundary`. Default true.
+   *
+   * Off, a border edge gets only the half of its bar that faces the surface,
+   * so a grid comes out with its outside edges open. That is Blender's
+   * behaviour and it is rarely what a build script wants, hence the default.
+   */
+  boundary?: boolean;
+}
+
+/**
+ * Replace every face with a solid frame along its edges — grates, railings,
+ * shelving, anything that is "a grid, but made of bars".
+ *
+ * Blender's `bmesh.ops.wireframe` with `use_replace`, and the construction is
+ * measured rather than invented — it was read off a cube and a grid-with-a-hole
+ * before a line of this was written:
+ *
+ *  - each vertex becomes **two** points, `thickness / 2` along its normal
+ *    either way
+ *  - each *corner of each face* becomes one point, `thickness / 2` along that
+ *    corner's bisector, in the face's plane
+ *  - each edge becomes four quads per side it has: two reaching the inner
+ *    point, two the outer
+ *
+ * The counts fall out of that and match Blender exactly: a cube gives 40
+ * vertices and 48 faces, the grid 110 and 120 with `boundary` off, 130 and 160
+ * with it on.
+ *
+ * **An open side is treated as one more face**, whose corner direction is the
+ * negated sum of the real faces' — which is what puts the boundary point
+ * outward on a sheet's rim and *into* the gap at the corner of a hole, both
+ * measured, with no special case between them.
+ *
+ * Not implemented, and refused rather than approximated: Blender's
+ * `use_even_offset` (measured to move every point — at a right angle it is the
+ * difference between `t/2` along the bisector and `t/2` perpendicular),
+ * `offset` (sliding the bar off the edge) and `use_crease`. Concave corners
+ * are untested: the bisector points out of the face there, as it does for
+ * `inset`.
+ */
+export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
+  const half = opts.thickness / 2;
+  const withBoundary = opts.boundary ?? true;
+  const P = data.positions;
+  const at = (v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+
+  const faceNormals = data.polys.map((poly) => normalize(newellNormal(P, poly)));
+
+  // Per (face, corner): the in-plane bisector, pointing into the face.
+  const bisectors: Vec3[][] = data.polys.map((poly, f) => {
+    const n = poly.length;
+    return poly.map((v, i) => {
+      const p = at(v);
+      const d1 = normalize(sub(at(poly[(i - 1 + n) % n]!), p));
+      const d2 = normalize(sub(at(poly[(i + 1) % n]!), p));
+      const sum: Vec3 = [d1[0] + d2[0], d1[1] + d2[1], d1[2] + d2[2]];
+      if (Math.hypot(sum[0], sum[1], sum[2]) > 1e-6) return normalize(sum);
+      // A straight corner has no bisector: take the in-plane perpendicular
+      // and point it at the face's middle.
+      const side = normalize(crossVec(faceNormals[f]!, d2));
+      const toCentre = sub(faceCentre(P, poly), p);
+      return side[0] * toCentre[0] + side[1] * toCentre[1] + side[2] * toCentre[2] >= 0
+        ? side
+        : ([-side[0], -side[1], -side[2]] as Vec3);
+    });
+  });
+
+  // Vertex normals, weighted by the corner angle.
+  //
+  // Which weighting is not a detail: area weighting matches Blender on a cube
+  // and a flat grid — where every weighting agrees — and drifts 4.5mm on the
+  // curved production cage, because there the faces meeting at a vertex have
+  // different sizes. Corner angle is what BMesh uses.
+  const vertexNormal: Vec3[] = Array.from({ length: P.length / 3 }, () => [0, 0, 0] as Vec3);
+  data.polys.forEach((poly, f) => {
+    const unit = faceNormals[f]!;
+    const n = poly.length;
+    poly.forEach((v, i) => {
+      const p = at(v);
+      const d1 = normalize(sub(at(poly[(i - 1 + n) % n]!), p));
+      const d2 = normalize(sub(at(poly[(i + 1) % n]!), p));
+      const cos = Math.max(-1, Math.min(1, d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]));
+      const w = Math.acos(cos);
+      const acc = vertexNormal[v]!;
+      vertexNormal[v] = [acc[0] + unit[0] * w, acc[1] + unit[1] * w, acc[2] + unit[2] * w];
+    });
+  });
+
+  const positions: number[] = [];
+  const push = (p: Vec3): number => {
+    positions.push(p[0], p[1], p[2]);
+    return positions.length / 3 - 1;
+  };
+
+  const inner: number[] = [];
+  const outer: number[] = [];
+  for (let v = 0; v < P.length / 3; v++) {
+    const p = at(v);
+    const n = normalize(vertexNormal[v]!);
+    inner.push(push([p[0] - n[0] * half, p[1] - n[1] * half, p[2] - n[2] * half]));
+    outer.push(push([p[0] + n[0] * half, p[1] + n[1] * half, p[2] + n[2] * half]));
+  }
+
+  // The corner points, indexed the way the polygons are.
+  const corner: number[][] = data.polys.map((poly, f) =>
+    poly.map((v, i) => {
+      const p = at(v);
+      const b = bisectors[f]![i]!;
+      return push([p[0] + b[0] * half, p[1] + b[1] * half, p[2] + b[2] * half]);
+    }),
+  );
+
+  // Which faces run along each edge, and in which direction.
+  interface Side { a: number; b: number; point: (v: number) => number }
+  const sides = new Map<string, Side[]>();
+  data.polys.forEach((poly, f) => {
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const key = seamKey(a, b);
+      const list = sides.get(key) ?? [];
+      const ca = corner[f]![i]!;
+      const cb = corner[f]![(i + 1) % poly.length]!;
+      list.push({ a, b, point: (v) => (v === a ? ca : cb) });
+      sides.set(key, list);
+    }
+  });
+
+  // An open edge's other side, built from a per-vertex point that exists only
+  // when `boundary` is on.
+  // The direction is per boundary EDGE, not per vertex: the in-plane
+  // perpendicular to that edge, pointing away from the one face it has. A
+  // vertex adds up whichever of those it is on.
+  //
+  // Reading it off the vertex instead — "away from the faces meeting here" —
+  // agrees on a flat sheet and is wrong the moment the rim folds: on a cube
+  // with its lid off, the rim points straight up in Blender and out along the
+  // diagonal that way, 3.9mm apart on a 0.02 bar.
+  const openDirection = new Map<number, Vec3>();
+  const openPoint = new Map<number, number>();
+  if (withBoundary) {
+    data.polys.forEach((poly, f) => {
+      const n = poly.length;
+      const centre = faceCentre(P, poly);
+      for (let i = 0; i < n; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % n]!;
+        if ((sides.get(seamKey(a, b))?.length ?? 0) !== 1) continue;
+        const d = normalize(sub(at(b), at(a)));
+        let away = normalize(crossVec(d, faceNormals[f]!));
+        const mid = at(a);
+        const toCentre = sub(centre, mid);
+        if (away[0] * toCentre[0] + away[1] * toCentre[1] + away[2] * toCentre[2] > 0)
+          away = [-away[0], -away[1], -away[2]];
+        for (const v of [a, b]) {
+          const acc = openDirection.get(v) ?? ([0, 0, 0] as Vec3);
+          openDirection.set(v, [acc[0] + away[0], acc[1] + away[1], acc[2] + away[2]]);
+        }
+      }
+    });
+    for (const [v, sum] of openDirection) {
+      const away = normalize(sum);
+      const p = at(v);
+      openPoint.set(
+        v,
+        push([p[0] + away[0] * half, p[1] + away[1] * half, p[2] + away[2] * half]),
+      );
+    }
+  }
+
+  const polys: number[][] = [];
+  for (const [, list] of sides) {
+    const all: Side[] = [...list];
+    if (withBoundary && list.length === 1) {
+      // The virtual face on the other side runs the opposite way round.
+      const { a, b } = list[0]!;
+      all.push({ a: b, b: a, point: (v) => openPoint.get(v)! });
+    }
+    for (const side of all) {
+      const pa = side.point(side.a);
+      const pb = side.point(side.b);
+      polys.push([pa, pb, inner[side.b]!, inner[side.a]!]);
+      polys.push([pb, pa, outer[side.a]!, outer[side.b]!]);
+    }
+  }
+
+  return { positions: Float32Array.from(positions), polys };
+}
+
+/** Newell's normal, un-normalised — its length is twice the polygon's area. */
+function newellNormal(P: Float32Array, poly: readonly number[]): Vec3 {
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]! * 3;
+    const b = poly[(i + 1) % poly.length]! * 3;
+    nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+    ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+    nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+  }
+  return [nx, ny, nz];
+}
+
+function faceCentre(P: Float32Array, poly: readonly number[]): Vec3 {
+  let x = 0, y = 0, z = 0;
+  for (const v of poly) {
+    x += P[v * 3]!;
+    y += P[v * 3 + 1]!;
+    z += P[v * 3 + 2]!;
+  }
+  const n = poly.length || 1;
+  return [x / n, y / n, z / n];
+}
+
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
 export interface BisectPlaneOptions {
   /** A point on the cutting plane — Blender's `plane_co`. */
   planeCo: Vec3;

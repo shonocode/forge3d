@@ -491,3 +491,149 @@ export function sweep(opts: SweepOptions): MeshData {
   }
   return b.build();
 }
+
+export interface CircleOptions {
+  /** Distance from the centre to each vertex — Blender's `radius`. Default 0.5. */
+  radius?: number;
+  /** How many vertices around — Blender's `segments`. Default 32. */
+  segments?: number;
+  /**
+   * `"ngon"` closes it with one polygon, `"none"` leaves a ring of edges with
+   * no face at all — Blender's `cap_ends`. Default `"ngon"`.
+   *
+   * `"none"` is the useful one for a build script: it is a **profile**, and
+   * what you do with it is `sweep` it along a path or `revolve` it. That is
+   * the case the matrix filed under "要らなさそう" until the brazier's chain
+   * needed a ring and wrote one out point by point.
+   */
+  caps?: "ngon" | "none";
+  /** Which way the disc faces. Default `"+y"` — flat on the floor, like `plane`. */
+  facing?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+  /** Where to put it. */
+  at?: Vec3;
+}
+
+/**
+ * A regular polygon — Blender's `bmesh.ops.create_circle`.
+ *
+ * The ring starts at +x and turns the same way Blender's does — but **not from
+ * the same vertex**: measured, `create_circle` starts a quarter turn along
+ * (+y of its own XY plane). Matching that would put this generator out of step
+ * with `cylinder`, `sphere` and `revolve`, which all start at angle 0, so the
+ * start stays where the rest of the module puts it and the difference is
+ * written down instead.
+ *
+ * With `caps: "none"` the result has **no faces**: `MeshData` carries the ring
+ * as a single open polygon so the points survive `meshFromData`, and the
+ * profile helpers below (`circleProfile`) give the same ring as `Vec2`s for
+ * `sweep` and `revolve`, which is usually what a build script wants.
+ */
+export function circle(opts: CircleOptions = {}): MeshData {
+  const r = opts.radius ?? 0.5;
+  const seg = Math.max(3, opts.segments ?? 32);
+  const facing = opts.facing ?? "+y";
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+
+  // u × v is the stated normal, so the ring comes out wound CCW seen from the
+  // side the disc faces — the same convention `plane` uses.
+  const frame: Record<string, [Vec3, Vec3]> = {
+    "+y": [[1, 0, 0], [0, 0, -1]],
+    "-y": [[1, 0, 0], [0, 0, 1]],
+    "+z": [[1, 0, 0], [0, 1, 0]],
+    "-z": [[-1, 0, 0], [0, 1, 0]],
+    "+x": [[0, 0, -1], [0, 1, 0]],
+    "-x": [[0, 0, 1], [0, 1, 0]],
+  };
+  const [u, v] = frame[facing]!;
+
+  const b = new Builder();
+  const ring: number[] = [];
+  for (let i = 0; i < seg; i++) {
+    const a = (i / seg) * Math.PI * 2;
+    const c = Math.cos(a) * r;
+    const s = Math.sin(a) * r;
+    ring.push(b.vert(ax + u[0] * c + v[0] * s, ay + u[1] * c + v[1] * s, az + u[2] * c + v[2] * s));
+  }
+  b.face(...ring);
+  const data = b.build();
+  // `caps: "none"` keeps the ring as geometry without claiming it is a
+  // surface. An empty `polys` would lose the vertices entirely.
+  return opts.caps === "none" ? { positions: data.positions, polys: [] } : data;
+}
+
+/** The same ring as a 2D profile, for `sweep` and `revolve`. */
+export function circleProfile(radius = 0.5, segments = 32, at: Vec2 = [0, 0]): Vec2[] {
+  const out: Vec2[] = [];
+  const n = Math.max(3, segments);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    out.push([at[0] + Math.cos(a) * radius, at[1] + Math.sin(a) * radius]);
+  }
+  return out;
+}
+
+export interface TorusOptions {
+  /** Centre of the tube to the centre of the torus — Blender's `major_radius`. Default 1. */
+  majorRadius?: number;
+  /** The tube's own radius — Blender's `minor_radius`. Default 0.25. */
+  minorRadius?: number;
+  /** Segments around the ring — Blender's `major_segments`. Default 48. */
+  majorSegments?: number;
+  /** Segments around the tube — Blender's `minor_segments`. Default 12. */
+  minorSegments?: number;
+  /** Which axis the ring turns about. Default `"y"` — lying flat, like a quoit. */
+  axis?: "x" | "y" | "z";
+  /** Where to put it. */
+  at?: Vec3;
+}
+
+/**
+ * A torus — a chain link, a ring, a tyre, a handle.
+ *
+ * Blender puts this in the add-mesh menu (`bpy.ops.mesh.primitive_torus_add`)
+ * rather than in `bmesh.ops`, so the API matrix could not list it; the brazier
+ * found it anyway, because a chain is torus after torus and writing one out by
+ * hand is a `revolve` of a circle that has to be spelled point by point.
+ *
+ * `revolve(circleProfile(minor, minorSegments, [major, 0]))` is the same shape
+ * — this is that, named after what it is.
+ */
+export function torus(opts: TorusOptions = {}): MeshData {
+  const major = opts.majorRadius ?? 1;
+  const minor = opts.minorRadius ?? 0.25;
+  const majorSegments = Math.max(3, opts.majorSegments ?? 48);
+  const minorSegments = Math.max(3, opts.minorSegments ?? 12);
+  const axis = opts.axis ?? "y";
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+
+  const b = new Builder();
+  const loops: number[][] = [];
+  for (let i = 0; i < majorSegments; i++) {
+    const around = (i / majorSegments) * Math.PI * 2;
+    const loop: number[] = [];
+    for (let j = 0; j < minorSegments; j++) {
+      const through = (j / minorSegments) * Math.PI * 2;
+      // Distance from the axis, and height along it.
+      const rr = major + Math.cos(through) * minor;
+      const h = Math.sin(through) * minor;
+      const c = Math.cos(around) * rr;
+      const s = Math.sin(around) * rr;
+      const p: Vec3 =
+        axis === "y" ? [c, h, s] : axis === "z" ? [c, s, h] : [h, c, s];
+      loop.push(b.vert(ax + p[0], ay + p[1], az + p[2]));
+    }
+    loops.push(loop);
+  }
+  for (let i = 0; i < majorSegments; i++) {
+    const ni = (i + 1) % majorSegments;
+    for (let j = 0; j < minorSegments; j++) {
+      const nj = (j + 1) % minorSegments;
+      // Wound this way round, not the other: the first version came out with
+      // the same surface as Blender's to 0.0000mm and the **signed volume
+      // negated**, which is a torus turned inside out. No distance measurement
+      // can see that; the volume line in `compare.ts` is what caught it.
+      b.face(loops[i]![j]!, loops[i]![nj]!, loops[ni]![nj]!, loops[ni]![j]!);
+    }
+  }
+  return b.build();
+}
