@@ -9,7 +9,7 @@ import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Nullable } from "@babylonjs/core/types";
 import { state, status } from "../state";
 import type { AnimClipData, BoneTrack, KeyframeData } from "../state";
-import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain, refreshPoseGizmoOrientation, applyAllBoneConstraints } from "./skeleton-tool";
+import { getActiveSkeleton, findBoneById, updateHierarchyVisualization, applyIKChain, refreshPoseGizmoOrientation, applyAllBoneConstraints, setBoneLocalMatrix } from "./skeleton-tool";
 import { applyMorphDrivers } from "./morph-driver-apply";
 import { getEasingFunction } from "./easing";
 import type { EasingType } from "./easing";
@@ -375,7 +375,7 @@ export function scrubToFrame(frame: number): void {
       rotQuat,
       new Vector3(pose.position.x, pose.position.y, pose.position.z)
     );
-    bd.bone.getLocalMatrix().copyFrom(mat);
+    setBoneLocalMatrix(bd.bone, mat);
   }
 
   syncBoneVisuals();

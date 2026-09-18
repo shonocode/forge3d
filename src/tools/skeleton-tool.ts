@@ -86,6 +86,35 @@ function boneVisualScale(): number {
   return state.boneDisplay.size * _boneVisualFit;
 }
 
+/**
+ * Write a bone's local transform, through whatever actually owns it.
+ *
+ * A bone built in forge3d owns its own local matrix, and writing it is enough.
+ * A bone that arrived in a **GLB does not**: glTF expresses a skeleton through
+ * the node hierarchy, so the loader links every bone to a `TransformNode` and
+ * `Skeleton.prepare()` then rebuilds that bone's matrix from the node on every
+ * frame. A direct write is overwritten before it is ever drawn.
+ *
+ * The failure is confusing rather than obvious, because it is **half** visible:
+ * the joint markers are separate meshes that `syncBoneVisuals` positions from
+ * the values just written, so the skeleton on screen moves and the character
+ * does not. Pressing Play appears to do nothing while the rig animates.
+ *
+ * chiikawa-reign hit the same trap from the other side and documents it in
+ * `character-animation.ts`: "the node owns the authoritative transform and
+ * overwrites any direct writes to `bone.rotation` / `bone.position`".
+ */
+export function setBoneLocalMatrix(bone: Bone, local: Matrix): void {
+  const node = bone.getTransformNode();
+  if (node) {
+    node.rotationQuaternion ??= Quaternion.Identity();
+    local.decompose(node.scaling, node.rotationQuaternion, node.position);
+    return;
+  }
+  bone.getLocalMatrix().copyFrom(local);
+  bone.markAsDirty();
+}
+
 let boneMaterial: StandardMaterial | null = null;
 let selectedBoneMaterial: StandardMaterial | null = null;
 
@@ -635,8 +664,7 @@ export function syncBoneRotationFromVisual(boneData: BoneData, skelData: Skeleto
     .multiply(curRotation);
 
   const newLocal = Matrix.Compose(curScale, newRotation, curTranslation);
-  boneData.bone.getLocalMatrix().copyFrom(newLocal);
-  boneData.bone.markAsDirty();
+  setBoneLocalMatrix(boneData.bone, newLocal);
 
   // Recompute world transforms for the whole skeleton, then resync
   // every descendant visual's position. The selected bone's own
@@ -743,8 +771,9 @@ export function applyIKChain(
   const baseAbsRot = absoluteRotationOf(chain[0]!);
   const locals = chainLocalTranslations(result.positions, baseAbsRot, localRots);
   for (let i = 1; i < chain.length; i++) {
-    chain[i]!.bone.getLocalMatrix().copyFrom(
-      Matrix.Compose(localScales[i]!, localRots[i]!, locals[i - 1]!)
+    setBoneLocalMatrix(
+      chain[i]!.bone,
+      Matrix.Compose(localScales[i]!, localRots[i]!, locals[i - 1]!),
     );
     chain[i]!.bone.markAsDirty();
   }
@@ -792,8 +821,7 @@ export function solveIKForBone(endBoneId: string, target: Vector3): boolean {
 
   const restore = (mats: Matrix[]) => {
     for (let i = 0; i < chain.length; i++) {
-      chain[i]!.bone.getLocalMatrix().copyFrom(mats[i]!);
-      chain[i]!.bone.markAsDirty();
+      setBoneLocalMatrix(chain[i]!.bone, mats[i]!);
     }
     skelData.skeleton.computeAbsoluteTransforms();
     updateChildVisuals(chain[0]!.id, skelData);
@@ -1399,9 +1427,7 @@ function applyPoseToBone(
   );
 
   const write = (mat: Matrix) => {
-    bd.bone.getLocalMatrix().copyFrom(mat);
-    bd.bone.markAsDirty();
-    skelData.skeleton.computeAbsoluteTransforms();
+    setBoneLocalMatrix(bd.bone, mat);
     // The bone's own position may have moved (translation pasted) — resync
     // its visual as well as all descendants.
     if (bd.visual) {
