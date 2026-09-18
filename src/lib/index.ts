@@ -98,6 +98,8 @@ export {
   mirrorMesh,
   arrayMesh,
   instanceMesh,
+  radialArray,
+  arrayAlongPath,
   weldMesh,
   boundsOf,
   solidify,
@@ -106,6 +108,8 @@ export {
   bisectPlane,
   type TransformOptions,
   type MirrorOptions,
+  type RadialArrayOptions,
+  type PathArrayOptions,
   type SolidifyOptions,
   type SymmetrizeOptions,
   type ConvexHullReport,
@@ -215,6 +219,17 @@ export {
   type FacePredicate,
   type EdgePredicate,
 } from "../tools/select";
+
+// ── Displacement ───────────────────────────────────────────────────────────
+// Pushing vertices around by something irregular — the step that makes a box
+// read as a stone. No Blender reference (a texture-driven modifier and an
+// editor RNG), so the guarantee is determinism: same seed, same mesh.
+export {
+  displace,
+  valueNoise,
+  hashNoise,
+  type DisplaceOptions,
+} from "../tools/displace";
 
 // ── Repair ─────────────────────────────────────────────────────────────────
 // Making generated geometry well-formed before the next stage sees it. Both

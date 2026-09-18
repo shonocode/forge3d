@@ -178,6 +178,247 @@ export function instanceMesh(data: MeshData, placements: readonly TransformOptio
   return mergeMeshes(placements.map((p) => transformMesh(data, p)));
 }
 
+export interface RadialArrayOptions {
+  /** How many copies in total. The source counts as the first one. */
+  count: number;
+  /** Axis to turn about, through `center`. Default `"y"`. */
+  axis?: "x" | "y" | "z" | Vec3;
+  /** Point the axis passes through. Default the origin. */
+  center?: Vec3;
+  /**
+   * Total sweep in radians. Default a full turn.
+   *
+   * **A full turn and a partial one space their copies differently, on
+   * purpose.** Round a full turn, `count` copies sit `2π / count` apart and
+   * nothing lands twice — three legs at 120°. Over a partial angle the first
+   * copy is at 0 and the last is exactly *at* `angle` — five balusters fanned
+   * across a quarter turn are five, not four and a gap.
+   */
+  angle?: number;
+  /** Push each copy this far out from the axis before turning it. Default 0. */
+  radius?: number;
+}
+
+/**
+ * Copies turned about an axis — legs round a brazier, stools round an island.
+ *
+ * Blender's `bmesh.ops.spin(use_duplicate=True)`, and the two disagree about
+ * counting in a way worth knowing, because it is the kind of difference that
+ * shows up as a rendering artefact rather than an error:
+ *
+ *  - Blender's `steps` is how many copies to **add**, so the source plus
+ *    `steps` copies come out; this `count` is the total.
+ *  - Blender divides by `steps` whatever the angle, so a full turn puts the
+ *    last copy **exactly on top of the first**. Measured on a cube: 40
+ *    vertices of which 32 are distinct. Doubled geometry is invisible until
+ *    something z-fights or a weld halves the model.
+ *
+ * So `radialArray({ count: n })` is `spin(steps = n - 1, angle = 2π(n-1)/n)`,
+ * and over a partial angle it is plain `spin(steps = n - 1)`. The parity run
+ * spells both (`parity/compare.ts`, op `spin`).
+ */
+export function radialArray(data: MeshData, opts: RadialArrayOptions): MeshData {
+  const count = Math.max(1, Math.floor(opts.count));
+  const angle = opts.angle ?? Math.PI * 2;
+  const center = opts.center ?? ([0, 0, 0] as Vec3);
+  const named: Record<"x" | "y" | "z", Vec3> = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+  const axis: Vec3 =
+    opts.axis === undefined || typeof opts.axis === "string" ? named[opts.axis ?? "y"] : opts.axis;
+  const full = Math.abs(Math.abs(angle) - Math.PI * 2) < 1e-9;
+  const step = count < 2 ? 0 : angle / (full ? count : count - 1);
+
+  const source =
+    opts.radius ? transformMesh(data, { translate: radialPush(axis, opts.radius) }) : data;
+
+  const parts: MeshData[] = [];
+  for (let i = 0; i < count; i++) parts.push(rotateAbout(source, center, axis, step * i));
+  return mergeMeshes(parts);
+}
+
+/** A unit vector perpendicular to `axis`, scaled by `by` — "out from the axis". */
+function radialPush(axis: Vec3, by: number): Vec3 {
+  const a = normalize(axis);
+  // Any perpendicular will do; take the one furthest from the axis so the
+  // choice is stable rather than nearly-degenerate.
+  const helper: Vec3 = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const p = normalize(crossVec(a, helper));
+  return [p[0] * by, p[1] * by, p[2] * by];
+}
+
+/** Rotate a mesh by `angle` about an arbitrary axis through `center`. */
+function rotateAbout(data: MeshData, center: Vec3, axis: Vec3, angle: number): MeshData {
+  if (angle === 0) return { ...data, polys: data.polys.map((p) => [...p]) };
+  const [x, y, z] = normalize(axis);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const t = 1 - c;
+  // Rodrigues, written out: `transformMesh` takes Euler angles, and turning an
+  // arbitrary axis into Euler angles loses precision exactly where a ring
+  // needs it — every copy inherits the error.
+  const m = [
+    t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+    t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+    t * x * z - s * y, t * y * z + s * x, t * z * z + c,
+  ];
+
+  const out = new Float32Array(data.positions.length);
+  for (let i = 0; i < data.positions.length; i += 3) {
+    const px = data.positions[i]! - center[0];
+    const py = data.positions[i + 1]! - center[1];
+    const pz = data.positions[i + 2]! - center[2];
+    out[i] = m[0]! * px + m[1]! * py + m[2]! * pz + center[0];
+    out[i + 1] = m[3]! * px + m[4]! * py + m[5]! * pz + center[1];
+    out[i + 2] = m[6]! * px + m[7]! * py + m[8]! * pz + center[2];
+  }
+  return {
+    positions: out,
+    polys: data.polys.map((p) => [...p]),
+    creases: data.creases ? new Map(data.creases) : undefined,
+    seams: data.seams ? new Set(data.seams) : undefined,
+  };
+}
+
+const crossVec = (a: Vec3, b: Vec3): Vec3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+
+const normalize = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+export interface PathArrayOptions {
+  /**
+   * How many copies. Omit to space them by `spacing` instead.
+   *
+   * With a count the copies are spread evenly by **arc length**, first at the
+   * start and last at the end of the path (or, on a closed path, one step
+   * short of coming back round).
+   */
+  count?: number;
+  /** Distance between copies along the path. Ignored when `count` is given. */
+  spacing?: number;
+  /** Join the last path point back to the first. Default false. */
+  closed?: boolean;
+  /** Which way is up for the copies. Default `[0, 1, 0]`. Same as `sweep`. */
+  up?: Vec3;
+  /** Turn each copy to follow the path. Default true. */
+  follow?: boolean;
+  /** Extra spin about the path, radians, added per copy index. */
+  twistPerCopy?: number;
+}
+
+/**
+ * Copies laid along a path, each turned to follow it — a chain, a fence, bolts
+ * round a flange.
+ *
+ * The copy's local axes meet the path the same way `sweep`'s profile does: +z
+ * runs along the path, +y is `up`, +x is the side. A link modelled lying in
+ * the xy plane therefore threads the path without being pre-rotated, and
+ * `twistPerCopy = π / 2` alternates them the way a real chain does.
+ *
+ * **No Blender reference.** Blender does this with an Array modifier fitted to
+ * a curve plus a Curve modifier, which *deforms* the geometry along the curve
+ * rather than placing rigid copies. That is a different operation with a
+ * different result, so there is nothing to measure this against and no parity
+ * claim is made — unlike `radialArray`, whose `spin` really is the same job.
+ */
+export function arrayAlongPath(
+  data: MeshData,
+  path: readonly Vec3[],
+  opts: PathArrayOptions = {},
+): MeshData {
+  if (path.length < 2) return mergeMeshes([data]);
+  const closed = opts.closed ?? false;
+  const points = closed ? [...path, path[0]!] : [...path];
+
+  // Cumulative arc length, so spacing means distance and not "per segment" —
+  // a path with one long leg and three short ones would otherwise bunch.
+  const cumulative: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    const d = Math.hypot(
+      points[i]![0] - points[i - 1]![0],
+      points[i]![1] - points[i - 1]![1],
+      points[i]![2] - points[i - 1]![2],
+    );
+    cumulative.push(cumulative[i - 1]! + d);
+  }
+  const total = cumulative[cumulative.length - 1]!;
+  if (total === 0) return mergeMeshes([data]);
+
+  const distances: number[] = [];
+  if (opts.count !== undefined) {
+    const n = Math.max(1, Math.floor(opts.count));
+    const step = n < 2 ? 0 : total / (closed ? n : n - 1);
+    for (let i = 0; i < n; i++) distances.push(step * i);
+  } else {
+    const spacing = opts.spacing ?? total;
+    for (let d = 0; d <= total + 1e-9; d += spacing) distances.push(d);
+  }
+
+  const up = normalize(opts.up ?? [0, 1, 0]);
+  const follow = opts.follow ?? true;
+  const twist = opts.twistPerCopy ?? 0;
+
+  const parts: MeshData[] = [];
+  distances.forEach((d, i) => {
+    const { point, tangent } = sampleAt(points, cumulative, Math.min(d, total));
+    let placed = data;
+    if (twist) placed = rotateAbout(placed, [0, 0, 0], [0, 0, 1], twist * i);
+    if (follow) placed = orientToFrame(placed, tangent, up);
+    parts.push(transformMesh(placed, { translate: point }));
+  });
+  return mergeMeshes(parts);
+}
+
+/** Point and unit tangent at arc length `d` along a polyline. */
+function sampleAt(
+  points: readonly Vec3[],
+  cumulative: readonly number[],
+  d: number,
+): { point: Vec3; tangent: Vec3 } {
+  let seg = 0;
+  while (seg < cumulative.length - 2 && cumulative[seg + 1]! < d) seg++;
+  const a = points[seg]!;
+  const b = points[seg + 1]!;
+  const segLen = cumulative[seg + 1]! - cumulative[seg]!;
+  const t = segLen === 0 ? 0 : (d - cumulative[seg]!) / segLen;
+  return {
+    point: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t],
+    tangent: normalize([b[0] - a[0], b[1] - a[1], b[2] - a[2]]),
+  };
+}
+
+/** Rotate a mesh from the world axes onto (side, up, tangent). */
+function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
+  let side = crossVec(up, tangent);
+  if (Math.hypot(side[0], side[1], side[2]) < 1e-9) {
+    // The path runs straight up: any side will do, so take a stable one.
+    side = crossVec([1, 0, 0], tangent);
+    if (Math.hypot(side[0], side[1], side[2]) < 1e-9) side = crossVec([0, 0, 1], tangent);
+  }
+  side = normalize(side);
+  const vUp = normalize(crossVec(tangent, side));
+
+  const out = new Float32Array(data.positions.length);
+  for (let i = 0; i < data.positions.length; i += 3) {
+    const x = data.positions[i]!;
+    const y = data.positions[i + 1]!;
+    const z = data.positions[i + 2]!;
+    out[i] = side[0] * x + vUp[0] * y + tangent[0] * z;
+    out[i + 1] = side[1] * x + vUp[1] * y + tangent[1] * z;
+    out[i + 2] = side[2] * x + vUp[2] * y + tangent[2] * z;
+  }
+  return {
+    positions: out,
+    polys: data.polys.map((p) => [...p]),
+    creases: data.creases ? new Map(data.creases) : undefined,
+    seams: data.seams ? new Set(data.seams) : undefined,
+  };
+}
+
 /**
  * Fuse vertices that coincide, rewriting polygons to the survivors.
  *

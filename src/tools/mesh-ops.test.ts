@@ -6,6 +6,8 @@ import {
   mirrorMesh,
   arrayMesh,
   instanceMesh,
+  radialArray,
+  arrayAlongPath,
   weldMesh,
   boundsOf,
 } from "./mesh-ops";
@@ -189,5 +191,110 @@ describe("boundsOf", () => {
 
   it("is null for an empty mesh", () => {
     expect(boundsOf({ positions: new Float32Array(), polys: [] })).toBeNull();
+  });
+});
+
+describe("radialArray", () => {
+  it("test_a_full_turn_does_not_put_a_copy_on_the_original", () => {
+    // Blender's spin does, and that is the reason this function exists rather
+    // than a thin wrapper: 40 vertices where 32 are distinct is invisible
+    // until something z-fights.
+    const ring = radialArray(box({ at: [1.5, 0, 0] }), { count: 4 });
+    expect(vertCount(ring)).toBe(32);
+    const distinct = new Set<string>();
+    for (let i = 0; i < vertCount(ring); i++) distinct.add(vert(ring, i).map((n) => n.toFixed(5)).join(","));
+    expect(distinct.size).toBe(32);
+  });
+
+  it("test_three_copies_land_at_120_degrees", () => {
+    const legs = radialArray(box({ at: [1, 0, 0] }), { count: 3 });
+    const centres = [0, 1, 2].map((i) => {
+      // Each copy's 8 vertices average back to where its box centre went.
+      let x = 0, z = 0;
+      for (let v = i * 8; v < i * 8 + 8; v++) {
+        x += vert(legs, v)[0];
+        z += vert(legs, v)[2];
+      }
+      return [x / 8, z / 8];
+    });
+    expect(centres[0]![0]).toBeCloseTo(1, 5);
+    expect(centres[1]![0]).toBeCloseTo(Math.cos((2 * Math.PI) / 3), 5);
+    // +Y is up and the turn is right-handed about it, so the second copy goes
+    // to negative z. Pinned because a sign flip here is a mirrored prop.
+    expect(centres[1]![1]).toBeCloseTo(-Math.sin((2 * Math.PI) / 3), 5);
+    expect(centres[2]![1]).toBeCloseTo(Math.sin((2 * Math.PI) / 3), 5);
+  });
+
+  it("test_a_partial_angle_puts_the_last_copy_on_the_angle", () => {
+    // A fan of five across a quarter turn is five, not four and a gap.
+    const fan = radialArray(box({ at: [1, 0, 0] }), { count: 5, angle: Math.PI / 2 });
+    expect(vertCount(fan)).toBe(40);
+    let x = 0, z = 0;
+    for (let v = 32; v < 40; v++) {
+      x += vert(fan, v)[0];
+      z += vert(fan, v)[2];
+    }
+    expect(x / 8).toBeCloseTo(0, 5);
+    expect(z / 8).toBeCloseTo(-1, 5);
+  });
+
+  it("test_the_axis_and_centre_are_honoured", () => {
+    const m = radialArray(box(), { count: 2, axis: "z", center: [0, 2, 0] });
+    const bb = boundsOf(m)!;
+    // Half a turn about a point two above: the copy lands two above that.
+    expect(bb.max[1]).toBeCloseTo(4.5, 5);
+  });
+});
+
+describe("arrayAlongPath", () => {
+  const path: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0, 2],
+    [0, 0, 6],
+  ];
+
+  it("test_copies_are_spaced_by_arc_length_not_by_segment", () => {
+    // Three copies over a path whose two segments differ: the middle one sits
+    // at distance 3, inside the long segment, not at the joint at 2.
+    const m = arrayAlongPath(box(), path, { count: 3, follow: false });
+    expect(vertCount(m)).toBe(24);
+    let z = 0;
+    for (let v = 8; v < 16; v++) z += vert(m, v)[2];
+    expect(z / 8).toBeCloseTo(3, 5);
+  });
+
+  it("test_spacing_places_one_copy_per_step", () => {
+    const m = arrayAlongPath(box(), path, { spacing: 2, follow: false });
+    expect(vertCount(m)).toBe(8 * 4); // 0, 2, 4, 6
+  });
+
+  it("test_following_turns_the_copy_onto_the_path", () => {
+    const tall = box({ size: [0.2, 0.2, 2] });
+    const bent: [number, number, number][] = [[0, 0, 0], [4, 0, 0]];
+    const m = arrayAlongPath(tall, bent, { count: 1 });
+    // +z is along the path, so a mesh long in z comes out long in x.
+    const bb = boundsOf(m)!;
+    expect(bb.size[0]).toBeCloseTo(2, 5);
+    expect(bb.size[2]).toBeCloseTo(0.2, 5);
+  });
+
+  it("test_twist_alternates_the_copies", () => {
+    // What a chain needs: every other link turned a quarter turn.
+    const flat = box({ size: [1, 0.1, 0.4] });
+    const m = arrayAlongPath(flat, [[0, 0, 0], [0, 0, 3]], {
+      count: 2,
+      twistPerCopy: Math.PI / 2,
+      follow: false,
+    });
+    const width = (from: number): number => {
+      let min = Infinity, max = -Infinity;
+      for (let v = from; v < from + 8; v++) {
+        min = Math.min(min, vert(m, v)[0]);
+        max = Math.max(max, vert(m, v)[0]);
+      }
+      return max - min;
+    };
+    expect(width(0)).toBeCloseTo(1, 5);
+    expect(width(8)).toBeCloseTo(0.1, 5);
   });
 });
