@@ -433,25 +433,31 @@ export function bevelEdges(
     used.add(b);
     canonical.add(he);
   }
-  const skipped = all.size - canonical.size;
-  if (outInfo) outInfo.skipped = skipped;
-  // The branch case, still deferred. A loop of edges is the usual way to ask
-  // for it — every vertex of one carries two selected edges — and the greedy
-  // matching above then bevels every other edge and drops the rest. Measured
-  // on a revolved rim: 12 of 24.
-  //
-  // The editor opts into that by passing `outInfo` and showing the count; a
-  // caller that does not look at it gets a named failure instead of a mesh
-  // that is half beveled and says nothing.
-  if (skipped > 0 && !outInfo)
+  // How many selected edges meet at each vertex. One is the ordinary case;
+  // two is what asking for a loop looks like from the inside; three or more is
+  // Blender's full vertex mesh and has not been measured.
+  const degreeOf = new Map<number, number[]>();
+  for (const he of all) {
+    for (const v of [edgeOrigin(em, he), edgeEnd(em, he)]) {
+      const list = degreeOf.get(v);
+      if (list) list.push(he);
+      else degreeOf.set(v, [he]);
+    }
+  }
+  let maxDegree = 0;
+  for (const list of degreeOf.values()) maxDegree = Math.max(maxDegree, list.length);
+  if (maxDegree >= 3)
     throw new Error(
-      `bevelEdges: ${skipped} of ${all.size} selected edges meet another selected ` +
-        `edge at a vertex (Blender's "branch" case), and only a non-adjacent subset ` +
-        `can be beveled today. Pass the third argument \`{ skipped: 0 }\` to accept ` +
-        `the partial result and read how many were dropped.`,
+      `bevelEdges: a vertex has ${maxDegree} selected edges at it. Two is handled ` +
+        `— that is what a loop of edges is — but three or more is Blender's full ` +
+        `vertex mesh, which has not been measured, so it is refused not guessed.`,
     );
-  if (canonical.size === 0)
-    throw new Error(`bevelEdges: every selected edge was dropped. Nothing was beveled.`);
+  // Whether the branch path can take this selection is not known until its
+  // vertices have been looked at, so the decision waits for the build below.
+  // Falling back matters: before branches existed the operator beveled a
+  // greedy non-adjacent subset, and a shape the branch path has not been
+  // measured on should still get that rather than nothing.
+  let branching = maxDegree >= 2;
 
   const reach =
     offsetType === "PERCENT"
@@ -463,7 +469,220 @@ export function bevelEdges(
   type FanInfo = FanInfoOut;
 
   const vertInfo = new Map<number, FanInfo>();
-  const bevels: Array<{ a: number; b: number; f1: number; f2: number }> = [];
+  const bevels: Array<{ a: number; b: number; f1: number; f2: number; he: number }> = [];
+
+  /**
+   * What appears at a vertex where two selected edges meet.
+   *
+   * One rule covers this and the ordinary case both: **a new vertex on every
+   * edge at the vertex that is not selected, and one in every face whose two
+   * edges at the vertex are both selected.** Measured on three configurations
+   * (a cube corner at valence 3, a bipyramid equator vertex at valence 4, and
+   * the same at two segments); the counts come out 2, 2 and 3.
+   *
+   * There is no corner polygon: with two selected edges the ring of new
+   * vertices has two members and degenerates, which is the same reason the
+   * ordinary case's cap vanishes at a cube corner.
+   */
+  interface BranchMesh {
+    /** New vertex per unselected edge, keyed by the far vertex. */
+    slide: Map<number, number>;
+    /** New vertex per face with two selected edges at this vertex. */
+    corner: Map<number, number>;
+    /** Per selected edge, the rail read from its f1 side to its f2 side. */
+    rail: Map<number, number[]>;
+    /** The far vertices of the selected edges here. */
+    bevelled: Set<number>;
+    faces: number[];
+    edges: number[];
+  }
+  /** A shape the branch path has not been measured on. Falls back, not fatal. */
+  class Unmeasured extends Error {}
+  const branchInfo = new Map<number, BranchMesh>();
+  const branchPos: Array<[number, number, number]> = [];
+  const claim = (p: [number, number, number]): number => {
+    branchPos.push(p);
+    return -branchPos.length; // negative placeholder, resolved after allocation
+  };
+
+  try {
+  for (const [v, hes] of degreeOf) {
+    if (!branching || hes.length < 2) continue;
+    const fe = fanEdges(em, v, em.halfEdges[hes[0]!]!.face);
+    if (!fe)
+      throw new Unmeasured(
+        `bevelEdges: the fan at vertex ${v} is open or non-manifold. Two selected ` +
+          `edges meeting there needs a closed fan.`,
+      );
+    const bevelled = new Set<number>(
+      hes.map((he) => (edgeOrigin(em, he) === v ? edgeEnd(em, he) : edgeOrigin(em, he))),
+    );
+    const vx = em.positions[v * 3]!;
+    const vy = em.positions[v * 3 + 1]!;
+    const vz = em.positions[v * 3 + 2]!;
+    const lenTo = (to: number): number =>
+      Math.hypot(
+        em.positions[to * 3]! - vx,
+        em.positions[to * 3 + 1]! - vy,
+        em.positions[to * 3 + 2]! - vz,
+      );
+    // OFFSET is already a distance. PERCENT is not, and Blender's PERCENT path
+    // puts *no* offset at all at a branch vertex — measured on a cube, where
+    // the original corner survives and the two chamfers pinch to it. That is a
+    // defect rather than a definition (the two conventions agree at every
+    // other vertex of the same run), so this takes the mean adjacent edge and
+    // carries on rather than reproducing it.
+    let dist = reach.amount;
+    if (reach.kind === "PERCENT") {
+      let sum = 0;
+      for (const nb of fe.edges) sum += lenTo(nb);
+      dist = (reach.amount * sum) / Math.max(1, fe.edges.length);
+    }
+
+    const unitTo = (to: number): [number, number, number] => {
+      const l = lenTo(to) || 1;
+      return [
+        (em.positions[to * 3]! - vx) / l,
+        (em.positions[to * 3 + 1]! - vy) / l,
+        (em.positions[to * 3 + 2]! - vz) / l,
+      ];
+    };
+    /** sin of the angle at `v` between the edges to `a` and to `b`. */
+    const sineBetween = (a: number, b: number): number => {
+      const ua = unitTo(a);
+      const ub = unitTo(b);
+      const c = Math.max(-1, Math.min(1, ua[0] * ub[0] + ua[1] * ub[1] + ua[2] * ub[2]));
+      return Math.sqrt(Math.max(1e-12, 1 - c * c));
+    };
+
+    const n = fe.faces.length;
+    const slide = new Map<number, number>();
+    for (let i = 0; i < n; i++) {
+      const nb = fe.edges[i]!;
+      if (bevelled.has(nb) || slide.has(nb)) continue;
+      // This edge receives a rail end when the face on either side of it also
+      // holds a selected edge — which, at a branch vertex, is every one of
+      // them in the shapes measured so far. A rail end is placed at the
+      // *perpendicular* distance from the selected edge, so the walk along
+      // this one is divided by the sine of the angle between them; the same
+      // conversion the ordinary path already makes. Without it the bipyramid
+      // came out 1.2 mm away with the topology already correct.
+      const before = fe.edges[(i + n - 1) % n]!;
+      const after = fe.edges[(i + 1) % n]!;
+      const sines: number[] = [];
+      if (bevelled.has(before)) sines.push(sineBetween(nb, before));
+      if (bevelled.has(after)) sines.push(sineBetween(nb, after));
+      if (sines.length === 2 && Math.abs(sines[0]! - sines[1]!) > 1e-6)
+        throw new Unmeasured(
+          `bevelEdges: the two selected edges either side of vertex ${v} meet edge ` +
+            `${nb} at different angles, so one new vertex cannot sit at the offset ` +
+            `from both. That shape has not been measured.`,
+        );
+      const t = sines.length > 0 ? dist / sines[0]! : dist;
+      const u = unitTo(nb);
+      slide.set(nb, claim([vx + u[0] * t, vy + u[1] * t, vz + u[2] * t]));
+    }
+
+    const corner = new Map<number, number>();
+    for (let i = 0; i < n; i++) {
+      const ePrev = fe.edges[(i + n - 1) % n]!;
+      const eNext = fe.edges[i]!;
+      if (bevelled.has(ePrev) && bevelled.has(eNext))
+        corner.set(fe.faces[i]!, claim(faceCorner(em, v, ePrev, eNext, dist)));
+    }
+
+    /** The point a selected edge's rail ends on, inside face `f`. */
+    const endIn = (f: number, nb: number): number => {
+      const i = fe.faces.indexOf(f);
+      const ePrev = fe.edges[(i + n - 1) % n]!;
+      const eNext = fe.edges[i]!;
+      const other = ePrev === nb ? eNext : ePrev;
+      const c = corner.get(f);
+      if (bevelled.has(other)) {
+        if (c === undefined) throw new Error(`bevelEdges: no corner for face ${f} at ${v}`);
+        return c;
+      }
+      const sIdx = slide.get(other);
+      if (sIdx === undefined) throw new Error(`bevelEdges: no slide for ${other} at ${v}`);
+      return sIdx;
+    };
+
+    // The two selected edges cut the fan into two arcs, so both of them end on
+    // the same two points — and the rail *between* those points therefore
+    // belongs to the vertex rather than to either edge. Blender writes one set
+    // of interior points and lets both chamfers use it.
+    //
+    // Building them per edge instead put a second vertex at the same position:
+    // the surface came out identical to six digits and the parity run still
+    // said DIFFERENT TOPOLOGY, 15 vertices against 14. A duplicate vertex is
+    // invisible in every measure except the count.
+    const endsOf = new Map<number, [number, number]>();
+    for (const he of hes) {
+      const nb = edgeOrigin(em, he) === v ? edgeEnd(em, he) : edgeOrigin(em, he);
+      endsOf.set(he, [
+        endIn(em.halfEdges[he]!.face, nb),
+        endIn(em.halfEdges[em.halfEdges[he]!.twin]!.face, nb),
+      ]);
+    }
+    const [first, second] = endsOf.get(hes[0]!)!;
+    for (const [he, pair] of endsOf) {
+      const ok = (pair[0] === first && pair[1] === second) || (pair[0] === second && pair[1] === first);
+      if (!ok)
+        throw new Unmeasured(
+          `bevelEdges: the two selected edges at vertex ${v} do not share a pair of ` +
+            `rail ends (edge ${he}). That shape has not been measured.`,
+        );
+    }
+    const pf = branchPos[-first - 1]!;
+    const ps = branchPos[-second - 1]!;
+    const interior = curve.slice(1, curve.length - 1).map(([sc, tc]) =>
+      claim([
+        vx + (pf[0] - vx) * sc + (ps[0] - vx) * tc,
+        vy + (pf[1] - vy) * sc + (ps[1] - vy) * tc,
+        vz + (pf[2] - vz) * sc + (ps[2] - vz) * tc,
+      ]),
+    );
+    const rail = new Map<number, number[]>();
+    for (const [he, pair] of endsOf) {
+      rail.set(
+        he,
+        pair[0] === first
+          ? [pair[0], ...interior, pair[1]]
+          : [pair[0], ...[...interior].reverse(), pair[1]],
+      );
+    }
+    branchInfo.set(v, { slide, corner, rail, bevelled, faces: fe.faces, edges: fe.edges });
+  }
+  } catch (e) {
+    if (!(e instanceof Unmeasured)) throw e;
+    // Not a shape the branch path knows. Put everything back and let the
+    // greedy subset take it, loudly, exactly as it did before branches
+    // existed. "Not measured" and "broken" are different, and only the first
+    // one falls back.
+    branching = false;
+    branchInfo.clear();
+    branchPos.length = 0;
+  }
+
+  if (branching) {
+    canonical.clear();
+    for (const he of all) canonical.add(he);
+  }
+  const skipped = all.size - canonical.size;
+  if (outInfo) outInfo.skipped = skipped;
+  // The editor opts into a partial result by passing `outInfo` and showing the
+  // count; a caller that does not look at it gets a named failure instead of a
+  // mesh that is half beveled and says nothing. Measured on a revolved rim
+  // before branches worked: 12 of 24 edges silently dropped.
+  if (skipped > 0 && !outInfo)
+    throw new Error(
+      `bevelEdges: ${skipped} of ${all.size} selected edges meet another selected ` +
+        `edge at a vertex, in a configuration the branch case has not been measured ` +
+        `on, so only a non-adjacent subset was beveled. Pass the third argument ` +
+        `\`{ skipped: 0 }\` to accept the partial result and read how many were dropped.`,
+    );
+  if (canonical.size === 0)
+    throw new Error(`bevelEdges: every selected edge was dropped. Nothing was beveled.`);
 
   for (const he of canonical) {
     const a = edgeOrigin(em, he);
@@ -487,18 +706,25 @@ export function bevelEdges(
           `direction — the face may be degenerate or wound inconsistently.`,
       );
 
-    const infoA = computeFanInfo(em, a, f1, f2, ax, ay, b, reach, "origin", curve);
-    const infoB = computeFanInfo(em, b, f1, f2, bx, by, a, reach, "destination", curve);
-    if (!infoA || !infoB)
+    // A vertex where two selected edges meet is already described by
+    // `branchInfo`; the ordinary path assumes exactly one and would walk the
+    // fan as though the second edge were not selected.
+    const infoA = branchInfo.has(a)
+      ? null
+      : computeFanInfo(em, a, f1, f2, ax, ay, b, reach, "origin", curve);
+    const infoB = branchInfo.has(b)
+      ? null
+      : computeFanInfo(em, b, f1, f2, bx, by, a, reach, "destination", curve);
+    if ((!infoA && !branchInfo.has(a)) || (!infoB && !branchInfo.has(b)))
       throw new Error(
         `bevelEdges: the vertex fan at ${!infoA ? a : b} is not one this operator ` +
           `handles — it is non-manifold, or the two faces holding edge ${a}-${b} are ` +
           `not adjacent in it. Nothing was beveled.`,
       );
 
-    vertInfo.set(a, infoA);
-    vertInfo.set(b, infoB);
-    bevels.push({ a, b, f1, f2 });
+    if (infoA) vertInfo.set(a, infoA);
+    if (infoB) vertInfo.set(b, infoB);
+    bevels.push({ a, b, f1, f2, he });
   }
 
   // Allocate new vertex indices and append positions.
@@ -522,6 +748,15 @@ export function bevelEdges(
       info.slideIdx.set(nb, idx);
     }
   }
+  // The branch vertices' positions were collected as negative placeholders
+  // while they were being worked out, so that adding them could not disturb
+  // the ordinary path's numbering. They become real indices here.
+  const branchBase = nextV;
+  for (const q of branchPos) {
+    newPositions.push(q[0], q[1], q[2]);
+    nextV++;
+  }
+  const real = (placeholder: number): number => branchBase + (-placeholder - 1);
 
   const polys = toPolygons(em);
   const newPolys: number[][] = [];
@@ -529,6 +764,22 @@ export function bevelEdges(
     const poly = polys[f]!;
     const grown: number[] = [];
     poly.forEach((v, i) => {
+      const bm = branchInfo.get(v);
+      if (bm) {
+        // The face's own two edges at `v` decide this entirely: two selected
+        // edges give the single corner vertex, one gives the slide on the
+        // other (which is also that selected edge's rail end in this face),
+        // and none gives both slides.
+        const prev = poly[(i + poly.length - 1) % poly.length]!;
+        const next = poly[(i + 1) % poly.length]!;
+        const bp = bm.bevelled.has(prev);
+        const bn = bm.bevelled.has(next);
+        if (bp && bn) grown.push(real(bm.corner.get(f)!));
+        else if (bp) grown.push(real(bm.slide.get(next)!));
+        else if (bn) grown.push(real(bm.slide.get(prev)!));
+        else grown.push(real(bm.slide.get(prev)!), real(bm.slide.get(next)!));
+        return;
+      }
       const info = vertInfo.get(v);
       if (!info) {
         grown.push(v);
@@ -567,16 +818,16 @@ export function bevelEdges(
 
   // Chamfer: `segments` quads spanning the two rail runs.
   const chamferStart = newPolys.length;
-  for (const { a, b } of bevels) {
-    const ia = vertInfo.get(a)!;
-    const ib = vertInfo.get(b)!;
+  const railAt = (v: number, he: number): number[] => {
+    const bm = branchInfo.get(v);
+    if (bm) return bm.rail.get(he)!.map(real);
+    return vertInfo.get(v)!.railIdx;
+  };
+  for (const { a, b, he } of bevels) {
+    const ra = railAt(a, he);
+    const rb = railAt(b, he);
     for (let k = 0; k < segments; k++)
-      newPolys.push([
-        ia.railIdx[k]!,
-        ia.railIdx[k + 1]!,
-        ib.railIdx[k + 1]!,
-        ib.railIdx[k]!,
-      ]);
+      newPolys.push([ra[k]!, ra[k + 1]!, rb[k + 1]!, rb[k]!]);
   }
   const chamferEnd = newPolys.length;
 
@@ -701,6 +952,74 @@ interface FanInfoOut {
   slidePos: Map<number, [number, number, number]>;
   /** Every non-beveled edge at the vertex -> its new vertex. Rail ends included. */
   slideIdx: Map<number, number>;
+}
+
+/**
+ * The ordered edges around a closed vertex fan, named by their far vertex.
+ *
+ * `walkFanFull` gives the faces; the edge between two consecutive ones is the
+ * vertex they share other than `v`. For a closed fan of n faces there are n
+ * such edges, and they are what the bevel cares about: every one of them
+ * either carries a beveled edge or receives a new vertex.
+ */
+function fanEdges(em: EditMesh, v: number, startFace: number): { faces: number[]; edges: number[] } | null {
+  const walk = walkFanFull(em, v, startFace);
+  if (!walk || !walk.closed) return null;
+  const faces = walk.fan;
+  const edges: number[] = [];
+  for (let i = 0; i < faces.length; i++) {
+    const nb = sharedNonVertex(em, faces[i]!, faces[(i + 1) % faces.length]!, v);
+    if (nb < 0) return null;
+    edges.push(nb);
+  }
+  return { faces, edges };
+}
+
+/**
+ * Where two beveled edges meeting in one face put their shared corner.
+ *
+ * Each of them wants a line in the face at `dist` from itself; the corner is
+ * where those two lines cross. On the bisector that is `dist / sin(half the
+ * angle between them)` from the vertex, which is why a sharp corner pushes the
+ * point a long way in and a flat one barely moves it.
+ *
+ * Measured on a cube with two adjacent top edges beveled by 0.25: the two
+ * edges meet at 90 degrees, so the point sits 0.3536 along the diagonal and
+ * lands on (0.25, -0.25, 0.5) — exactly what Blender wrote.
+ */
+function faceCorner(
+  em: EditMesh,
+  v: number,
+  n1: number,
+  n2: number,
+  dist: number,
+): [number, number, number] {
+  const vx = em.positions[v * 3]!;
+  const vy = em.positions[v * 3 + 1]!;
+  const vz = em.positions[v * 3 + 2]!;
+  const dir = (to: number): [number, number, number] => {
+    const d: [number, number, number] = [
+      em.positions[to * 3]! - vx,
+      em.positions[to * 3 + 1]! - vy,
+      em.positions[to * 3 + 2]! - vz,
+    ];
+    const l = Math.hypot(d[0], d[1], d[2]) || 1;
+    return [d[0] / l, d[1] / l, d[2] / l];
+  };
+  const u1 = dir(n1);
+  const u2 = dir(n2);
+  const bx = u1[0] + u2[0];
+  const by = u1[1] + u2[1];
+  const bz = u1[2] + u2[2];
+  const bl = Math.hypot(bx, by, bz);
+  // Straight through: the two edges are opposite, there is no corner to find
+  // and the bisector is undefined. Fall back to the offset along one of them,
+  // which is what a flat corner means.
+  if (bl < 1e-9) return [vx + u1[0] * dist, vy + u1[1] * dist, vz + u1[2] * dist];
+  const cosFull = Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1] + u1[2] * u2[2]));
+  const sinHalf = Math.sqrt(Math.max(1e-12, (1 - cosFull) / 2));
+  const t = dist / sinHalf;
+  return [vx + (bx / bl) * t, vy + (by / bl) * t, vz + (bz / bl) * t];
 }
 
 /**
