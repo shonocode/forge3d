@@ -52,7 +52,17 @@ export interface SourceTrack {
 }
 
 /** Resolves a glTF node name to a bone in the editor's skeleton. */
-export type BoneResolver = (name: string) => { boneId: string; boneName: string } | null;
+/**
+ * Maps a glTF node name onto a bone in the active skeleton.
+ *
+ * `restPosition` is the bone's own local translation, and it is not optional
+ * bookkeeping — see {@link clipFromTracks} for what happens without it.
+ * Omitting it falls back to the origin, which is only correct for a bone that
+ * genuinely sits on its parent.
+ */
+export type BoneResolver = (
+  name: string,
+) => { boneId: string; boneName: string; restPosition?: { x: number; y: number; z: number } } | null;
 
 const ZERO = { x: 0, y: 0, z: 0 };
 
@@ -163,10 +173,21 @@ export function clipFromTracks(
     for (const track of group) for (const key of track.keys) frames.add(key.frame);
     if (frames.size === 0) continue;
 
+    // A bone with no translation sampler keeps its **rest translation**, not
+    // the origin.
+    //
+    // glTF only writes the channels a clip animates, and these clips animate
+    // rotation alone for every bone except `root`. A `KeyframeData` carries
+    // both channels, so the missing one has to be filled with something — and
+    // filling it with zero moves the bone onto its parent. On this character
+    // `spine` sits 70 mm above `hip`, so the whole torso collapsed into the
+    // pelvis the instant a clip was selected, at frame 0, before playback even
+    // started. It looked like the clip was broken; the clip was fine.
+    const rest = bone.restPosition ?? ZERO;
     const ordered = [...frames].sort((a, b) => a - b);
     const keyframes: KeyframeData[] = ordered.map((frame) => ({
       frame,
-      position: position ? sampleVector(position.keys, frame) : { ...ZERO },
+      position: position ? sampleVector(position.keys, frame) : { ...rest },
       rotation: quaternion
         ? sampleQuaternionAsEuler(quaternion.keys, frame)
         : eulerTrack

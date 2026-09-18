@@ -70,7 +70,16 @@ export function adoptImportedClips(groups: readonly AnimationGroup[]): AnimClipD
     groups,
     (name) => {
       const bone = byName.get(name);
-      return bone ? { boneId: bone.id, boneName: bone.name } : null;
+      if (!bone) return null;
+      // The bone's own local translation, for tracks that key rotation only.
+      // See `clipFromTracks`: without it those bones would be keyed onto the
+      // origin and the skeleton would fold.
+      const rest = bone.bone.getLocalMatrix().getTranslation();
+      return {
+        boneId: bone.id,
+        boneName: bone.name,
+        restPosition: { x: rest.x, y: rest.y, z: rest.z },
+      };
     },
     () => "clip_" + ++state.animClipCounter,
   ).filter((clip) => clip.tracks.length > 0);

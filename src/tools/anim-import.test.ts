@@ -146,3 +146,64 @@ describe("clipFromTracks", () => {
     expect(clip.frameRate).toBe(30);
   });
 });
+
+describe("a track that keys rotation only", () => {
+  /**
+   * glTF writes only the channels a clip animates, and these characters'
+   * clips animate rotation alone for every bone but `root`. A `KeyframeData`
+   * carries both channels, so the missing one gets filled — and filling it
+   * with the origin puts the bone on top of its parent.
+   *
+   * On kurimanju that meant `spine`, which sits 70 mm above `hip`, collapsed
+   * into the pelvis the moment a clip was selected, at frame 0, before
+   * playback started. The clip looked broken; the clip was fine.
+   */
+  const resolveWithRest: BoneResolver = (name) => ({
+    boneId: `id:${name}`,
+    boneName: name,
+    restPosition: { x: 0, y: 0.07, z: 0 },
+  });
+
+  const rotationOnly = [
+    {
+      targetName: "spine",
+      channel: "rotation" as const,
+      frameRate: 60,
+      keys: [
+        { frame: 0, value: [0, 0, 0] },
+        { frame: 60, value: [Math.PI / 60, 0, 0] },
+      ],
+    },
+  ];
+
+  it("keeps the bone at its rest translation", () => {
+    const clip = clipFromTracks("Idle", rotationOnly, resolveWithRest, "clip0");
+    for (const key of clip.tracks[0]!.keyframes) {
+      expect(key.position.y).toBeCloseTo(0.07, 6);
+      expect(key.position.x).toBeCloseTo(0, 6);
+    }
+  });
+
+  it("falls back to the origin when the resolver offers no rest", () => {
+    const clip = clipFromTracks("Idle", rotationOnly, resolveAll, "clip0");
+    expect(clip.tracks[0]!.keyframes[0]!.position).toEqual({ x: 0, y: 0, z: 0 });
+  });
+
+  it("still prefers a real translation track when there is one", () => {
+    const clip = clipFromTracks(
+      "Hop",
+      [
+        ...rotationOnly,
+        {
+          targetName: "spine",
+          channel: "position" as const,
+          frameRate: 60,
+          keys: [{ frame: 0, value: [0, 0.5, 0] }],
+        },
+      ],
+      resolveWithRest,
+      "clip0",
+    );
+    expect(clip.tracks[0]!.keyframes[0]!.position.y).toBeCloseTo(0.5, 6);
+  });
+});

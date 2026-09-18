@@ -6,12 +6,30 @@ import type { GeoSnapshot } from "./tools/sculpt";
 import { diffAttribute } from "./tools/sculpt-delta";
 import { paintAt, hasUVs, beginPaintStroke, getStrokeTarget } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
-import { updateHierarchy, updateProperties } from "./ui/panels";
+import { updateHierarchy, updateProperties, updateBoneUI, updateAnimUI } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
 import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camera-presets";
 import { applySnapToGizmos } from "./tools/snap";
+
+/**
+ * Redraw the panels that read `state.selectedBoneId`.
+ *
+ * Clicking a bone in the viewport used to change the selection and nothing
+ * else: `selectBone` swaps the visual's material and attaches the gizmo, and
+ * no caller on this path refreshed the UI. So the marker turned yellow while
+ * the Bone panel, the keyframe list and the graph editor all kept saying
+ * "ボーンを選択" — the app telling you to do the thing you had just done.
+ *
+ * Both panels are cheap to rebuild and the click is a human-speed event, so
+ * this refreshes unconditionally rather than trying to work out which one
+ * cares.
+ */
+function refreshAfterBoneSelection(): void {
+  updateBoneUI();
+  updateAnimUI();
+}
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, flipDiagonalSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut, trisToQuadsSelection, quadsToTrisSelection, subdivideSelection, markCreaseSelection, setCreaseSelection } from "./tools/edit-mode";
@@ -405,6 +423,7 @@ export function initInput(): void {
       );
       if (pk?.hit) {
         handleBonePointerDown(pk);
+        refreshAfterBoneSelection();
       }
       return;
     }
@@ -418,6 +437,7 @@ export function initInput(): void {
       );
       if (pk?.hit) {
         handleBonePointerDown(pk);
+        refreshAfterBoneSelection();
       }
       return;
     }
