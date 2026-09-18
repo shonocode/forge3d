@@ -274,23 +274,28 @@ describe("bevelEdges", () => {
     expect(em.vertices).toHaveLength(6);
   });
 
-  it("bevels a cube edge — proper vertex-fan split + tri caps", () => {
+  it("bevels a cube edge — one new vertex per non-beveled edge, ring closes the corner", () => {
     const em = buildEditMesh(makeCube())!;
-    // Pick the first canonical edge. In this cube triangulation, every
-    // canonical edge is an interior manifold edge with a 6-tri fan at each
-    // endpoint — the V2 algorithm has to split those fans correctly.
+    // Pick the first canonical edge. In this cube triangulation it is an
+    // interior manifold edge whose endpoints each carry five faces, so four
+    // of the edges at each end are not the beveled one.
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
     const result = bevelEdges(em, new Set([target]), { offset: 20 });
 
     // Topology delta:
     //   - 12 original tris remapped (no faces removed)
-    //   - +1 chamfer quad (V2)
-    //   - +2 corner cap tris (one per endpoint)
+    //   - +1 chamfer quad
+    //   - +1 corner polygon per endpoint
     expect(em.faces).toHaveLength(12 + 1 + 2);
     expect(result.size).toBe(1);
-    // 8 original, the two beveled ends replaced by two rails each: 8 - 2 + 4.
-    expect(em.vertices).toHaveLength(10);
+    // This used to say 10, from when the operator put two new vertices at each
+    // end — the two ends of the rail — and bridged the faces between them with
+    // a triangle. Blender puts one on *every* edge at the vertex that is not
+    // the beveled one, which here is four per end: 8 - 2 + 8. Measured against
+    // Blender on an octahedron and a hexagonal bipyramid at 1, 2 and 4
+    // segments, all 0.0000mm; see `tools/modeling/parity/README.md`.
+    expect(em.vertices).toHaveLength(14);
   });
 
   it("bevels an edge held by quads — a cube, which it could not do before", () => {

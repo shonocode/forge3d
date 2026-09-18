@@ -422,16 +422,7 @@ export function bevelEdges(
   const r = (2 * Math.log(0.5)) / Math.log(profile);
   const curve = profileCurve(r, segments);
 
-  type FanInfo = {
-    role: "origin" | "destination";
-    railPos: Array<[number, number, number]>;
-    railIdx: number[];
-    arcF1: Set<number>;
-    arcF2: Set<number>;
-    /** The one face between F1 and F2 that takes the whole rail run, or -1. */
-    absorb: number;
-    capX: number; // -1 when there is nothing to cap
-  };
+  type FanInfo = FanInfoOut;
 
   const vertInfo = new Map<number, FanInfo>();
   const bevels: Array<{ a: number; b: number; f1: number; f2: number }> = [];
@@ -472,6 +463,17 @@ export function bevelEdges(
       newPositions.push(p[0], p[1], p[2]);
       return idx;
     });
+    // The two rail ends *are* the new vertices on F1's and F2's other edges,
+    // so they go into the same map as the interior ones. Every non-beveled
+    // edge at the vertex then has exactly one new vertex, and a face around
+    // it never has to know which kind it is looking at.
+    info.slideIdx.set(info.xNeighbour, info.railIdx[0]!);
+    info.slideIdx.set(info.yNeighbour, info.railIdx[info.railIdx.length - 1]!);
+    for (const [nb, q] of info.slidePos) {
+      const idx = nextV++;
+      newPositions.push(q[0], q[1], q[2]);
+      info.slideIdx.set(nb, idx);
+    }
   }
 
   const polys = toPolygons(em);
@@ -479,24 +481,40 @@ export function bevelEdges(
   for (let f = 0; f < polys.length; f++) {
     const poly = polys[f]!;
     const grown: number[] = [];
-    for (const v of poly) {
+    poly.forEach((v, i) => {
       const info = vertInfo.get(v);
       if (!info) {
         grown.push(v);
-        continue;
+        return;
       }
       const last = info.railIdx.length - 1;
-      if (info.absorb === f) {
-        // The face between F1 and F2 takes the whole run. Which way round is
-        // decided by which of its neighbours at `v` F1 holds — measured
-        // against Blender, where a cube's third face goes from quad to
-        // (4 + segments)-gon and no corner cap is added at all.
+      if (f === info.f1) grown.push(info.railIdx[0]!);
+      else if (f === info.f2) grown.push(info.railIdx[last]!);
+      else if (info.absorb === f) {
+        // Nothing but this one face sits between F1 and F2, so there is no
+        // corner polygon to hold the rail's interior points and they live
+        // here instead. Measured on a cube, where the third face at the
+        // vertex goes from a quad to a (4 + segments)-gon.
         const run = absorbOrder(em, f, v, info) ? info.railIdx : [...info.railIdx].reverse();
         grown.push(...run);
-      } else if (info.arcF1.has(f)) grown.push(info.railIdx[0]!);
-      else if (info.arcF2.has(f)) grown.push(info.railIdx[last]!);
-      else grown.push(v);
-    }
+      } else {
+        // An intermediate face: the vertex becomes the two new vertices on
+        // this face's own two edges, so a triangle becomes a quad. Measured
+        // on the octahedron, where Blender turns (-Y, +X, +Z) into
+        // (-Y, slide(-Y), slide(+Z), +Z).
+        const prev = poly[(i + poly.length - 1) % poly.length]!;
+        const next = poly[(i + 1) % poly.length]!;
+        const a = info.slideIdx.get(prev);
+        const b = info.slideIdx.get(next);
+        if (a !== undefined && b !== undefined) grown.push(a, b);
+        // Open fans keep the pre-2026-09-18 behaviour: there is no closed
+        // ring to build a corner from, and no measurement of what Blender
+        // does at a boundary, so the arcs still take one rail end each.
+        else if (info.arcF1.has(f)) grown.push(info.railIdx[0]!);
+        else if (info.arcF2.has(f)) grown.push(info.railIdx[last]!);
+        else grown.push(v);
+      }
+    });
     newPolys.push(grown);
   }
 
@@ -515,13 +533,30 @@ export function bevelEdges(
   }
   const chamferEnd = newPolys.length;
 
-  // Corner caps, only where the rails could not be absorbed. Winding differs
-  // by endpoint role, as it did when this was always a triangle.
+  // The corner. Blender closes it with the whole ring of new vertices — the
+  // rail, then the interior slides walked back the other way — and emits that
+  // ring as a single polygon: a triangle at a valence-4 vertex, a pentagon at
+  // a valence-6 one, a hexagon once `segments` is 2.
+  //
+  // The one exception is measured rather than reasoned: at a valence-4 vertex
+  // with more than one segment, Blender fans the ring from the single interior
+  // slide instead of emitting it whole. It does not do that at valence 6.
   for (const info of vertInfo.values()) {
-    if (info.capX < 0 || info.absorb >= 0) continue;
-    const run = info.railIdx;
-    if (info.role === "origin") newPolys.push([...run].reverse().concat(info.capX));
-    else newPolys.push([...run, info.capX]);
+    if (info.absorb >= 0 || info.ringNeighbours.length === 0) continue;
+    const orient = (ring: number[]): number[] =>
+      info.role === "origin" ? [...ring].reverse() : ring;
+    if (info.ringNeighbours.length === 1 && segments > 1) {
+      const x = info.slideIdx.get(info.ringNeighbours[0]!)!;
+      for (let k = 0; k < segments; k++)
+        newPolys.push(orient([info.railIdx[k]!, info.railIdx[k + 1]!, x]));
+    } else {
+      newPolys.push(
+        orient([
+          ...info.railIdx,
+          ...[...info.ringNeighbours].reverse().map((nb) => info.slideIdx.get(nb)!),
+        ]),
+      );
+    }
   }
 
   // The beveled vertices themselves are gone — every face that used one now
@@ -602,7 +637,23 @@ interface FanInfoOut {
   arcF1: Set<number>;
   arcF2: Set<number>;
   absorb: number;
-  capX: number;
+  /** The two faces holding the beveled edge. */
+  f1: number;
+  f2: number;
+  /** F1's face-mate of the vertex — the edge rail 0 slides along. */
+  xNeighbour: number;
+  /** F2's, for the far end of the rail. */
+  yNeighbour: number;
+  /**
+   * The interior edges at the vertex, named by their far vertex, in fan order
+   * from F1's side to F2's. One per face boundary between the intermediates,
+   * so `intermediates - 1` of them, and empty when a single face absorbs.
+   */
+  ringNeighbours: number[];
+  /** A new vertex per interior edge, before indices are handed out. */
+  slidePos: Map<number, [number, number, number]>;
+  /** Every non-beveled edge at the vertex -> its new vertex. Rail ends included. */
+  slideIdx: Map<number, number>;
 }
 
 /**
@@ -621,11 +672,20 @@ interface FanInfoOut {
  *    Blender does: measured on a cube, where the third face at the vertex goes
  *    from a quad to a `(4 + segments)`-gon and the face count rises by exactly
  *    the number of chamfer quads.
- *  - **two or more** — the arc is halved, each half taking one end of the run,
- *    and the gap is sealed with a corner polygon. Blender instead absorbs the
- *    rails into the surrounding faces. The octahedron case in
- *    `parity/compare-bevel.ts` measures the difference: same vertex and face
- *    counts, 2.3% more area, the chamfer itself in the right place.
+ *  - **two or more** — every interior edge gets a new vertex of its own, each
+ *    intermediate face takes the two that sit on its own edges (a triangle
+ *    becomes a quad), and the ring of new vertices closes the corner.
+ *
+ * Those are not two rules but one: a new vertex on every edge at `v` that is
+ * not the beveled one, and a corner polygon of all of them. With a single
+ * intermediate there are only two such edges, the ring degenerates to a
+ * 2-gon and vanishes, and "absorb" is what that looks like from outside.
+ *
+ * Measured on an octahedron (valence 4) and a hexagonal bipyramid (valence 6,
+ * and valence 4 at the other end of the same edge), at 1 and 2 segments. The
+ * interior slides sit at the same *distance* along their edges as the rail,
+ * not the same fraction: the bipyramid's equator vertex has a 0.2 edge and a
+ * 0.32 one, and Blender put both new vertices 0.05 from it.
  */
 function computeFanInfo(
   em: EditMesh,
@@ -661,8 +721,45 @@ function computeFanInfo(
 
   const arcF1 = new Set<number>([f1]);
   const arcF2 = new Set<number>([f2]);
-  let capX = -1;
   let absorb = -1;
+  const ringNeighbours: number[] = [];
+  const slidePos = new Map<number, [number, number, number]>();
+  const slideIdx = new Map<number, number>();
+  const base = {
+    role,
+    railPos,
+    railIdx: [] as number[],
+    arcF1,
+    arcF2,
+    absorb,
+    f1,
+    f2,
+    xNeighbour: x,
+    yNeighbour: y,
+    ringNeighbours,
+    slidePos,
+    slideIdx,
+  };
+  // How far along an edge a new vertex goes. `w` is a proportion of F1's and
+  // F2's own edges, so it has to become a distance before it can be applied to
+  // an interior edge of a different length — see the note on the bipyramid
+  // above. When the two differ their mean is used, which is not measured:
+  // every case so far has had them equal.
+  const reach = (from: number, to: number): [number, number, number] => {
+    const len = Math.hypot(
+      em.positions[to * 3]! - em.positions[from * 3]!,
+      em.positions[to * 3 + 1]! - em.positions[from * 3 + 1]!,
+      em.positions[to * 3 + 2]! - em.positions[from * 3 + 2]!,
+    );
+    return lerpPos(em, from, to, len > 1e-12 ? dist / len : 0);
+  };
+  const lenX = Math.hypot(
+    em.positions[x * 3]! - vx, em.positions[x * 3 + 1]! - vy, em.positions[x * 3 + 2]! - vz,
+  );
+  const lenY = Math.hypot(
+    em.positions[y * 3]! - vx, em.positions[y * 3 + 1]! - vy, em.positions[y * 3 + 2]! - vz,
+  );
+  const dist = (w * (lenX + lenY)) / 2;
 
   if (!closed) {
     // Open fan: v lies on the mesh boundary. The fan splits at the bevel edge
@@ -676,7 +773,7 @@ function computeFanInfo(
       for (let i = 0; i <= f2idx; i++) arcF2.add(fan[i]!);
       for (let i = f1idx; i < fan.length; i++) arcF1.add(fan[i]!);
     }
-    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
+    return base;
   }
 
   // Closed fan: F1 sits at index 0 (the CCW walk started from it).
@@ -684,47 +781,29 @@ function computeFanInfo(
   const ccwArcB = fan.slice(f2idx + 1);
 
   if (ccwArcA.length === 0 && ccwArcB.length === 0) {
-    // Fan of two: nothing between F1 and F2, so nothing to absorb or cap.
-    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
+    // Fan of two: nothing between F1 and F2, so nothing to absorb or close.
+    return base;
   }
 
+  // The intermediates, ordered from F1's side to F2's. Only one of the two
+  // CCW arcs can be non-empty, because F1 and F2 share the beveled edge.
   let intermediates: number[];
-  let firstHalfArc: Set<number>;
-  let secondHalfArc: Set<number>;
-  let bracketLeft: number;
-  let bracketRight: number;
-
-  if (ccwArcA.length > 0 && ccwArcB.length === 0) {
-    intermediates = ccwArcA;
-    firstHalfArc = arcF1;
-    secondHalfArc = arcF2;
-    bracketLeft = f1;
-    bracketRight = f2;
-  } else if (ccwArcB.length > 0 && ccwArcA.length === 0) {
-    intermediates = ccwArcB;
-    firstHalfArc = arcF2;
-    secondHalfArc = arcF1;
-    bracketLeft = f2;
-    bracketRight = f1;
-  } else {
-    return null;
-  }
+  if (ccwArcA.length > 0 && ccwArcB.length === 0) intermediates = ccwArcA;
+  else if (ccwArcB.length > 0 && ccwArcA.length === 0) intermediates = [...ccwArcB].reverse();
+  else return null;
 
   if (intermediates.length === 1) {
-    absorb = intermediates[0]!;
-    return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
+    base.absorb = intermediates[0]!;
+    return base;
   }
 
-  const half = Math.floor(intermediates.length / 2);
-  for (let i = 0; i < half; i++) firstHalfArc.add(intermediates[i]!);
-  for (let i = half; i < intermediates.length; i++) secondHalfArc.add(intermediates[i]!);
-
-  const left = half > 0 ? intermediates[half - 1]! : bracketLeft;
-  const right = half < intermediates.length ? intermediates[half]! : bracketRight;
-  capX = sharedNonVertex(em, left, right, v);
-
-  if (capX < 0) return null;
-  return { role, railPos, railIdx: [], arcF1, arcF2, absorb, capX };
+  for (let i = 0; i + 1 < intermediates.length; i++) {
+    const nb = sharedNonVertex(em, intermediates[i]!, intermediates[i + 1]!, v);
+    if (nb < 0) return null;
+    ringNeighbours.push(nb);
+    slidePos.set(nb, reach(v, nb));
+  }
+  return base;
 }
 
 /**
