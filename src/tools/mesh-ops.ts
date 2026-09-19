@@ -426,25 +426,81 @@ function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
  * that is the intended outcome when welding closes a seam.
  */
 export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
-  const inv = 1 / Math.max(tolerance, 1e-9);
-  const index = new Map<string, number>();
-  const remap = new Int32Array(data.positions.length / 3);
-  const positions: number[] = [];
+  const count = data.positions.length / 3;
+  const cell = Math.max(tolerance, 1e-9);
+  const inv = 1 / cell;
 
-  for (let v = 0; v < remap.length; v++) {
+  // Buckets of one tolerance across, and **every neighbouring bucket is
+  // searched**, because a pair can be a nanometre apart and still fall either
+  // side of a bucket line. Snapping to the bucket alone — which is what this
+  // did until it was measured — welds only what happens to round together:
+  // against `remove_doubles` at 0.05 on the production cage it kept 145
+  // vertices where Blender kept 113, and on an arm 20 against 10.
+  const buckets = new Map<string, number[]>();
+  const bucketOf = (x: number, y: number, z: number): string =>
+    `${Math.floor(x * inv)},${Math.floor(y * inv)},${Math.floor(z * inv)}`;
+
+  for (let v = 0; v < count; v++) {
+    const key = bucketOf(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
+    const list = buckets.get(key);
+    if (list) list.push(v);
+    else buckets.set(key, [v]);
+  }
+
+  // **Claiming, not chaining.** Each vertex that is still free claims every
+  // free vertex within tolerance; a vertex that has been claimed cannot claim
+  // in turn. Making it transitive instead — a chain each link of which is
+  // within tolerance — is the obvious reading and is wrong: measured at 0.05
+  // on an arm cage, transitive closure collapsed all 36 vertices into **one**
+  // where Blender kept 10.
+  const claimedBy = new Int32Array(count).fill(-1);
+  const limit = tolerance * tolerance;
+  // Who gets to claim is decided by **position**, not by index: Blender sorts
+  // the vertices before pairing them, and with index order the counts came out
+  // 115 and 11 against its 113 and 10 — close enough to look like rounding and
+  // not be.
+  const order = Array.from({ length: count }, (_, i) => i).sort((a, b) => {
+    const sa = data.positions[a * 3]! + data.positions[a * 3 + 1]! + data.positions[a * 3 + 2]!;
+    const sb = data.positions[b * 3]! + data.positions[b * 3 + 1]! + data.positions[b * 3 + 2]!;
+    return sa === sb ? a - b : sa - sb;
+  });
+  for (const v of order) {
+    if (claimedBy[v] !== -1) continue;
     const x = data.positions[v * 3]!;
     const y = data.positions[v * 3 + 1]!;
     const z = data.positions[v * 3 + 2]!;
-    const key = `${Math.round(x * inv)},${Math.round(y * inv)},${Math.round(z * inv)}`;
-    const hit = index.get(key);
-    if (hit !== undefined) {
-      remap[v] = hit;
-    } else {
-      const id = positions.length / 3;
-      positions.push(x, y, z);
-      index.set(key, id);
-      remap[v] = id;
+    const cx = Math.floor(x * inv), cy = Math.floor(y * inv), cz = Math.floor(z * inv);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dz = -1; dz <= 1; dz++) {
+          for (const other of buckets.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
+            if (other === v || claimedBy[other] !== -1) continue;
+            const ox = data.positions[other * 3]! - x;
+            const oy = data.positions[other * 3 + 1]! - y;
+            const oz = data.positions[other * 3 + 2]! - z;
+            if (ox * ox + oy * oy + oz * oz <= limit) claimedBy[other] = v;
+          }
+        }
+  }
+
+  // The survivor keeps its own position rather than the group's average —
+  // Blender merges onto a vertex, not onto a midpoint.
+  const remap = new Int32Array(count);
+  const newIndex = new Map<number, number>();
+  const positions: number[] = [];
+  for (let v = 0; v < count; v++) {
+    const keep = claimedBy[v] === -1 ? v : claimedBy[v]!;
+    let id = newIndex.get(keep);
+    if (id === undefined) {
+      id = positions.length / 3;
+      positions.push(
+        data.positions[keep * 3]!,
+        data.positions[keep * 3 + 1]!,
+        data.positions[keep * 3 + 2]!,
+      );
+      newIndex.set(keep, id);
     }
+    remap[v] = id;
   }
 
   const polys: number[][] = [];
