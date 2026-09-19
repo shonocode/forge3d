@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
 import { canonicalEdge, faceVertices, faceVerts, forEachEdge } from "./half-edge";
-import { meshFromData } from "../../lib/mesh";
+import { meshFromData, meshToData } from "../../lib/mesh";
 import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads } from "./operators";
 
 /** Same stub mesh as half-edge.test.ts — just the surface we touch. */
@@ -693,6 +693,7 @@ describe("delete variants", () => {
 
 import { edgeSlide, mergeAtCenter, collapseEdges, bridgeEdgeLoops } from "./operators";
 import { edgeEnd, edgeOrigin, type EditMesh } from "./half-edge";
+import { cylinder } from "../generate";
 
 /** Canonical half-edge between two vertices, or -1. */
 function edgeBetween(em: EditMesh, a: number, b: number): number {
@@ -942,5 +943,28 @@ describe("trisToQuads shape threshold", () => {
     expect(trisToQuads(sliver, null).size).toBe(0);
     // Opening the threshold takes it: the rule is a threshold, not a veto.
     expect(trisToQuads(sliver, null, 40, 179).size).toBe(1);
+  });
+});
+
+describe("bridgeEdgeLoops duplicate guard", () => {
+  it("test_bridging_a_tube_does_not_double_its_wall", () => {
+    // The two rims of a tube are already joined through the wall, so every
+    // quad the bridge would add lands exactly on one that exists. Blender's
+    // bmesh refuses to create a face twice; without the same guard this came
+    // back as a 24-face tube where 12 faces were copies — which renders and
+    // measures like a tube until something z-fights.
+    const em = meshFromData(cylinder({ radius1: 0.2, depth: 0.5, uSegments: 12, caps: "none" }));
+    const rims = new Set<number>();
+    forEachEdge(em, (he) => {
+      if (em.halfEdges[he]!.twin < 0) rims.add(he);
+    });
+    expect(rims.size).toBe(24);
+
+    bridgeEdgeLoops(em, rims);
+    const out = meshToData(em);
+    expect(out.polys).toHaveLength(12);
+
+    const keys = new Set(out.polys.map((p) => [...p].sort((a, b) => a - b).join(",")));
+    expect(keys.size).toBe(12);
   });
 });

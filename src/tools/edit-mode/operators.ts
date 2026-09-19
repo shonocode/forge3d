@@ -2242,6 +2242,13 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
 
   const newPolys = toPolygons(em);
   const faceStart = newPolys.length;
+  // A face that already exists is not created again — bmesh refuses to, and
+  // the case it protects against is not exotic: bridge the two rims of a tube
+  // and every quad of the band lands exactly on a quad of the wall. Without
+  // this, that comes back as a double-walled tube (24 faces where 12 are
+  // copies), which renders, measures and subdivides like a tube right up
+  // until something z-fights or a weld halves it.
+  const existing = new Set(newPolys.map((p) => [...p].sort((x, y) => x - y).join(",")));
   const quads = A.cycle ? n : n - 1;
   for (let i = 0; i < quads; i++) {
     const a0 = A.verts[i]!;
@@ -2250,7 +2257,9 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
     const b1 = bRev[(off + i + 1) % n]!;
     // Quad (a1, a0, b0, b1): crosses A's boundary edge reversed (a1→a0) and
     // B's boundary edge reversed (b0→b1 in reverse walk) — both manifold.
-    newPolys.push([a1, a0, b0, b1]);
+    const quad = [a1, a0, b0, b1];
+    if (existing.has([...quad].sort((x, y) => x - y).join(","))) continue;
+    newPolys.push(quad);
   }
 
   rebuildPolygons(em, em.positions, newPolys);
