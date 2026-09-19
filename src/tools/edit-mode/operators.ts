@@ -2316,8 +2316,10 @@ export function trisToQuads(
   em: EditMesh,
   selectedFaces: ReadonlySet<number> | null,
   maxAngleDeg = 40,
+  maxShapeAngleDeg = 40,
 ): Set<number> {
   const cosLimit = Math.cos((maxAngleDeg * Math.PI) / 180);
+  const shapeLimit = (maxShapeAngleDeg * Math.PI) / 180;
   const inScope = (f: number): boolean =>
     faceVertexCount(em, f) === 3 && (!selectedFaces || selectedFaces.has(f));
 
@@ -2340,6 +2342,7 @@ export function trisToQuads(
     if (x < 0 || y < 0 || x === y) return;
     const quad = [b, x, a, y];
     if (!isConvexQuad(em.positions, quad)) return;
+    if (worstCornerDeviation(em.positions, quad) > shapeLimit) return;
     cands.push({ f1, f2, err: quadAngleError(em.positions, quad), dot, quad });
   });
   if (cands.length === 0) return new Set();
@@ -2374,6 +2377,34 @@ export function trisToQuads(
  * from 90° (radians). 0 = perfect rectangle; a "diamond" pairing across two
  * grid cells scores ~π/3 per corner. Degenerate corners count as worst-case.
  */
+/**
+ * How far the worst corner of a quad is from a right angle, in radians.
+ *
+ * The rejection test, where {@link quadAngleError} (the sum over all four) is
+ * only the ranking. Two triangles can meet in a perfectly flat plane and still
+ * make a sliver, and a sliver quad is worse than the two triangles it replaced.
+ */
+function worstCornerDeviation(P: Float32Array, quad: readonly number[]): number {
+  let worst = 0;
+  for (let i = 0; i < 4; i++) {
+    const p0 = quad[(i + 3) % 4]!;
+    const p1 = quad[i]!;
+    const p2 = quad[(i + 1) % 4]!;
+    const ux = P[p0 * 3]! - P[p1 * 3]!;
+    const uy = P[p0 * 3 + 1]! - P[p1 * 3 + 1]!;
+    const uz = P[p0 * 3 + 2]! - P[p1 * 3 + 2]!;
+    const vx = P[p2 * 3]! - P[p1 * 3]!;
+    const vy = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
+    const vz = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
+    const lu = Math.hypot(ux, uy, uz);
+    const lv = Math.hypot(vx, vy, vz);
+    if (lu < 1e-12 || lv < 1e-12) return Math.PI;
+    const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (lu * lv)));
+    worst = Math.max(worst, Math.abs(Math.acos(cos) - Math.PI / 2));
+  }
+  return worst;
+}
+
 function quadAngleError(P: Float32Array, quad: readonly number[]): number {
   let err = 0;
   for (let i = 0; i < 4; i++) {

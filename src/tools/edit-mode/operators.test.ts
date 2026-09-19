@@ -914,3 +914,33 @@ describe("vertexSlide", () => {
     expect(em.positions[5]).toBeCloseTo(-1);
   });
 });
+
+describe("trisToQuads shape threshold", () => {
+  it("test_a_sliver_pair_is_left_as_triangles", () => {
+    // Two triangles in one plane, meeting along a long thin diagonal: joining
+    // them is legal by the normal test and gives a quad with a 20° corner.
+    // Blender refuses it at the default 40°, and so does this.
+    const em = meshFromData({
+      positions: Float32Array.from([
+        0, 0, 0,
+        4, 0, 0,
+        4, 0, 0.35,
+        0, 0, 0.35,
+      ]),
+      polys: [[0, 1, 2], [0, 2, 3]],
+    });
+    expect(trisToQuads(em, null).size).toBe(1); // a rectangle joins
+    const sliver = meshFromData({
+      positions: Float32Array.from([
+        0, 0, 0,
+        4, 0, 0,
+        4.2, 0, 0.1,
+        0.1, 0, 0.02,
+      ]),
+      polys: [[0, 1, 2], [0, 2, 3]],
+    });
+    expect(trisToQuads(sliver, null).size).toBe(0);
+    // Opening the threshold takes it: the rule is a threshold, not a veto.
+    expect(trisToQuads(sliver, null, 40, 179).size).toBe(1);
+  });
+});
