@@ -405,3 +405,133 @@ export function holesFill(em: EditMesh, opts: HolesFillOptions = {}): Set<number
   for (let i = start; i < out.length; i++) sel.add(i);
   return sel;
 }
+
+// ── Filling a named loop ───────────────────────────────────────────────────
+
+/**
+ * Walk a set of boundary edges into the closed loops they form.
+ *
+ * Shared by the three fills. Returns one vertex ring per loop, wound so the
+ * face built from it faces the way the surrounding surface does — a fill run
+ * the other way is a hole with a lid on backwards, which nothing but the
+ * volume column would report.
+ *
+ * Edges that do not close into a ring are left out rather than guessed at.
+ */
+function loopsFromEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): number[][] {
+  // Boundary half-edges in the direction their own face traverses them. The
+  // fill runs the other way, or its normal points into the surface.
+  const next = new Map<number, number>();
+  for (const heRaw of selectedEdges) {
+    const h = em.halfEdges[heRaw];
+    if (!h || h.twin >= 0) continue; // interior: not a hole's border
+    next.set(em.halfEdges[h.next]!.v, h.v);
+  }
+
+  const out: number[][] = [];
+  const seen = new Set<number>();
+  for (const from of next.keys()) {
+    if (seen.has(from)) continue;
+    const loop: number[] = [from];
+    seen.add(from);
+    let cur = next.get(from)!;
+    let ok = true;
+    while (cur !== from) {
+      if (cur === undefined || seen.has(cur) || loop.length > next.size) {
+        ok = false;
+        break;
+      }
+      seen.add(cur);
+      loop.push(cur);
+      cur = next.get(cur)!;
+    }
+    if (ok && loop.length >= 3) out.push(loop);
+  }
+  return out;
+}
+
+/**
+ * Close each named loop with **one** face — Blender's
+ * `bmesh.ops.edgeloop_fill(edges=)`.
+ *
+ * The difference from {@link holesFill} is the selection: that one finds every
+ * open loop in the mesh and closes them all, this one closes the loops you
+ * name. On a sheet with a square hole punched in it, handing over the hole's
+ * four edges gives one quad back and leaves the sheet's own rim open —
+ * measured, 15 faces become 16 and the area goes from 0.9375 to 1.0.
+ *
+ * **Interior edges in the selection are ignored rather than refused**: an edge
+ * with a face on both sides is not part of any hole, so there is nothing for
+ * it to close. A selection made only of those fills nothing and returns an
+ * empty set — read the return value rather than assuming.
+ *
+ * Returns the new faces.
+ */
+export function edgeloopFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  const loops = loopsFromEdges(em, selectedEdges);
+  if (loops.length === 0) return new Set();
+
+  const out = toPolygons(em);
+  const start = out.length;
+  for (const loop of loops) out.push(loop);
+  rebuildPolygons(em, em.positions, out);
+
+  const made = new Set<number>();
+  for (let i = start; i < out.length; i++) made.add(i);
+  return made;
+}
+
+/**
+ * The same, but filled with **triangles**.
+ *
+ * Where {@link edgeloopFill} drops one n-gon over the hole, this fans it, so a
+ * square hole comes back as two triangles rather than one quad: measured, 15
+ * faces become 17 with the same area. Useful where the consumer cannot take
+ * n-gons — a renderer, an exporter, or `catmullClark`, which wants quads and
+ * treats a big n-gon poorly.
+ *
+ * ## Not the same algorithm as Blender's `triangle_fill`
+ *
+ * This fans **each loop separately**. Blender projects the whole edge
+ * selection onto its best-fit plane and triangulates that, which is a
+ * different job the moment there is more than one loop: measured on a tube's
+ * two rims, Blender makes 18 faces where this makes 32, and on a holed sheet
+ * the filled area comes out 0.30 against 0.32.
+ *
+ * The two agree on a single 4-edge loop, which is the one shape that cannot
+ * tell them apart. Matching Blender would mean a constrained planar
+ * triangulation with its own tie-breaks; that has not been measured, so the
+ * gap is written down rather than papered over.
+ */
+export function triangleFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  const loops = loopsFromEdges(em, selectedEdges);
+  if (loops.length === 0) return new Set();
+
+  const out = toPolygons(em);
+  const start = out.length;
+  for (const loop of loops)
+    for (let i = 1; i + 1 < loop.length; i++) out.push([loop[0]!, loop[i]!, loop[i + 1]!]);
+  rebuildPolygons(em, em.positions, out);
+
+  const made = new Set<number>();
+  for (let i = start; i < out.length; i++) made.add(i);
+  return made;
+}
+
+/**
+ * Close the loops in an edge selection — Blender's
+ * `bmesh.ops.edgenet_fill(edges=)`.
+ *
+ * **Measured to agree with {@link edgeloopFill} on a single closed loop**, and
+ * that is the whole of what can be compared here. Blender's version is more
+ * general: it takes a *net* of loose edges crossing a region and works out the
+ * faces between them. forge3d's `MeshData` is positions and polygons with no
+ * wire edges in it, so a net has nowhere to live, and the general case is not
+ * reachable rather than unimplemented.
+ *
+ * Kept as its own name because the two are different operators in Blender and
+ * a caller looking for this one should find it, with the scope written down.
+ */
+export function edgenetFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  return edgeloopFill(em, selectedEdges);
+}

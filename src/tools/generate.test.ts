@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { box, plane, cylinder, sphere, circle, circleProfile, torus, revolve, sweep } from "./generate";
+import { box, plane, cylinder, sphere, circle, circleProfile, torus, revolve, sweep, icosphere } from "./generate";
 import { meshFromData, type MeshData } from "../lib/mesh";
 import { facePolyNormal } from "./edit-mode/half-edge";
 
@@ -349,5 +349,70 @@ describe("torus", () => {
     // Lying flat, the thin direction is y; stood on its edge, it is z.
     expect(spread(flat, 1)).toBeCloseTo(0.1, 5);
     expect(spread(upright, 2)).toBeCloseTo(0.1, 5);
+  });
+});
+
+describe("icosphere", () => {
+  it("counts follow Blender's, with 1 being the bare icosahedron", () => {
+    // Measured: 1 -> 12/20, 2 -> 42/80, 3 -> 162/320.
+    for (const [subdivisions, verts, faces] of [
+      [1, 12, 20],
+      [2, 42, 80],
+      [3, 162, 320],
+    ] as const) {
+      const m = icosphere({ radius: 0.2, subdivisions });
+      expect(m.positions.length / 3).toBe(verts);
+      expect(m.polys).toHaveLength(faces);
+      for (const p of m.polys) expect(p).toHaveLength(3);
+    }
+  });
+
+  it("puts every vertex on the sphere", () => {
+    const m = icosphere({ radius: 0.2, subdivisions: 3 });
+    for (let v = 0; v < m.positions.length / 3; v++) {
+      const r = Math.hypot(m.positions[v * 3]!, m.positions[v * 3 + 1]!, m.positions[v * 3 + 2]!);
+      expect(r).toBeCloseTo(0.2, 6);
+    }
+  });
+
+  it("subdivides flat and projects once, not at every level", () => {
+    // The two rules agree for one split and part company at the second.
+    // Blender's three interior points on the arc from the pole to its
+    // neighbour sit at 0.229297 / 0.5 / 0.770703 of the way round it — what
+    // dividing the straight chord into four gives. Projecting at every level
+    // would space them 0.25 / 0.5 / 0.75 and put a vertex 4.6 mm out.
+    const m = icosphere({ radius: 1, subdivisions: 3 });
+    const at = (v: number): [number, number, number] => [
+      m.positions[v * 3]!,
+      m.positions[v * 3 + 1]!,
+      m.positions[v * 3 + 2]!,
+    ];
+    const pole: [number, number, number] = [0, 1, 0];
+    // Its neighbour on the upper ring, at azimuth 0.
+    const ringY = 1 / Math.sqrt(5);
+    const neighbour: [number, number, number] = [Math.sqrt(1 - ringY * ringY), ringY, 0];
+    const theta = Math.acos(
+      pole[0] * neighbour[0] + pole[1] * neighbour[1] + pole[2] * neighbour[2],
+    );
+
+    const fractions: number[] = [];
+    for (let v = 0; v < m.positions.length / 3; v++) {
+      const p = at(v);
+      // On the great circle through the two: zero component along their cross.
+      const n = [
+        pole[1] * neighbour[2] - pole[2] * neighbour[1],
+        pole[2] * neighbour[0] - pole[0] * neighbour[2],
+        pole[0] * neighbour[1] - pole[1] * neighbour[0],
+      ];
+      const len = Math.hypot(n[0]!, n[1]!, n[2]!);
+      if (Math.abs((p[0] * n[0]! + p[1] * n[1]! + p[2] * n[2]!) / len) > 1e-9) continue;
+      const ang = Math.acos(Math.min(1, p[0] * pole[0] + p[1] * pole[1] + p[2] * pole[2]));
+      if (ang <= theta + 1e-9) fractions.push(ang / theta);
+    }
+    fractions.sort((a, b) => a - b);
+    for (const want of [0.229297, 0.5, 0.770703])
+      expect(fractions.some((f) => Math.abs(f - want) < 1e-5)).toBe(true);
+    // And explicitly not the equal-angle spacing.
+    expect(fractions.some((f) => Math.abs(f - 0.25) < 1e-5)).toBe(false);
   });
 });

@@ -3307,3 +3307,398 @@ export function offsetEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
   rebuildPolygons(em, new Float32Array(newPositions), out);
   return added;
 }
+
+// ── Duplicate / Split / degenerate cleanup ─────────────────────────────────
+
+/**
+ * Add a free-standing copy of the selected faces — Blender's
+ * `bmesh.ops.duplicate(geom=)`.
+ *
+ * The copy shares **nothing** with the original: every corner is duplicated
+ * even where the two would otherwise sit on the same vertex. Measured on a 2×2
+ * grid with one face duplicated — 9 vertices and 4 faces become 13 and 5, and
+ * the area goes from 1.0 to 1.25, the extra being the new face laid exactly on
+ * the old one.
+ *
+ * Nothing moves, so the copy starts coincident with what it came from. Moving
+ * it is the second half, the same split the extrudes have.
+ *
+ * Returns the new faces.
+ */
+export function duplicateFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const newPositions: number[] = Array.from(em.positions);
+  let nextV = em.vertices.length;
+  const copyOf = new Map<number, number>();
+  const copy = (v: number): number => {
+    let c = copyOf.get(v);
+    if (c === undefined) {
+      c = nextV++;
+      copyOf.set(v, c);
+      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+    }
+    return c;
+  };
+
+  const out = polys.map((p) => [...p]);
+  const start = out.length;
+  for (const f of selectedFaces) out.push(polys[f]!.map(copy));
+
+  rebuildPolygons(em, new Float32Array(newPositions), out);
+  const made = new Set<number>();
+  for (let i = start; i < out.length; i++) made.add(i);
+  return made;
+}
+
+/**
+ * Tear the selected faces free of everything around them — Blender's
+ * `bmesh.ops.split(geom=)`.
+ *
+ * Where {@link duplicateFaces} adds a copy and leaves the original attached,
+ * this detaches what is already there: the face count does not change and the
+ * area does not change, only the sharing does. Measured on a 2×2 grid with the
+ * corner face split — 9 vertices become **12**, because that face's outer
+ * corner is its own already and the other three were shared.
+ *
+ * The same question {@link splitEdges} asks, along a face selection's border
+ * rather than along named edges.
+ *
+ * Returns the vertices that gained a copy.
+ */
+export function splitFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const inside = new Set<number>();
+  const outside = new Set<number>();
+  for (let f = 0; f < polys.length; f++)
+    for (const v of polys[f]!) (selectedFaces.has(f) ? inside : outside).add(v);
+
+  const newPositions: number[] = Array.from(em.positions);
+  let nextV = em.vertices.length;
+  const copyOf = new Map<number, number>();
+  for (const v of inside) {
+    if (!outside.has(v)) continue; // only this side uses it — nothing to tear
+    const c = nextV++;
+    copyOf.set(v, c);
+    newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+  }
+  if (copyOf.size === 0) return new Set();
+
+  const out = polys.map((poly, f) =>
+    selectedFaces.has(f) ? poly.map((v) => copyOf.get(v) ?? v) : [...poly],
+  );
+  rebuildPolygons(em, new Float32Array(newPositions), out);
+  return new Set(copyOf.values());
+}
+
+/**
+ * Which vertices sit on top of which — Blender's
+ * `bmesh.ops.find_doubles(verts=, dist=)`.
+ *
+ * **Reports; does not weld.** That is the whole difference from `weldMesh`
+ * (which is `remove_doubles`): this hands back the targetmap and lets the
+ * caller decide, and that targetmap is exactly what {@link weldVerts} takes.
+ * Splitting the two halves is what lets a pipeline look at what would be
+ * merged before merging it.
+ *
+ * Each vertex is mapped to the **lowest-numbered** vertex within `dist` of it;
+ * a vertex that is itself the lowest of its cluster is left out of the map.
+ *
+ * Every pair is compared, so the cost grows with the square of the vertex
+ * count — fine for a cage, and the wrong tool for a scanned mesh. `weldMesh`
+ * is the one that buckets by distance and scales, at the price of deciding the
+ * merge for you.
+ */
+export function findDoubles(em: EditMesh, dist: number): Map<number, number> {
+  const out = new Map<number, number>();
+  const P = em.positions;
+  const n = em.vertices.length;
+  const d2 = dist * dist;
+  for (let v = 0; v < n; v++) {
+    for (let u = 0; u < v; u++) {
+      if (out.has(u)) continue; // already claimed — keep the cluster's lowest
+      const dx = P[v * 3]! - P[u * 3]!;
+      const dy = P[v * 3 + 1]! - P[u * 3 + 1]!;
+      const dz = P[v * 3 + 2]! - P[u * 3 + 2]!;
+      if (dx * dx + dy * dy + dz * dz <= d2) {
+        out.set(v, u);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Collapse edges shorter than `dist` — Blender's
+ * `bmesh.ops.dissolve_degenerate(dist=, edges=)`.
+ *
+ * The cleanup for geometry that came out of an operator with a zero-width
+ * feature in it: a bevel clamped to nothing, an inset that met itself, two
+ * vertices dragged onto each other. Measured on a 2×2 grid with one vertex
+ * moved onto its neighbour — 9 vertices become 8 and two of the quads come
+ * back as triangles, with the area unchanged.
+ *
+ * Unlike `weldMesh` this is not a distance weld over the whole mesh: only
+ * vertices joined by a **short edge** merge, so two surfaces lying against
+ * each other are left alone.
+ */
+export function dissolveDegenerate(em: EditMesh, dist: number): Set<number> {
+  const P = em.positions;
+  const parent = new Map<number, number>();
+  const find = (x: number): number => {
+    let r = x;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    return r;
+  };
+
+  let any = false;
+  forEachEdge(em, (he) => {
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    const dx = P[a * 3]! - P[b * 3]!;
+    const dy = P[a * 3 + 1]! - P[b * 3 + 1]!;
+    const dz = P[a * 3 + 2]! - P[b * 3 + 2]!;
+    if (Math.hypot(dx, dy, dz) > dist) return;
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+    any = true;
+  });
+  if (!any) return new Set();
+
+  const byRoot = new Map<number, number[]>();
+  for (const v of parent.keys()) {
+    const r = find(v);
+    const list = byRoot.get(r);
+    if (list) list.push(v);
+    else byRoot.set(r, [v]);
+  }
+  const clusters: number[][] = [];
+  for (const list of byRoot.values()) if (list.length > 1) clusters.push(list);
+  if (clusters.length === 0) return new Set();
+  return mergeClusters(em, clusters);
+}
+
+/**
+ * Turn each face's corner list by one — Blender's
+ * `bmesh.ops.flip_quad_tessellation(faces=)`.
+ *
+ * **No geometry moves and no vertex is added.** What changes is which diagonal
+ * a quad implicitly splits along, because a fan triangulation starts at the
+ * face's first corner: `[a, b, c, d]` cuts a-c and `[b, c, d, a]` cuts b-d. On
+ * a quad that is not flat those are two different surfaces, which is why the
+ * operator exists at all — and why `quadsToTris` and this one have to agree
+ * about where a face starts.
+ *
+ * Measured: Blender turns the list rather than reversing it, so the winding
+ * and the normal are untouched.
+ */
+export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+  const polys = toPolygons(em);
+  const out = polys.map((poly, f) =>
+    selectedFaces.has(f) && poly.length > 3 ? [...poly.slice(1), poly[0]!] : [...poly],
+  );
+  rebuildPolygons(em, em.positions, out);
+  return new Set(selectedFaces);
+}
+
+// ── Non-planar faces, edge rings ───────────────────────────────────────────
+
+/**
+ * Split the faces that are not flat — Blender's
+ * `bmesh.ops.connect_verts_nonplanar(faces=, angle_limit=)`.
+ *
+ * A quad whose four corners do not lie in one plane has no single surface: it
+ * is two triangles, and **which two depends on the diagonal**, so every
+ * consumer that triangulates it is free to pick a different answer. Splitting
+ * it here settles that once, in the file, instead of leaving it to the
+ * renderer and the exporter to disagree about.
+ *
+ * `angleLimit` is in radians and measures how far a corner leans out of the
+ * face's own plane. A face inside the limit is left as it is.
+ *
+ * The cut runs from the face's first corner, the same diagonal `quadsToTris`
+ * fans along — measured against Blender on a quad with one corner lifted,
+ * which it also splits 0-2 rather than along the shorter diagonal.
+ *
+ * Returns the faces it produced.
+ */
+export function connectVertsNonplanar(
+  em: EditMesh,
+  selectedFaces: ReadonlySet<number>,
+  angleLimit: number,
+): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const P = em.positions;
+  const out: number[][] = [];
+  const made = new Set<number>();
+
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
+    if (!selectedFaces.has(f) || poly.length < 4) {
+      out.push([...poly]);
+      continue;
+    }
+
+    // Newell's normal is the plane the face "mostly" lies in; the worst corner
+    // is how far out of it the face leans.
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]! * 3;
+      const b = poly[(i + 1) % poly.length]! * 3;
+      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+    }
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-20) {
+      out.push([...poly]);
+      continue;
+    }
+    nx /= len;
+    ny /= len;
+    nz /= len;
+
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (const v of poly) {
+      cx += P[v * 3]!;
+      cy += P[v * 3 + 1]!;
+      cz += P[v * 3 + 2]!;
+    }
+    cx /= poly.length;
+    cy /= poly.length;
+    cz /= poly.length;
+
+    let worst = 0;
+    for (const v of poly) {
+      const dx = P[v * 3]! - cx;
+      const dy = P[v * 3 + 1]! - cy;
+      const dz = P[v * 3 + 2]! - cz;
+      const along = dx * nx + dy * ny + dz * nz;
+      const radius = Math.hypot(dx, dy, dz);
+      if (radius > 1e-12) worst = Math.max(worst, Math.abs(Math.asin(along / radius)));
+    }
+    if (worst <= angleLimit) {
+      out.push([...poly]);
+      continue;
+    }
+
+    for (let i = 1; i + 1 < poly.length; i++) {
+      made.add(out.length);
+      out.push([poly[0]!, poly[i]!, poly[i + 1]!]);
+    }
+  }
+
+  if (made.size === 0) return new Set();
+  rebuildPolygons(em, em.positions, out);
+  return made;
+}
+
+/**
+ * Cut across the faces a ring of edges runs through — Blender's
+ * `bmesh.ops.subdivide_edgering(edges=, cuts=)`.
+ *
+ * The many-ring form of `loopCut`. Given the edges that run *along* a tube,
+ * every quad they cross is cut `cuts` times perpendicular to them, so an
+ * eight-sided tube three bands tall comes back six bands tall — measured, 32
+ * vertices and 24 faces become 56 and 48 at `cuts` 1.
+ *
+ * **Scope: quads crossed by exactly two of the selected edges, opposite each
+ * other.** That is what a ring is; a face touched by one selected edge, or by
+ * two adjacent ones, has no "across" to cut and is refused rather than cut
+ * somewhere plausible. `subdivideEdges` is the operator for cutting edges
+ * without deciding what the faces should become.
+ *
+ * Returns the faces it produced.
+ */
+export function subdivideEdgering(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  cuts: number,
+): Set<number> {
+  const n = Math.max(0, Math.floor(cuts));
+  if (n === 0 || selectedEdges.size === 0) return new Set();
+
+  const chosen = new Set<string>();
+  for (const heRaw of selectedEdges) {
+    if (!em.halfEdges[heRaw]) continue;
+    chosen.add(seamKey(edgeOrigin(em, heRaw), edgeEnd(em, heRaw)));
+  }
+
+  const polys = toPolygons(em);
+  const P = em.positions;
+  const positions: number[] = Array.from(P);
+  let nextV = em.vertices.length;
+  // One run of cut vertices per undirected edge, shared by both its faces.
+  const cutsOn = new Map<string, number[]>();
+  const cutRun = (a: number, b: number): number[] => {
+    const key = seamKey(a, b);
+    const found = cutsOn.get(key);
+    if (found) return a < b ? found : [...found].reverse();
+    const made: number[] = [];
+    for (let k = 1; k <= n; k++) {
+      const t = k / (n + 1);
+      const lo = a < b ? a : b;
+      const hi = a < b ? b : a;
+      made.push(nextV++);
+      positions.push(
+        P[lo * 3]! + (P[hi * 3]! - P[lo * 3]!) * t,
+        P[lo * 3 + 1]! + (P[hi * 3 + 1]! - P[lo * 3 + 1]!) * t,
+        P[lo * 3 + 2]! + (P[hi * 3 + 2]! - P[lo * 3 + 2]!) * t,
+      );
+    }
+    cutsOn.set(key, made);
+    return a < b ? made : [...made].reverse();
+  };
+
+  const out: number[][] = [];
+  const made = new Set<number>();
+  for (const poly of polys) {
+    const hits: number[] = [];
+    for (let i = 0; i < poly.length; i++)
+      if (chosen.has(seamKey(poly[i]!, poly[(i + 1) % poly.length]!))) hits.push(i);
+
+    if (hits.length === 0) {
+      out.push([...poly]);
+      continue;
+    }
+    const opposite =
+      poly.length === 4 && hits.length === 2 && Math.abs(hits[0]! - hits[1]!) === 2;
+    if (!opposite)
+      throw new Error(
+        `subdivideEdgering: a ${poly.length}-sided face has ${hits.length} selected ` +
+          `edge(s) on it, not two opposite ones — that is not a ring, and cutting ` +
+          `it anywhere would be a guess.`,
+      );
+
+    // The quad reads a, b, c, d with the selected edges a-b and c-d. Cut runs
+    // go along each, and the new faces stack between them.
+    const i0 = hits[0]!;
+    const a = poly[i0]!;
+    const b = poly[(i0 + 1) % 4]!;
+    const c = poly[(i0 + 2) % 4]!;
+    const d = poly[(i0 + 3) % 4]!;
+    const along1 = [a, ...cutRun(a, b), b];
+    const along2 = [d, ...cutRun(d, c), c];
+    for (let k = 0; k < along1.length - 1; k++) {
+      made.add(out.length);
+      out.push([along1[k]!, along1[k + 1]!, along2[k + 1]!, along2[k]!]);
+    }
+  }
+
+  rebuildPolygons(em, new Float32Array(positions), out);
+  return made;
+}

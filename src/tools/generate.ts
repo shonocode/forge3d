@@ -648,3 +648,128 @@ export function torus(opts: TorusOptions = {}): MeshData {
   }
   return b.build();
 }
+
+export interface IcosphereOptions {
+  radius?: number;
+  /**
+   * Blender's `subdivisions`, and **1 is the bare icosahedron** — 12 vertices
+   * and 20 triangles. Each step after that splits every triangle into four.
+   * Default 2.
+   *
+   * Measured: 1 → 12/20, 2 → 42/80, 3 → 162/320.
+   */
+  subdivisions?: number;
+  /** Where to put it. */
+  at?: Vec3;
+}
+
+/**
+ * A sphere made of near-equilateral triangles — Blender's
+ * `bmesh.ops.create_icosphere`.
+ *
+ * The one {@link sphere} cannot be. A UV sphere's triangles crowd together at
+ * the poles and stretch at the equator, which shows up as shading artefacts and
+ * as wasted vertices; an icosphere's are all within a few percent of each
+ * other. Reach for it when the surface is going to be displaced, simulated or
+ * lit at a grazing angle.
+ *
+ * ## The layout, read off Blender rather than assumed
+ *
+ * Poles at ±radius, two rings of five at ±radius/√5 — so the rings sit at
+ * `radius·√(4/5)` out from the axis — and the two rings are **offset by half a
+ * step**: 0°, 72°, 144°… against 36°, 108°, 180°… That offset is what makes
+ * the middle band twenty identical triangles instead of ten quads.
+ *
+ * The direction the azimuth runs is not observable here: both rings' angles are
+ * closed under negation, so mirroring gives the same set of points. This
+ * follows {@link sphere}'s convention for consistency inside the library.
+ *
+ * ## Subdividing flat, then projecting once
+ *
+ * **Not** midpoint-and-project at every level. The two agree for one split and
+ * part company at the second, because projecting early moves the point the
+ * next midpoint is taken between. Measured on the arc from the pole to its
+ * neighbour at `subdivisions` 3: Blender's three interior points sit at
+ * 0.229297, 0.5 and 0.770703 of the way round it, which is what dividing the
+ * straight **chord** into four gives. Projecting at every level would space
+ * them evenly by angle — 0.25, 0.5, 0.75 — and put a vertex 4.6 mm out.
+ *
+ * So the icosahedron is subdivided as a flat solid and every vertex is pushed
+ * onto the sphere at the end.
+ */
+export function icosphere(opts: IcosphereOptions = {}): MeshData {
+  const r = opts.radius ?? 0.5;
+  const levels = Math.max(1, Math.floor(opts.subdivisions ?? 2));
+  const [ax, ay, az] = opts.at ?? [0, 0, 0];
+
+  // Corner coordinates before placing: the unit icosahedron.
+  const ringY = 1 / Math.sqrt(5);
+  const ringR = Math.sqrt(1 - ringY * ringY);
+  let verts: Vec3[] = [[0, 1, 0]];
+  for (let k = 0; k < 5; k++) {
+    const a = (k * 72 * Math.PI) / 180;
+    verts.push([Math.cos(a) * ringR, ringY, Math.sin(a) * ringR]);
+  }
+  for (let k = 0; k < 5; k++) {
+    const a = ((k * 72 + 36) * Math.PI) / 180;
+    verts.push([Math.cos(a) * ringR, -ringY, Math.sin(a) * ringR]);
+  }
+  verts.push([0, -1, 0]);
+
+  // Wound this way round, not the other: the first version put the whole
+  // sphere inside out — same surface, signed volume negated — and no distance
+  // measurement could see it. The volume line in `compare.ts` is what caught
+  // it, which is the second time that check has earned its place.
+  const up = (k: number): number => 1 + (k % 5);
+  const lo = (k: number): number => 6 + (k % 5);
+  let tris: Array<[number, number, number]> = [];
+  for (let k = 0; k < 5; k++) {
+    tris.push([0, up(k + 1), up(k)]);
+    tris.push([up(k), up(k + 1), lo(k)]);
+    tris.push([lo(k), up(k + 1), lo(k + 1)]);
+    tris.push([11, lo(k), lo(k + 1)]);
+  }
+
+  // Each level splits every triangle four ways. Midpoints are shared between
+  // the two triangles on an edge, or the vertex count doubles and the surface
+  // comes apart at every seam.
+  //
+  // **Flat midpoints — the projection happens once, below.** Projecting here
+  // instead moves the point the next level's midpoint is taken between, and
+  // the two answers part company from the second split onwards: measured, a
+  // vertex 4.6 mm out at `subdivisions` 3.
+  for (let level = 1; level < levels; level++) {
+    const mid = new Map<string, number>();
+    const midpoint = (a: number, b: number): number => {
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      const found = mid.get(key);
+      if (found !== undefined) return found;
+      const p = verts[a]!;
+      const q = verts[b]!;
+      const made = verts.length;
+      verts.push([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2]);
+      mid.set(key, made);
+      return made;
+    };
+    const next: Array<[number, number, number]> = [];
+    for (const [a, b, c] of tris) {
+      const ab = midpoint(a, b);
+      const bc = midpoint(b, c);
+      const ca = midpoint(c, a);
+      next.push([a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]);
+    }
+    tris = next;
+  }
+
+  // `Builder` welds by position, which would fuse nothing here but also costs
+  // a hash per vertex; the indices are already unique by construction.
+  const positions = new Float32Array(verts.length * 3);
+  for (let i = 0; i < verts.length; i++) {
+    const [x, y, z] = verts[i]!;
+    const len = Math.hypot(x, y, z) || 1;
+    positions[i * 3] = ax + (x / len) * r;
+    positions[i * 3 + 1] = ay + (y / len) * r;
+    positions[i * 3 + 2] = az + (z / len) * r;
+  }
+  return { positions, polys: tris.map((t) => [...t]) };
+}
