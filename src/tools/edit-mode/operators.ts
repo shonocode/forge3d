@@ -342,43 +342,79 @@ export interface BevelOptions {
   profile?: number;
 }
 
-/** Points along the superellipse `s^r + t^r = 1`, at equal arc length. */
+/**
+ * Points along the superellipse `s^r + t^r = 1`, spaced at **equal chords**.
+ *
+ * Equal chords, not equal arc length. The two coincide for a circle (r = 2,
+ * `profile` 0.5) and for a straight line (r = 1, `profile` 0.25), and differ
+ * everywhere else — which is why the first implementation spaced by arc length
+ * and matched Blender on every case anyone had measured. `profile` 0.75 with 8
+ * segments is 0.42 mm out that way and 0.0007 mm out this way, against a
+ * tolerance of 0.01 mm.
+ *
+ * The rule was read off Blender rather than inferred: a cube beveled at
+ * `profile` 0.75, `segments` 8 comes back with eight chords of 0.223165,
+ * 0.223163, 0.223164, 0.223162, 0.223162, 0.223164, 0.223163, 0.223165 — equal
+ * to a part in 10^5, which no arc-length spacing of that curve produces.
+ *
+ * The superellipse is defined in coordinates measured from the **outer** corner
+ * of the square the two slide directions span, so it is built there and
+ * converted at the end. Building it in corner coordinates instead gives the
+ * right endpoints and wrong everything between them, which is exactly what
+ * happened first: segments=1 matched Blender and segments=2 did not.
+ */
 function profileCurve(r: number, segments: number): Array<[number, number]> {
   if (segments <= 1) return [[1, 0], [0, 1]];
 
-  // The superellipse is defined in coordinates measured from the **outer**
-  // corner of the square the two slide directions span, so it is built there
-  // and converted at the end. Building it in corner coordinates instead gives
-  // the right endpoints and wrong everything between them, which is exactly
-  // what happened first: segments=1 matched Blender and segments=2 did not.
-  const N = 4096;
-  const dense: Array<[number, number]> = [];
-  for (let i = 0; i <= N; i++) {
-    const sOuter = i / N;
-    const tOuter = Math.pow(Math.max(0, 1 - Math.pow(sOuter, r)), 1 / r);
-    dense.push([1 - sOuter, 1 - tOuter]);
-  }
+  /** The curve at parameter `u` — `u` is the outer-corner coordinate `s`. */
+  const at = (u: number): [number, number] => [
+    1 - u,
+    1 - Math.pow(Math.max(0, 1 - Math.pow(u, r)), 1 / r),
+  ];
+  const START = at(0);
+  const END = at(1);
+  const dist = (p: [number, number], q: [number, number]): number =>
+    Math.hypot(p[0] - q[0], p[1] - q[1]);
 
-  const cum = [0];
-  for (let i = 1; i < dense.length; i++)
-    cum.push(
-      cum[i - 1]! + Math.hypot(dense[i]![0] - dense[i - 1]![0], dense[i]![1] - dense[i - 1]![1]),
-    );
-  const total = cum[cum.length - 1]!;
+  /** Walk chords of length `len` from the start, stopping one short. */
+  const walk = (len: number): Array<[number, number]> => {
+    const pts: Array<[number, number]> = [START];
+    let u = 0;
+    // One chord short of the full count: the last point is the far end, which
+    // is known exactly, and solving for it would only re-derive it badly.
+    for (let k = 0; k < segments - 1; k++) {
+      const from = pts[k]!;
+      // Distance from `from` grows with `u` along this arc, so bisect on it.
+      let lo = u;
+      let hi = 1;
+      for (let it = 0; it < 60; it++) {
+        const mid = (lo + hi) / 2;
+        if (dist(from, at(mid)) < len) lo = mid;
+        else hi = mid;
+      }
+      u = (lo + hi) / 2;
+      pts.push(at(u));
+    }
+    return pts;
+  };
 
-  const out: Array<[number, number]> = [];
-  let cursor = 1;
-  for (let k = 0; k <= segments; k++) {
-    const want = (k / segments) * total;
-    while (cursor < cum.length - 1 && cum[cursor]! < want) cursor++;
-    const lo = cum[cursor - 1]!;
-    const hi = cum[cursor]!;
-    const f = hi > lo ? (want - lo) / (hi - lo) : 0;
-    out.push([
-      dense[cursor - 1]![0] + (dense[cursor]![0] - dense[cursor - 1]![0]) * f,
-      dense[cursor - 1]![1] + (dense[cursor]![1] - dense[cursor - 1]![1]) * f,
-    ]);
+  // Solve for the chord that makes the leftover exactly one more of itself.
+  // `leftover(len) - len` falls as `len` rises — the walk gets further along,
+  // so less is left — which is what makes a bisection valid here. The earlier
+  // form asked whether the walk *landed* on the end instead, and that is true
+  // for every `len` at or above the answer: it converged on the top of the
+  // bracket and came back with a rail whose last chord was 0.0007 long and
+  // whose two halves were not mirror images.
+  const gap = (len: number): number => dist(walk(len)[segments - 1]!, END) - len;
+  let lo = 0;
+  let hi = dist(START, END); // one chord straight across — certainly too long
+  for (let it = 0; it < 100; it++) {
+    const mid = (lo + hi) / 2;
+    if (gap(mid) > 0) lo = mid;
+    else hi = mid;
   }
+  const out = walk((lo + hi) / 2);
+  out.push(END);
   return out;
 }
 
@@ -2003,8 +2039,12 @@ export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: n
 // ── Merge / Collapse (F-M8) ────────────────────────────────────────────────
 
 /**
- * Merge vertex clusters: each cluster's members become ONE vertex at the
- * cluster centroid. Faces whose cycle collapses below 3 unique verts are
+ * Merge vertex clusters: each cluster's members become ONE vertex, at the
+ * cluster centroid unless `where` names a point for it — `collapseEdges` does,
+ * because Blender puts an edge collapse at the mean of the edge midpoints
+ * rather than at the mean of the vertices, and those differ whenever the run is
+ * unevenly spaced. `where` is indexed by cluster, and a missing or undefined
+ * entry means the centroid. Faces whose cycle collapses below 3 unique verts are
  * dropped; a quad losing one edge to the merge degrades to a triangle
  * (consecutive duplicate corners are collapsed). The vertex buffer is
  * compacted (unreferenced verts removed), and seam keys are remapped across
@@ -2012,12 +2052,17 @@ export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: n
  *
  * Returns the merged vertices' NEW (compacted) indices.
  */
-function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
+function mergeClusters(
+  em: EditMesh,
+  clusters: number[][],
+  where?: ReadonlyArray<readonly [number, number, number] | undefined>,
+): Set<number> {
   const P = em.positions;
   const remap = new Map<number, number>();
   const targets: number[] = [];
 
-  for (const cluster of clusters) {
+  for (let c = 0; c < clusters.length; c++) {
+    const cluster = clusters[c]!;
     if (cluster.length < 2) continue;
     const target = Math.min(...cluster);
     targets.push(target);
@@ -2028,9 +2073,10 @@ function mergeClusters(em: EditMesh, clusters: number[][]): Set<number> {
       cz += P[v * 3 + 2]!;
     }
     for (const v of cluster) remap.set(v, target);
-    P[target * 3] = cx / cluster.length;
-    P[target * 3 + 1] = cy / cluster.length;
-    P[target * 3 + 2] = cz / cluster.length;
+    const at = where?.[c] ?? [cx / cluster.length, cy / cluster.length, cz / cluster.length];
+    P[target * 3] = at[0];
+    P[target * 3 + 1] = at[1];
+    P[target * 3 + 2] = at[2];
   }
   if (targets.length === 0) return new Set();
 
@@ -2097,9 +2143,89 @@ export function mergeAtCenter(em: EditMesh, selectedVerts: ReadonlySet<number>):
 }
 
 /**
+ * Merge named vertices onto named targets — Blender's
+ * `bmesh.ops.weld_verts(targetmap=)`.
+ *
+ * The key moves **onto** the target and the target does not move. That is what
+ * separates this from {@link mergeAtCenter}, which puts the result at the
+ * centroid, and from {@link collapseEdges}, which puts it at the mean of the
+ * edge midpoints. All three merge; they differ only in where the survivor ends
+ * up, and picking the wrong one is a silent few-millimetre error.
+ *
+ * A chain is followed to its end: given `a → b` and `b → c`, both `a` and `b`
+ * land on `c`. A cycle has no terminal and is refused rather than resolved
+ * arbitrarily — Blender's own behaviour there is undefined, so guessing would
+ * be inventing a rule and calling it compatibility.
+ *
+ * Returns the survivors' new (compacted) indices.
+ */
+export function weldVerts(em: EditMesh, targetmap: ReadonlyMap<number, number>): Set<number> {
+  if (targetmap.size === 0) return new Set();
+
+  /** Follow `v` through the map until it names a vertex that is not a key. */
+  const terminal = (v: number): number => {
+    let cur = v;
+    for (let hops = 0; hops <= targetmap.size; hops++) {
+      const next = targetmap.get(cur);
+      // `next === cur` is a vertex welded to itself — a no-op, not a cycle.
+      // Without this it spins to the hop limit and throws, and the `end === key`
+      // guard below that is meant to drop it never runs.
+      if (next === undefined || next === cur) return cur;
+      cur = next;
+    }
+    throw new Error(
+      `weldVerts: the targetmap cycles at vertex ${v} — there is no vertex for ` +
+        `the merge to land on, and picking one would be inventing a rule.`,
+    );
+  };
+
+  const byTarget = new Map<number, Set<number>>();
+  for (const key of targetmap.keys()) {
+    const end = terminal(key);
+    if (end === key) continue;
+    let group = byTarget.get(end);
+    if (!group) {
+      group = new Set([end]);
+      byTarget.set(end, group);
+    }
+    group.add(key);
+  }
+  if (byTarget.size === 0) return new Set();
+
+  const targets = [...byTarget.keys()];
+  const P = em.positions;
+  return mergeClusters(
+    em,
+    targets.map((t) => [...byTarget.get(t)!]),
+    // The target keeps its place; only the keys move.
+    targets.map((t) => [P[t * 3]!, P[t * 3 + 1]!, P[t * 3 + 2]!] as const),
+  );
+}
+
+/**
  * Collapse each selected edge to its midpoint (Blender's Edge Collapse).
  * Edges sharing endpoints collapse together — union-find groups them into
  * clusters first, so collapsing a connected run of edges yields one vertex.
+ *
+ * ## Where the merged vertex lands
+ *
+ * At the **mean of the selected edges' midpoints**, which is not the same as
+ * the mean of the vertices unless the run is evenly spaced. Measured against
+ * `bmesh.ops.collapse` on four uneven chains:
+ *
+ * | vertices at x       | Blender | midpoint mean | vertex centroid |
+ * |---------------------|---------|---------------|-----------------|
+ * | 0, 1, 3             | 1.2500  | 1.2500        | 1.3333          |
+ * | 0, 1, 5             | 1.7500  | 1.7500        | 2.0000          |
+ * | 0, 1, 3, 7          | 2.5000  | 2.5000        | 2.7500          |
+ * | 0, .25, .5, 4, 4.25 | 1.71875 | 1.71875       | 1.8000          |
+ *
+ * Effectively each vertex is weighted by how many selected edges touch it, so
+ * the ends of a run count once and the interior twice. The vertex centroid
+ * shipped here first and agreed on a cube — where the top face's four edges are
+ * symmetric and every rule gives the centre — and was 1.7 mm out on a curved
+ * cage. {@link mergeAtCenter} keeps the plain centroid, because Blender's
+ * "Merge At Center" really is that.
  */
 export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
   if (selectedEdges.size === 0) return new Set();
@@ -2116,6 +2242,11 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
     if (ra !== rb) parent.set(ra, rb);
   };
 
+  // The midpoint of each selected edge, kept so the merge point can be their
+  // mean rather than the cluster's centroid.
+  const P = em.positions;
+  const midpoints: Array<[number, number, number]> = [];
+  const ofEdge: number[] = [];
   for (const heRaw of selectedEdges) {
     const he = canonicalEdge(em, heRaw);
     const a = edgeOrigin(em, he);
@@ -2123,6 +2254,12 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
     if (!parent.has(a)) parent.set(a, a);
     if (!parent.has(b)) parent.set(b, b);
     union(a, b);
+    midpoints.push([
+      (P[a * 3]! + P[b * 3]!) / 2,
+      (P[a * 3 + 1]! + P[b * 3 + 1]!) / 2,
+      (P[a * 3 + 2]! + P[b * 3 + 2]!) / 2,
+    ]);
+    ofEdge.push(a);
   }
 
   const byRoot = new Map<number, number[]>();
@@ -2132,7 +2269,24 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
     if (!l) { l = []; byRoot.set(r, l); }
     l.push(v);
   }
-  return mergeClusters(em, [...byRoot.values()]);
+
+  const roots = [...byRoot.keys()];
+  const sums = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < midpoints.length; i++) {
+    const r = find(ofEdge[i]!);
+    const s = sums.get(r) ?? [0, 0, 0, 0];
+    s[0] += midpoints[i]![0];
+    s[1] += midpoints[i]![1];
+    s[2] += midpoints[i]![2];
+    s[3] += 1;
+    sums.set(r, s);
+  }
+  const where = roots.map((r) => {
+    const s = sums.get(r);
+    return s ? ([s[0] / s[3], s[1] / s[3], s[2] / s[3]] as const) : undefined;
+  });
+
+  return mergeClusters(em, roots.map((r) => byRoot.get(r)!), where);
 }
 
 // ── Bridge Edge Loops (F-M8) ───────────────────────────────────────────────

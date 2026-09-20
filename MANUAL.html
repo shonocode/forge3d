@@ -358,6 +358,12 @@ Blender に 25 と入れたのと同じ面取りが出る。<br>
 <code>bevelEdges(em, edges, { offset: 20, segments: 4, profile: 0.5 })</code>。
 GUI は今のところ segments=1 / profile=0.5 固定。立方体の1辺は Blender と
 <strong>0.0000mm で一致</strong>する（<code>tools/modeling/parity/README.md</code>）。</div>
+<div class="note"><strong>2026-09-20: profile が 0.5 以外でも合うようになった。</strong>
+断面の点を<strong>等弧長</strong>に並べていたが、Blender は<strong>等弦長</strong>だった。
+円（0.5）と直線（0.25）ではこの2つは完全に一致するので、それまでの計測では
+見分けられなかった ― <code>profile 0.75</code> で 0.26mm ずれていた。
+いまは 0.1 / 0.25 / 0.5 / 0.75 / 0.9 の5点で 0.0000mm 一致。
+<strong>GUI の既定（0.5）で作った形は変わらない。</strong></div>
 
 <h3 id="edit-loopcut">4.6 Loop Cut (ループカット)</h3>
 <p>メッシュをぐるりと一周する辺のループを追加する。関節用ループや細部用ループの挿入に。<strong>キー: <kbd>Ctrl+R</kbd></strong></p>

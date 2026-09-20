@@ -345,7 +345,13 @@ export function revolve(opts: RevolveOptions): MeshData {
     const ca = Math.cos(a);
     const sa = Math.sin(a);
     const loop: number[] = [];
-    for (const p of prof) loop.push(b.vert(ax + ca * p[0], ay + p[1], az + sa * p[0]));
+    // `-sa`: +X turns toward **-Z**, the right-hand rule about +Y. This used
+    // to turn the other way, which put `revolve` and `radialArray` — both
+    // spinning about +Y, both in this library — in opposite directions, and
+    // put both out of step with Blender's `spin`. A full turn is the same
+    // point set either way, so nothing that ships changed shape; a partial
+    // turn is a mirror image, and that is what the parity row caught.
+    for (const p of prof) loop.push(b.vert(ax + ca * p[0], ay + p[1], az - sa * p[0]));
     loops.push(loop);
   }
   // A profile drawn downwards produces an inside-out shell, so it is turned
@@ -363,13 +369,18 @@ export function revolve(opts: RevolveOptions): MeshData {
   // A generator's contract should be that its output faces outward. Wanting a
   // shell seen from within is a legitimate thing to want, and mirroring is the
   // honest way to ask for it.
+  //
+  // The two branches swapped when the spin direction did, above: reversing the
+  // way the stations travel reverses which side of each quad is the outside,
+  // so keeping the old pairing would have turned every full revolve in the
+  // scene builders inside out while the vertex positions stayed put.
   const descending = prof.length > 1 && prof[prof.length - 1]![1] < prof[0]![1];
   for (let i = 0; i < (closed ? stations : stations - 1); i++) {
     const n = (i + 1) % stations;
     for (let j = 0; j < prof.length - 1; j++) {
       const [a0, a1, b1, b0] = [loops[i]![j]!, loops[i]![j + 1]!, loops[n]![j + 1]!, loops[n]![j]!];
-      if (descending) b.face(a0, b0, b1, a1);
-      else b.face(a0, a1, b1, b0);
+      if (descending) b.face(a0, a1, b1, b0);
+      else b.face(a0, b0, b1, a1);
     }
   }
   return b.build();

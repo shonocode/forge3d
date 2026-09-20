@@ -384,6 +384,54 @@ describe("bevelEdges", () => {
     }
   });
 
+  it("spaces the profile at equal chords, not equal arc length", () => {
+    // The two rules are the same curve sampled differently, and they coincide
+    // exactly for `profile` 0.5 (a circle) and 0.25 (a straight line) — which
+    // is every value the other bevel rows use. So arc-length spacing shipped
+    // and measured clean until `profile` 0.75 was asked for, where it put the
+    // rail 0.42 mm off Blender's.
+    //
+    // The pinned point is the one that tells them apart: the middle of the
+    // rail is the same under any symmetric rule, so it proves nothing.
+    // Measured from Blender 5.1.1, bmesh.ops.bevel(profile=0.75, segments=4).
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+    });
+    let target = -1;
+    forEachEdge(em, (he) => {
+      const a = edgeOrigin(em, he);
+      const b = edgeEnd(em, he);
+      if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
+    });
+    bevelEdges(em, new Set([target]), { offset: 20, segments: 4, profile: 0.75 });
+
+    const { positions } = meshToData(em);
+    const rail: Array<[number, number]> = [];
+    for (let v = 0; v < positions.length / 3; v++) {
+      const [x, y, z] = [positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!];
+      if (Math.abs(x - 0.5) < 1e-9 && y > 0.29 && z < -0.29) rail.push([y, z]);
+    }
+    rail.sort((p, q) => p[0] - q[0]);
+    expect(rail).toHaveLength(5);
+
+    // Blender's second rail point, 0.0021 from where arc length would put it.
+    expect(rail[1]![0]).toBeCloseTo(0.388548, 5);
+    expect(rail[1]![1]).toBeCloseTo(-0.499175, 5);
+
+    // 7 places, not more: positions live in a Float32Array, whose ulp at 0.5 is
+    // 6e-8, and the two inner chords land one ulp off the two outer ones for
+    // that reason alone. The solve itself is exact — the rail comes back
+    // mirror-symmetric to the bit.
+    const chords = rail
+      .slice(1)
+      .map((p, i) => Math.hypot(p[0] - rail[i]![0], p[1] - rail[i]![1]));
+    for (const c of chords) expect(c).toBeCloseTo(chords[0]!, 7);
+  });
+
   it("bevel preserves manifold closure (no new boundaries)", () => {
     const em = buildEditMesh(makeCube())!;
     let target = -1;
@@ -691,7 +739,7 @@ describe("delete variants", () => {
 
 // ── F-M8 batch 1: edgeSlide / merge / bridge ──
 
-import { edgeSlide, mergeAtCenter, collapseEdges, bridgeEdgeLoops } from "./operators";
+import { edgeSlide, mergeAtCenter, collapseEdges, weldVerts, bridgeEdgeLoops } from "./operators";
 import { edgeEnd, edgeOrigin, type EditMesh } from "./half-edge";
 import { cylinder } from "../generate";
 
@@ -799,10 +847,92 @@ describe("mergeAtCenter / collapseEdges", () => {
   it("collapseEdges unions shared-endpoint runs into one vertex", () => {
     const em = buildEditMesh(makeStrip())!;
     // Bottom edges 0-1 and 1-2 share vertex 1 → single 3-vert cluster.
+    // Evenly spaced, so the midpoint mean and the vertex centroid are both 1 —
+    // which is why this case could not see the rule. The next one can.
     const sel = collapseEdges(em, new Set([edgeBetween(em, 0, 1), edgeBetween(em, 1, 2)]));
     expect(sel.size).toBe(1);
     const v = [...sel][0]!;
-    expect(em.positions[v * 3]).toBeCloseTo(1, 5); // centroid x of 0,1,2
+    expect(em.positions[v * 3]).toBeCloseTo(1, 5);
+  });
+
+  it("weldVerts leaves the survivor on the target, not between the two", () => {
+    // The distinguishing property, and the reason all three merges exist: this
+    // one does not move the target. Measured against Blender 5.1.1,
+    // bmesh.ops.weld_verts, on the cube / body / arm cages.
+    const em = meshFromData({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 3, 0, 0,
+        0, 1, 0, 1, 1, 0, 3, 1, 0,
+      ]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    const sel = weldVerts(em, new Map([[1, 0], [2, 0]]));
+    expect(sel.size).toBe(1);
+    const v = [...sel][0]!;
+    // Vertex 0's place, untouched — not 1.25 (collapse) and not 1.3333 (centre).
+    expect(em.positions[v * 3]).toBeCloseTo(0, 6);
+  });
+
+  it("weldVerts follows a chain to its end", () => {
+    const em = meshFromData({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 3, 0, 0,
+        0, 1, 0, 1, 1, 0, 3, 1, 0,
+      ]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    // 2 → 1 → 0, so both land on 0 rather than 2 landing on 1's old place.
+    const sel = weldVerts(em, new Map([[2, 1], [1, 0]]));
+    expect(sel.size).toBe(1);
+    expect(em.positions[[...sel][0]! * 3]).toBeCloseTo(0, 6);
+  });
+
+  it("weldVerts treats a vertex mapped to itself as a no-op, not a cycle", () => {
+    const em = meshFromData({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 3, 0, 0,
+        0, 1, 0, 1, 1, 0, 3, 1, 0,
+      ]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    // `2 → 2` is "weld it to itself", which asks for nothing. It used to spin
+    // to the hop limit and be reported as a cycle.
+    expect(() => weldVerts(em, new Map([[2, 2]]))).not.toThrow();
+    expect(em.vertices).toHaveLength(6);
+    expect(em.faces).toHaveLength(2);
+  });
+
+  it("weldVerts refuses a cycle rather than picking a winner", () => {
+    const em = meshFromData({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 3, 0, 0,
+        0, 1, 0, 1, 1, 0, 3, 1, 0,
+      ]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    // No vertex in the map is a terminal, so there is nothing to land on.
+    expect(() => weldVerts(em, new Map([[0, 1], [1, 0]]))).toThrow(/cycle/);
+  });
+
+  it("collapseEdges lands on the mean of the edge midpoints, not the vertex centroid", () => {
+    // Uneven on purpose: x = 0, 1, 3 gives midpoint mean 1.25 and vertex
+    // centroid 1.3333. The centroid shipped here first and agreed on every
+    // evenly-spaced case anyone had written, including the one above; it was
+    // 1.7 mm out on the production cage.
+    //
+    // Measured from Blender 5.1.1, bmesh.ops.collapse, on four uneven chains —
+    // the table is on `collapseEdges`.
+    const em = meshFromData({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 3, 0, 0,
+        0, 1, 0, 1, 1, 0, 3, 1, 0,
+      ]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    const sel = collapseEdges(em, new Set([edgeBetween(em, 0, 1), edgeBetween(em, 1, 2)]));
+    expect(sel.size).toBe(1);
+    const v = [...sel][0]!;
+    expect(em.positions[v * 3]).toBeCloseTo(1.25, 5);
   });
 });
 

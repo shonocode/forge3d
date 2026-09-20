@@ -140,6 +140,7 @@ export {
   bridgeEdgeLoops,
   mergeAtCenter,
   collapseEdges,
+  weldVerts,
   deleteFaces,
   deleteFacesByEdges,
   deleteFacesByVertices,
