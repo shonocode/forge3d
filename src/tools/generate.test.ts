@@ -197,6 +197,25 @@ describe("revolve", () => {
     expect(signedVolume(up)).toBeCloseTo(Math.PI * 2, 2);
     expect(signedVolume(down)).toBeCloseTo(Math.PI * 2, 2);
   });
+
+  /**
+   * `offset` climbs the axis over the **whole turn**, not per step. The two
+   * readings differ by a factor of `steps`, and a mesh spun in one step cannot
+   * tell them apart -- six can. Measured against Blender's Screw modifier:
+   * 3 profile points x 6 steps is 18 vertices at offset 0 and 21 at 0.5.
+   */
+  it("climbs the whole offset over the whole turn", () => {
+    const prof: Array<[number, number]> = [[0.2, 0], [0.3, 0.1], [0.2, 0.2]];
+    const flat = revolve({ profile: prof, steps: 6 });
+    const screw = revolve({ profile: prof, steps: 6, offset: 0.5 });
+    // A turn that climbs cannot meet itself, so the seam stays open: one more
+    // ring of three.
+    expect(vertCount(flat)).toBe(18);
+    expect(vertCount(screw)).toBe(21);
+    // Station 1 of 6 sits one sixth of the way up; the last one the whole way.
+    expect(screw.positions[1 * 3 * 3 + 1]).toBeCloseTo(0.5 / 6, 6);
+    expect(screw.positions[6 * 3 * 3 + 1]).toBeCloseTo(0.5, 6);
+  });
 });
 
 describe("sweep", () => {

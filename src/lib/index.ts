@@ -258,6 +258,24 @@ export {
   type DisplaceOptions,
 } from "../tools/displace";
 
+// ── Deform ─────────────────────────────────────────────────────────────────
+// The regular half of the same job: twist a baluster, bend a rail, taper a
+// leg, cast a rough shape onto a sphere, press a ripple into a sheet.
+// Blender's deform modifiers, with the rules read off the running binary —
+// the numbers are on each function.
+export {
+  cast,
+  simpleDeform,
+  wave,
+  warp,
+  type CastOptions,
+  type SimpleDeformOptions,
+  type WaveOptions,
+  type WarpOptions,
+  type WarpTransform,
+  type DeformAxis,
+} from "../tools/deform";
+
 // ── Repair ─────────────────────────────────────────────────────────────────
 // Making generated geometry well-formed before the next stage sees it. Both
 // are Blender operators, and both are here because a generator can emit a mesh
@@ -266,6 +284,8 @@ export {
 export {
   recalcFaceNormals,
   connectVertsConcave,
+  deleteLoose,
+  separateLoose,
   type RecalcFaceNormalsReport,
   type ConnectVertsConcaveReport,
 } from "../tools/mesh-repair";

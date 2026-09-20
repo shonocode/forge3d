@@ -497,3 +497,113 @@ export function connectVertsConcave(
     ...(data.seams ? { seams: new Set(data.seams) } : {}),
   };
 }
+
+// ── Loose geometry ─────────────────────────────────────────────────────────
+
+/**
+ * Drop vertices that no polygon uses — Blender's **Delete Loose**.
+ *
+ * This is the other half of a difference this library has carried on purpose.
+ * `dissolveFaces`, `dissolveEdges`, `dissolveVerts`, `deleteFaces` and
+ * `collapseEdges` all leave the vertices they orphan where they are, and every
+ * one of those parity rows records the gap — a dissolved cube comes back with
+ * 8 vertices where Blender has 4. Keeping them is deliberate: compacting
+ * shifts every index above the hole, which reaches into selections, undo and
+ * skin weights, so it must be something the caller asks for rather than
+ * something an operator does behind their back.
+ *
+ * This is how they ask. Run it at the end of a build, not between edits.
+ *
+ * Creases and seams are remapped across the compaction; one that named a
+ * vertex which is going away is dropped with it.
+ */
+export function deleteLoose(data: MeshData): MeshData {
+  const used = new Set<number>();
+  for (const poly of data.polys) for (const v of poly) used.add(v);
+
+  const count = data.positions.length / 3;
+  if (used.size === count) return { ...data, polys: data.polys.map((p) => [...p]) };
+
+  const remap = new Map<number, number>();
+  const positions: number[] = [];
+  for (let v = 0; v < count; v++) {
+    if (!used.has(v)) continue;
+    remap.set(v, positions.length / 3);
+    positions.push(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
+  }
+
+  const creases = data.creases ? new Map<string, number>() : undefined;
+  if (data.creases && creases)
+    for (const [key, value] of data.creases) {
+      const [a, b] = key.split("_").map(Number);
+      const na = remap.get(a!);
+      const nb = remap.get(b!);
+      if (na === undefined || nb === undefined) continue;
+      creases.set(na < nb ? `${na}_${nb}` : `${nb}_${na}`, value);
+    }
+
+  return {
+    ...data,
+    positions: new Float32Array(positions),
+    polys: data.polys.map((poly) => poly.map((v) => remap.get(v)!)),
+    ...(creases ? { creases } : {}),
+  };
+}
+
+/**
+ * Split a mesh into its disconnected pieces — Blender's **Separate ▸ By Loose
+ * Parts**.
+ *
+ * Two faces belong to the same piece when they share a vertex. A brazier built
+ * as one `MeshData` — bowl, legs, chains, stones — comes back as the parts it
+ * was always made of, which is what an exporter wants when each piece needs
+ * its own object, and what a measurement wants when only one shell is in
+ * question.
+ *
+ * Pieces come back in the order their lowest-numbered vertex appears, so the
+ * result is stable across runs. Each is compacted, like {@link deleteLoose};
+ * vertices no polygon uses are in no piece and are dropped.
+ *
+ * **No parity row.** The harness compares one mesh against one mesh, and this
+ * returns several — the rule is checked by unit test instead, on a shape whose
+ * pieces are known.
+ */
+export function separateLoose(data: MeshData): MeshData[] {
+  const count = data.positions.length / 3;
+  const parent = new Int32Array(count);
+  for (let v = 0; v < count; v++) parent[v] = v;
+  const find = (x: number): number => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r]!;
+    while (parent[x] !== r) {
+      const next = parent[x]!;
+      parent[x] = r;
+      x = next;
+    }
+    return r;
+  };
+  for (const poly of data.polys)
+    for (let i = 1; i < poly.length; i++) {
+      const ra = find(poly[0]!);
+      const rb = find(poly[i]!);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+  // Group the faces, keeping the order their roots are first seen.
+  const order: number[] = [];
+  const byRoot = new Map<number, number[][]>();
+  for (const poly of data.polys) {
+    const r = find(poly[0]!);
+    let list = byRoot.get(r);
+    if (!list) {
+      list = [];
+      byRoot.set(r, list);
+      order.push(r);
+    }
+    list.push(poly);
+  }
+
+  return order.map((r) =>
+    deleteLoose({ ...data, polys: byRoot.get(r)!.map((p) => [...p]) }),
+  );
+}

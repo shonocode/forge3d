@@ -3,6 +3,8 @@ import type { MeshData } from "../lib/mesh";
 import {
   recalcFaceNormals,
   connectVertsConcave,
+  deleteLoose,
+  separateLoose,
   type RecalcFaceNormalsReport,
   type ConnectVertsConcaveReport,
 } from "./mesh-repair";
@@ -290,5 +292,80 @@ describe("connectVertsConcave", () => {
     const after = connectVertsConcave(m);
     expect(after.creases?.get("0_1")).toBe(1);
     expect(after.seams?.has("4_5")).toBe(true);
+  });
+});
+
+describe("deleteLoose / separateLoose", () => {
+  /** A quad, plus a vertex no polygon uses. */
+  const withOrphan = () => ({
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 9, 9, 9]),
+    polys: [[0, 1, 2, 3]],
+  });
+
+  it("drops a vertex no polygon uses and renumbers the rest", () => {
+    const out = deleteLoose(withOrphan());
+    expect(out.positions.length / 3).toBe(4);
+    expect(out.polys).toEqual([[0, 1, 2, 3]]);
+  });
+
+  it("renumbers when the orphan is in the middle", () => {
+    const out = deleteLoose({
+      positions: new Float32Array([0, 0, 0, 9, 9, 9, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+      polys: [[0, 2, 3, 4]],
+    });
+    expect(out.positions.length / 3).toBe(4);
+    // Everything above the hole shifts down by one.
+    expect(out.polys).toEqual([[0, 1, 2, 3]]);
+    expect(Array.from(out.positions.slice(3, 6))).toEqual([1, 0, 0]);
+  });
+
+  it("is a no-op when every vertex is used", () => {
+    const before = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1]), polys: [[0, 1, 2]] };
+    const out = deleteLoose(before);
+    expect(Array.from(out.positions)).toEqual(Array.from(before.positions));
+    expect(out.polys).toEqual(before.polys);
+  });
+
+  it("carries creases across the renumbering and drops the ones that go", () => {
+    const out = deleteLoose({
+      positions: new Float32Array([0, 0, 0, 9, 9, 9, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+      polys: [[0, 2, 3, 4]],
+      creases: new Map([
+        ["2_3", 1],
+        ["0_1", 0.5], // names the orphan — goes with it
+      ]),
+    });
+    expect([...out.creases!.keys()].sort()).toEqual(["1_2"]);
+  });
+
+  it("separates a mesh into the pieces it was made of", () => {
+    // Two triangles that share nothing.
+    const out = separateLoose({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 0, 0, 1,
+        5, 0, 0, 6, 0, 0, 5, 0, 1,
+      ]),
+      polys: [[0, 1, 2], [3, 4, 5]],
+    });
+    expect(out).toHaveLength(2);
+    for (const piece of out) {
+      expect(piece.positions.length / 3).toBe(3);
+      expect(piece.polys).toEqual([[0, 1, 2]]);
+    }
+    expect(out[0]!.positions[0]).toBe(0);
+    expect(out[1]!.positions[0]).toBe(5);
+  });
+
+  it("keeps faces that share a single vertex in one piece", () => {
+    // Two triangles meeting at a corner are one piece, not two.
+    const out = separateLoose({
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 0, 0, 1,
+        -1, 0, 0, 0, 0, -1,
+      ]),
+      polys: [[0, 1, 2], [0, 3, 4]],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.positions.length / 3).toBe(5);
   });
 });

@@ -8,7 +8,57 @@
  * (Blender's default mode; topological "Connected" can come later).
  */
 
-export type ProportionalFalloff = "smooth" | "linear" | "sharp";
+export type ProportionalFalloff =
+  | "smooth"
+  | "linear"
+  | "sharp"
+  | "root"
+  | "sphere"
+  | "inverseSquare"
+  | "constant";
+
+/**
+ * Blender's falloff curves, as a function of `t` — 1 at the centre, 0 at the
+ * rim.
+ *
+ * All seven were measured off the running binary (Blender 5.1.1) through the
+ * Warp modifier, which exposes the same table under `falloff_type`:
+ * `tools/modeling/parity/probe-warp.py`. Proportional editing, Warp,
+ * vertex-weight proximity and the sculpt brushes all draw on it, so it lives
+ * in one place rather than once per caller.
+ *
+ * The first three were already here, written from the same family and now
+ * confirmed rather than assumed. `sphere` is the one a guess gets wrong — it
+ * is a quarter circle, `sqrt(2t − t²)`, not `sqrt(t)` (that is `root`).
+ *
+ * | curve | w(t) | w(0.25) measured |
+ * |---|---|---|
+ * | `constant` | 1 | 1.000000 |
+ * | `linear` | t | 0.250000 |
+ * | `sharp` | t² | 0.062500 |
+ * | `smooth` | t²(3 − 2t) | 0.156250 |
+ * | `root` | √t | 0.500000 |
+ * | `inverseSquare` | t(2 − t) | 0.437500 |
+ * | `sphere` | √(2t − t²) | 0.661438 |
+ */
+export function falloffWeight(t: number, falloff: ProportionalFalloff = "smooth"): number {
+  switch (falloff) {
+    case "constant":
+      return 1;
+    case "linear":
+      return t;
+    case "sharp":
+      return t * t;
+    case "root":
+      return Math.sqrt(t);
+    case "sphere":
+      return Math.sqrt(2 * t - t * t);
+    case "inverseSquare":
+      return t * (2 - t);
+    default:
+      return t * t * (3 - 2 * t); // smoothstep
+  }
+}
 
 /**
  * Compute per-vertex influence weights around a selection.
@@ -16,9 +66,8 @@ export type ProportionalFalloff = "smooth" | "linear" | "sharp";
  * Every seed vertex gets weight 1. Every other vertex within `radius` of the
  * nearest seed gets a weight in (0, 1) shaped by `falloff`:
  *
- * - `smooth`: smoothstep — Blender's default, eases in AND out
- * - `linear`: straight ramp
- * - `sharp`:  quadratic — influence hugs the selection
+ * shaped by `falloff` — see `falloffWeight` for the seven curves and the
+ * numbers they were measured against. `smooth` is Blender's default.
  *
  * Vertices at or beyond `radius` are omitted entirely, so the result's key
  * set doubles as the "affected vertices" list for snapshots and undo.
@@ -57,12 +106,7 @@ export function computeFalloffWeights(
     if (best >= r2) continue;
 
     const t = 1 - Math.sqrt(best) / radius; // 1 at the seed, 0 at the rim
-    let w: number;
-    switch (falloff) {
-      case "linear": w = t; break;
-      case "sharp": w = t * t; break;
-      default: w = t * t * (3 - 2 * t); // smoothstep
-    }
+    const w = falloffWeight(t, falloff);
     if (w > 1e-6) weights.set(v, w);
   }
   return weights;

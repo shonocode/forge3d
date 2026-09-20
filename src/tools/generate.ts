@@ -314,6 +314,18 @@ export interface RevolveOptions {
   profile: readonly Vec2[];
   /** Segments around — Blender's `steps`. Default 24. */
   steps?: number;
+  /**
+   * How far the profile climbs the axis over the whole sweep — Blender's
+   * **Screw** modifier's `screw_offset`, and `bmesh.ops.spin`'s `dvec` times
+   * its `steps` (dvec is per step, this is per turn). Default 0, a plain lathe.
+   *
+   * Non-zero turns the revolve into a helix: a spring, a thread, a spiral
+   * stair. **It also opens the shape** — a full turn that climbs cannot meet
+   * itself, so the seam stays open and there is one more station than steps.
+   * Measured: 3 profile points × 6 steps is 18 vertices at offset 0 and 21 at
+   * offset 0.5.
+   */
+  offset?: number;
   /** Sweep angle in radians — Blender's `angle`. Default 2π, left open if partial. */
   angle?: number;
   /** Where to put it. Blender's `cent`. */
@@ -327,14 +339,18 @@ export interface RevolveOptions {
  * turned leg, a faucet spout, a pendant shade.
  *
  * Blender: `bmesh.ops.spin(geom=, cent=, axis=, angle=, steps=)`. The axis is
- * fixed to +Y here, and `spin`'s `dvec` (which turns the revolve into a screw)
- * has no equivalent — `sweep` is the way to get a helix.
+ * fixed to +Y here. `spin`'s `dvec` is `offset`, measured against the Screw
+ * modifier; `sweep` remains the way to get a helix along an arbitrary path.
  */
 export function revolve(opts: RevolveOptions): MeshData {
   const prof = opts.profile;
   const seg = Math.max(3, opts.steps ?? 24);
   const angle = opts.angle ?? Math.PI * 2;
-  const closed = Math.abs(angle - Math.PI * 2) < 1e-6;
+  const offset = opts.offset ?? 0;
+  // A full turn that climbs cannot meet itself, so an offset opens the shape
+  // even at 2π. Measured: 18 vertices at offset 0 and 21 at offset 0.5, for
+  // the same three-point profile and six steps.
+  const closed = Math.abs(angle - Math.PI * 2) < 1e-6 && offset === 0;
   const [ax, ay, az] = opts.at ?? [0, 0, 0];
 
   const b = new Builder();
@@ -351,7 +367,12 @@ export function revolve(opts: RevolveOptions): MeshData {
     // put both out of step with Blender's `spin`. A full turn is the same
     // point set either way, so nothing that ships changed shape; a partial
     // turn is a mirror image, and that is what the parity row caught.
-    for (const p of prof) loop.push(b.vert(ax + ca * p[0], ay + p[1], az - sa * p[0]));
+    //
+    // The climb is spread evenly over the steps, not over the stations:
+    // measured, station 1 of 6 at offset 0.5 sits exactly 0.5/6 up.
+    const rise = (offset * i) / seg;
+    for (const p of prof)
+      loop.push(b.vert(ax + ca * p[0], ay + p[1] + rise, az - sa * p[0]));
     loops.push(loop);
   }
   // A profile drawn downwards produces an inside-out shell, so it is turned
