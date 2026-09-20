@@ -3,7 +3,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
 import { canonicalEdge, faceVertices, faceVerts, forEachEdge } from "./half-edge";
 import { meshFromData, meshToData } from "../../lib/mesh";
-import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads } from "./operators";
+import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads, reverseFaces, extrudeDiscreteFaces, connectVertPair, splitEdges, offsetEdgeLoops } from "./operators";
 
 /** Same stub mesh as half-edge.test.ts — just the surface we touch. */
 function makeStubMesh(positions: number[], indices: number[]): Mesh {
@@ -1096,5 +1096,117 @@ describe("bridgeEdgeLoops duplicate guard", () => {
 
     const keys = new Set(out.polys.map((p) => [...p].sort((a, b) => a - b).join(",")));
     expect(keys.size).toBe(12);
+  });
+});
+
+describe("reverseFaces / extrudeDiscreteFaces / connectVertPair / splitEdges / offsetEdgeLoops", () => {
+  /** A 2x2 grid of quads on the XZ plane, 9 verts, side 2. */
+  function grid2(): ReturnType<typeof meshFromData> {
+    const pos: number[] = [];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) pos.push(i, 0, j);
+    const polys: number[][] = [];
+    const at = (i: number, j: number): number => i * 3 + j;
+    for (let i = 0; i < 2; i++)
+      for (let j = 0; j < 2; j++)
+        polys.push([at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)]);
+    return meshFromData({ positions: new Float32Array(pos), polys });
+  }
+
+  it("reverseFaces turns the shell inside out and nothing else", () => {
+    const em = grid2();
+    const before = Array.from(em.positions);
+    reverseFaces(em, new Set([0, 1, 2, 3]));
+    expect(em.vertices).toHaveLength(9);
+    expect(em.faces).toHaveLength(4);
+    expect(Array.from(em.positions)).toEqual(before);
+    // Face 0 was [0, 3, 4, 1]; it now runs the other way. Compared as a cycle,
+    // because the rebuild is free to start it at any of its corners.
+    const got = faceVerts(em, 0);
+    const start = got.indexOf(0);
+    const rotated = [...got.slice(start), ...got.slice(0, start)];
+    expect(rotated).toEqual([0, 1, 4, 3]);
+  });
+
+  it("extrudeDiscreteFaces gives each face its own walls", () => {
+    // The whole point: the region form shares the seams between neighbours and
+    // this one does not. Four touching quads come back as four boxes.
+    // Measured against Blender on a 4x4 grid — 25/16 becomes 89/80 here and
+    // 50/32 for the region form.
+    const em = grid2();
+    const caps = extrudeDiscreteFaces(em, new Set([0, 1, 2, 3]));
+    expect(caps.size).toBe(4);
+    expect(em.faces).toHaveLength(4 * 5); // 4 caps + 4 walls each
+    expect(em.vertices).toHaveLength(9 + 4 * 4); // no sharing at all
+  });
+
+  it("connectVertPair cuts a quad along its diagonal", () => {
+    const em = grid2();
+    const made = connectVertPair(em, 0, 4); // opposite corners of face 0
+    expect(made.size).toBe(2);
+    expect(em.faces).toHaveLength(5);
+    expect(em.vertices).toHaveLength(9);
+  });
+
+  it("connectVertPair refuses corners that are already neighbours", () => {
+    const em = grid2();
+    expect(() => connectVertPair(em, 0, 1)).toThrow(/share no face|already joined/);
+  });
+
+  it("splitEdges tears a vertex only when its faces stop being reachable", () => {
+    // This is the rule, and it is why the operator is more than duplicating
+    // endpoints. Edge 3-4 of the 2×2 grid is held by two faces.
+    //
+    //   Vertex 3 sits on the sheet's border and those two faces are all it
+    //   has, joined to each other **only** through the edge being cut — so it
+    //   splits.
+    //   Vertex 4 is the middle of the sheet with four faces around it, and
+    //   cutting one edge still leaves them reachable the long way round — so
+    //   it does not.
+    //
+    // One copy, not two, and not zero.
+    const em = grid2();
+    let middle = -1;
+    forEachEdge(em, (he) => {
+      const a = edgeOrigin(em, he);
+      const b = edgeEnd(em, he);
+      if ((a === 3 && b === 4) || (a === 4 && b === 3)) middle = he;
+    });
+    expect(middle).toBeGreaterThanOrEqual(0);
+
+    const added = splitEdges(em, new Set([middle]));
+    expect(added.size).toBe(1);
+    expect(em.vertices).toHaveLength(10);
+    // The copy is of vertex 3, so it stands where vertex 3 stands.
+    const copy = [...added][0]!;
+    expect(em.positions[copy * 3]).toBeCloseTo(em.positions[3 * 3]!, 6);
+    expect(em.positions[copy * 3 + 2]).toBeCloseTo(em.positions[3 * 3 + 2]!, 6);
+  });
+
+  it("offsetEdgeLoops adds two coincident loops and moves nothing", () => {
+    // Measured against Blender on a 4x4 grid: 25 verts / 16 faces become
+    // 35 / 24, eight of the faces have zero area, and every coordinate stays.
+    const em = grid2();
+    const loop = new Set<number>();
+    forEachEdge(em, (he) => {
+      const a = edgeOrigin(em, he);
+      const b = edgeEnd(em, he);
+      // The loop at i = 1: verts 3, 4, 5.
+      if ([3, 4, 5].includes(a) && [3, 4, 5].includes(b)) loop.add(he);
+    });
+    expect(loop.size).toBe(2);
+
+    const before = new Set(
+      Array.from({ length: em.vertices.length }, (_, v) =>
+        [em.positions[v * 3], em.positions[v * 3 + 1], em.positions[v * 3 + 2]].join(","),
+      ),
+    );
+    const added = offsetEdgeLoops(em, loop);
+    expect(added.size).toBe(6); // three loop verts, copied twice
+    expect(em.vertices).toHaveLength(15);
+    // Nothing new in space — every copy landed on an existing position.
+    for (const v of added) {
+      const key = [em.positions[v * 3], em.positions[v * 3 + 1], em.positions[v * 3 + 2]].join(",");
+      expect(before.has(key)).toBe(true);
+    }
   });
 });

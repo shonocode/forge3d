@@ -2913,3 +2913,397 @@ const cross3 = (
   a[2] * b[0] - a[0] * b[2],
   a[0] * b[1] - a[1] * b[0],
 ];
+
+// ── Winding / discrete extrude / connecting verts ──────────────────────────
+
+/**
+ * Reverse the winding of the selected faces — Blender's
+ * `bmesh.ops.reverse_faces(faces=)`.
+ *
+ * Flips which side is the outside, one face at a time and without asking
+ * whether the result is consistent with its neighbours. {@link recalcFaceNormals}
+ * is the one that makes a whole shell agree; this is the manual override for
+ * when that guessed wrong, and for building a deliberately inward-facing shell.
+ *
+ * Nothing is added or removed, so vertex indices, creases and seams all carry
+ * through. Returns the faces it turned.
+ */
+export function reverseFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const out = polys.map((poly, f) => (selectedFaces.has(f) ? [...poly].reverse() : poly));
+  rebuildPolygons(em, em.positions, out);
+  return new Set(selectedFaces);
+}
+
+/**
+ * Extrude every selected face on its **own**, not as one region — Blender's
+ * `bmesh.ops.extrude_discrete_faces(faces=)`.
+ *
+ * The difference from {@link extrudeFaces} is what happens where two selected
+ * faces touch. The region form shares the duplicated vertices along that seam,
+ * so the two caps stay joined and no wall is built between them. This form
+ * gives each face its own copies, so every face grows a complete skirt and the
+ * pair comes back as two separate boxes standing side by side.
+ *
+ * Like every extrude here, it **moves nothing** — the cap lands exactly on the
+ * face it came from. Translating the returned faces is the second half.
+ *
+ * Returns the new caps.
+ */
+export function extrudeDiscreteFaces(
+  em: EditMesh,
+  selectedFaces: ReadonlySet<number>,
+): Set<number> {
+  if (selectedFaces.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+  const newPositions: number[] = Array.from(em.positions);
+  let nextV = em.vertices.length;
+
+  const newPolys: number[][] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
+  }
+
+  // Skirts first, caps after, so the cap ids are the tail of the list.
+  const caps: number[][] = [];
+  for (const f of selectedFaces) {
+    const poly = polys[f]!;
+    // Fresh duplicates per face — this is the whole difference from the
+    // region form, where a shared vertex is duplicated once.
+    const dup = poly.map((v) => {
+      const d = nextV++;
+      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+      return d;
+    });
+    // Every edge is a boundary when the face is its own region.
+    for (let i = 0; i < poly.length; i++) {
+      const j = (i + 1) % poly.length;
+      newPolys.push([poly[i]!, poly[j]!, dup[j]!, dup[i]!]);
+    }
+    caps.push(dup);
+  }
+
+  const capStart = newPolys.length;
+  for (const cap of caps) newPolys.push(cap);
+
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+
+  const out = new Set<number>();
+  for (let i = capStart; i < newPolys.length; i++) out.add(i);
+  return out;
+}
+
+/**
+ * Cut a face in two by joining two of its vertices — Blender's
+ * `bmesh.ops.connect_vert_pair(verts=)`.
+ *
+ * The two vertices have to share a face and must not already be neighbours in
+ * it: adjacent corners are joined by an edge already, and asking for that edge
+ * again would be asking for a zero-width face.
+ *
+ * **Scope: one face.** Blender's version will route a path across several
+ * faces when the pair does not share one, and that is a different (and much
+ * larger) operation — a path search with tie-breaks nobody here has measured.
+ * A pair with no common face is refused rather than approximated, so the
+ * caller finds out instead of receiving a mesh that quietly did nothing.
+ *
+ * Returns the two faces the original became.
+ */
+export function connectVertPair(em: EditMesh, a: number, b: number): Set<number> {
+  if (a === b) throw new Error(`connectVertPair: ${a} and ${b} are the same vertex`);
+
+  const polys = toPolygons(em);
+  let target = -1;
+  let ia = -1;
+  let ib = -1;
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
+    const pa = poly.indexOf(a);
+    const pb = poly.indexOf(b);
+    if (pa < 0 || pb < 0) continue;
+    const gap = Math.abs(pa - pb);
+    if (gap === 1 || gap === poly.length - 1) continue; // already an edge
+    target = f;
+    ia = pa;
+    ib = pb;
+    break;
+  }
+  if (target < 0)
+    throw new Error(
+      `connectVertPair: ${a} and ${b} share no face they could be cut apart in — ` +
+        `either they are not on one face, or they are already joined by an edge. ` +
+        `Routing a cut across several faces is Blender's behaviour and is not ` +
+        `implemented here.`,
+    );
+
+  const poly = polys[target]!;
+  const lo = Math.min(ia, ib);
+  const hi = Math.max(ia, ib);
+  // Both halves keep the parent's direction, so both keep its winding.
+  const first = poly.slice(lo, hi + 1);
+  const second = [...poly.slice(hi), ...poly.slice(0, lo + 1)];
+
+  const out: number[][] = [];
+  for (let f = 0; f < polys.length; f++) if (f !== target) out.push(polys[f]!);
+  const start = out.length;
+  out.push(first, second);
+
+  rebuildPolygons(em, em.positions, out);
+  return new Set([start, start + 1]);
+}
+
+// ── Split Edges (rip) ──────────────────────────────────────────────────────
+
+/**
+ * Tear the mesh apart along the selected edges — Blender's
+ * `bmesh.ops.split_edges(edges=)`.
+ *
+ * Every selected interior edge becomes two boundary edges, one for each face
+ * that held it, and the faces stop sharing vertices there. What makes this more
+ * than duplicating endpoints is deciding **how many copies each vertex needs**:
+ * a vertex where four quads meet and two opposite edges are cut splits into two
+ * vertices, one per pair of faces that are still joined; a vertex where only one
+ * cut edge arrives does not split at all, because the faces around it are still
+ * reachable from each other the long way.
+ *
+ * So the rule is a connectivity question asked per vertex: group the faces
+ * around it into runs joined by edges that were **not** cut, and give every run
+ * after the first its own copy. That is what `use_verts` means in Blender's UI
+ * as "Rip", and it is why ripping one edge out of the middle of a grid does not
+ * detach anything — the ring around each endpoint is still connected.
+ *
+ * Positions are copied, so the two sides start coincident. Moving one of them
+ * is the second half, the same split of responsibilities the extrudes have.
+ *
+ * Returns the vertices that gained a copy (their **new** indices).
+ */
+export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  if (selectedEdges.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+
+  /** The undirected edges being cut. */
+  const cut = new Set<string>();
+  for (const heRaw of selectedEdges) {
+    const he = em.halfEdges[heRaw];
+    if (!he) continue;
+    cut.add(seamKey(edgeOrigin(em, heRaw), edgeEnd(em, heRaw)));
+  }
+  if (cut.size === 0) return new Set();
+
+  /** Which faces use each vertex, and through which of its two edges there. */
+  const facesAt = new Map<number, number[]>();
+  for (let f = 0; f < polys.length; f++) {
+    for (const v of polys[f]!) {
+      const list = facesAt.get(v);
+      if (list) list.push(f);
+      else facesAt.set(v, [f]);
+    }
+  }
+
+  const newPositions: number[] = Array.from(em.positions);
+  let nextV = em.vertices.length;
+  /** face -> (oldVert -> the copy that face should use). */
+  const rename = new Map<number, Map<number, number>>();
+  const added = new Set<number>();
+
+  for (const [v, faces] of facesAt) {
+    if (faces.length < 2) continue;
+
+    // Two faces at this vertex stay together when they share an edge that
+    // runs through it and was not cut.
+    const parent = new Map<number, number>(faces.map((f) => [f, f]));
+    const find = (x: number): number => {
+      let r = x;
+      while (parent.get(r) !== r) r = parent.get(r)!;
+      return r;
+    };
+    let joinedAny = false;
+    for (const f of faces) {
+      const poly = polys[f]!;
+      const i = poly.indexOf(v);
+      for (const other of [poly[(i + 1) % poly.length]!, poly[(i - 1 + poly.length) % poly.length]!]) {
+        if (cut.has(seamKey(v, other))) continue;
+        // The other face on this uncut edge, if any.
+        for (const g of faces) {
+          if (g === f) continue;
+          const gp = polys[g]!;
+          const gi = gp.indexOf(v);
+          const gn = [gp[(gi + 1) % gp.length]!, gp[(gi - 1 + gp.length) % gp.length]!];
+          if (!gn.includes(other)) continue;
+          const rf = find(f);
+          const rg = find(g);
+          if (rf !== rg) {
+            parent.set(rf, rg);
+            joinedAny = true;
+          }
+        }
+      }
+    }
+    void joinedAny;
+
+    const runs = new Map<number, number[]>();
+    for (const f of faces) {
+      const r = find(f);
+      const list = runs.get(r);
+      if (list) list.push(f);
+      else runs.set(r, [f]);
+    }
+    if (runs.size < 2) continue; // still one piece — nothing to tear here
+
+    // The first run keeps the original index so unrelated geometry is untouched.
+    let first = true;
+    for (const [, group] of runs) {
+      if (first) {
+        first = false;
+        continue;
+      }
+      const copy = nextV++;
+      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+      added.add(copy);
+      for (const f of group) {
+        let map = rename.get(f);
+        if (!map) {
+          map = new Map();
+          rename.set(f, map);
+        }
+        map.set(v, copy);
+      }
+    }
+  }
+
+  if (added.size === 0) return new Set();
+
+  const out = polys.map((poly, f) => {
+    const map = rename.get(f);
+    return map ? poly.map((v) => map.get(v) ?? v) : poly;
+  });
+  rebuildPolygons(em, new Float32Array(newPositions), out);
+  return added;
+}
+
+// ── Offset Edge Loops ──────────────────────────────────────────────────────
+
+/**
+ * Put a parallel loop either side of the selected one — Blender's
+ * `bmesh.ops.offset_edgeloops(edges=)`, the Ctrl+Shift+R of the UI.
+ *
+ * **Nothing moves.** Both new loops land exactly on the one they flank, so the
+ * strips between them have no width and the mesh's area does not change. That
+ * is the operator, not an omission: the editor slides them afterwards, and
+ * `edgeSlide` is the second half here. Measured on a 4×4 grid with the middle
+ * loop selected — 25 vertices and 16 faces become **35 and 24, of which 8 have
+ * zero area**, and every x coordinate in the mesh is where it was.
+ *
+ * The faces on each side of the loop are re-attached to that side's copy, so
+ * the original loop ends up sandwiched between the two new strips.
+ *
+ * Refuses a selection whose adjacent faces do not fall into exactly two sides —
+ * a loop that does not separate what is around it has no "either side" to
+ * offset into, and guessing would produce a mesh nobody asked for.
+ *
+ * Returns the vertices it added.
+ */
+export function offsetEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+  if (selectedEdges.size === 0) return new Set();
+
+  const polys = toPolygons(em);
+
+  const loopEdges = new Set<string>();
+  const loopVerts = new Set<number>();
+  for (const heRaw of selectedEdges) {
+    if (!em.halfEdges[heRaw]) continue;
+    const a = edgeOrigin(em, heRaw);
+    const b = edgeEnd(em, heRaw);
+    loopEdges.add(seamKey(a, b));
+    loopVerts.add(a);
+    loopVerts.add(b);
+  }
+  if (loopEdges.size === 0) return new Set();
+
+  // Faces touching the loop through one of its edges — the ones that will be
+  // pushed onto a copy. A face merely touching a loop *vertex* is not one of
+  // them; it stays where it is.
+  const adjacent: number[] = [];
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      if (loopEdges.has(seamKey(poly[i]!, poly[(i + 1) % poly.length]!))) {
+        adjacent.push(f);
+        break;
+      }
+    }
+  }
+
+  // Two of those faces are on the same side when they share an edge that is
+  // not part of the loop. On a grid that walks each column; across the loop
+  // there is no such edge, which is what makes the two sides two groups.
+  const parent = new Map<number, number>(adjacent.map((f) => [f, f]));
+  const find = (x: number): number => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    return r;
+  };
+  for (const f of adjacent) {
+    for (const g of adjacent) {
+      if (g <= f) continue;
+      const pf = polys[f]!;
+      const pg = new Set<string>();
+      const gp = polys[g]!;
+      for (let i = 0; i < gp.length; i++) pg.add(seamKey(gp[i]!, gp[(i + 1) % gp.length]!));
+      for (let i = 0; i < pf.length; i++) {
+        const key = seamKey(pf[i]!, pf[(i + 1) % pf.length]!);
+        if (loopEdges.has(key) || !pg.has(key)) continue;
+        const rf = find(f);
+        const rg = find(g);
+        if (rf !== rg) parent.set(rf, rg);
+        break;
+      }
+    }
+  }
+
+  const sides = new Map<number, number[]>();
+  for (const f of adjacent) {
+    const r = find(f);
+    const list = sides.get(r);
+    if (list) list.push(f);
+    else sides.set(r, [f]);
+  }
+  if (sides.size !== 2)
+    throw new Error(
+      `offsetEdgeLoops: the selected edges have ${sides.size} side(s) of faces on ` +
+        `them, not 2 — a loop that does not separate what is around it has no ` +
+        `"either side" to offset into.`,
+    );
+
+  const newPositions: number[] = Array.from(em.positions);
+  let nextV = em.vertices.length;
+  const added = new Set<number>();
+  const out = polys.map((p) => [...p]);
+  const strips: number[][] = [];
+
+  for (const [, faces] of sides) {
+    const copy = new Map<number, number>();
+    for (const v of loopVerts) {
+      const c = nextV++;
+      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+      copy.set(v, c);
+      added.add(c);
+    }
+    for (const f of faces) out[f] = out[f]!.map((v) => copy.get(v) ?? v);
+
+    // A strip per loop edge, flat against it. Wound from the copied side so
+    // it pairs cleanly with the face that moved.
+    for (const key of loopEdges) {
+      const [a, b] = key.split("_").map(Number) as [number, number];
+      strips.push([a, b, copy.get(b)!, copy.get(a)!]);
+    }
+  }
+
+  out.push(...strips);
+  rebuildPolygons(em, new Float32Array(newPositions), out);
+  return added;
+}

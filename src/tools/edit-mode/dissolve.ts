@@ -363,3 +363,163 @@ export function dissolveLimit(
 
   return dissolveEdges(em, flat, { useVerts: true }, report);
 }
+
+/**
+ * Remove vertices and merge the faces that met at them — Blender's
+ * `bmesh.ops.dissolve_verts(verts=)`.
+ *
+ * The third of the set. {@link dissolveEdges} takes an edge away and joins the
+ * two faces either side; this takes a **corner** away and joins everything that
+ * met there, so a vertex with four quads around it comes back as one face with
+ * the corner gone.
+ *
+ * A vertex whose faces do not close into a single ring — one on an open
+ * boundary, or where the walk cannot be ordered — is counted in
+ * `report.skipped` rather than half-dissolved. That is the same contract
+ * {@link dissolveFaces} has, and it exists because a partial dissolve leaves a
+ * mesh that looks plausible and is not what was asked for.
+ */
+export function dissolveVerts(
+  em: EditMesh,
+  selectedVerts: ReadonlySet<number>,
+  report: DissolveReport = blank(),
+): DissolveReport {
+  if (selectedVerts.size === 0) return report;
+
+  const polys = toPolygons(em);
+  const parent = new Map<number, number>();
+  const find = (x: number): number => {
+    let r = x;
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+    return r;
+  };
+
+  // Every face touching a selected vertex joins that vertex's group. A face
+  // touching two selected vertices bridges their groups, which is what makes
+  // dissolving a run of vertices produce one face rather than several.
+  let any = false;
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
+    let anchor = -1;
+    for (const v of poly) {
+      if (!selectedVerts.has(v)) continue;
+      if (anchor < 0) {
+        anchor = f;
+        if (parent.get(f) === undefined) parent.set(f, f);
+      }
+      // Tie every face at this vertex together.
+      for (let g = 0; g < polys.length; g++) {
+        if (g === f || !polys[g]!.includes(v)) continue;
+        if (parent.get(g) === undefined) parent.set(g, g);
+        const rf = find(f);
+        const rg = find(g);
+        if (rf !== rg) parent.set(rf, rg);
+        any = true;
+      }
+    }
+  }
+  if (!any) return report;
+
+  const groups = new Map<number, number>();
+  for (const f of parent.keys()) groups.set(f, find(f));
+  mergeGroups(em, groups, false, report);
+
+  // Merging alone is not the operation. Two things are left, and both were
+  // found by measurement rather than reasoning:
+  //
+  // 1. **A selected vertex on the merged border survives the merge.** Only a
+  //    fully surrounded one drops out of the boundary loop. Dissolving every
+  //    vertex of a 4×4 grid left forge3d with one 16-sided face where Blender
+  //    is left with nothing at all — the border vertices were selected too,
+  //    and asking for them to go means they go.
+  //
+  // 2. **The loop that is left can be a face that already exists.** Dissolving
+  //    a cube's top four corners merges the top and the four sides, and the
+  //    border of that region is the bottom rim — which is the bottom face,
+  //    already there. Emitting it gave two coincident quads, area 2.0 against
+  //    Blender's 1.0, and **the distance check could not see it**: sampling a
+  //    doubled surface gives the same points. Only the area column said so.
+  //    Same rule bmesh follows everywhere, and the same one `bridgeEdgeLoops`
+  //    needed when it was building tubes with two walls.
+  const after = toPolygons(em);
+  const seen = new Set<string>();
+  const kept: number[][] = [];
+  for (const poly of after) {
+    const trimmed = poly.filter((v) => !selectedVerts.has(v));
+    if (trimmed.length < 3) continue;
+    const key = [...trimmed].sort((a, b) => a - b).join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(trimmed);
+  }
+  rebuildPolygons(em, em.positions, kept);
+
+  // Orphaned vertices stay, like every other dissolve here — Blender drops
+  // them, and matching that would shift every index above the hole and reach
+  // into selection, undo and skin weights. Measured as 8 against 4 on a cube.
+  return report;
+}
+
+/**
+ * Cut faces apart by joining the selected vertices inside them — Blender's
+ * `bmesh.ops.connect_verts(verts=)`.
+ *
+ * The many-vertex form of {@link connectVertPair}. Within one face, the
+ * selected corners are joined in the order they appear around it, so two
+ * corners give two pieces and three give three pieces plus the triangle
+ * between them.
+ *
+ * Corners that are already neighbours in the face are skipped — the edge
+ * joining them exists, and cutting there would ask for a face with no width.
+ * Faces with fewer than two selected corners are left alone.
+ *
+ * Returns the faces it produced.
+ */
+export function connectVerts(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<number> {
+  if (selectedVerts.size < 2) return new Set();
+
+  const polys = toPolygons(em);
+  const out: number[][] = [];
+  const made = new Set<number>();
+
+  for (const poly of polys) {
+    const at: number[] = [];
+    for (let i = 0; i < poly.length; i++) if (selectedVerts.has(poly[i]!)) at.push(i);
+
+    if (at.length < 2) {
+      out.push(poly);
+      continue;
+    }
+
+    // Arcs between consecutive selected corners, walking the face's own
+    // direction so every piece keeps the parent's winding.
+    const pieces: number[][] = [];
+    for (let k = 0; k < at.length; k++) {
+      const from = at[k]!;
+      const to = at[(k + 1) % at.length]!;
+      const arc: number[] = [];
+      for (let i = from; ; i = (i + 1) % poly.length) {
+        arc.push(poly[i]!);
+        if (i === to) break;
+      }
+      // Two corners long means they were already neighbours: no face there.
+      if (arc.length >= 3) pieces.push(arc);
+    }
+    // Three or more corners also leave a face in the middle, bounded by the
+    // new edges themselves. Two corners do not — the arcs are the whole face.
+    if (at.length >= 3) pieces.push(at.map((i) => poly[i]!));
+
+    if (pieces.length < 2) {
+      out.push(poly);
+      continue;
+    }
+    for (const piece of pieces) {
+      made.add(out.length);
+      out.push(piece);
+    }
+  }
+
+  if (made.size === 0) return new Set();
+  rebuildPolygons(em, em.positions, out);
+  return made;
+}
