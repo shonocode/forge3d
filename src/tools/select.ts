@@ -29,6 +29,7 @@
  *
  * Pure and headless — no scene, no picking, no selection state.
  */
+import type { MeshData } from "../lib/mesh";
 import type { EditMesh } from "./edit-mode/half-edge";
 import {
   faceVerts,
@@ -239,4 +240,120 @@ export function nearestEdges(
 
   scored.sort((a, b) => a.d2 - b.d2);
   return scored.slice(0, count).map((s) => s.edge);
+}
+
+export interface RegionExtendOptions {
+  /**
+   * Shrink instead of grow — Blender's `use_contract`. Default false.
+   *
+   * Growing returns the faces **outside** the selection that touch it;
+   * shrinking returns the faces **inside** it that touch something outside.
+   * Either way the answer is the *change*, not the new selection.
+   */
+  contract?: boolean;
+  /**
+   * Count a face that shares only a **vertex** as adjacent — Blender's
+   * `use_face_step`. Default false, which counts only faces sharing an edge.
+   *
+   * Measured on the shrinking side too, which needed a case built for it: a
+   * 3×3 block of a grid with one corner left out. Its middle face is
+   * surrounded on all four edges but touches the missing corner at a point,
+   * and that is the only arrangement that tells the two adjacencies apart.
+   * With `faceStep` the middle face is dropped; without it, it stays.
+   */
+  faceStep?: boolean;
+}
+
+/**
+ * Grow or shrink a face selection by one step — Blender's
+ * `bmesh.ops.region_extend`, the Select ▸ Grow/Shrink of the UI.
+ *
+ * ```ts
+ * const top = selectFaces(mesh, facing([0, 1, 0]));
+ * const ring = regionExtend(mesh, top);                       // the band around it
+ * const rim = regionExtend(mesh, top, { contract: true });     // its own border
+ * ```
+ *
+ * The rest of this module picks faces by **description** — which way they
+ * face, where their centre is, how many sides they have — and that vocabulary
+ * cannot say "these, plus the ones touching them", because that is defined by
+ * the mesh rather than by space. This is the operator for it, and it is why
+ * the API matrix's old note that forge3d "has a predicate vocabulary instead"
+ * was an argument about style rather than a reason to leave a hole.
+ *
+ * **Returns what changed**, matching Blender: the faces that would join the
+ * selection, or the ones that would leave it. Union or subtract for the new
+ * selection.
+ *
+ * ## Measured
+ *
+ * On a 4×4 grid, face `r*4 + c`:
+ *
+ * | selection | grow | grow, `faceStep` | shrink |
+ * |---|---|---|---|
+ * | face 5 | 1, 4, 6, 9 | 0, 1, 2, 4, 6, 8, 9, 10 | 5 |
+ * | face 0, a corner | 1, 4 | 1, 4, 5 | 0 |
+ * | faces 5, 6, 9, 10 | 1, 2, 4, 7, 8, 11, 13, 14 | + 0, 3, 12, 15 | all four |
+ * | the whole grid | nothing | — | **nothing** |
+ *
+ * The last row is the one worth knowing: **shrinking the whole grid removes
+ * nothing.** "Border" means the border of the *selection*, not of the mesh, so
+ * a selection with nothing outside it has no border to lose.
+ */
+export function regionExtend(
+  mesh: MeshData,
+  faces: ReadonlySet<number>,
+  opts: RegionExtendOptions = {},
+): Set<number> {
+  const contract = opts.contract ?? false;
+  const faceStep = opts.faceStep ?? false;
+
+  const atVertex = new Map<number, number[]>();
+  const atEdge = new Map<string, number[]>();
+  const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+
+  for (let f = 0; f < mesh.polys.length; f++) {
+    const poly = mesh.polys[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const vs = atVertex.get(a);
+      if (vs) vs.push(f);
+      else atVertex.set(a, [f]);
+      const key = edgeKey(a, b);
+      const es = atEdge.get(key);
+      if (es) es.push(f);
+      else atEdge.set(key, [f]);
+    }
+  }
+
+  const neighbours = (f: number): Set<number> => {
+    const poly = mesh.polys[f]!;
+    const out = new Set<number>();
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      if (faceStep) {
+        for (const g of atVertex.get(a) ?? []) if (g !== f) out.add(g);
+      } else {
+        const b = poly[(i + 1) % poly.length]!;
+        for (const g of atEdge.get(edgeKey(a, b)) ?? []) if (g !== f) out.add(g);
+      }
+    }
+    return out;
+  };
+
+  const changed = new Set<number>();
+  for (let f = 0; f < mesh.polys.length; f++) {
+    const inside = faces.has(f);
+    // Growing walks the faces that are out and asks whether anything in
+    // touches them; shrinking walks the ones that are in and asks the
+    // opposite. Both come down to "a neighbour on the other side".
+    if (inside !== contract) continue;
+    for (const g of neighbours(f))
+      if (faces.has(g) !== inside) {
+        changed.add(f);
+        break;
+      }
+  }
+  return changed;
 }

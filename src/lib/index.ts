@@ -248,6 +248,8 @@ export {
   edgeMidpoint,
   edgeAlong,
   nearestEdges,
+  regionExtend,
+  type RegionExtendOptions,
   type FacePredicate,
   type EdgePredicate,
 } from "../tools/select";

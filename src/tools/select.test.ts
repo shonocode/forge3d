@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { box } from "./generate";
-import { meshFromData, meshToData } from "../lib/mesh";
+import { meshFromData, meshToData, type MeshData } from "../lib/mesh";
 import { extrudeFacesBy, scaleFaces } from "./edit-mode/face-transform";
 import {
   faceCentroid,
@@ -19,6 +19,7 @@ import {
   edgeAlong,
   edgeMidpoint,
   nearestEdges,
+  regionExtend,
 } from "./select";
 
 /** A unit cube centred on the origin: six quads, one per axis direction. */
@@ -214,5 +215,92 @@ describe("edge selection", () => {
     // "click on the rim" work on a bowl.
     const [vertical] = nearestEdges(em, [1, 1, 1], 1, edgeAlong([0, 1, 0], 10));
     expect(edgeMidpoint(em, vertical!)).toEqual([1, 0, 1]);
+  });
+});
+
+describe("regionExtend", () => {
+  /**
+   * The 4×4 grid the Blender probe used — face `r * 4 + c`, so
+   *
+   *   12 13 14 15
+   *    8  9 10 11
+   *    4  5  6  7
+   *    0  1  2  3
+   */
+  function grid4(): MeshData {
+    const positions: number[] = [];
+    for (let r = 0; r <= 4; r++)
+      for (let c = 0; c <= 4; c++) positions.push(c * 0.25 - 0.5, r * 0.25 - 0.5, 0);
+    const polys: number[][] = [];
+    for (let r = 0; r < 4; r++)
+      for (let c = 0; c < 4; c++)
+        polys.push([r * 5 + c, r * 5 + c + 1, (r + 1) * 5 + c + 1, (r + 1) * 5 + c]);
+    return { positions: new Float32Array(positions), polys };
+  }
+
+  const sorted = (s: ReadonlySet<number>): number[] => [...s].sort((a, b) => a - b);
+  const g = grid4();
+
+  // Every expectation is a Blender 5.1.1 result from
+  // tools/modeling/parity/probe-region-extend.py.
+
+  it("grows to the faces sharing an edge", () => {
+    expect(sorted(regionExtend(g, new Set([5])))).toEqual([1, 4, 6, 9]);
+    expect(sorted(regionExtend(g, new Set([0])))).toEqual([1, 4]);
+    expect(sorted(regionExtend(g, new Set([5, 6, 9, 10])))).toEqual([
+      1, 2, 4, 7, 8, 11, 13, 14,
+    ]);
+  });
+
+  it("grows to the faces sharing only a vertex with faceStep", () => {
+    expect(sorted(regionExtend(g, new Set([5]), { faceStep: true }))).toEqual([
+      0, 1, 2, 4, 6, 8, 9, 10,
+    ]);
+    expect(sorted(regionExtend(g, new Set([0]), { faceStep: true }))).toEqual([1, 4, 5]);
+    expect(sorted(regionExtend(g, new Set([5, 6, 9, 10]), { faceStep: true }))).toEqual([
+      0, 1, 2, 3, 4, 7, 8, 11, 12, 13, 14, 15,
+    ]);
+  });
+
+  it("returns what changed, not the new selection", () => {
+    // Blender returns the extension. A single face grows to four neighbours
+    // and the face itself is not among them.
+    expect(regionExtend(g, new Set([5])).has(5)).toBe(false);
+  });
+
+  it("shrinks to the selection's own border", () => {
+    expect(sorted(regionExtend(g, new Set([5]), { contract: true }))).toEqual([5]);
+    expect(sorted(regionExtend(g, new Set([5, 6, 9, 10]), { contract: true }))).toEqual([
+      5, 6, 9, 10,
+    ]);
+    // A 3×3 block: only its middle survives.
+    const block = new Set([5, 6, 7, 9, 10, 11, 13, 14, 15]);
+    expect(sorted(regionExtend(g, block, { contract: true }))).toEqual([5, 6, 7, 9, 13]);
+  });
+
+  it("uses the selection's border, not the mesh's", () => {
+    // The whole grid has nothing outside it, so shrinking removes nothing —
+    // the outer faces are on the *mesh* boundary, which does not count.
+    const all = new Set(g.polys.map((_, i) => i));
+    expect(sorted(regionExtend(g, all, { contract: true }))).toEqual([]);
+    expect(sorted(regionExtend(g, all))).toEqual([]);
+  });
+
+  it("applies faceStep when shrinking too", () => {
+    // The case built to tell the two adjacencies apart: a 3×3 block with one
+    // corner missing. Face 10 has all four edge-neighbours inside but touches
+    // the absent 15 at a point.
+    const notched = new Set([5, 6, 7, 9, 10, 11, 13, 14]);
+    expect(sorted(regionExtend(g, notched, { contract: true }))).toEqual([
+      5, 6, 7, 9, 11, 13, 14,
+    ]);
+    expect(sorted(regionExtend(g, notched, { contract: true, faceStep: true }))).toEqual([
+      5, 6, 7, 9, 10, 11, 13, 14,
+    ]);
+  });
+
+  it("returns nothing for an empty selection", () => {
+    expect(sorted(regionExtend(g, new Set()))).toEqual([]);
+    expect(sorted(regionExtend(g, new Set(), { contract: true }))).toEqual([]);
   });
 });
