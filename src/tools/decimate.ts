@@ -70,9 +70,21 @@ function quadricError(q: Quadric, x: number, y: number, z: number): number {
  * one lets a nearly-flat neighbourhood through, and the solve then answers
  * with a point a long way off that has a *low* computed cost — low because the
  * quadric barely constrains that direction, not because the point is good.
- * Measured: with an absolute 1e-12, decimating the `character` cage to half
- * put a vertex **62.6 mm** off the original surface where Blender's worst was
- * 1.70 mm.
+ *
+ * It is not on its own enough, and an earlier version of this comment said it
+ * was. Decimating `character` to half, measured as (mean / worst) millimetres
+ * of the output's surface from the input's:
+ *
+ * | conditioning | one-ring leash | |
+ * |---|---|---|
+ * | absolute | none | 0.955 / 62.64 |
+ * | **relative** | none | 0.592 / 62.52 |
+ * | absolute | **yes** | 0.990 / 45.81 |
+ * | **relative** | **yes** | **0.480 / 26.47** |
+ *
+ * The threshold moves the mean, the leash moves the worst case, and only the
+ * pair gets both. Blender's worst on the same input is 1.70 mm, so this is
+ * still behind — see `tools/modeling/parity/decimate-quality.ts`.
  */
 function optimalPoint(q: Quadric): [number, number, number] | null {
   const a = q[0]!, b = q[1]!, c = q[2]!;
@@ -239,19 +251,49 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     const best = optimalPoint(q);
     // A leash as well as the conditioning test: even a solve that passes can
     // land somewhere absurd on a surface that is flat in one direction, and a
-    // collapse is meant to put the new vertex *on* the edge it replaces, not
-    // out in space. Two edge-lengths from the midpoint is generous — the
-    // optimal point for a genuine crease sits between the two ends.
+    // collapse is meant to put the new vertex where the edge *was*, not out in
+    // space.
+    //
+    // **Removing this leash costs 26.5 mm → 62.5 mm** on `character` at ratio
+    // 0.5, measured by taking it out and re-running. It is the load-bearing
+    // half of that fix; see the note on `optimalPoint` for the other half.
+    //
+    // The bound is the one-ring rather than a multiple of the edge length on
+    // the argument that an edge-length leash loosens exactly where it is
+    // needed most — as the mesh coarsens the edges grow. **The two spellings
+    // measured identically on all three production cages**, so that argument
+    // is untested and this is the more principled of two equals.
+    //
+    // What it catches shows up as `out→input` distance: the output has
+    // surface the input never had. The single Hausdorff number hides which
+    // direction the error is in; `.diag`-style splitting is what found it.
     if (best) {
-      const mx = (P[u * 3]! + P[v * 3]!) / 2;
-      const my = (P[u * 3 + 1]! + P[v * 3 + 1]!) / 2;
-      const mz = (P[u * 3 + 2]! + P[v * 3 + 2]!) / 2;
-      const len = Math.hypot(
-        P[v * 3]! - P[u * 3]!,
-        P[v * 3 + 1]! - P[u * 3 + 1]!,
-        P[v * 3 + 2]! - P[u * 3 + 2]!,
-      );
-      if (Math.hypot(best[0] - mx, best[1] - my, best[2] - mz) <= 2 * len) options.push(best);
+      let cx = 0, cy = 0, cz = 0, n = 0;
+      for (const side of [u, v])
+        for (const t of vertTris[side]!) {
+          const f = live[t];
+          if (!f) continue;
+          for (const w of f) {
+            cx += P[w * 3]!;
+            cy += P[w * 3 + 1]!;
+            cz += P[w * 3 + 2]!;
+            n++;
+          }
+        }
+      if (n > 0) {
+        cx /= n; cy /= n; cz /= n;
+        let radius = 0;
+        for (const side of [u, v])
+          for (const t of vertTris[side]!) {
+            const f = live[t];
+            if (!f) continue;
+            for (const w of f) {
+              const d = Math.hypot(P[w * 3]! - cx, P[w * 3 + 1]! - cy, P[w * 3 + 2]! - cz);
+              if (d > radius) radius = d;
+            }
+          }
+        if (Math.hypot(best[0] - cx, best[1] - cy, best[2] - cz) <= radius) options.push(best);
+      }
     }
     options.push([P[u * 3]!, P[u * 3 + 1]!, P[u * 3 + 2]!]);
     options.push([P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]);
