@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { deleteLoose } from "./mesh-repair";
 import { box, plane } from "./generate";
 import {
   mergeMeshes,
@@ -9,6 +10,7 @@ import {
   radialArray,
   arrayAlongPath,
   weldMesh,
+  maskMesh,
   wireframe,
   boundsOf,
 } from "./mesh-ops";
@@ -343,5 +345,92 @@ describe("wireframe", () => {
     });
     // (0.5, 0.5) is the middle of one of the four quads.
     for (const [x, z] of centres) expect(Math.hypot(x! - 0.5, z! - 0.5)).toBeGreaterThan(0.05);
+  });
+});
+
+describe("maskMesh", () => {
+  /**
+   * Two quads sharing an edge: 0-1-4-3 and 1-2-5-4, on a row of six.
+   *
+   *   3---4---5
+   *   |   |   |
+   *   0---1---2
+   */
+  const strip = () => ({
+    positions: new Float32Array([
+      0, 0, 0, 1, 0, 0, 2, 0, 0,
+      0, 1, 0, 1, 1, 0, 2, 1, 0,
+    ]),
+    polys: [
+      [0, 1, 4, 3],
+      [1, 2, 5, 4],
+    ],
+  });
+
+  it("drops a polygon when any one of its vertices goes", () => {
+    // Three corners of the left quad is not enough — measured on Blender,
+    // where 9 vertices masked to 3 came back with no faces at all.
+    const out = maskMesh(strip(), new Set([0, 1, 3]));
+    expect(out.positions.length / 3).toBe(3);
+    expect(out.polys).toEqual([]);
+  });
+
+  it("keeps a vertex whose polygons have all gone", () => {
+    // The loose-vertex half of the same rule. Blender does not sweep them up
+    // and neither does this; `deleteLoose` is the operator for that.
+    const out = maskMesh(strip(), new Set([0, 1, 3]));
+    expect(out.positions.length / 3).toBe(3);
+    expect(deleteLoose(out).positions.length / 3).toBe(0);
+  });
+
+  it("renumbers in the original order", () => {
+    const out = maskMesh(strip(), new Set([1, 2, 4, 5]));
+    expect(out.polys).toEqual([[0, 1, 3, 2]]); // was [1, 2, 5, 4]
+    expect([...out.positions.slice(0, 3)]).toEqual([1, 0, 0]);
+  });
+
+  it("keeps a vertex only when its weight is strictly above the threshold", () => {
+    // Measured: weight 0.5 against threshold 0.5 is dropped, and 0.4 against
+    // 0.3 is kept. A `>=` here would pass the second and fail the first.
+    const all = new Map([0, 1, 2, 3, 4, 5].map((v) => [v, 0.5] as const));
+    expect(maskMesh(strip(), all).positions.length / 3).toBe(0);
+    const lower = new Map([0, 1, 2, 3, 4, 5].map((v) => [v, 0.4] as const));
+    expect(maskMesh(strip(), lower, { threshold: 0.3 }).positions.length / 3).toBe(6);
+  });
+
+  it("inverts the test, not the weight", () => {
+    // The one that separates the two readings: at weight 0.6 against a
+    // threshold of 0.3, inverting the **test** drops everything, while
+    // inverting the *weight* would keep it all (1 − 0.6 is still above 0.3).
+    // Blender drops it — measured in probe-face-add3.py.
+    const w = new Map([0, 1, 2, 3, 4, 5].map((v) => [v, 0.6] as const));
+    expect(maskMesh(strip(), w, { threshold: 0.3, invert: true }).positions.length / 3).toBe(0);
+    expect(maskMesh(strip(), w, { threshold: 0.3 }).positions.length / 3).toBe(6);
+  });
+
+  it("treats a vertex nobody mentions as weight 0", () => {
+    const out = maskMesh(strip(), new Map([[0, 1]]), { invert: true });
+    expect(out.positions.length / 3).toBe(5); // everything but vertex 0
+  });
+
+  it("carries creases and seams through the renumbering", () => {
+    // `deleteLoose` renumbered and then handed back the **old** seam set until
+    // 2026-09-21; nothing in the parity harness compares seams, so this is the
+    // only thing that catches it.
+    const out = maskMesh(
+      { ...strip(), creases: new Map([["1_4", 1]]), seams: new Set(["4_5"]) },
+      new Set([1, 2, 4, 5]),
+    );
+    // 1→0, 2→1, 4→2, 5→3.
+    expect([...out.creases!]).toEqual([["0_2", 1]]);
+    expect([...out.seams!]).toEqual(["2_3"]);
+  });
+
+  it("drops a crease whose edge did not survive", () => {
+    const out = maskMesh(
+      { ...strip(), creases: new Map([["0_1", 1], ["1_4", 0.5]]) },
+      new Set([1, 2, 4, 5]),
+    );
+    expect([...out.creases!]).toEqual([["0_2", 0.5]]);
   });
 });

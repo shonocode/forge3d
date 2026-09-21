@@ -114,6 +114,7 @@ export {
   symmetrize,
   convexHull,
   bisectPlane,
+  maskMesh,
   type TransformOptions,
   type MirrorOptions,
   type RadialArrayOptions,
@@ -123,6 +124,7 @@ export {
   type SymmetrizeOptions,
   type ConvexHullReport,
   type BisectPlaneOptions,
+  type MaskOptions,
 } from "../tools/mesh-ops";
 
 // ── Topology operators ─────────────────────────────────────────────────────
@@ -192,8 +194,10 @@ export {
 
 // ── Refine ─────────────────────────────────────────────────────────────────
 // Adding detail, relaxing it, closing what is left open. Three of the four
-// have a Blender default that does the opposite of what a reader expects; the
-// JSDoc on each says which.
+// fills have a Blender default that does the opposite of what a reader
+// expects; the JSDoc on each says which. `edgeFaceAdd` is the F key -- the one
+// that takes an unordered set of vertices rather than a loop and works the
+// ring out itself.
 export {
   poke,
   subdivideEdges,
@@ -207,6 +211,7 @@ export {
   type SmoothVertOptions,
   type HolesFillOptions,
 } from "../tools/edit-mode/refine";
+export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
 
 // ── Moving a face selection ────────────────────────────────────────────────
 // `extrudeFaces` duplicates and stitches but does not move — in the editor the
@@ -277,15 +282,17 @@ export {
 } from "../tools/deform";
 
 // ── Repair ─────────────────────────────────────────────────────────────────
-// Making generated geometry well-formed before the next stage sees it. Both
-// are Blender operators, and both are here because a generator can emit a mesh
-// that is wrong in a way nothing downstream reports: a shell wound inward, or
-// a concave n-gon that Catmull-Clark will fold.
+// Making generated geometry well-formed before the next stage sees it. All are
+// Blender operators, and the first two are here because a generator can emit a
+// mesh that is wrong in a way nothing downstream reports: a shell wound inward,
+// or a concave n-gon that Catmull-Clark will fold. `compactMesh` is the
+// renumbering the other two share, exported because `maskMesh` needs it too.
 export {
   recalcFaceNormals,
   connectVertsConcave,
   deleteLoose,
   separateLoose,
+  compactMesh,
   type RecalcFaceNormalsReport,
   type ConnectVertsConcaveReport,
 } from "../tools/mesh-repair";

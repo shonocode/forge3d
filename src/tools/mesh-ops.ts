@@ -16,6 +16,7 @@
  */
 import type { MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
+import { compactMesh } from "./mesh-repair";
 import type { Vec3 } from "./generate";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
@@ -1347,4 +1348,63 @@ export function convexHull(
   report.interior = n - remap.size;
   report.degenerate = polys.length === 0;
   return { positions: new Float32Array(positions), polys };
+}
+
+export interface MaskOptions {
+  /**
+   * A vertex is kept when its weight is **strictly above** this. Default 0.5,
+   * Blender's. Strictly: a weight of exactly 0.5 against a threshold of 0.5 is
+   * dropped, measured.
+   */
+  threshold?: number;
+  /**
+   * Flip the test — keep what the weights do *not* select. Blender's
+   * `invert_vertex_group`.
+   *
+   * **It inverts the test, not the weight.** Measured: four vertices at weight
+   * 0.6 against a threshold of 0.3, inverted, all disappear. Had it inverted
+   * the weight they would have stayed, because 1 − 0.6 is still above 0.3.
+   */
+  invert?: boolean;
+}
+
+/**
+ * Keep the part of a mesh its weights select — Blender's **Mask** modifier.
+ *
+ * The cheap way to take a mesh apart along something other than its connected
+ * pieces: keep the faces above a line, drop the half a mirror is about to
+ * replace, cut a generated room down to the wall a screenshot needs.
+ * {@link separateLoose} splits by what is joined to what; this splits by what
+ * the caller says.
+ *
+ * `weights` is either a `Set` of vertices — every one of them weight 1, which
+ * is what a selection means — or a `Map` from vertex to weight, which is what
+ * a Blender vertex group is. A vertex not mentioned has weight 0.
+ *
+ * ## The two rules, measured
+ *
+ * - **A polygon survives only when every one of its vertices does.** Three
+ *   corners of a quad in the group is not enough; the quad goes.
+ * - **A kept vertex stays even when no polygon uses it.** Masking the middle
+ *   of a sheet leaves its rim behind as loose vertices. Follow with
+ *   {@link deleteLoose} if that is not wanted — Blender does not do it either.
+ *
+ * Vertices come back in their original order, renumbered, with creases and
+ * seams carried through.
+ */
+export function maskMesh(
+  data: MeshData,
+  weights: ReadonlySet<number> | ReadonlyMap<number, number>,
+  opts: MaskOptions = {},
+): MeshData {
+  const threshold = opts.threshold ?? 0.5;
+  const invert = opts.invert ?? false;
+  const weightOf = (v: number): number =>
+    weights instanceof Map ? (weights.get(v) ?? 0) : weights.has(v) ? 1 : 0;
+
+  const keep = new Set<number>();
+  for (let v = 0; v < data.positions.length / 3; v++)
+    if ((weightOf(v) > threshold) !== invert) keep.add(v);
+
+  return compactMesh(data, keep);
 }

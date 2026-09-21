@@ -1,8 +1,8 @@
 /**
  * Making generated geometry well-formed enough for the next stage.
  *
- * Both functions here are Blender operations, named as Blender names them, and
- * both exist because `tools/modeling` had to write them itself:
+ * Everything here is a Blender operation, named as Blender names it. The first
+ * two exist because `tools/modeling` had to write them itself:
  *
  * - {@link recalcFaceNormals} — `bmesh.ops.recalc_face_normals`. `raster.ts`
  *   had `orientOutward`, which flips the whole mesh when its signed volume
@@ -17,9 +17,13 @@
  *   0.0000mm — so the split is the right fix rather than a workaround, and it
  *   is an operation Blender ships.
  *
- * Both work on {@link MeshData} rather than an `EditMesh`. Blender's are BMesh
- * operators, but the place these are needed is the generator's output, before
- * anything has been handed to the operator layer at all.
+ * {@link deleteLoose} and {@link separateLoose} came later, from the parity
+ * harness: five dissolve rows each carried a "Blender has fewer vertices"
+ * footnote, and this is the operator that footnote was about.
+ *
+ * All of them work on {@link MeshData} rather than an `EditMesh`. Blender's
+ * are BMesh operators, but the place these are needed is the generator's
+ * output, before anything has been handed to the operator layer at all.
  *
  * Pure and headless — Vitest-pinned.
  */
@@ -520,33 +524,64 @@ export function connectVertsConcave(
 export function deleteLoose(data: MeshData): MeshData {
   const used = new Set<number>();
   for (const poly of data.polys) for (const v of poly) used.add(v);
+  return compactMesh(data, used);
+}
 
+/**
+ * Keep only the listed vertices, renumbering what is left.
+ *
+ * A polygon survives only when **every** one of its vertices does — the rule
+ * Blender's Mask modifier uses, and the one {@link deleteLoose} needs as a
+ * special case where nothing it drops is in a polygon anyway. A kept vertex
+ * that no polygon uses stays: masking away the middle of a sheet leaves its
+ * loose rim behind, which is measured, not assumed.
+ *
+ * Creases **and seams** are carried through with the new numbering. Seams were
+ * not, until 2026-09-21: `deleteLoose` renumbered the vertices and spread the
+ * old `seams` set on unchanged, so every seam key pointed at whatever vertex
+ * had taken that number. Nothing in the parity harness compares seams, so the
+ * only thing that could catch it is this sentence.
+ */
+export function compactMesh(data: MeshData, keep: ReadonlySet<number>): MeshData {
   const count = data.positions.length / 3;
-  if (used.size === count) return { ...data, polys: data.polys.map((p) => [...p]) };
 
   const remap = new Map<number, number>();
   const positions: number[] = [];
   for (let v = 0; v < count; v++) {
-    if (!used.has(v)) continue;
+    if (!keep.has(v)) continue;
     remap.set(v, positions.length / 3);
     positions.push(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
   }
 
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const moved = (k: string): string | undefined => {
+    const [a, b] = k.split("_").map(Number);
+    const na = remap.get(a!);
+    const nb = remap.get(b!);
+    return na === undefined || nb === undefined ? undefined : key(na, nb);
+  };
+
   const creases = data.creases ? new Map<string, number>() : undefined;
   if (data.creases && creases)
-    for (const [key, value] of data.creases) {
-      const [a, b] = key.split("_").map(Number);
-      const na = remap.get(a!);
-      const nb = remap.get(b!);
-      if (na === undefined || nb === undefined) continue;
-      creases.set(na < nb ? `${na}_${nb}` : `${nb}_${na}`, value);
+    for (const [k, value] of data.creases) {
+      const nk = moved(k);
+      if (nk !== undefined) creases.set(nk, value);
+    }
+
+  const seams = data.seams ? new Set<string>() : undefined;
+  if (data.seams && seams)
+    for (const k of data.seams) {
+      const nk = moved(k);
+      if (nk !== undefined) seams.add(nk);
     }
 
   return {
-    ...data,
     positions: new Float32Array(positions),
-    polys: data.polys.map((poly) => poly.map((v) => remap.get(v)!)),
+    polys: data.polys
+      .filter((poly) => poly.every((v) => remap.has(v)))
+      .map((poly) => poly.map((v) => remap.get(v)!)),
     ...(creases ? { creases } : {}),
+    ...(seams ? { seams } : {}),
   };
 }
 
