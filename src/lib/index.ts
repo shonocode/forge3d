@@ -297,6 +297,13 @@ export {
   type ConnectVertsConcaveReport,
 } from "../tools/mesh-repair";
 
+// ── Decimation ────────────────────────────────────────────────────────────
+// The other direction: a cage built for modelling turned into something a
+// game can afford. Blender's Decimate has three modes and the other two are
+// already above -- Planar is `dissolveLimit` (measured: the modifier and
+// `bmesh.ops.dissolve_limit` agree), Un-Subdivide is deliberately unwritten.
+export { decimateCollapse, type DecimateOptions } from "../tools/decimate";
+
 // ── Subdivision ────────────────────────────────────────────────────────────
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp
 // creases are how a box becomes a fillet with one parameter.
