@@ -72,3 +72,52 @@ export function extrudeVertIndiv(
     edges,
   };
 }
+
+/**
+ * Edges the old faces had that the new ones do not — what Blender leaves
+ * behind when it removes a face and keeps its edges.
+ *
+ * `bmesh.ops.delete(context='FACES_ONLY')` says it in its name: the faces go,
+ * the vertices **and edges** stay, so every edge of a removed face that no
+ * surviving face still uses ends up belonging to nothing. `extrude_face_region`
+ * does the same to the region's *interior* edges — the boundary ones are taken
+ * up by the new side walls, the interior ones are taken up by nothing.
+ *
+ * ## Why this is a function and not a line inside each operator
+ *
+ * Because the scope was measured rather than guessed. Seventeen rows that
+ * remove faces were run and **only two leave an edge behind**: `delete` and
+ * `extrude-region`. Every dissolve, every merge, `mask`, `delete_loose`,
+ * `region_extend` — all of them come back with nothing on either side, because
+ * those operators clean up after themselves in Blender too. So this is applied
+ * at exactly two call sites, and adding a third is a claim that wants its own
+ * measurement.
+ *
+ * Both lists are polygons over the **same vertex numbering**. Order is the
+ * order the edges are first met walking `before`, which makes the result
+ * stable for a test to name.
+ */
+export function orphanedEdges(
+  before: readonly (readonly number[])[],
+  after: readonly (readonly number[])[],
+): number[][] {
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+
+  const survives = new Set<string>();
+  for (const poly of after)
+    for (let i = 0; i < poly.length; i++)
+      survives.add(key(poly[i]!, poly[(i + 1) % poly.length]!));
+
+  const seen = new Set<string>();
+  const out: number[][] = [];
+  for (const poly of before)
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const k = key(a, b);
+      if (survives.has(k) || seen.has(k)) continue;
+      seen.add(k);
+      out.push(a < b ? [a, b] : [b, a]);
+    }
+  return out;
+}

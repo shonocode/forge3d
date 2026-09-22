@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { extrudeVertIndiv } from "./wire";
+import { extrudeVertIndiv, orphanedEdges } from "./wire";
+import { deleteFaces, extrudeFaces } from "./operators";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { deleteLoose, compactMesh } from "../mesh-repair";
 import type { MeshData } from "../../lib/mesh";
@@ -118,5 +119,100 @@ describe("wire edges through the rest of the library", () => {
     const out = deleteLoose(extrudeVertIndiv(quad(), [0]));
     expect(out.positions.length / 3).toBe(4);
     expect(out.edges).toEqual([]);
+  });
+});
+
+describe("orphanedEdges", () => {
+  it("keeps the edges a removed face had and nothing else uses", () => {
+    // Two quads sharing an edge 1-2. Removing the left one strands its three
+    // outer edges; the shared one survives on the right-hand quad.
+    const before = [
+      [0, 1, 2, 3],
+      [1, 4, 5, 2],
+    ];
+    const after = [[1, 4, 5, 2]];
+    expect(orphanedEdges(before, after)).toEqual([
+      [0, 1],
+      [2, 3],
+      [0, 3],
+    ]);
+  });
+
+  it("returns nothing when every edge is still used", () => {
+    const polys = [[0, 1, 2, 3]];
+    expect(orphanedEdges(polys, polys)).toEqual([]);
+  });
+
+  it("does not repeat an edge two removed faces shared", () => {
+    const before = [
+      [0, 1, 2],
+      [0, 2, 3],
+    ];
+    expect(orphanedEdges(before, [])).toEqual([
+      [0, 1],
+      [1, 2],
+      [0, 2],
+      [2, 3],
+      [0, 3],
+    ]);
+  });
+});
+
+describe("the operators that strand edges", () => {
+  /** An n×n quad grid in the XY plane — the shape the parity row uses. */
+  function grid(n: number): MeshData {
+    const positions: number[] = [];
+    for (let r = 0; r <= n; r++)
+      for (let c = 0; c <= n; c++) positions.push(c, r, 0);
+    const polys: number[][] = [];
+    for (let r = 0; r < n; r++)
+      for (let c = 0; c < n; c++)
+        polys.push([r * (n + 1) + c, r * (n + 1) + c + 1, (r + 1) * (n + 1) + c + 1, (r + 1) * (n + 1) + c]);
+    return { positions: new Float32Array(positions), polys };
+  }
+
+  it("deleteFaces keeps the edges of what it removed — FACES_ONLY", () => {
+    // Blender's own name for the behaviour, and what `deleteFaces`'s JSDoc had
+    // claimed since long before it was true. On a 2×2 grid, deleting the whole
+    // sheet strands every one of its 12 edges.
+    const em = meshFromData(grid(2));
+    deleteFaces(em, new Set([0, 1, 2, 3]));
+    const out = meshToData(em);
+    expect(out.polys).toEqual([]);
+    expect(out.edges).toHaveLength(12);
+  });
+
+  it("deleteFaces strands nothing when a neighbour still uses the edge", () => {
+    // Deleting one face of a closed cube: all four of its edges belong to
+    // faces that are still there. Measured — the parity row's `cube` case is
+    // 0 wire edges on both sides.
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [
+        [0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
+        [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+      ],
+    });
+    deleteFaces(em, new Set([1]));
+    expect(meshToData(em).edges).toEqual([]);
+  });
+
+  it("extrudeFaces strands the region's interior edges, not its boundary", () => {
+    // The boundary edges are taken up by the skirt; the interior ones are
+    // taken up by nothing. A 4×4 grid has 40 edges, 16 on the boundary, so 24
+    // interior — and Blender leaves exactly 24.
+    const em = meshFromData(grid(4));
+    extrudeFaces(em, new Set(Array.from({ length: 16 }, (_, i) => i)));
+    expect(meshToData(em).edges).toHaveLength(24);
+  });
+
+  it("extruding one face of a grid strands nothing", () => {
+    // Its four edges are all on the region boundary, so the skirt takes them.
+    const em = meshFromData(grid(2));
+    extrudeFaces(em, new Set([0]));
+    expect(meshToData(em).edges).toEqual([]);
   });
 });

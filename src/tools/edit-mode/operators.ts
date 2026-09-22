@@ -1,3 +1,4 @@
+import { orphanedEdges } from "./wire";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { walkEdgeRing } from "./edge-walk";
@@ -39,6 +40,12 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
     if (!selectedFaces.has(f)) kept.push(polys[f]!);
   }
   rebuildPolygons(em, em.positions, kept);
+  // The edges of the deleted faces that nothing else uses stay, with no face
+  // on them — `context='FACES_ONLY'`, which is what this operator's JSDoc
+  // already claimed to match. It did not until 2026-09-22, and **nothing could
+  // see that**: distance, area, volume, `facing` and both counts are computed
+  // from polygons. `body` was 0 against Blender's 80.
+  em.wireEdges = [...(em.wireEdges ?? []), ...orphanedEdges(polys, kept)];
   return new Set();
 }
 
@@ -116,6 +123,11 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
   const newSelEnd = newPolys.length;
 
   rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  // The region's **interior** edges are left with no face on them: the new cap
+  // is built on duplicated vertices and the skirt only takes up the boundary.
+  // Measured — extruding a 4x4 grid leaves 24, which is exactly its interior
+  // edge count, and Blender leaves the same 24.
+  em.wireEdges = [...(em.wireEdges ?? []), ...orphanedEdges(polys, newPolys)];
 
   const newSel = new Set<number>();
   for (let i = newSelStart; i < newSelEnd; i++) newSel.add(i);
