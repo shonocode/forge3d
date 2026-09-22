@@ -226,6 +226,9 @@ export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit
 export {
   reverseLoopData,
   rotateLoopData,
+  collapseLoopData,
+  pointmergeLoopData,
+  averageVertLoopData,
   type LoopLayer,
 } from "../tools/edit-mode/loop-data";
 

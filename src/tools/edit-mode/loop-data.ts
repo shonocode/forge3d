@@ -124,3 +124,146 @@ export function rotateLoopData(
   });
   return withLayer(data, layer, next);
 }
+
+/** Every (face, corner) that sits on vertex `v`. */
+function cornersAt(data: MeshData, v: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let f = 0; f < data.polys.length; f++) {
+    const poly = data.polys[f]!;
+    for (let i = 0; i < poly.length; i++) if (poly[i] === v) out.push([f, i]);
+  }
+  return out;
+}
+
+/** Component-wise mean of some corner values. */
+function meanOf(values: readonly (readonly number[])[]): number[] {
+  const width = values[0]!.length;
+  const out = new Array<number>(width).fill(0);
+  for (const value of values) for (let k = 0; k < width; k++) out[k]! += value[k]!;
+  return out.map((x) => x / values.length);
+}
+
+/** Component-wise midpoint of the range — **not** the mean. */
+function midpointOf(values: readonly (readonly number[])[]): number[] {
+  const width = values[0]!.length;
+  const lo = [...values[0]!];
+  const hi = [...values[0]!];
+  for (const value of values)
+    for (let k = 0; k < width; k++) {
+      if (value[k]! < lo[k]!) lo[k] = value[k]!;
+      if (value[k]! > hi[k]!) hi[k] = value[k]!;
+    }
+  return lo.map((x, k) => (x + hi[k]!) / 2);
+}
+
+/**
+ * Flatten the seam along an edge — Blender's `collapse_uvs`.
+ *
+ * Within **each face** using the edge, its two corners on that edge are set to
+ * their mean. The two faces are not brought together: a seam across the edge
+ * survives, and what goes is the variation *along* it.
+ *
+ * Measured on a 2×2 grid of quads. For the shared edge 1-4, the face holding
+ * 0.10 and 0.20 there comes back holding 0.15 twice, and the face holding
+ * 1.00 and 1.30 comes back holding 1.15 twice — each face averaged its own
+ * pair, and neither took anything from the other.
+ *
+ * `edges` are vertex pairs; order within a pair does not matter.
+ */
+export function collapseLoopData(
+  data: MeshData,
+  edges: readonly (readonly number[])[],
+  layer: LoopLayer = "uv",
+): MeshData {
+  const current = requireLayer(data, layer, "collapseLoopData");
+  const next = current.map((corners) => corners.map((c) => [...c]));
+
+  for (const edge of edges) {
+    const [a, b] = edge as [number, number];
+    for (let f = 0; f < data.polys.length; f++) {
+      const poly = data.polys[f]!;
+      const ia = poly.indexOf(a);
+      const ib = poly.indexOf(b);
+      if (ia < 0 || ib < 0) continue;
+      // Only when they really are neighbours around this face, or a diagonal
+      // would count as an edge of it.
+      const n = poly.length;
+      if ((ia + 1) % n !== ib && (ib + 1) % n !== ia) continue;
+      const mid = meanOf([next[f]![ia]!, next[f]![ib]!]);
+      next[f]![ia] = [...mid];
+      next[f]![ib] = [...mid];
+    }
+  }
+  return withLayer(data, layer, next);
+}
+
+/**
+ * Give every corner at the chosen vertices one value, taken from `snap` —
+ * Blender's `pointmerge_facedata`.
+ *
+ * The value is the **mean** of the corners at `snap` alone, and it is written
+ * to every corner at every vertex in `verts`. What the other vertices held
+ * does not enter the average; they are written over.
+ *
+ * Measured: on a 2×2 grid, snapping vertices 1 and 4 to vertex 4 gives every
+ * one of those six corners 1.65, which is the mean of vertex 4's own four
+ * (0.20, 1.30, 2.10, 3.00) and not of all six. Confirmed per component on a
+ * set whose mean and midpoint differ in both: (0,1) (1,8) (2,9) (9,10) gives
+ * (3, 7), the mean.
+ */
+export function pointmergeLoopData(
+  data: MeshData,
+  verts: ReadonlySet<number> | readonly number[],
+  snap: number,
+  layer: LoopLayer = "uv",
+): MeshData {
+  const current = requireLayer(data, layer, "pointmergeLoopData");
+  const next = current.map((corners) => corners.map((c) => [...c]));
+
+  const source = cornersAt(data, snap);
+  if (source.length === 0)
+    throw new Error(`pointmergeLoopData: vertex ${snap} is on no polygon, so it has no value to give.`);
+  const value = meanOf(source.map(([f, i]) => current[f]![i]!));
+
+  for (const v of new Set(verts))
+    for (const [f, i] of cornersAt(data, v)) next[f]![i] = [...value];
+  return withLayer(data, layer, next);
+}
+
+/**
+ * Flatten the corners at the chosen vertices to one value — Blender's
+ * `average_vert_facedata`.
+ *
+ * **It is the midpoint of the range, not the mean**, and that is measured
+ * rather than read: four corners holding 0.20, 1.30, 2.10 and 3.00 come back
+ * holding **1.60**, where the mean is 1.65. Three earlier probes failed to
+ * explain a 0.700 and a 0.650 by trying to read it as some average; both are
+ * midpoints.
+ *
+ * It is also **one value for the whole selection**, not one per vertex: given
+ * two vertices whose own midpoints are 0.55 and 1.60, every corner at both
+ * comes back 1.55, the midpoint across all of them together.
+ *
+ * Per component, confirmed on a set where mean and midpoint differ in both:
+ * (0,1) (1,8) (2,9) (9,10) gives (4.5, 5.5).
+ *
+ * The difference from {@link pointmergeLoopData}, which is a mean, is the kind
+ * of asymmetry worth not assuming away — the two were measured separately on
+ * the same arrangement and answered differently.
+ */
+export function averageVertLoopData(
+  data: MeshData,
+  verts: ReadonlySet<number> | readonly number[],
+  layer: LoopLayer = "uv",
+): MeshData {
+  const current = requireLayer(data, layer, "averageVertLoopData");
+  const next = current.map((corners) => corners.map((c) => [...c]));
+
+  const touched: Array<[number, number]> = [];
+  for (const v of new Set(verts)) touched.push(...cornersAt(data, v));
+  if (touched.length === 0) return withLayer(data, layer, next);
+
+  const value = midpointOf(touched.map(([f, i]) => current[f]![i]!));
+  for (const [f, i] of touched) next[f]![i] = [...value];
+  return withLayer(data, layer, next);
+}
