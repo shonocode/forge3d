@@ -99,9 +99,34 @@ describe("edgeFaceAdd", () => {
     expect(data.polys).toHaveLength(4);
   });
 
-  it("refuses two vertices rather than pretending to make a face", () => {
-    // Blender makes a wire edge, which MeshData has nowhere to put.
-    expect(() => run(grid(), [0, 8])).toThrow(/wire edge/);
+  it("makes a wire edge from two vertices, not a face", () => {
+    // Blender: selecting two opposite corners of a grid leaves a loose edge
+    // (0, 8) and no new face. `MeshData` had nowhere to put one until
+    // 2026-09-22 and this threw instead.
+    const before = grid();
+    const { data, face } = run(before, [0, 8]);
+    expect(face).toBeNull();
+    expect(data.polys).toHaveLength(4);
+    expect(data.edges).toEqual([[0, 8]]);
+  });
+
+  it("changes nothing when the two already have an edge", () => {
+    // Blender returns CANCELLED for two adjacent corners.
+    const { data, face } = run(grid(), [0, 1]);
+    expect(face).toBeNull();
+    expect(data.edges).toEqual([]);
+    expect(data.polys).toHaveLength(4);
+  });
+
+  it("does not add the same wire edge twice", () => {
+    const em = meshFromData(grid());
+    edgeFaceAdd(em, new Set([0, 8]));
+    edgeFaceAdd(em, new Set([8, 0]));
+    expect(meshToData(em).edges).toEqual([[0, 8]]);
+  });
+
+  it("still refuses a single vertex", () => {
+    expect(() => run(grid(), [3])).toThrow(/two to make an edge/);
   });
 
   it("refuses a collinear selection", () => {

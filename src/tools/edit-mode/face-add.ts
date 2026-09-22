@@ -22,9 +22,9 @@
  *   same face.
  * - **It refuses when the face already exists.** Selecting the four corners of
  *   a quad that is already there returns `CANCELLED` and changes nothing.
- * - **Two vertices make a wire edge**, not a face. `MeshData` is positions and
- *   polygons and has nowhere to put one, so {@link edgeFaceAdd} throws rather
- *   than doing something else that looks similar.
+ * - **Two vertices make a wire edge**, not a face. `MeshData` grew somewhere
+ *   to put one on 2026-09-22, so {@link edgeFaceAdd} now does it — before that
+ *   it threw rather than doing something else that looked similar.
  * - **When the new face touches existing faces, the winding is the manifold
  *   one** — each shared edge is traversed opposite to the face already using
  *   it. Filling the hole in an open cube comes back agreeing with the shell;
@@ -154,22 +154,42 @@ export function ringOf(positions: Float32Array, verts: ReadonlySet<number>): num
  * those vertices was already there — which is what Blender does, and is why
  * the return is not a `Set` like the operators that touch several faces.
  *
- * Throws on fewer than three vertices (that is a wire edge, which `MeshData`
- * cannot hold) and on a collinear selection.
+ * With exactly **two** vertices it adds a wire edge instead and returns null —
+ * no face was made. It refuses when those two already have an edge between
+ * them, measured: Blender returns `CANCELLED` and changes nothing.
+ *
+ * Throws on fewer than two vertices and on a collinear selection of three or
+ * more.
  *
  * The winding follows the faces the new one touches. See the module note for
  * the case where it touches none, which is the one Blender's own answer could
  * not be read for.
  */
 export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | null {
-  if (verts.size < 3)
+  if (verts.size < 2)
     throw new Error(
-      `edgeFaceAdd: ${verts.size} vertices. Blender makes a **wire edge** from ` +
-        `two (measured), and MeshData is positions plus polygons with nowhere ` +
-        `to put one. Three or more makes a face.`,
+      `edgeFaceAdd: ${verts.size} vertices. Blender needs two to make an edge ` +
+        `and three to make a face.`,
     );
 
   const polys = toPolygons(em);
+
+  // Two vertices make a wire edge, and **only when there is not already an
+  // edge between them** — measured: two adjacent corners of a grid come back
+  // `CANCELLED` and the mesh is untouched, two opposite ones come back with a
+  // new loose edge. Returns null because no face was made, which is also what
+  // `bmesh.ops.contextual_create` reports (its `faces` list comes back empty).
+  if (verts.size === 2) {
+    const [a, b] = [...verts];
+    const key = (x: number, y: number): string => (x < y ? `${x}_${y}` : `${y}_${x}`);
+    const want = key(a!, b!);
+    for (const poly of polys)
+      for (let i = 0; i < poly.length; i++)
+        if (key(poly[i]!, poly[(i + 1) % poly.length]!) === want) return null;
+    for (const e of em.wireEdges ?? []) if (key(e[0]!, e[1]!) === want) return null;
+    em.wireEdges = [...(em.wireEdges ?? []), [a!, b!]];
+    return null;
+  }
   for (const poly of polys)
     if (poly.length === verts.size && poly.every((v) => verts.has(v))) return null;
 

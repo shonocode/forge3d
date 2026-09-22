@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extrudeVertIndiv, orphanedEdges } from "./wire";
+import { extrudeVertIndiv, orphanedEdges, faceSplitByEdges } from "./wire";
 import { deleteFaces, extrudeFaces } from "./operators";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { deleteLoose, compactMesh } from "../mesh-repair";
@@ -214,5 +214,103 @@ describe("the operators that strand edges", () => {
     const em = meshFromData(grid(2));
     extrudeFaces(em, new Set([0]));
     expect(meshToData(em).edges).toEqual([]);
+  });
+});
+
+describe("faceSplitByEdges", () => {
+  /** The unit quad the probe used, plus whatever extra points a case needs. */
+  function withPoints(...extra: Array<[number, number]>): MeshData {
+    const base = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0];
+    for (const [x, y] of extra) base.push(x, y, 0);
+    return { positions: new Float32Array(base), polys: [[0, 1, 2, 3]] };
+  }
+
+  /** Faces as cycles starting at their lowest vertex, sorted, for comparing. */
+  const shape = (m: MeshData): number[][] =>
+    m.polys
+      .map((f) => {
+        const at = f.indexOf(Math.min(...f));
+        return [...f.slice(at), ...f.slice(0, at)];
+      })
+      .sort((a, b) => a[0]! - b[0]! || a.length - b.length || a[1]! - b[1]!);
+
+  // Every expectation is a Blender 5.1.1 result from
+  // tools/modeling/parity/probe-split.py.
+
+  it("cuts between two opposite edges", () => {
+    // Blender: (0, 4, 5, 3) and (5, 4, 1, 2).
+    const m = { ...withPoints([0.5, 0], [0.5, 1]), edges: [[4, 5]] };
+    expect(shape(faceSplitByEdges(m))).toEqual([
+      [0, 4, 5, 3],
+      [1, 2, 5, 4],
+    ]);
+  });
+
+  it("does not snap — an end well off the boundary gives the same answer", () => {
+    // 5% of the quad away, and Blender's output is byte-identical to the
+    // on-the-line case. Whatever it is doing, it is not rounding.
+    const m = { ...withPoints([0.5, 0.05], [0.5, 0.95]), edges: [[4, 5]] };
+    expect(shape(faceSplitByEdges(m))).toEqual([
+      [0, 4, 5, 3],
+      [1, 2, 5, 4],
+    ]);
+  });
+
+  it("attaches ends floating in the interior to their nearest edge", () => {
+    // Blender: (0, 1, 5, 4) and (4, 5, 2, 3). v4 joins the left edge, v5 the
+    // right — each to the boundary edge nearest it.
+    const m = { ...withPoints([0.3, 0.5], [0.7, 0.5]), edges: [[4, 5]] };
+    expect(shape(faceSplitByEdges(m))).toEqual([
+      [0, 1, 5, 4],
+      [2, 3, 4, 5],
+    ]);
+  });
+
+  it("splits on a diagonal between two corners the face already has", () => {
+    // Blender: (0, 1, 2) and (2, 3, 0). No new vertices.
+    const m: MeshData = { ...withPoints(), edges: [[0, 2]] };
+    const out = faceSplitByEdges(m);
+    expect(shape(out)).toEqual([
+      [0, 1, 2],
+      [0, 2, 3],
+    ]);
+    expect(out.positions.length / 3).toBe(4);
+  });
+
+  it("takes two cuts across one face in turn", () => {
+    // Blender: (0,4,5,3) (5,4,6,7) (7,6,1,2) — three faces from two wires.
+    const m = {
+      ...withPoints([0.33, 0], [0.33, 1], [0.66, 0], [0.66, 1]),
+      edges: [
+        [4, 5],
+        [6, 7],
+      ],
+    };
+    const out = faceSplitByEdges(m);
+    expect(out.polys).toHaveLength(3);
+    expect(shape(out)).toEqual([
+      [0, 4, 5, 3],
+      [1, 2, 7, 6],
+      [4, 6, 7, 5],
+    ]);
+  });
+
+  it("consumes the wire edges it used", () => {
+    const m = { ...withPoints([0.5, 0], [0.5, 1]), edges: [[4, 5]] };
+    expect(faceSplitByEdges(m).edges).toEqual([]);
+  });
+
+  it("refuses two ends nearest the same boundary edge", () => {
+    // Blender answers a zero-area triangle there and the ring order that
+    // produces it does not follow the rule the other arrangements do.
+    const m = { ...withPoints([0.3, 0], [0.7, 0]), edges: [[4, 5]] };
+    expect(() => faceSplitByEdges(m)).toThrow(/same boundary edge/);
+  });
+
+  it("leaves a mesh with no wire edges exactly as it was", () => {
+    const m = withPoints();
+    const out = faceSplitByEdges(m);
+    expect(out.polys).toEqual(m.polys);
+    expect(out.edges).toEqual([]);
   });
 });

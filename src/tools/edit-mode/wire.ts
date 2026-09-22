@@ -121,3 +121,152 @@ export function orphanedEdges(
     }
   return out;
 }
+
+/** Squared distance from `p` to the segment `a`–`b`, and where along it. */
+function toSegment(
+  P: Float32Array,
+  p: number,
+  a: number,
+  b: number,
+): { d2: number; t: number } {
+  const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
+  const ux = P[b * 3]! - ax, uy = P[b * 3 + 1]! - ay, uz = P[b * 3 + 2]! - az;
+  const wx = P[p * 3]! - ax, wy = P[p * 3 + 1]! - ay, wz = P[p * 3 + 2]! - az;
+  const uu = ux * ux + uy * uy + uz * uz;
+  const t = uu < 1e-20 ? 0 : Math.max(0, Math.min(1, (wx * ux + wy * uy + wz * uz) / uu));
+  const dx = wx - t * ux, dy = wy - t * uy, dz = wz - t * uz;
+  return { d2: dx * dx + dy * dy + dz * dz, t };
+}
+
+/**
+ * Split faces along the wire edges lying across them — Blender's
+ * **Face ▸ Split by Edges** (`bpy.ops.mesh.face_split_by_edges`).
+ *
+ * The way a cut drawn as loose edges becomes real topology: lay the line you
+ * want down as wire, then make the faces respect it.
+ *
+ * **Not a `bmesh.ops`.** Calling `bmesh.ops.face_split_by_edges` gets
+ * `operator "face_split_by_edges" doesn't exist` — it lives only on
+ * `bpy.ops.mesh`, which is why the API matrix files it under "real operators
+ * that are not in bmesh.ops".
+ *
+ * ## The rule, measured
+ *
+ * It is **not** a snap with a tolerance. A wire end 5% of the quad away from
+ * the boundary gives byte-identical output to one exactly on it, so nothing is
+ * being rounded — each end is simply **attached to the boundary edge nearest
+ * it** and the face's ring is cut in two at the two attachment points.
+ * Reproduced exactly on three arrangements (`probe-split.py`):
+ *
+ * | the wire edge | Blender | and here |
+ * |---|---|---|
+ * | ends on two opposite edges | (0,4,5,3) (5,4,1,2) | same |
+ * | ends floating in the interior | (0,1,5,4) (4,5,2,3) | same |
+ * | a diagonal between two corners | (0,1,2) (2,3,0) | same |
+ *
+ * ## What is refused
+ *
+ * **Both ends nearest the same boundary edge.** Blender answers a pentagon and
+ * a *zero-area* triangle there — for ends at 0.3 and 0.7 along a quad's bottom
+ * edge it gives (0,4,5,2,3) and (5,4,1), the second of which has no area — and
+ * the ring order that produces it is not the one every other case follows. One
+ * sample of a degenerate arrangement is not a rule, so this throws rather than
+ * inventing an answer.
+ *
+ * Wire edges that are consumed become face edges and leave `edges`; ones that
+ * no face claims stay.
+ */
+export function faceSplitByEdges(data: MeshData): MeshData {
+  const P = data.positions;
+  let polys = data.polys.map((p) => [...p]);
+  const leftover: number[][] = [];
+
+  for (const wire of data.edges ?? []) {
+    const [a, b] = wire as [number, number];
+    let target = -1;
+    let bestScore = Infinity;
+
+    // The face this wire belongs to: the one whose boundary both ends are
+    // closest to. A wire across nothing keeps to itself.
+    for (let f = 0; f < polys.length; f++) {
+      const ring = polys[f]!;
+      let worst = 0;
+      for (const end of [a, b]) {
+        if (ring.includes(end)) continue;
+        let near = Infinity;
+        for (let i = 0; i < ring.length; i++)
+          near = Math.min(near, toSegment(P, end, ring[i]!, ring[(i + 1) % ring.length]!).d2);
+        worst = Math.max(worst, near);
+      }
+      if (worst < bestScore) {
+        bestScore = worst;
+        target = f;
+      }
+    }
+    if (target < 0) {
+      leftover.push([...wire]);
+      continue;
+    }
+
+    // Attach each end that is not already a corner to the nearest boundary
+    // edge, remembering how far along so several ends on one edge keep order.
+    const ring = polys[target]!;
+    const inserts = new Map<number, Array<{ v: number; t: number }>>();
+    const where = new Map<number, number>();
+    for (const end of [a, b]) {
+      if (ring.includes(end)) continue;
+      let at = 0;
+      let t = 0;
+      let best = Infinity;
+      for (let i = 0; i < ring.length; i++) {
+        const r = toSegment(P, end, ring[i]!, ring[(i + 1) % ring.length]!);
+        if (r.d2 < best) {
+          best = r.d2;
+          at = i;
+          t = r.t;
+        }
+      }
+      where.set(end, at);
+      const list = inserts.get(at);
+      if (list) list.push({ v: end, t });
+      else inserts.set(at, [{ v: end, t }]);
+    }
+    if (where.size === 2 && where.get(a) === where.get(b))
+      throw new Error(
+        `faceSplitByEdges: both ends of the wire edge ${a}-${b} are nearest the ` +
+          `same boundary edge. Blender answers a zero-area triangle there and ` +
+          `the ring order that produces it does not follow the rule every other ` +
+          `arrangement does, so this is refused rather than guessed.`,
+      );
+
+    const grown: number[] = [];
+    for (let i = 0; i < ring.length; i++) {
+      grown.push(ring[i]!);
+      const added = inserts.get(i);
+      if (added) for (const { v } of added.sort((x, y) => x.t - y.t)) grown.push(v);
+    }
+
+    const ia = grown.indexOf(a);
+    const ib = grown.indexOf(b);
+    if (ia < 0 || ib < 0) {
+      leftover.push([...wire]);
+      continue;
+    }
+    const [lo, hi] = ia < ib ? [ia, ib] : [ib, ia];
+    const first = grown.slice(lo, hi + 1);
+    const second = [...grown.slice(hi), ...grown.slice(0, lo + 1)];
+    if (first.length < 3 || second.length < 3) {
+      leftover.push([...wire]);
+      continue;
+    }
+    polys = [...polys.slice(0, target), first, second, ...polys.slice(target + 1)];
+  }
+
+  return {
+    positions: new Float32Array(P),
+    polys,
+    ...(data.creases ? { creases: new Map(data.creases) } : {}),
+    ...(data.seams ? { seams: new Set(data.seams) } : {}),
+    edges: leftover,
+  };
+}
