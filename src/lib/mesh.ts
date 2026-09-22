@@ -28,6 +28,27 @@ export interface MeshData {
   creases?: Map<string, number>;
   /** UV seam edges, keyed "minVertex_maxVertex". */
   seams?: Set<string>;
+  /**
+   * Edges that belong to no polygon — Blender's "loose" or wire edges.
+   *
+   * **Only the wire ones.** A polygon's own edges are read off `polys`, so an
+   * edge listed here that a polygon also uses is a contradiction rather than a
+   * duplicate; the rule is measured — build a face on a wire edge in Blender
+   * and it stops being reported as loose.
+   *
+   * Optional, and absent means the same as empty. It exists because four
+   * Blender operators produce edges with no face on them and had nowhere to
+   * put them: `extrude_vert_indiv`, `edgenet_prepare`, `face_split_by_edges`,
+   * and the F key when exactly two vertices are chosen. The API matrix called
+   * that "a separate project"; it is one field.
+   *
+   * **`EditMesh` does not carry these.** A half-edge structure is about faces,
+   * and threading wire edges through every operator would be a change to all
+   * of them. `meshFromData` keeps them to one side and `meshToData` hands them
+   * back unchanged, so an operator that renumbers vertices must remap them —
+   * `compactMesh` does, and it is the shared path for the ones that renumber.
+   */
+  edges?: number[][];
 }
 
 /**
@@ -49,6 +70,9 @@ export function meshFromData(data: MeshData): EditMesh {
   };
 
   rebuildPolygons(em, em.positions, data.polys);
+  // Carried, not used. See the note on `MeshData.edges`: the operators never
+  // look at these, and `meshToData` puts them back exactly as they came in.
+  em.wireEdges = (data.edges ?? []).map((e) => [...e]);
 
   const tri = triangulateFaces(em);
   em.triToFace = tri.triToFace;
@@ -63,6 +87,7 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     polys: toPolygons(em),
     creases: new Map(em.creases),
     seams: new Set(em.seams),
+    edges: (em.wireEdges ?? []).map((e) => [...e]),
   };
 }
 

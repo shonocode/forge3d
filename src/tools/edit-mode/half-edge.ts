@@ -60,6 +60,22 @@ export interface EditMesh {
    */
   seams: Set<string>;
   /**
+   * Edges belonging to no face, carried through untouched.
+   *
+   * **No operator in this module reads or writes these.** A half-edge
+   * structure is defined by faces, and a wire edge has none — threading them
+   * through would be a change to every operator rather than a field. They ride
+   * here so `meshFromData` → operator → `meshToData` does not silently drop
+   * what `MeshData.edges` was given.
+   *
+   * The consequence to know: an operator that **renumbers vertices** leaves
+   * these pointing at the old numbers. The operators here do not renumber
+   * (forge3d leaves orphaned vertices where Blender compacts, which is five
+   * parity rows' worth of documented difference); the ones that do go through
+   * `compactMesh`, which remaps them.
+   */
+  wireEdges?: number[][];
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them

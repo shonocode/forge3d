@@ -213,6 +213,11 @@ export {
 } from "../tools/edit-mode/refine";
 export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
 
+// ── Wire edges ─────────────────────────────────────────────────────────────
+// Edges that belong to no face. `MeshData.edges` is where they live; these
+// are the operators that make them.
+export { extrudeVertIndiv } from "../tools/edit-mode/wire";
+
 // ── Moving a face selection ────────────────────────────────────────────────
 // `extrudeFaces` duplicates and stitches but does not move — in the editor the
 // user drags a gizmo next. These supply the missing half for code, plus a way

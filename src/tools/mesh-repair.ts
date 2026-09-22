@@ -536,8 +536,10 @@ export function deleteLoose(data: MeshData): MeshData {
  * that no polygon uses stays: masking away the middle of a sheet leaves its
  * loose rim behind, which is measured, not assumed.
  *
- * Creases **and seams** are carried through with the new numbering. Seams were
- * not, until 2026-09-21: `deleteLoose` renumbered the vertices and spread the
+ * Creases, seams **and wire edges** are carried through with the new
+ * numbering, and a wire edge with an end that did not survive is dropped —
+ * there is nothing for it to join to. Seams were not carried, until
+ * 2026-09-21: `deleteLoose` renumbered the vertices and spread the
  * old `seams` set on unchanged, so every seam key pointed at whatever vertex
  * had taken that number. Nothing in the parity harness compares seams, so the
  * only thing that could catch it is this sentence.
@@ -575,6 +577,12 @@ export function compactMesh(data: MeshData, keep: ReadonlySet<number>): MeshData
       if (nk !== undefined) seams.add(nk);
     }
 
+  const edges = data.edges
+    ? data.edges
+        .map((e) => e.map((v) => remap.get(v)))
+        .filter((e): e is number[] => e.every((v) => v !== undefined))
+    : undefined;
+
   return {
     positions: new Float32Array(positions),
     polys: data.polys
@@ -582,6 +590,7 @@ export function compactMesh(data: MeshData, keep: ReadonlySet<number>): MeshData
       .map((poly) => poly.map((v) => remap.get(v)!)),
     ...(creases ? { creases } : {}),
     ...(seams ? { seams } : {}),
+    ...(edges ? { edges } : {}),
   };
 }
 
