@@ -49,6 +49,21 @@ export interface MeshData {
    * `compactMesh` does, and it is the shared path for the ones that renumber.
    */
   edges?: number[][];
+  /**
+   * UV per **face corner**, shaped like `polys`: `uvs[f][i]` belongs to corner
+   * `i` of polygon `f`, as `[u, v]`.
+   *
+   * Per corner and not per vertex, which is the whole point — two faces
+   * meeting at an edge can disagree about the UV along it, and that
+   * disagreement is what a seam is. A per-vertex layer cannot express one.
+   *
+   * The same nesting as `polys` so a corner and its coordinate are found the
+   * same way; {@link reverseLoopData} and the rest check the two agree and
+   * refuse rather than guess when they do not.
+   */
+  uvs?: number[][][];
+  /** Vertex colour per face corner, `[r, g, b, a]`, shaped like {@link uvs}. */
+  colors?: number[][][];
 }
 
 /**
@@ -73,6 +88,12 @@ export function meshFromData(data: MeshData): EditMesh {
   // Carried, not used. See the note on `MeshData.edges`: the operators never
   // look at these, and `meshToData` puts them back exactly as they came in.
   em.wireEdges = (data.edges ?? []).map((e) => [...e]);
+  // The loop layers ride along the same way, with the same warning: an
+  // operator that changes a face's arity leaves them describing the old one.
+  // The four that permute them work on `MeshData` directly and never enter
+  // here; anything else that wants to keep them has to say so.
+  if (data.uvs) em.loopUVs = data.uvs.map((f) => f.map((c) => [...c]));
+  if (data.colors) em.loopColors = data.colors.map((f) => f.map((c) => [...c]));
 
   const tri = triangulateFaces(em);
   em.triToFace = tri.triToFace;
@@ -88,6 +109,8 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     creases: new Map(em.creases),
     seams: new Set(em.seams),
     edges: (em.wireEdges ?? []).map((e) => [...e]),
+    uvs: (em.loopUVs ?? []).map((f) => f.map((c) => [...c])),
+    colors: (em.loopColors ?? []).map((f) => f.map((c) => [...c])),
   };
 }
 

@@ -76,6 +76,19 @@ export interface EditMesh {
    */
   wireEdges?: number[][];
   /**
+   * Per-face-corner UV and colour, carried through untouched — the same
+   * arrangement, and the same warning, as {@link wireEdges}.
+   *
+   * **An operator that changes a face's arity invalidates these.** Extrude,
+   * bevel, subdivide and the rest rebuild `polys` and do not rebuild the
+   * layers, so a mesh that goes through one comes out with layers describing
+   * the faces it used to have. The four operators that work on loop data take
+   * `MeshData` directly and never come through here; carrying them is so that
+   * a mesh which merely *passes* an operator does not lose them silently.
+   */
+  loopUVs?: number[][][];
+  loopColors?: number[][][];
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them

@@ -218,6 +218,17 @@ export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
 // are the operators that make them.
 export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
 
+// ── Per-face-corner data ───────────────────────────────────────────────────
+// UVs and vertex colours live per **corner**, not per vertex — that is what
+// lets two faces disagree along an edge, which is what a seam is. These two
+// cover Blender's four: `reverse_uvs` / `reverse_colors` / `rotate_uvs` /
+// `rotate_colors`, which differ only in layer and direction.
+export {
+  reverseLoopData,
+  rotateLoopData,
+  type LoopLayer,
+} from "../tools/edit-mode/loop-data";
+
 // ── Moving a face selection ────────────────────────────────────────────────
 // `extrudeFaces` duplicates and stitches but does not move — in the editor the
 // user drags a gizmo next. These supply the missing half for code, plus a way
