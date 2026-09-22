@@ -267,3 +267,97 @@ export function averageVertLoopData(
   for (const [f, i] of touched) next[f]![i] = [...value];
   return withLayer(data, layer, next);
 }
+
+/**
+ * Copy corner data onto the chosen faces from the ones around them — Blender's
+ * `face_attribute_fill`.
+ *
+ * What it is for: a face that has no UVs yet, sitting against faces that do.
+ * Filling it makes it agree with its neighbours along the edges they share,
+ * rather than leaving a hole in the layer.
+ *
+ * ## The rules that came out clean
+ *
+ * - **The sources are the faces you did *not* give.** A chosen face takes from
+ *   its neighbours, never the other way round.
+ * - **An edge has to be shared.** Two quads meeting at a single point exchange
+ *   nothing, measured in both directions — a corner in common is not enough.
+ * - Where exactly one neighbour offers a value at a corner, that value is
+ *   taken. Where none does, the corner is left as it was.
+ *
+ * ## The rule that did not
+ *
+ * **Which neighbour wins when two offer at the same corner.** Seven
+ * arrangements went into this and none of them produced a rule:
+ *
+ * - it is **not the face index** — renumbering the same four quads so the
+ *   previous winner became face 2 instead of face 1 did not change which face
+ *   won, so the answer is geometric
+ * - it is **not consistently the edge into the corner either**: filling each
+ *   quad of a 2×2 grid in turn, three took the value across the edge *into*
+ *   their centre corner and the fourth took the one across the edge *out* of
+ *   it. The odd one out is the face whose centre corner is its **first**, which
+ *   looks like an artefact of the order Blender walks a face's corners in —
+ *   and one sample of an artefact is not a rule.
+ *
+ * So a corner with two disagreeing sources **throws**. Everything else is
+ * exact. `tools/modeling/parity/probe-fill.py` and `probe-fill2.py` hold the
+ * numbers for whoever picks this up.
+ */
+export function faceAttributeFill(
+  data: MeshData,
+  faces: ReadonlySet<number> | readonly number[],
+  layer: LoopLayer = "uv",
+): MeshData {
+  const chosen = new Set(faces);
+  const current = requireLayer(data, layer, "faceAttributeFill");
+  const next = current.map((corners) => corners.map((c) => [...c]));
+
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+
+  // Which faces use each edge, so a corner can ask what is across its two.
+  const atEdge = new Map<string, number[]>();
+  for (let f = 0; f < data.polys.length; f++) {
+    const poly = data.polys[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      const k = key(poly[i]!, poly[(i + 1) % poly.length]!);
+      const list = atEdge.get(k);
+      if (list) list.push(f);
+      else atEdge.set(k, [f]);
+    }
+  }
+
+  const sameValue = (a: readonly number[], b: readonly number[]): boolean =>
+    a.length === b.length && a.every((x, k) => Math.abs(x - b[k]!) < 1e-9);
+
+  for (const f of chosen) {
+    const poly = data.polys[f];
+    if (poly === undefined) throw new Error(`faceAttributeFill: no face ${f}`);
+    const n = poly.length;
+
+    for (let i = 0; i < n; i++) {
+      const v = poly[i]!;
+      // The two edges meeting at this corner, and what is across each.
+      const offers: number[][] = [];
+      for (const k of [key(poly[(i + n - 1) % n]!, v), key(v, poly[(i + 1) % n]!)])
+        for (const g of atEdge.get(k) ?? []) {
+          if (g === f || chosen.has(g)) continue;
+          const j = data.polys[g]!.indexOf(v);
+          if (j >= 0) offers.push(current[g]![j]!);
+        }
+
+      if (offers.length === 0) continue;
+      const first = offers[0]!;
+      if (!offers.every((o) => sameValue(o, first)))
+        throw new Error(
+          `faceAttributeFill: face ${f}'s corner on vertex ${v} has two ` +
+            `neighbours offering different values, and which one Blender takes ` +
+            `could not be read from seven arrangements — it is not the face ` +
+            `index and not consistently either of the corner's two edges. ` +
+            `Give the conflicting neighbour as well, or fill in two passes.`,
+        );
+      next[f]![i] = [...first];
+    }
+  }
+  return withLayer(data, layer, next);
+}

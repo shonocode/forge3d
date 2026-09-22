@@ -5,6 +5,7 @@ import {
   collapseLoopData,
   pointmergeLoopData,
   averageVertLoopData,
+  faceAttributeFill,
 } from "./loop-data";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import type { MeshData } from "../../lib/mesh";
@@ -286,5 +287,77 @@ describe("averageVertLoopData", () => {
     const out = averageVertLoopData(m, [4]);
     const i = out.polys[0]!.indexOf(4);
     expect(out.uvs![0]![i]).toEqual([4.5, 5.5]);
+  });
+});
+
+describe("faceAttributeFill", () => {
+  /** Two quads sharing edge 1-2, the shape the first fill probe used. */
+  function pair(): MeshData {
+    const polys = [
+      [0, 1, 2, 3],
+      [1, 4, 5, 2],
+    ];
+    return {
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0, 0, 2, 1, 0,
+      ]),
+      polys,
+      uvs: polys.map((p, f) => p.map((_, i) => [f + i / 10, 0])),
+    };
+  }
+
+  it("takes the neighbour's value at the vertices they share", () => {
+    // Blender: filling face 0 of the pair gives it 0.0, 1.0, 1.3, 0.3 — its
+    // corners on v1 and v2 take face 1's values there, and the two corners
+    // face 1 does not touch are left alone.
+    const out = faceAttributeFill(pair(), [0]);
+    expect(uAt(out, 0, 0)).toBe(0);
+    expect(uAt(out, 0, 1)).toBe(1);
+    expect(uAt(out, 0, 2)).toBe(1.3);
+    expect(uAt(out, 0, 3)).toBe(0.3);
+  });
+
+  it("leaves the source alone", () => {
+    const out = faceAttributeFill(pair(), [0]);
+    expect(out.uvs![1]!.map((c) => c[0])).toEqual([1, 1.1, 1.2, 1.3]);
+  });
+
+  it("does nothing when there is no source", () => {
+    // Give both faces and neither has a neighbour outside the selection.
+    const before = pair();
+    const out = faceAttributeFill(before, [0, 1]);
+    expect(out.uvs).toEqual(before.uvs);
+  });
+
+  it("needs a shared edge — a shared corner gives nothing", () => {
+    // Measured in both directions: two quads meeting at one point exchange
+    // nothing at all.
+    const polys = [
+      [0, 1, 2, 3],
+      [2, 4, 5, 6],
+    ];
+    const touching: MeshData = {
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 1, 0, 2, 2, 0, 1, 2, 0,
+      ]),
+      polys,
+      uvs: polys.map((p, f) => p.map((_, i) => [f + i / 10, 0])),
+    };
+    expect(faceAttributeFill(touching, [0]).uvs).toEqual(touching.uvs);
+    expect(faceAttributeFill(touching, [1]).uvs).toEqual(touching.uvs);
+  });
+
+  it("refuses a corner whose two neighbours disagree", () => {
+    // The centre of a 2x2 grid. Seven arrangements did not say which of the
+    // two wins, so this throws rather than picking one.
+    expect(() => faceAttributeFill(grid2x2(), [0])).toThrow(/could not be read/);
+  });
+
+  it("is fine at the centre once the conflict is given as well", () => {
+    // Giving faces 0 and 1 leaves faces 2 and 3 as sources; face 0's centre
+    // corner then has only face 2 across an edge it shares, so there is one
+    // offer and no ambiguity.
+    const out = faceAttributeFill(grid2x2(), [0, 1]);
+    expect(uAt(out, 0, 4)).toBe(2.1);
   });
 });

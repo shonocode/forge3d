@@ -229,6 +229,7 @@ export {
   collapseLoopData,
   pointmergeLoopData,
   averageVertLoopData,
+  faceAttributeFill,
   type LoopLayer,
 } from "../tools/edit-mode/loop-data";
 
