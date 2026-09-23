@@ -362,6 +362,24 @@ export { catmullClark, type SubdivResult } from "../tools/edit-mode/subdivide";
 // ── UV ─────────────────────────────────────────────────────────────────────
 export * from "../tools/edit-mode/uv-unwrap";
 export * from "../tools/edit-mode/uv-pack";
+// Blender's two UV **modifiers**, which write the same per-corner layer the
+// unwrappers do.
+export {
+  uvProject,
+  uvWarp,
+  type UVProjectOptions,
+  type UVWarpOptions,
+  type UVWarpAxis,
+} from "../tools/edit-mode/uv-modifiers";
+
+// ── Mesh onto mesh ─────────────────────────────────────────────────────────
+export {
+  shrinkwrap,
+  type ShrinkwrapOptions,
+  type ShrinkwrapMethod,
+  type ShrinkwrapMode,
+  type ShrinkwrapProjectOptions,
+} from "../tools/edit-mode/shrinkwrap";
 export { computeLSCM, type LSCMResult, type LSCMOptions } from "../tools/edit-mode/lscm";
 
 // ── Sculpt maths ───────────────────────────────────────────────────────────
