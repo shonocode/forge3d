@@ -234,6 +234,17 @@ export {
   type SmoothNormalsOptions,
   type PointNormalsOptions,
 } from "../tools/edit-mode/normals";
+// The same layer, written by Blender's two normal **modifiers** rather than
+// its edit-mode operators.
+export {
+  weightedNormal,
+  normalEdit,
+  type WeightedNormalMode,
+  type WeightedNormalOptions,
+  type NormalEditMode,
+  type NormalMixMode,
+  type NormalEditOptions,
+} from "../tools/edit-mode/normal-modifiers";
 
 // ── Per-face-corner data ───────────────────────────────────────────────────
 // UVs and vertex colours live per **corner**, not per vertex — that is what

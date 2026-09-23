@@ -63,7 +63,16 @@ export interface PointNormalsOptions {
   invert?: boolean;
 }
 
-type Vec3 = [number, number, number];
+/**
+ * The corner-normal type these operators pass around.
+ *
+ * The helpers below it — `faceNormal`, `faceArea`, `cornerAngle`,
+ * `currentNormals`, `withNormals`, `smoothGroups` — are exported for
+ * `normal-modifiers.ts`, which writes the same layer from Blender's two normal
+ * modifiers and needs the same reading of "one smooth group". They are not in
+ * the public barrel; the operators are.
+ */
+export type Vec3 = [number, number, number];
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a: Vec3, b: Vec3): Vec3 => [
@@ -85,7 +94,7 @@ const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`
 const at = (P: Float32Array, v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
 
 /** Newell's normal of a polygon, unit length — Blender's `polygon.normal`. */
-function faceNormal(P: Float32Array, poly: readonly number[]): Vec3 {
+export function faceNormal(P: Float32Array, poly: readonly number[]): Vec3 {
   let nx = 0;
   let ny = 0;
   let nz = 0;
@@ -100,7 +109,7 @@ function faceNormal(P: Float32Array, poly: readonly number[]): Vec3 {
 }
 
 /** Area of a polygon, by fan triangulation. */
-function faceArea(P: Float32Array, poly: readonly number[]): number {
+export function faceArea(P: Float32Array, poly: readonly number[]): number {
   let area = 0;
   const a = at(P, poly[0]!);
   for (let i = 1; i + 1 < poly.length; i++) {
@@ -113,7 +122,7 @@ function faceArea(P: Float32Array, poly: readonly number[]): number {
 }
 
 /** The interior angle of `poly` at its corner `i`. */
-function cornerAngle(P: Float32Array, poly: readonly number[], i: number): number {
+export function cornerAngle(P: Float32Array, poly: readonly number[], i: number): number {
   const v = at(P, poly[i]!);
   const a = normalized(sub(at(P, poly[(i + 1) % poly.length]!), v));
   const b = normalized(sub(at(P, poly[(i - 1 + poly.length) % poly.length]!), v));
@@ -129,12 +138,12 @@ function faceNormalsPerCorner(data: MeshData): Vec3[][] {
 }
 
 /** The layer as it stands: the stored one if there is one, else face normals. */
-function currentNormals(data: MeshData): Vec3[][] {
+export function currentNormals(data: MeshData): Vec3[][] {
   if (!data.normals) return faceNormalsPerCorner(data);
   return data.normals.map((face) => face.map((n) => [n[0]!, n[1]!, n[2]!] as Vec3));
 }
 
-function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<string> | null): MeshData {
+export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<string> | null): MeshData {
   const out: MeshData = {
     positions: Float32Array.from(data.positions),
     polys: data.polys.map((p) => [...p]),
@@ -158,7 +167,7 @@ function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<string> | nu
  * This is the part of the rule that is easy to miss, and the reason
  * `averageNormals` does nothing after `splitNormals`.
  */
-function smoothGroups(data: MeshData): [number, number][][] {
+export function smoothGroups(data: MeshData): [number, number][][] {
   const sharp = data.sharp ?? new Set<string>();
   // corner id -> [face, index]; and the faces at each vertex
   const cornersAt = new Map<number, [number, number][]>();
