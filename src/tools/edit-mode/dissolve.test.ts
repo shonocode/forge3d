@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { meshFromData, meshToData } from "../../lib/mesh";
-import { forEachEdge } from "./half-edge";
+import { forEachEdge, edgeOrigin, edgeEnd } from "./half-edge";
 import { dissolveFaces, dissolveEdges, dissolveLimit } from "./dissolve";
 
 /** `nx` by `ny` quads in the z=0 plane, one unit each. */
@@ -116,6 +116,54 @@ describe("dissolveEdges", () => {
     forEachEdge(em, (he) => all.add(he));
     dissolveEdges(em, all);
     expect(meshToData(em).polys).toHaveLength(1);
+  });
+
+  it("with useVerts, is Blender's delete_edgeloop", () => {
+    // `delete_edgeloop(use_face_split=False)` and `dissolve_edges(use_verts=
+    // True)` return the same faces on every arrangement measured
+    // (probe-delete-edgeloop2.py). These are the counts from that probe.
+    const column = (): { em: ReturnType<typeof meshFromData>; sel: Set<number> } => {
+      // A 4x4 grid of quads, 25 vertices; `grid(4, 4)` numbers them i*(ny+1)+j
+      // with positions (i, j, 0), so the middle column is x === 2.
+      const em = meshFromData(grid(4, 4));
+      const sel = new Set<number>();
+      forEachEdge(em, (he) => {
+        const a = edgeOrigin(em, he);
+        const b = edgeEnd(em, he);
+        if (em.positions[a * 3] === 2 && em.positions[b * 3] === 2) sel.add(he);
+      });
+      return { em, sel };
+    };
+
+    // The loop: 25 -> 20 vertices, 16 -> 12 faces, every one a quad.
+    const loop = column();
+    expect(loop.sel.size).toBe(4);
+    dissolveEdges(loop.em, loop.sel, { useVerts: true });
+    const out = meshToData(loop.em);
+    expect(out.polys).toHaveLength(12);
+    expect(arities(out.polys)).toEqual([4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]);
+
+    // One edge on its own takes no vertex with it — its ends keep three
+    // edges each — and leaves a hexagon. Measured: 25 verts, 15 faces.
+    //
+    // **The edge has to be interior at both ends**, which is what Blender was
+    // measured on. Pick one that touches the rim instead and the rim vertex
+    // is left with two edges and goes, giving 24 vertices and a five-gon —
+    // the rule is the same, the input is not. That mistake cost a test run.
+    const single = column();
+    const interior = [...single.sel].filter((he) => {
+      const mid = (v: number): boolean => {
+        const y = single.em.positions[v * 3 + 1]!;
+        return y > 0 && y < 4;
+      };
+      return mid(edgeOrigin(single.em, he)) && mid(edgeEnd(single.em, he));
+    });
+    expect(interior).toHaveLength(2);
+    const one = new Set([interior[0]!]);
+    dissolveEdges(single.em, one, { useVerts: true });
+    const alone = meshToData(single.em);
+    expect(alone.polys).toHaveLength(15);
+    expect(arities(alone.polys).filter((n) => n === 6)).toHaveLength(1);
   });
 });
 

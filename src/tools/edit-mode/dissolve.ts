@@ -265,6 +265,26 @@ export function dissolveFaces(
  * Takes half-edge indices. An edge on the mesh boundary has only one face and
  * nothing to merge, so it is ignored rather than deleted — dissolving is not
  * deleting, and `deleteFacesByEdges` is the operator that removes geometry.
+ *
+ * ## With `useVerts`, this is also Blender's `delete_edgeloop`
+ *
+ * `bpy.ops.mesh.delete_edgeloop(use_face_split=False)` and
+ * `bmesh.ops.dissolve_edges(use_verts=True)` return **the same faces** on
+ * every arrangement measured: a grid's middle column, a grid's middle row, a
+ * cylinder's closed ring, half a column, and one edge on its own
+ * (`tools/modeling/parity/probe-delete-edgeloop2.py`). The `delete-edgeloop`
+ * parity row drives the `bpy.ops` side against this function and agrees to
+ * 0.0000 mm on a flat sheet and a bent one.
+ *
+ * The API matrix had `delete_edgeloop` down as missing. It was here under
+ * another name — the third time that has happened, after
+ * `face_split_by_edges`'s "structurally impossible" and `DECIMATE`'s Planar
+ * mode turning out to be `dissolveLimit`.
+ *
+ * **`use_face_split=True` is the one difference, and only off a loop.** With
+ * it on, a selection that is *not* a loop — half a grid column — comes back as
+ * three triangles where this gives one five-gon. On an actual loop the two
+ * settings are identical, measured both ways.
  */
 export function dissolveEdges(
   em: EditMesh,
