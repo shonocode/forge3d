@@ -220,6 +220,7 @@ export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
 export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
+export { unsubdivide, type UnsubdivideOptions } from "../tools/edit-mode/unsubdivide";
 
 // ── Per-face-corner data ───────────────────────────────────────────────────
 // UVs and vertex colours live per **corner**, not per vertex — that is what
