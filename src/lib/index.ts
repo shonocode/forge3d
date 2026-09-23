@@ -219,6 +219,7 @@ export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
 export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
+export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
 
 // ── Per-face-corner data ───────────────────────────────────────────────────
 // UVs and vertex colours live per **corner**, not per vertex — that is what
