@@ -3524,6 +3524,235 @@ export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<nu
 // ── Non-planar faces, edge rings ───────────────────────────────────────────
 
 /**
+ * How close two planarity errors have to be before they count as the same,
+ * relative to **the face's own size**.
+ *
+ * The window exists because the minimum is tied far more often than not: on
+ * any face with a symmetry the two best cuts score identically, and Blender's
+ * float32 arithmetic then ranks them by rounding — 1e-17 apart on numbers of
+ * order 1e-2. Ties are resolved here the way its search resolves an exact one,
+ * by keeping the candidate it reached first, which is the only part of that
+ * decision that is a rule.
+ *
+ * **The scale has to be the face, not the error.** Scaling the window by the
+ * errors being compared makes it vanish exactly where it is needed: a quad's
+ * two errors are both about 1e-17, so a window of `1e-9 × 1e-17` is far below
+ * the gap between them and the tie turns back into a float64 coin flip. That
+ * was measured, not reasoned about — it moved `saddleGrid`'s parity distance
+ * from 7.7 mm to 9.8 mm by flipping quads at random.
+ */
+const NONPLANAR_TIE_REL = 1e-9;
+
+/**
+ * Newell's normal of one stretch of a face's corners, normalized.
+ *
+ * Blender's `BM_face_calc_normal_subset`, including the detail that decides
+ * the quad case: the sum starts from the **last** corner of the stretch, so
+ * the sub-polygon is closed. A three-corner stretch therefore gets its
+ * triangle's exact plane normal rather than an open chain's approximation.
+ *
+ * @returns the unit normal, or `null` if the stretch is degenerate — which
+ *   disqualifies the pair, as `!= 0.0f` does there
+ */
+function subsetNormal(P: Float32Array, cycle: readonly number[]): [number, number, number] | null {
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  let prev = cycle[cycle.length - 1]! * 3;
+  for (const v of cycle) {
+    const cur = v * 3;
+    nx += (P[prev + 1]! - P[cur + 1]!) * (P[prev + 2]! + P[cur + 2]!);
+    ny += (P[prev + 2]! - P[cur + 2]!) * (P[prev]! + P[cur]!);
+    nz += (P[prev]! - P[cur]!) * (P[prev + 1]! + P[cur + 1]!);
+    prev = cur;
+  }
+  const len = Math.hypot(nx, ny, nz);
+  if (!(len > 1e-30)) return null;
+  return [nx / len, ny / len, nz / len];
+}
+
+/**
+ * How far one stretch of corners departs from its own plane: the total
+ * absolute change in height around it, the height being the distance along the
+ * stretch's normal.
+ *
+ * Blender's `bm_face_subset_calc_planar`. It projects with
+ * `axis_dominant_v3_to_m3` and reads `dot_m3_v3_row_z`, which that function
+ * asserts is the normal itself, so the height is `dot(no, v)`.
+ */
+function subsetPlanarError(
+  P: Float32Array,
+  cycle: readonly number[],
+  no: readonly [number, number, number],
+): number {
+  const height = (v: number): number =>
+    P[v * 3]! * no[0] + P[v * 3 + 1]! * no[1] + P[v * 3 + 2]! * no[2];
+  let delta = 0;
+  let prev = height(cycle[cycle.length - 1]!);
+  for (const v of cycle) {
+    const cur = height(v);
+    delta += Math.abs(cur - prev);
+    prev = cur;
+  }
+  return delta;
+}
+
+/**
+ * Would this cut leave the face? True when the diagonal crosses one of the
+ * face's own edges, or when its midpoint falls outside, in the projection
+ * along the face's normal.
+ *
+ * Stands in for Blender's `BM_face_splits_check_legal`, which the search
+ * consults **before** accepting a pair — so an illegal best cut hands the row
+ * to the runner-up rather than being taken. On a convex face nothing is
+ * rejected; it matters for the concave n-gons `dissolveLimit` leaves behind,
+ * where the cheapest pair can lie outside the outline entirely.
+ */
+function nonplanarCutLeavesFace(
+  P: Float32Array,
+  face: readonly number[],
+  ia: number,
+  ib: number,
+  no: readonly [number, number, number],
+): boolean {
+  const n = face.length;
+  const up: [number, number, number] = Math.abs(no[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const d = up[0] * no[0] + up[1] * no[1] + up[2] * no[2];
+  let ax = up[0] - no[0] * d;
+  let ay = up[1] - no[1] * d;
+  let az = up[2] - no[2] * d;
+  const alen = Math.hypot(ax, ay, az);
+  if (!(alen > 1e-30)) return false;
+  ax /= alen;
+  ay /= alen;
+  az /= alen;
+  const bx = no[1] * az - no[2] * ay;
+  const by = no[2] * ax - no[0] * az;
+  const bz = no[0] * ay - no[1] * ax;
+  const flat = face.map((v) => {
+    const o = v * 3;
+    return [P[o]! * ax + P[o + 1]! * ay + P[o + 2]! * az, P[o]! * bx + P[o + 1]! * by + P[o + 2]! * bz] as [number, number];
+  });
+
+  const side = (o: [number, number], a: [number, number], b: [number, number]): number =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+
+  const p0 = flat[ia]!;
+  const p1 = flat[ib]!;
+  for (let k = 0; k < n; k++) {
+    const j = (k + 1) % n;
+    if (k === ia || k === ib || j === ia || j === ib) continue;
+    const q0 = flat[k]!;
+    const q1 = flat[j]!;
+    if (side(p0, p1, q0) * side(p0, p1, q1) < 0 && side(q0, q1, p0) * side(q0, q1, p1) < 0) return true;
+  }
+
+  const mx = (p0[0] + p1[0]) / 2;
+  const my = (p0[1] + p1[1]) / 2;
+  let crossings = 0;
+  for (let k = 0; k < n; k++) {
+    const q0 = flat[k]!;
+    const q1 = flat[(k + 1) % n]!;
+    if (q0[1] > my !== q1[1] > my) {
+      const t = (my - q0[1]) / (q1[1] - q0[1]);
+      if (q0[0] + t * (q1[0] - q0[0]) > mx) crossings++;
+    }
+  }
+  return crossings % 2 === 0;
+}
+
+/**
+ * The cut Blender's search would take through one face, or `null` for none.
+ *
+ * `bm_face_split_find`: every pair of non-adjacent corners, scored by how
+ * non-planar the two halves it would leave are, smallest total wins. `cos` is
+ * the angle between those halves' normals, which is what the caller compares
+ * against the limit.
+ *
+ * Legality is applied as a filter with a fallback: if it rejects every
+ * candidate the best one is taken anyway, so a face is never left whole for
+ * want of a legal cut.
+ */
+function nonplanarBestCut(
+  P: Float32Array,
+  face: readonly number[],
+): { ia: number; ib: number; cos: number } | null {
+  const n = face.length;
+  const whole = subsetNormal(P, face);
+  // The tie window's scale: how big this face is, so that two errors of 1e-17
+  // on a face 0.1 across still read as the same number.
+  let extent = 0;
+  const o = face[0]! * 3;
+  for (const v of face) {
+    extent = Math.max(extent, Math.hypot(P[v * 3]! - P[o]!, P[v * 3 + 1]! - P[o + 1]!, P[v * 3 + 2]! - P[o + 2]!));
+  }
+  let best: { ia: number; ib: number; err: number; cos: number } | null = null;
+  let bestIllegal: { ia: number; ib: number; err: number; cos: number } | null = null;
+  for (let ia = 0; ia < n; ia++) {
+    for (let ib = ia + 2; ib < n; ib++) {
+      if (ia === 0 && ib === n - 1) continue; // adjacent around the wrap
+      const a: number[] = [];
+      for (let k = ia; k <= ib; k++) a.push(face[k]!);
+      const b: number[] = [];
+      for (let k = ib; k <= ia + n; k++) b.push(face[k % n]!);
+      const noA = subsetNormal(P, a);
+      if (!noA) continue;
+      const noB = subsetNormal(P, b);
+      if (!noB) continue;
+      const err = subsetPlanarError(P, a, noA) + subsetPlanarError(P, b, noB);
+      const cos = noA[0] * noB[0] + noA[1] * noB[1] + noA[2] * noB[2];
+      const candidate = { ia, ib, err, cos };
+      const legal = !whole || !nonplanarCutLeavesFace(P, face, ia, ib, whole);
+      const slot = legal ? best : bestIllegal;
+      if (slot === null) {
+        if (legal) best = candidate;
+        else bestIllegal = candidate;
+        continue;
+      }
+      const tol = NONPLANAR_TIE_REL * Math.max(extent, Math.abs(err), Math.abs(slot.err));
+      if (err < slot.err - tol) {
+        if (legal) best = candidate;
+        else bestIllegal = candidate;
+      }
+    }
+  }
+  const won = best ?? bestIllegal;
+  return won ? { ia: won.ia, ib: won.ib, cos: won.cos } : null;
+}
+
+/**
+ * Split one face as far as the limit asks, depth first.
+ *
+ * Blender pushes both halves back onto a stack and keeps going while they have
+ * more than three corners, so one call can cut an n-gon several times — and
+ * can stop early, leaving a quad whole because *its* two halves are within the
+ * limit even though the face it came from was not.
+ */
+function splitNonplanarFace(
+  P: Float32Array,
+  face: readonly number[],
+  limitCos: number,
+  into: number[][],
+): void {
+  if (face.length <= 3) {
+    into.push([...face]);
+    return;
+  }
+  const cut = nonplanarBestCut(P, face);
+  if (!cut || !(cut.cos < limitCos)) {
+    into.push([...face]);
+    return;
+  }
+  const n = face.length;
+  const a: number[] = [];
+  for (let k = cut.ia; k <= cut.ib; k++) a.push(face[k]!);
+  const b: number[] = [];
+  for (let k = cut.ib; k <= cut.ia + n; k++) b.push(face[k % n]!);
+  splitNonplanarFace(P, a, limitCos, into);
+  splitNonplanarFace(P, b, limitCos, into);
+}
+
+/**
  * Split the faces that are not flat — Blender's
  * `bmesh.ops.connect_verts_nonplanar(faces=, angle_limit=)`.
  *
@@ -3533,14 +3762,26 @@ export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<nu
  * it here settles that once, in the file, instead of leaving it to the
  * renderer and the exporter to disagree about.
  *
- * `angleLimit` is in radians and measures how far a corner leans out of the
- * face's own plane. A face inside the limit is left as it is.
+ * The rule, read off `bmo_connect_nonplanar.cc` rather than guessed: for every
+ * pair of non-adjacent corners, measure how far each of the two halves that
+ * pair would leave departs from its own plane, and take the pair whose two
+ * errors add to the least. Cut it only if the angle between those halves'
+ * normals exceeds `angleLimit` (radians) — so the limit is about the fold the
+ * cut would reveal, not about how far a corner sits off the face's average
+ * plane. Then repeat on both halves.
  *
- * The cut runs from the face's first corner, the same diagonal `quadsToTris`
- * fans along — measured against Blender on a quad with one corner lifted,
- * which it also splits 0-2 rather than along the shorter diagonal.
+ * **On a quad the rule cannot decide.** Both candidates leave two triangles,
+ * each exactly planar, so both errors are zero in exact arithmetic; Blender's
+ * float32 rounding of those zeros picks the winner, and on a bent 4×4 sheet it
+ * comes out `v1`-`v3` on 6 of 16 quads with no geometric reason to be found —
+ * the answer even alternates as a corner is pushed smoothly through a sweep.
+ * That is noise, not a rule, so it is not imitated: a tie keeps the first
+ * candidate, `v0`-`v2`, which is the same diagonal `quadsToTris` fans along
+ * and what Blender itself returns wherever the noise does not overrule it.
+ * `tools/modeling/parity/probe-nonplanar6.py` reproduces its 16 answers in
+ * float32 and is the record of why this is the end of that road.
  *
- * Returns the faces it produced.
+ * Returns the faces it produced — both halves of every face that was cut.
  */
 export function connectVertsNonplanar(
   em: EditMesh,
@@ -3551,6 +3792,7 @@ export function connectVertsNonplanar(
 
   const polys = toPolygons(em);
   const P = em.positions;
+  const limitCos = Math.cos(angleLimit);
   const out: number[][] = [];
   const made = new Set<number>();
 
@@ -3560,57 +3802,15 @@ export function connectVertsNonplanar(
       out.push([...poly]);
       continue;
     }
-
-    // Newell's normal is the plane the face "mostly" lies in; the worst corner
-    // is how far out of it the face leans.
-    let nx = 0;
-    let ny = 0;
-    let nz = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]! * 3;
-      const b = poly[(i + 1) % poly.length]! * 3;
-      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
-      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
-      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
-    }
-    const len = Math.hypot(nx, ny, nz);
-    if (len < 1e-20) {
-      out.push([...poly]);
+    const pieces: number[][] = [];
+    splitNonplanarFace(P, poly, limitCos, pieces);
+    if (pieces.length === 1) {
+      out.push(pieces[0]!);
       continue;
     }
-    nx /= len;
-    ny /= len;
-    nz /= len;
-
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    for (const v of poly) {
-      cx += P[v * 3]!;
-      cy += P[v * 3 + 1]!;
-      cz += P[v * 3 + 2]!;
-    }
-    cx /= poly.length;
-    cy /= poly.length;
-    cz /= poly.length;
-
-    let worst = 0;
-    for (const v of poly) {
-      const dx = P[v * 3]! - cx;
-      const dy = P[v * 3 + 1]! - cy;
-      const dz = P[v * 3 + 2]! - cz;
-      const along = dx * nx + dy * ny + dz * nz;
-      const radius = Math.hypot(dx, dy, dz);
-      if (radius > 1e-12) worst = Math.max(worst, Math.abs(Math.asin(along / radius)));
-    }
-    if (worst <= angleLimit) {
-      out.push([...poly]);
-      continue;
-    }
-
-    for (let i = 1; i + 1 < poly.length; i++) {
+    for (const piece of pieces) {
       made.add(out.length);
-      out.push([poly[0]!, poly[i]!, poly[i + 1]!]);
+      out.push(piece);
     }
   }
 
