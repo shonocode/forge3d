@@ -177,6 +177,42 @@ describe("smoothLaplacianVert", () => {
     };
     expect(() => smoothLaplacianVert(m)).toThrow(/5-gon/);
   });
+
+  it("moves a near-degenerate pair exactly where Blender moves it", () => {
+    // A 4x4 alternating sheet with two interior vertices brought 0.0005 apart
+    // instead of a full 0.1 step. The solve pulls that edge to 79x its length
+    // — far past `validate_solution`'s 1.8x ceiling — and **neither side
+    // freezes them**, which is the case that says this implementation of the
+    // clamps does not over-reject. Measured: probe-laplacian24.py.
+    const nx = 4;
+    const nz = 4;
+    const step = 0.1;
+    const bump = 0.05;
+    const pts: number[][] = [];
+    for (let r = 0; r <= nz; r++)
+      for (let c = 0; c <= nx; c++)
+        pts.push([c * step - 0.2, (r + c) % 2 ? bump : -bump, r * step - 0.2]);
+    const a = 2 * (nx + 1) + 1;
+    const b = a + 1;
+    const mid = (pts[a]![0]! + pts[b]![0]!) / 2;
+    pts[a]![0] = mid - 0.00025;
+    pts[b]![0] = mid + 0.00025;
+    const polys: number[][] = [];
+    for (let r = 0; r < nz; r++)
+      for (let c = 0; c < nx; c++)
+        polys.push([
+          r * (nx + 1) + c,
+          (r + 1) * (nx + 1) + c,
+          (r + 1) * (nx + 1) + c + 1,
+          r * (nx + 1) + c + 1,
+        ]);
+
+    const out = smoothLaplacianVert({ positions: Float32Array.from(pts.flat()), polys });
+    expectClose(at(out, a), [-0.065847, 0.012859, 0], "the near pair, first");
+    expectClose(at(out, b), [-0.034196, -0.010813, 0], "the near pair, second");
+    // and the corner of the sheet is still a corner
+    expectClose(at(out, 0), [-0.2, -0.05, -0.2], "a pinned corner");
+  });
 });
 
 /** The subdivision-1 icosphere the fixtures probe used, with v0 pushed out. */

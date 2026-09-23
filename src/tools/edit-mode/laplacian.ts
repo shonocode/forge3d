@@ -26,13 +26,17 @@
  *
  * ```
  * (1 + L_i) x_i  −  L_i · (Σ_j w_ij x_j) / (Σ_j w_ij)  =  x0_i
- * L_i = lambda / (12 · A_i)
+ * L_i = lambda / (4 · ring_i)
  * ```
  *
- * where `A_i` is the area of the faces touching `i` and `w_ij` are the usual
- * cotangent weights. Boundary vertices are pinned. Everything in it is
- * measured, and each piece took its own probe
- * (`tools/modeling/parity/probe-laplacian*.py`):
+ * where `ring_i` is the sum of the **corner triangles** touching `i` — for
+ * each corner of each face, the triangle (prev, curr, next), its area added to
+ * all three of them — and `w_ij` are the usual cotangent weights. A triangle's
+ * own area therefore lands in `ring_i` three times, which is why this is the
+ * same thing as the `lambda / (12 · A_i)` the probes fitted on fans.
+ *
+ * Boundary vertices are pinned. Everything in it is measured, and each piece
+ * took its own probe (`tools/modeling/parity/probe-laplacian*.py`):
  *
  * - **implicit, not explicit.** Fitting `x = (x0 + L t)/(1 + L)` to four
  *   values of `lambda` gives the same `L/lambda` to six places, which a
@@ -56,16 +60,19 @@
  *
  * A cotangent weight is a statement about a triangle, and Blender does not
  * simply triangulate: a quad contributes **both** of its triangulations with
- * every weight halved, diagonals included, and **half** its area to each
- * corner. Measured, that predicts Blender's whole output to 2.0e-17 on a 4x4
- * quad grid and 2.5e-11 on a 6x6, against 3.7e-3 to 1.5e-2 for plain
- * triangulation either way round.
+ * every weight halved, diagonals included. Measured, that predicts Blender's
+ * whole output to 2.0e-17 on a 4x4 quad grid and 2.5e-11 on a 6x6, against
+ * 3.7e-3 to 1.5e-2 for plain triangulation either way round. It is also what
+ * the loop walk in `init_laplacian_matrix` comes to, read later: the four
+ * corner triangles, each weight halved.
  *
- * On a sheet made deliberately irregular in all three axes the same rule
- * lands at **2.9e-6**, which is thirty times float32 and so is a real
- * remainder — the two triangulations of a strongly non-planar quad have
- * different areas, and which one Blender takes is not settled. Cages are not
- * that bent; this is recorded rather than hidden.
+ * **The area is the part that took reading the source.** For three sessions
+ * this file said "half its area to each corner", which is the closest of six
+ * guesses and still left 2.9e-6 on a strongly bent sheet — thirty times
+ * float32, so a real remainder. There is no triangulation in it: the ring area
+ * is the sum of the corner triangles, so a quad gives each of its corners
+ * three of its four, with the fourth — the one opposite — left out. With that,
+ * the `saddleGrid` parity case went from 0.02 mm to **0.0000 mm**.
  *
  * ## What this does not do, and why
  *
@@ -84,9 +91,37 @@
  *   vertices moves exactly the 10 of them that are **not** in any
  *   fully-selected face. No reading fits all four. Smoothing part of a mesh
  *   is better served by running this and blending the result.
- * - **n-gons are refused.** Blender has a path for them — an 8-gon does move
- *   things — but it has not been measured, and guessing here would be the
- *   fourth time this operator was written down wrong.
+ * - **n-gons are refused.** Blender's loop walk is general and would handle
+ *   them, and the corner-triangle form above is the shape of that path — but
+ *   it has not been *measured* here, and guessing would be the fourth time
+ *   this operator got written down wrong.
+ *
+ * ## The two clamps, which no well-proportioned mesh can see
+ *
+ * Both come straight from `bmo_smooth_laplacian.cc` and both only ever
+ * subtract movement:
+ *
+ * - **a corner triangle under `1e-5` freezes its own vertex** (Blender's
+ *   `zerola`), not its neighbours.
+ * - **`validate_solution`** throws away the answer for *both* ends of any edge
+ *   the solve would stretch past **1.8x** or squash below **0.15x** of its
+ *   original length. Those vertices keep the positions they came in with.
+ *
+ * A cage's edges never come near either limit, which is exactly why the
+ * `character` parity case was the only one of three that could see it: dense
+ * thin triangles, and 22 mm of average error on the interior vertices that no
+ * amount of solver tuning was going to explain. With the clamps in, that case
+ * reads **0.0001 mm**, and the two sides freeze **the same 812 vertices of
+ * 1495** — the same set, not just the same count.
+ *
+ * **What is not read: exactly when the edge clamp fires.** A 4x4 sheet with two
+ * interior vertices deliberately brought 0.0005 apart has the solve pull that
+ * edge to 79x its length, which is far past the 1.8x ceiling, and **neither
+ * Blender nor this freezes them** — both move them to the same place, to six
+ * decimals (`probe-laplacian24.py`). So the trigger is narrower than the code
+ * reads, in the same way on both sides. It is recorded rather than guessed at:
+ * every case measured agrees, and the next person should not assume the
+ * condition is understood.
  */
 import type { MeshData } from "../../lib/mesh";
 
@@ -140,6 +175,12 @@ export function smoothLaplacianVert(
 
   const P = Float64Array.from(data.positions);
   const count = P.length / 3;
+  // Blender's three constants, from `bmo_smooth_laplacian.cc`: a corner
+  // triangle thinner than `min_area` freezes its vertex, and an edge the solve
+  // would stretch or squash past these ratios disqualifies both of its ends.
+  const MIN_AREA = 0.00001;
+  const MAX_EDGE_RATIO = 1.8;
+  const MIN_EDGE_RATIO = 0.15;
 
   for (const poly of data.polys)
     if (poly.length > 4)
@@ -149,7 +190,10 @@ export function smoothLaplacianVert(
 
   // ── weights, areas, and which edges have one face ────────────────────────
   const weights: Map<number, number>[] = Array.from({ length: count }, () => new Map());
+  /** Blender's `ring_areas`: the sum of the corner triangles touching a vertex. */
   const area = new Float64Array(count);
+  /** Blender's `zerola`: vertices whose row is the identity, so they do not move. */
+  const frozen = new Uint8Array(count);
   const edgeFaces = new Map<number, number>();
 
   const at = (v: number): [number, number, number] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
@@ -192,20 +236,39 @@ export function smoothLaplacianVert(
     if (poly.length === 3) {
       const [a, b, c] = poly as [number, number, number];
       triangle(a, b, c);
-      const ar = triArea(a, b, c);
-      for (const v of poly) area[v]! += ar;
     } else if (poly.length === 4) {
       const [a, b, c, d] = poly as [number, number, number, number];
       // Both triangulations, halved, diagonals kept — measured, and the one
-      // reading of six that gets a quad grid exactly right.
+      // reading of six that gets a quad grid exactly right. It is also what
+      // Blender's loop walk comes to: the four corner triangles, each weight
+      // halved. Only the **scale** of these matters, because the row divides
+      // by the vertex's own weight sum.
       triangle(a, b, c, 0.5);
       triangle(a, c, d, 0.5);
       triangle(b, c, d, 0.5);
       triangle(b, d, a, 0.5);
-      const ar = (triArea(a, b, c) + triArea(a, c, d)) / 2;
-      for (const v of poly) area[v]! += ar;
     } else {
       continue; // a 1- or 2-gon carries no area and no angle
+    }
+
+    // The one-ring area, exactly as `init_laplacian_matrix` accumulates it:
+    // **per corner**, the triangle (prev, curr, next), its area added to all
+    // three of those vertices. For a triangle that is the face's own area
+    // counted three times over — which is where the 12 in `lambda/(12·A)`
+    // comes from — and for a quad it is three of the four corner triangles at
+    // each corner, which is a different number from "half of one
+    // triangulation" and the 0.02 mm the `saddleGrid` row used to be out by.
+    for (let i = 0; i < poly.length; i++) {
+      const prev = poly[(i - 1 + poly.length) % poly.length]!;
+      const curr = poly[i]!;
+      const next = poly[(i + 1) % poly.length]!;
+      const areaf = triArea(prev, curr, next);
+      // A corner thinner than this freezes **its own** vertex, not its
+      // neighbours — `sys->zerola[vi_curr] = true` and nothing else.
+      if (areaf < MIN_AREA) frozen[curr] = 1;
+      area[prev]! += areaf;
+      area[curr]! += areaf;
+      area[next]! += areaf;
     }
     for (let i = 0; i < poly.length; i++) {
       const p = poly[i]!;
@@ -228,11 +291,14 @@ export function smoothLaplacianVert(
     const w = weights[i]!;
     let ws = 0;
     for (const value of w.values()) ws += value;
-    if (boundary[i] || area[i]! <= 0 || w.size === 0 || Math.abs(ws) < 1e-14) {
+    if (frozen[i] || boundary[i] || area[i]! <= 0 || w.size === 0 || Math.abs(ws) < 1e-14) {
       rows.push({ diag: 1, cols: [], vals: [] });
       continue;
     }
-    const L = lambda / (12 * area[i]!);
+    // `1 + lambda/(4·ring_areas)` on the diagonal. The familiar `12·A` is this
+    // with a triangle's ring area written out — it counts each incident
+    // triangle three times.
+    const L = lambda / (4 * area[i]!);
     const cols: number[] = [];
     const vals: number[] = [];
     for (const [j, wij] of w) {
@@ -242,13 +308,53 @@ export function smoothLaplacianVert(
     rows.push({ diag: 1 + L, cols, vals });
   }
 
-  const out = Float64Array.from(P);
+  // All three axes are solved whatever `use` says, because the check below
+  // reads the solved position as a whole — Blender sets the right-hand side
+  // for x, y and z unconditionally and only consults `use_*` when writing the
+  // answer back.
+  const solved = Float64Array.from(P);
   for (let axis = 0; axis < 3; axis++) {
-    if (!use[axis]) continue;
     const b = new Float64Array(count);
     for (let i = 0; i < count; i++) b[i] = P[i * 3 + axis]!;
     const x = bicgstab(rows, b, tolerance, maxIterations);
-    for (let i = 0; i < count; i++) out[i * 3 + axis] = x[i]!;
+    for (let i = 0; i < count; i++) solved[i * 3 + axis] = x[i]!;
+  }
+
+  // `validate_solution`: an edge that the solve would stretch past 1.8x or
+  // squash below 0.15x of its length **disqualifies both of its ends**, which
+  // keep the positions they came in with. This is the whole of the 22 mm the
+  // `character` row was out by, and it is invisible on anything well
+  // proportioned: a cage's edges never come near either limit, so the row's
+  // other two cases cannot see it. Dense thin triangles can, and do.
+  const rejected = new Uint8Array(count);
+  const seen = new Set<number>();
+  const check = (p: number, q: number): void => {
+    const key = p < q ? p * count + q : q * count + p;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const before = Math.hypot(
+      P[p * 3]! - P[q * 3]!,
+      P[p * 3 + 1]! - P[q * 3 + 1]!,
+      P[p * 3 + 2]! - P[q * 3 + 2]!,
+    );
+    const after = Math.hypot(
+      solved[p * 3]! - solved[q * 3]!,
+      solved[p * 3 + 1]! - solved[q * 3 + 1]!,
+      solved[p * 3 + 2]! - solved[q * 3 + 2]!,
+    );
+    if (after > before * MAX_EDGE_RATIO || after < before * MIN_EDGE_RATIO) {
+      rejected[p] = 1;
+      rejected[q] = 1;
+    }
+  };
+  for (const poly of data.polys)
+    for (let i = 0; i < poly.length; i++) check(poly[i]!, poly[(i + 1) % poly.length]!);
+  for (const e of data.edges ?? []) check(e[0]!, e[1]!);
+
+  const out = Float64Array.from(P);
+  for (let i = 0; i < count; i++) {
+    if (rejected[i]) continue;
+    for (let axis = 0; axis < 3; axis++) if (use[axis]) out[i * 3 + axis] = solved[i * 3 + axis]!;
   }
 
   return {
