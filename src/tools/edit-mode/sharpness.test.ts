@@ -102,6 +102,31 @@ describe("setSharpnessByAngle", () => {
     expect([...(fold.sharp ?? [])]).toEqual(["0_1"]);
   });
 
+  it("materialises the corner normals when it marks anything", () => {
+    // **Not something the operator's name suggests.** Found by the parity
+    // suite the day the harness learned to carry `vn`: the row went from 3/3
+    // to 0/3 reading `normals 0/24`, because Blender's mesh had a
+    // custom-normal layer and this one did not.
+    //
+    // What is in it is the face normal at every corner — measured on a bent
+    // fan at three limits, 0.0000 degrees each time — and it is **not**
+    // created when nothing ends up sharp.
+    const marked = setSharpnessByAngle(hinge(90), { angle: deg(30) });
+    expect(marked.sharp?.size).toBe(1);
+    expect(marked.normals).toHaveLength(2);
+    expect(marked.normals![0]!).toHaveLength(4);
+    // Face 0 of the hinge lies in the y = 0 plane, so its normal is ±y and
+    // every one of its corners carries the same thing — which is the claim:
+    // the layer holds the **face** normal, not a smoothed one.
+    const n = marked.normals![0]![0]!;
+    expect(Math.abs(n[1]!)).toBeCloseTo(1, 6);
+    for (const corner of marked.normals![0]!) expect(corner).toEqual(n);
+
+    const nothing = setSharpnessByAngle(hinge(10), { angle: deg(80) });
+    expect(nothing.sharp?.size ?? 0).toBe(0);
+    expect(nothing.normals).toBeUndefined();
+  });
+
   it("moves nothing and changes no face", () => {
     const before = hinge(90);
     const out = setSharpnessByAngle(before, { angle: deg(30) });

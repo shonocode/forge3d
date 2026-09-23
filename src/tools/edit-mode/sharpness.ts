@@ -117,6 +117,27 @@ export function setSharpnessByAngle(
     polys: data.polys.map((p) => [...p]),
   };
   if (sharp.size > 0) out.sharp = sharp;
+  // **Marking an edge sharp materialises the corner normals**, which is not
+  // something this operator's name suggests and was not in the first
+  // measurement of it: the `set-sharpness` parity row went from 3/3 to 0/3
+  // the day the harness learned to carry `vn`, reading `normals 0/24` —
+  // Blender's mesh had the layer and this one did not.
+  //
+  // What is in it is the **face normal at every corner**, measured on a bent
+  // fan at three limits and agreeing to 0.0000 degrees each time
+  // (`probe-sharpness3.py`). The shading on a mesh with no per-face smooth
+  // flag is the face normal, and the layer freezes exactly that.
+  //
+  // And it is **not** created when nothing ends up sharp: at a limit of 179
+  // degrees, with no edge marked, `has_custom_normals` stays false. That is
+  // the condition used here; the case of a mesh that already had sharp edges
+  // and gains none is not measured.
+  if (sharp.size > 0)
+    out.normals = data.polys.map((poly) => {
+      const n = faceNormal(P, poly);
+      return poly.map(() => [...n]);
+    });
+  if (data.normals && sharp.size === 0) out.normals = data.normals.map((f) => f.map((c) => [...c]));
   if (data.creases) out.creases = new Map(data.creases);
   if (data.seams) out.seams = new Set(data.seams);
   if (data.edges) out.edges = data.edges.map((e) => [...e]);

@@ -223,6 +223,17 @@ export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
 export { unsubdivide, type UnsubdivideOptions } from "../tools/edit-mode/unsubdivide";
 export { edgenetPrepare, type EdgenetPrepareOptions } from "../tools/edit-mode/edgenet-prepare";
 export { setSharpnessByAngle, type SetSharpnessByAngleOptions } from "../tools/edit-mode/sharpness";
+export {
+  splitNormals,
+  mergeNormals,
+  averageNormals,
+  smoothNormals,
+  pointNormals,
+  type NormalWeight,
+  type AverageNormalsOptions,
+  type SmoothNormalsOptions,
+  type PointNormalsOptions,
+} from "../tools/edit-mode/normals";
 
 // ── Per-face-corner data ───────────────────────────────────────────────────
 // UVs and vertex colours live per **corner**, not per vertex — that is what

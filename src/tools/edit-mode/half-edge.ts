@@ -102,6 +102,12 @@ export interface EditMesh {
    */
   sharpEdges?: Set<string>;
   /**
+   * An explicit normal per face corner, carried through untouched with
+   * the same warning as the loop layers above: an operator that changes
+   * a face's arity leaves this describing the face it used to have.
+   */
+  loopNormals?: number[][][];
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them

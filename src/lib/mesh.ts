@@ -75,6 +75,21 @@ export interface MeshData {
   uvs?: number[][][];
   /** Vertex colour per face corner, `[r, g, b, a]`, shaped like {@link uvs}. */
   colors?: number[][][];
+  /**
+   * An explicit normal per face **corner**, `[x, y, z]`, shaped like
+   * {@link uvs} — Blender's custom normals, which live in a `custom_normal`
+   * attribute and number 24 on a cube rather than 8.
+   *
+   * Absent means "work them out from the geometry", which is what every
+   * renderer does by default. Present means the mesh carries an answer that
+   * overrides it, and five Blender operators plus two modifiers exist to
+   * compute one — see `tools/edit-mode/normals.ts`, added 2026-09-24 with
+   * this field.
+   *
+   * **Sharp edges belong with this.** Averaging a normal across an edge is
+   * exactly what {@link sharp} forbids, so the two layers are read together.
+   */
+  normals?: number[][][];
 }
 
 /**
@@ -100,6 +115,7 @@ export function meshFromData(data: MeshData): EditMesh {
   // look at these, and `meshToData` puts them back exactly as they came in.
   em.wireEdges = (data.edges ?? []).map((e) => [...e]);
   if (data.sharp) em.sharpEdges = new Set(data.sharp);
+  if (data.normals) em.loopNormals = data.normals.map((f) => f.map((c) => [...c]));
   // The loop layers ride along the same way, with the same warning: an
   // operator that changes a face's arity leaves them describing the old one.
   // The four that permute them work on `MeshData` directly and never enter
@@ -124,6 +140,7 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     uvs: (em.loopUVs ?? []).map((f) => f.map((c) => [...c])),
     colors: (em.loopColors ?? []).map((f) => f.map((c) => [...c])),
     sharp: new Set(em.sharpEdges ?? []),
+    normals: (em.loopNormals ?? []).map((f) => f.map((c) => [...c])),
   };
 }
 
