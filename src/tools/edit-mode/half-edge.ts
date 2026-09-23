@@ -89,6 +89,19 @@ export interface EditMesh {
   loopUVs?: number[][][];
   loopColors?: number[][][];
   /**
+   * Edges marked sharp, keyed the way `creases` and `seams` are — carried
+   * through untouched, with the same warning as {@link wireEdges}: an
+   * operator that renumbers vertices leaves these pointing at the old
+   * numbers.
+   *
+   * Added 2026-09-23 with `setSharpnessByAngle`, which takes `MeshData`
+   * directly and never comes through here. This is so a mesh that merely
+   * *passes* an operator does not lose the flag silently — the round trip
+   * through `meshFromData` and `meshToData` is the shared path, and a layer
+   * that vanishes there vanishes without a word.
+   */
+  sharpEdges?: Set<string>;
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them

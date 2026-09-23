@@ -29,6 +29,17 @@ export interface MeshData {
   /** UV seam edges, keyed "minVertex_maxVertex". */
   seams?: Set<string>;
   /**
+   * Edges marked **sharp**, keyed "minVertex_maxVertex" — Blender's
+   * `use_edge_sharp`, the flag that stops a smooth shade from being carried
+   * across an edge.
+   *
+   * A separate thing from {@link creases}, which is Catmull-Clark's weighting
+   * and has a value per edge: this is a flag and it is about shading. Added
+   * 2026-09-23 for `setSharpnessByAngle`, which is the operator that computes
+   * it from the geometry.
+   */
+  sharp?: Set<string>;
+  /**
    * Edges that belong to no polygon — Blender's "loose" or wire edges.
    *
    * **Only the wire ones.** A polygon's own edges are read off `polys`, so an
@@ -88,6 +99,7 @@ export function meshFromData(data: MeshData): EditMesh {
   // Carried, not used. See the note on `MeshData.edges`: the operators never
   // look at these, and `meshToData` puts them back exactly as they came in.
   em.wireEdges = (data.edges ?? []).map((e) => [...e]);
+  if (data.sharp) em.sharpEdges = new Set(data.sharp);
   // The loop layers ride along the same way, with the same warning: an
   // operator that changes a face's arity leaves them describing the old one.
   // The four that permute them work on `MeshData` directly and never enter
@@ -111,6 +123,7 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     edges: (em.wireEdges ?? []).map((e) => [...e]),
     uvs: (em.loopUVs ?? []).map((f) => f.map((c) => [...c])),
     colors: (em.loopColors ?? []).map((f) => f.map((c) => [...c])),
+    sharp: new Set(em.sharpEdges ?? []),
   };
 }
 
