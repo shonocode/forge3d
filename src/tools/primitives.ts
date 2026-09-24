@@ -5,12 +5,12 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, status } from "../state";
 import { selectMesh, updateGizmo } from "./selection";
-import { updateHierarchy } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
 import { createDefaultPBR } from "../materials/pbr-helpers";
 import { assignToActiveLayer } from "./layers";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
+import { store } from "../store";
 
 export const PALETTE = [
   "#5b7fff", "#4ce0a0", "#ff5c5c", "#ffc855", "#ff8f44",
@@ -96,7 +96,7 @@ export function addPrimitive(type: PrimType): AbstractMesh | null {
   assignToActiveLayer(m);
   state.allMeshes.push(m);
   selectMesh(m, false);
-  updateHierarchy();
+  store.notify();
 
   // Undo: remove mesh; Redo: re-add
   const mesh = m;
@@ -109,14 +109,14 @@ export function addPrimitive(type: PrimType): AbstractMesh | null {
       if (idx >= 0) state.allMeshes.splice(idx, 1);
       state.selectedMeshes = state.selectedMeshes.filter((x) => x !== mesh);
       updateGizmo();
-      updateHierarchy();
+      store.notify();
     },
     redo() {
       mesh.setEnabled(true);
       addShadowCaster(mesh);
       state.allMeshes.push(mesh);
       selectMesh(mesh, false);
-      updateHierarchy();
+      store.notify();
     },
   });
 

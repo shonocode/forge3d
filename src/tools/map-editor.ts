@@ -4,12 +4,12 @@ import type { MapInstance } from "../state";
 import { modelStore } from "../storage/model-store";
 import { metadataStore, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "./selection";
-import { updateHierarchy, updateMapInstances } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 import { unregisterMeshForShading } from "../viewport/shading";
 import { removeMeshFromLayers } from "./layers";
 import { openFileDialog } from "../ui/file-input";
+import { store } from "../store";
 
 // ── Scene Layout types ──
 
@@ -92,7 +92,7 @@ function placeAsInstances(modelId: string, modelName: string): boolean {
 
   const last = state.allMeshes[state.allMeshes.length - 1];
   if (last) selectMesh(last, false);
-  updateHierarchy();
+  store.notify();
   status("Placed (instance): " + modelName + " — ジオメトリ共有、移動/回転/スケールのみ");
   return true;
 }
@@ -148,7 +148,7 @@ export async function placeModel(modelId: string, modelName: string): Promise<vo
         label: "Place Model",
         undo() { removeMapInstance(iid); },
         redo() { void placeModel(modelId, modelName).then(() => {
-          updateHierarchy();
+          store.notify();
         }).catch((e) => {
           console.warn("Redo place failed:", e);
           status("\u26a0 Redo failed");
@@ -167,7 +167,7 @@ export async function placeModel(modelId: string, modelName: string): Promise<vo
       const lastMesh = result.meshes[result.meshes.length - 1];
       if (lastMesh) selectMesh(lastMesh, false);
 
-      updateHierarchy();
+      store.notify();
       status("Placed: " + modelName);
     } finally {
       URL.revokeObjectURL(url);
@@ -226,7 +226,7 @@ export function removeMapInstance(instanceId: string): void {
   }
 
   state.mapInstances.splice(idx, 1);
-  updateHierarchy();
+  store.notify();
   status("Removed: " + instance.modelName);
 }
 
@@ -337,7 +337,7 @@ export function importSceneLayout(): void {
           label: "Import Layout (" + ids.length + ")",
           undo() {
             for (const id of ids) removeMapInstance(id);
-            updateHierarchy();
+            store.notify();
           },
           redo() {
             // Re-place all models from stored layout data
@@ -361,7 +361,7 @@ export function importSceneLayout(): void {
                   }
                 }
               }
-              updateHierarchy();
+              store.notify();
             })().catch((e) => {
               console.error("Redo layout failed:", e);
               status("\u26a0 Redo failed");
@@ -372,7 +372,7 @@ export function importSceneLayout(): void {
 
       const placed = layout.objects.length - skipped;
       status("Layout imported: " + layout.name + " (" + placed + "/" + layout.objects.length + " objects)" + (skipped ? " — " + skipped + " missing" : ""));
-      updateMapInstances();
+      store.notify();
     } catch (e) {
       console.error("Import layout error:", e);
       status("⚠ Import error: " + (e as Error).message);

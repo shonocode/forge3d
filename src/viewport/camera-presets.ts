@@ -1,5 +1,9 @@
 import { Camera } from "@babylonjs/core/Cameras/camera";
 import { Animation } from "@babylonjs/core/Animations/animation";
+// Side effect: puts beginAnimation / CreateAndStartAnimation on the scene.
+// Without it the presets reported "Top view" and left the camera where it
+// was — the old screen got it by accident through another module's imports.
+import "@babylonjs/core/Animations/animatable";
 import { state, status } from "../state";
 
 export interface CameraPreset {

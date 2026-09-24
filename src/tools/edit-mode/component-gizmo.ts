@@ -11,7 +11,7 @@ import { refreshOverlayPositions, type EditOverlay } from "./overlay";
 import { computeFalloffWeights } from "./proportional";
 import { state } from "../../state";
 import type { EditSelection } from "../../state";
-import { updateProperties } from "../../ui/panels";
+import { store } from "../../store";
 
 /** Which transform the component gizmo currently performs. */
 export type EditGizmoMode = "move" | "rotate" | "scale";
@@ -167,7 +167,7 @@ export function createComponentGizmo(
           commitPositions(editMesh);
           refreshOverlayPositions(scene, overlay, editMesh, sel);
           recenterProxy(proxy, editMesh, sel);
-          updateProperties();
+          store.notify();
         },
         redo() {
           for (const v of affected) {
@@ -178,7 +178,7 @@ export function createComponentGizmo(
           commitPositions(editMesh);
           refreshOverlayPositions(scene, overlay, editMesh, sel);
           recenterProxy(proxy, editMesh, sel);
-          updateProperties();
+          store.notify();
         },
       });
     }

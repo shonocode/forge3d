@@ -31,9 +31,9 @@ import {
 import { refreshMaskVisual } from "../tools/sculpt";
 import { validateMorphDrivers } from "../tools/morph-driver";
 import { createLayer, toggleLayerVisibility, assignMeshToLayer } from "../tools/layers";
-import { updateLayerUI, updateHierarchy } from "../ui/panels";
 import { openFileDialog } from "../ui/file-input";
 import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY, UV_PIN_METADATA_KEY } from "../tools/edit-mode/build";
+import { store } from "../store";
 
 function sanitizeProjectName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, "_").replace(/^\.+/, "_").trim() || "project";
@@ -415,8 +415,7 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     }
   }
 
-  updateLayerUI();
-  updateHierarchy();
+  store.notify();
 }
 
 /**

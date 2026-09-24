@@ -1,15 +1,15 @@
 /**
- * The left panel: primitives, CSG, mesh tools, the scene's meshes. Each
+ * The left panel: primitives, CSG, mesh tools, measure, layers, the scene's
+ * meshes (`left-sections.tsx`). Each
  * section carries its note from the guide (variant C).
  */
 import { useState } from "react";
 import { PRIMS, addPrimitive } from "../tools/primitives";
 import { doCSG, type CSGOp } from "../tools/csg";
 import { MESH_TOOLS, runMeshTool } from "../tools/mesh-tools";
-import { selectMesh } from "../tools/selection";
 import { LEFT_SECTIONS } from "./guide/guide";
 import { SectionNote } from "./guide/section-note";
-import { useForge } from "./use-forge";
+import { HierarchyControls, LayerControls, MeasureControls } from "./left-sections";
 
 const section = (id: string) => LEFT_SECTIONS.find((s) => s.id === id)!;
 
@@ -21,7 +21,6 @@ const CSG_OPS: { op: CSGOp; sy: string; label: string }[] = [
 
 export function LeftPanel({ open }: { open: boolean }) {
   const [angle, setAngle] = useState(30);
-  const meshes = useForge((s) => s.allMeshes.map((m) => ({ mesh: m, id: m.uniqueId, name: m.name, sel: s.selectedMeshes.includes(m) })));
   return (
     <aside className={"lp" + (open ? " open" : "")} aria-label="左パネル">
       <SectionNote section={section("prim")}>
@@ -57,23 +56,14 @@ export function LeftPanel({ open }: { open: boolean }) {
           </div>
         ))}
       </SectionNote>
+      <SectionNote section={section("meas")}>
+        <MeasureControls />
+      </SectionNote>
+      <SectionNote section={section("lyr")}>
+        <LayerControls />
+      </SectionNote>
       <SectionNote section={section("hier")}>
-        {meshes.length === 0 ? (
-          <div className="empty">メッシュなし ― 上の Primitives から追加</div>
-        ) : (
-          <div className="slist" role="list">
-            {meshes.map((m) => (
-              <div
-                key={m.id}
-                role="listitem"
-                className={"sitem" + (m.sel ? " sel" : "")}
-                onClick={(e) => selectMesh(m.mesh, e.ctrlKey || e.metaKey)}
-              >
-                <span>{m.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <HierarchyControls />
       </SectionNote>
     </aside>
   );

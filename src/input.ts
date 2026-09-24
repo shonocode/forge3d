@@ -1,4 +1,4 @@
-import { state, E, status, isMobile } from "./state";
+import { state, E, status } from "./state";
 import type { ToolId } from "./state";
 import { selectMesh, deselect, updateGizmo, lastSelected } from "./tools/selection";
 import { sculptAt, captureGeometry, restoreGeometry, applySculptDelta } from "./tools/sculpt";
@@ -6,7 +6,6 @@ import type { GeoSnapshot } from "./tools/sculpt";
 import { diffAttribute } from "./tools/sculpt-delta";
 import { paintAt, hasUVs, beginPaintStroke, getStrokeTarget } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
-import { updateHierarchy, updateProperties, updateBoneUI, updateAnimUI } from "./ui/panels";
 import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
@@ -22,23 +21,20 @@ import { applySnapToGizmos } from "./tools/snap";
  * the Bone panel, the keyframe list and the graph editor all kept saying
  * "ボーンを選択" — the app telling you to do the thing you had just done.
  *
- * Both panels are cheap to rebuild and the click is a human-speed event, so
- * this refreshes unconditionally rather than trying to work out which one
- * cares.
+ * The screen reads the selection from the state, so telling the store is
+ * enough (ADR-014) — the frame fingerprint would catch it a frame later, this
+ * makes it immediate.
  */
 function refreshAfterBoneSelection(): void {
-  updateBoneUI();
-  updateAnimUI();
+  store.notify();
 }
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut, trisToQuadsSelection, quadsToTrisSelection, markCreaseSelection, setCreaseSelection, fillSelection } from "./tools/edit-mode";
 import { actionFor, type ActionId } from "./keymap";
+import { store } from "./store";
 
-const TOOL_TABS: Partial<Record<ToolId, string>> = {
-  sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
-};
 const BONE_TOOLS: ReadonlySet<ToolId> = new Set(["bone", "weight", "anim"]);
 
 export function setTool(t: ToolId): void {
@@ -47,7 +43,6 @@ export function setTool(t: ToolId): void {
 
   cleanupTool(prev);
   state.tool = t;
-  updateToolUI(t);
   initTool(t);
 }
 
@@ -63,18 +58,6 @@ function cleanupTool(prev: ToolId): void {
   document.querySelectorAll<HTMLElement>(".touch-mod").forEach((b) => b.classList.remove("on"));
 }
 
-function updateToolUI(t: ToolId): void {
-  document.querySelectorAll<HTMLElement>(".pill").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tool === t)
-  );
-  document.querySelectorAll<HTMLElement>(".gfab-btn").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tool === t)
-  );
-  E("modeL").textContent =
-    t === "sculpt" ? "SCULPT" : t === "paint" ? "PAINT" : t === "bone" ? "BONE" : t === "weight" ? "WEIGHT" : t === "anim" ? "ANIM" : "OBJECT";
-  const tab = TOOL_TABS[t];
-  if (tab) switchTab(tab);
-}
 
 function initTool(t: ToolId): void {
   if (BONE_TOOLS.has(t)) {
@@ -100,37 +83,8 @@ function initTool(t: ToolId): void {
   }
 }
 
-export function switchTab(id: string): void {
-  document.querySelectorAll<HTMLElement>(".tb").forEach((b) => {
-    const isActive = b.dataset.tab === id;
-    b.classList.toggle("on", isActive);
-    b.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-  document.querySelectorAll<HTMLElement>(".tbody").forEach((b) =>
-    b.classList.toggle("on", b.id === "tb-" + id)
-  );
-}
 
-export function togglePanel(which: "lp" | "rp"): void {
-  const lp = E("lpanel");
-  const rp = E("rpanel");
-  const ov = E("overlay");
-  if (which === "lp") {
-    const open = lp.classList.toggle("open");
-    rp.classList.remove("open");
-    ov.classList.toggle("open", open);
-  } else {
-    const open = rp.classList.toggle("open");
-    lp.classList.remove("open");
-    ov.classList.toggle("open", open);
-  }
-}
 
-export function closeAllPanels(): void {
-  E("lpanel").classList.remove("open");
-  E("rpanel").classList.remove("open");
-  E("overlay").classList.remove("open");
-}
 
 export function initInput(): void {
   const { canvas } = state;
@@ -260,8 +214,7 @@ export function initInput(): void {
         clearMeasurements();
         state.history.clear();
         updateGizmo();
-        updateHierarchy();
-        updateProperties();
+        store.notify();
         status("New scene");
       }
         return;
@@ -651,20 +604,6 @@ export function initInput(): void {
 
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // Panel toggles
-  E("btnLP").addEventListener("click", () => togglePanel("lp"));
-  E("btnRP").addEventListener("click", () => togglePanel("rp"));
-  E("overlay").addEventListener("click", closeAllPanels);
-
-  // Swipe to close panels
-  initSwipeToClose();
-
-  // Scroll fade hints for horizontally-scrollable areas
-  for (const sel of [".pills", ".tabs", ".mob-bottom"]) {
-    const el = document.querySelector<HTMLElement>(sel);
-    if (el) initScrollFade(el);
-  }
-
   // Drag & drop file import
   let dragCounter = 0;
   const dropZone = E("dropZone");
@@ -685,44 +624,7 @@ export function initInput(): void {
   // Resize
   window.addEventListener("resize", () => {
     state.engine.resize();
-    if (!isMobile()) closeAllPanels();
   });
 }
 
-function initSwipeToClose(): void {
-  const THRESHOLD = 60;
 
-  for (const [panelId, direction] of [["lpanel", -1], ["rpanel", 1]] as const) {
-    const panel = E(panelId);
-    let startX = 0;
-    let startY = 0;
-    panel.addEventListener("touchstart", (e) => {
-      const t = e.touches[0];
-      if (!t) return;
-      startX = t.clientX;
-      startY = t.clientY;
-    }, { passive: true });
-    panel.addEventListener("touchend", (e) => {
-      const t = e.changedTouches[0];
-      if (!t) return;
-      const dx = t.clientX - startX;
-      const dy = Math.abs(t.clientY - startY);
-      if (dy < 100 && dx * direction > THRESHOLD) {
-        closeAllPanels();
-      }
-    }, { passive: true });
-  }
-}
-
-function initScrollFade(el: HTMLElement): void {
-  el.classList.add("scroll-fade");
-  const update = () => {
-    const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2;
-    const atStart = el.scrollLeft > 2;
-    el.classList.toggle("scroll-end", atEnd);
-    el.classList.toggle("scroll-start", atStart);
-  };
-  el.addEventListener("scroll", update, { passive: true });
-  // Initial check after layout
-  requestAnimationFrame(update);
-}

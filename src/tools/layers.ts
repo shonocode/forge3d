@@ -1,7 +1,7 @@
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, status } from "../state";
 import type { LayerData } from "../state";
-import { updateLayerUI } from "../ui/panels";
+import { store } from "../store";
 
 export function createLayer(name?: string, parentId?: string | null): LayerData {
   state.layerCounter++;
@@ -22,12 +22,12 @@ export function createLayer(name?: string, parentId?: string | null): LayerData 
       const i = state.layers.indexOf(layer);
       if (i >= 0) state.layers.splice(i, 1);
       state.activeLayerId = prevActiveId;
-      updateLayerUI();
+      store.notify();
     },
     redo() {
       state.layers.push(layer);
       state.activeLayerId = layer.id;
-      updateLayerUI();
+      store.notify();
     },
   });
 
@@ -71,7 +71,7 @@ export function deleteLayer(layerId: string): void {
       for (const child of reparented) child.parentId = layerId;
       for (const [uid, lid] of movedMeshes) state.meshLayerMap.set(uid, lid);
       state.activeLayerId = prevActiveId;
-      updateLayerUI();
+      store.notify();
     },
     redo() {
       const i = state.layers.indexOf(layer);
@@ -79,7 +79,7 @@ export function deleteLayer(layerId: string): void {
       for (const child of reparented) child.parentId = layer.parentId ?? null;
       for (const [uid] of movedMeshes) state.meshLayerMap.set(uid, fallbackId);
       if (state.activeLayerId === layerId) state.activeLayerId = fallbackId;
-      updateLayerUI();
+      store.notify();
     },
   });
 }
@@ -129,8 +129,8 @@ export function toggleLayerVisibility(layerId: string): void {
 
   state.history.push({
     label: "Toggle Layer",
-    undo() { layer.visible = wasVisible; applySubtreeVisibility(layerId); updateLayerUI(); },
-    redo() { layer.visible = !wasVisible; applySubtreeVisibility(layerId); updateLayerUI(); },
+    undo() { layer.visible = wasVisible; applySubtreeVisibility(layerId); store.notify(); },
+    redo() { layer.visible = !wasVisible; applySubtreeVisibility(layerId); store.notify(); },
   });
 }
 

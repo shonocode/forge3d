@@ -1,6 +1,6 @@
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, status } from "../state";
-import { updateHierarchy } from "../ui/panels";
+import { store } from "../store";
 
 export function setParent(child: AbstractMesh, parent: AbstractMesh): void {
   if (child === parent) { status("自分自身を親にできません"); return; }
@@ -12,13 +12,13 @@ export function setParent(child: AbstractMesh, parent: AbstractMesh): void {
   }
   const oldParent = (child.parent as AbstractMesh) ?? null;
   child.setParent(parent);
-  updateHierarchy();
+  store.notify();
   status(child.name + " → " + parent.name);
 
   state.history.push({
     label: "Set Parent",
-    undo() { child.setParent(oldParent); updateHierarchy(); },
-    redo() { child.setParent(parent); updateHierarchy(); },
+    undo() { child.setParent(oldParent); store.notify(); },
+    redo() { child.setParent(parent); store.notify(); },
   });
 }
 
@@ -26,13 +26,13 @@ export function clearParent(mesh: AbstractMesh): void {
   if (!mesh.parent) { status("親なし"); return; }
   const oldParent = mesh.parent as AbstractMesh;
   mesh.setParent(null);
-  updateHierarchy();
+  store.notify();
   status("親を解除: " + mesh.name);
 
   state.history.push({
     label: "Clear Parent",
-    undo() { mesh.setParent(oldParent); updateHierarchy(); },
-    redo() { mesh.setParent(null); updateHierarchy(); },
+    undo() { mesh.setParent(oldParent); store.notify(); },
+    redo() { mesh.setParent(null); store.notify(); },
   });
 }
 

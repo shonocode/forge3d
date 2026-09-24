@@ -1,0 +1,96 @@
+/**
+ * New layout classes for the ported Measure / Layers / Hierarchy controls
+ * (`left-sections.tsx`). The shared `.sec` / `.panel-section` rules in
+ * `src/styles.css` and `src/app/app.css` already style `.cbtn` / `.sitem` /
+ * `.slist` / `.empty` / `.pi`; these only add the layout the old inline
+ * `style="..."` attributes provided (old-index.html lines 44-65).
+ */
+
+.hier-toolbar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.hier-toolbar input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg2);
+  color: var(--t1);
+  border: 1px solid var(--bg3);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+.hier-toolbar .cbtn {
+  flex: none;
+  width: auto;
+  margin-bottom: 0;
+  font-size: 9px;
+}
+
+.hier-parent-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.hier-parent-row .cbtn {
+  flex: 1;
+  width: auto;
+  margin-bottom: 0;
+  font-size: 9px;
+}
+
+.hier-indent {
+  color: var(--t4);
+  margin-right: 4px;
+  font-size: 8px;
+}
+
+.vis-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.layer-row .eye-btn {
+  background: none;
+  border: none;
+  color: var(--t3);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+.layer-row .name {
+  flex: 1;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.layer-row .count {
+  font-size: 9px;
+  color: var(--t4);
+  min-width: 18px;
+  text-align: right;
+}
+.layer-row .sub-btn {
+  background: none;
+  border: 1px solid var(--bg3);
+  border-radius: 3px;
+  color: var(--t3);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 0 4px;
+}

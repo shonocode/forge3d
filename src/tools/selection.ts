@@ -1,9 +1,9 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { state, isMobile } from "../state";
-import { updateHierarchy, updateProperties } from "../ui/panels";
 import { applySelectedEdges, resetEdges } from "./mesh-utils";
 import { isEditMode } from "./edit-mode";
+import { store } from "../store";
 
 export function selectMesh(mesh: AbstractMesh | null, additive: boolean): void {
   if (!additive) {
@@ -17,8 +17,7 @@ export function selectMesh(mesh: AbstractMesh | null, additive: boolean): void {
     applySelectedEdges(mesh);
   }
   updateGizmo();
-  updateHierarchy();
-  updateProperties();
+  store.notify();
 }
 
 export function deselect(): void {
@@ -64,8 +63,8 @@ function initGizmoUndo(): void {
         const m = mesh;
         state.history.push({
           label: "Transform",
-          undo() { m.position.copyFrom(bPos); m.rotation.copyFrom(bRot); m.scaling.copyFrom(bScl); updateProperties(); },
-          redo() { m.position.copyFrom(aPos); m.rotation.copyFrom(aRot); m.scaling.copyFrom(aScl); updateProperties(); },
+          undo() { m.position.copyFrom(bPos); m.rotation.copyFrom(bRot); m.scaling.copyFrom(bScl); store.notify(); },
+          redo() { m.position.copyFrom(aPos); m.rotation.copyFrom(aRot); m.scaling.copyFrom(aScl); store.notify(); },
         });
       }
       dragBefore = null;

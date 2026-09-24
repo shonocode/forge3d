@@ -15,8 +15,8 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { state, status } from "../state";
 import { selectMesh, updateGizmo } from "./selection";
 import { assignToActiveLayer } from "./layers";
-import { updateHierarchy } from "../ui/panels";
 import { openFileDialog } from "../ui/file-input";
+import { store } from "../store";
 
 /** Name prefix that marks a mesh as a non-exported reference plane. */
 export const REF_IMAGE_PREFIX = "refimg_";
@@ -78,7 +78,7 @@ function createRefPlane(fileName: string, tex: Texture): void {
   assignToActiveLayer(mesh);
   state.allMeshes.push(mesh);
   selectMesh(mesh, false);
-  updateHierarchy();
+  store.notify();
 
   state.history.push({
     label: "Add Reference Image",
@@ -88,13 +88,13 @@ function createRefPlane(fileName: string, tex: Texture): void {
       if (idx >= 0) state.allMeshes.splice(idx, 1);
       state.selectedMeshes = state.selectedMeshes.filter((x) => x !== mesh);
       updateGizmo();
-      updateHierarchy();
+      store.notify();
     },
     redo() {
       mesh.setEnabled(true);
       state.allMeshes.push(mesh);
       selectMesh(mesh, false);
-      updateHierarchy();
+      store.notify();
     },
   });
 

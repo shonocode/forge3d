@@ -12,6 +12,7 @@ import { useForge } from "./use-forge";
 export function MobileBar({ onPrimitives }: { onPrimitives(): void }) {
   const camLocked = useForge((s) => s.cameraLocked);
   const multi = useForge((s) => s.multiSelectMode);
+  const editing = useForge((s) => s.editMesh !== null);
   const toggleCam = (): void => {
     state.cameraLocked = !state.cameraLocked;
     if (state.cameraLocked) {
@@ -37,7 +38,7 @@ export function MobileBar({ onPrimitives }: { onPrimitives(): void }) {
       <button type="button" className="mbtn" onClick={() => void import("../export/gltf-exporter").then((m) => m.loadModelFromFile())}>📂 Load</button>
       <button type="button" className={"mbtn" + (camLocked ? " on" : "")} aria-pressed={camLocked} onClick={toggleCam}>🔒 Cam</button>
       <button type="button" className={"mbtn" + (multi ? " on" : "")} aria-pressed={multi} onClick={toggleMulti}>⊚ Multi</button>
-      <button type="button" className="mbtn" aria-label="Toggle Edit Mode" onClick={() => void import("../tools/edit-mode").then((m) => m.toggleEditMode())}>✎ Edit</button>
+      <button type="button" className={"mbtn" + (editing ? " on" : "")} aria-pressed={editing} aria-label="Toggle Edit Mode" onClick={() => void import("../tools/edit-mode").then((m) => m.toggleEditMode())}>✎ Edit</button>
     </nav>
   );
 }

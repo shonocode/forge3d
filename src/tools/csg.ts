@@ -4,7 +4,6 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { state, status } from "../state";
 import { selectMesh } from "./selection";
-import { updateHierarchy } from "../ui/panels";
 import { applyDefaultEdges, applyShading } from "./mesh-utils";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
@@ -13,6 +12,7 @@ import { buildEditMesh } from "./edit-mode/build";
 import { toPolygons } from "./edit-mode/half-edge";
 import { booleanBuffers, type RenderBuffer, type RenderResult } from "./csg-core";
 import type { BooleanOperation } from "./boolean/boolean";
+import { store } from "../store";
 
 export type CSGOp = "union" | "subtract" | "intersect";
 
@@ -153,7 +153,7 @@ export async function doCSG(op: CSGOp): Promise<void> {
     addShadowCaster(nm);
     state.allMeshes.push(nm);
     selectMesh(nm, false);
-    updateHierarchy();
+    store.notify();
   };
   hideOriginals();
   showResult();
@@ -172,7 +172,7 @@ export async function doCSG(op: CSGOp): Promise<void> {
       state.allMeshes.push(a);
       state.allMeshes.push(b);
       selectMesh(a, false);
-      updateHierarchy();
+      store.notify();
     },
     redo() {
       hideOriginals();

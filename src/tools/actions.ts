@@ -5,11 +5,11 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { state, status } from "../state";
 import { selectMesh, lastSelected, updateGizmo } from "./selection";
-import { updateHierarchy, updateProperties } from "../ui/panels";
 import { applyDefaultEdges } from "./mesh-utils";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 import { unregisterMeshForShading } from "../viewport/shading";
 import { removeMeshFromLayers } from "./layers";
+import { store } from "../store";
 
 const TEX_SIZE = 1024;
 
@@ -74,7 +74,7 @@ export function duplicateSelected(): void {
   addShadowCaster(c);
   state.allMeshes.push(c);
   selectMesh(c, false);
-  updateHierarchy();
+  store.notify();
 
   // Undo: remove clone; Redo: re-add
   const clone = c;
@@ -87,14 +87,14 @@ export function duplicateSelected(): void {
       if (idx >= 0) state.allMeshes.splice(idx, 1);
       state.selectedMeshes = state.selectedMeshes.filter((x) => x !== clone);
       updateGizmo();
-      updateHierarchy();
+      store.notify();
     },
     redo() {
       clone.setEnabled(true);
       addShadowCaster(clone);
       state.allMeshes.push(clone);
       selectMesh(clone, false);
-      updateHierarchy();
+      store.notify();
     },
   });
 }
@@ -134,7 +134,7 @@ export function toggleIsolate(): void {
     }
     status("Isolate: 選択のみ表示（もう一度で解除）");
   }
-  updateHierarchy();
+  store.notify();
 }
 
 export function cleanupMesh(m: AbstractMesh): void {
@@ -212,8 +212,7 @@ export function deleteSelected(): void {
   }
   state.selectedMeshes = [];
   updateGizmo();
-  updateHierarchy();
-  updateProperties();
+  store.notify();
 
   state.history.push({
     label: "Delete",
@@ -229,8 +228,7 @@ export function deleteSelected(): void {
         if (p && state.allMeshes.includes(p)) m.setParent(p);
       }
       selectMesh(deleted[deleted.length - 1]!, false);
-      updateHierarchy();
-      updateProperties();
+      store.notify();
     },
     redo() {
       for (const m of deleted) {
@@ -244,8 +242,7 @@ export function deleteSelected(): void {
         state.selectedMeshes = state.selectedMeshes.filter((x) => x !== m);
       }
       updateGizmo();
-      updateHierarchy();
-      updateProperties();
+      store.notify();
     },
   });
 
@@ -263,8 +260,7 @@ export function deleteOne(uid: number): void {
   const idx = state.allMeshes.indexOf(m);
   if (idx >= 0) state.allMeshes.splice(idx, 1);
   updateGizmo();
-  updateHierarchy();
-  updateProperties();
+  store.notify();
 
   state.history.push({
     label: "Delete",
@@ -273,8 +269,7 @@ export function deleteOne(uid: number): void {
       addShadowCaster(m);
       state.allMeshes.push(m);
       selectMesh(m, false);
-      updateHierarchy();
-      updateProperties();
+      store.notify();
     },
     redo() {
       m.setEnabled(false);
@@ -283,8 +278,7 @@ export function deleteOne(uid: number): void {
       if (i >= 0) state.allMeshes.splice(i, 1);
       state.selectedMeshes = state.selectedMeshes.filter((x) => x !== m);
       updateGizmo();
-      updateHierarchy();
-      updateProperties();
+      store.notify();
     },
   });
   status("削除");

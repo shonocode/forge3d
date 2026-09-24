@@ -1,7 +1,7 @@
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
-import { state, status, E, isMobile, type ComponentMode } from "../../state";
+import { state, status, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh } from "./build";
 import { commitTopology, writeEdgeAttrMetadata, writePolyMetadata } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
@@ -17,9 +17,7 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
 import { edgeFaceAdd } from "./face-add";
 import { lastSelected, updateGizmo } from "../selection";
-import { updateProperties } from "../../ui/panels";
-import { refreshEditToolsUI } from "../../ui/builders";
-import { switchTab } from "../../input";
+import { store } from "../../store";
 
 /**
  * Edit Mode controller. Owns the per-session overlay, gizmo, and box-select
@@ -73,23 +71,7 @@ export function enterEditMode(mesh: AbstractMesh): void {
 
   // Hide the object-mode gizmo while we're component-editing.
   updateGizmo();
-  applyModeLabel();
-  // Auto-jump to the Edit tab so operator buttons + sliders are visible.
-  switchTab("edit");
-  refreshEditToolsUI();
-  // Mobile: hardware Tab key doesn't exist. Open the right panel so the user
-  // can actually reach the Mark Seam / Unwrap / V-E-F buttons by tapping.
-  // Close the left panel first to mirror togglePanel's "only one open" rule.
-  if (isMobile()) {
-    const lp = E("lpanel");
-    const rp = E("rpanel");
-    const ov = E("overlay");
-    lp.classList.remove("open");
-    rp.classList.add("open");
-    ov.classList.add("open");
-  }
-  // Also reflect the toggle state on the mobile bottom-bar Edit button.
-  document.querySelectorAll<HTMLElement>("#btnMobEdit").forEach((b) => b.classList.add("on"));
+  store.notify();
   status(isMobile() ? "Edit Mode — Editボタンで戻れる、1/2/3 をパネルから選択" : "Edit Mode — Tab to exit, 1/2/3 for V/E/F");
 }
 
@@ -104,13 +86,8 @@ export function exitEditMode(): void {
   state.editSelection.indices.clear();
   cleanupBoxSelect();
   updateGizmo();
-  applyModeLabel();
-  refreshEditToolsUI();
-  // Back to a sensible default tab when leaving Edit Mode.
-  switchTab("xform");
-  // Clear the mobile bottom-bar Edit button state.
-  document.querySelectorAll<HTMLElement>("#btnMobEdit").forEach((b) => b.classList.remove("on"));
-  updateProperties();
+  // The screen follows state.editMesh (tab, panel, button state) — ADR-014.
+  store.notify();
   status("Object Mode");
 }
 
@@ -121,7 +98,7 @@ export function exitEditMode(): void {
 export function setEditGizmoMode(mode: EditGizmoMode): void {
   if (!state.editMesh || !currentGizmo) return;
   currentGizmo.setMode(mode);
-  refreshEditToolsUI();
+  store.notify();
   status(`Gizmo: ${mode}`);
 }
 
@@ -137,8 +114,7 @@ export function setComponentMode(mode: ComponentMode): void {
   state.editSelection.indices.clear();
   rebuildOverlay(state.scene, currentOverlay, state.editMesh, state.editSelection);
   currentGizmo.refresh(state.editMesh, state.editSelection);
-  applyModeLabel();
-  refreshEditToolsUI();
+  store.notify();
 }
 
 export function selectAllComponents(): void {
@@ -196,8 +172,7 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
   commitTopology(em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   currentGizmo.refresh(em, state.editSelection);
-  applyModeLabel();
-  refreshEditToolsUI();
+  store.notify();
 
   const after = {
     positions: new Float32Array(em.positions),
@@ -223,8 +198,7 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
       commitTopology(em);
       rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
       gizmoRef.refresh(em, state.editSelection);
-      applyModeLabel();
-      updateProperties();
+          store.notify();
     },
     redo() {
       if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
@@ -234,8 +208,7 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
       commitTopology(em);
       rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
       gizmoRef.refresh(em, state.editSelection);
-      applyModeLabel();
-      updateProperties();
+          store.notify();
     },
   });
   status(`${label} — ${newSel.size} selected`);
@@ -635,7 +608,7 @@ export function unwrapMesh(): void {
   state.editSelection.indices.clear();
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   currentGizmo.refresh(em, state.editSelection);
-  refreshEditToolsUI();
+  store.notify();
 
   const afterPos = new Float32Array(em.positions);
   const afterIdx = result.indices.slice();
@@ -663,7 +636,7 @@ export function unwrapMesh(): void {
       state.editSelection.mode = beforeMode;
       if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
       if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
-      refreshEditToolsUI();
+      store.notify();
     },
     redo() {
       const m = sourceMesh(em);
@@ -684,7 +657,7 @@ export function unwrapMesh(): void {
       state.editSelection.indices.clear();
       if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
       if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
-      refreshEditToolsUI();
+      store.notify();
     },
   });
 
@@ -1120,15 +1093,3 @@ export function pickComponentAt(pi: PickingInfo): number {
   return pi.faceId;
 }
 
-function applyModeLabel(): void {
-  const label = E("modeL");
-  if (!label) return;
-  if (!state.editMesh) {
-    // Restore the Object Mode label (other tools own their own labels).
-    label.textContent = "OBJECT";
-    return;
-  }
-  const m = state.editSelection.mode;
-  const code = m === "vertex" ? "V" : m === "edge" ? "E" : "F";
-  label.textContent = `EDIT (${code})`;
-}

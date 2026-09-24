@@ -18,6 +18,7 @@ import { updateMeasureOverlay } from "../tools/measure";
 import { startAutoSave } from "../storage/autosave";
 import { initPrefs } from "../prefs";
 import { connectStore } from "./connect";
+import { initNavGizmo } from "../viewport/nav-gizmo";
 import { getEditGizmoMode } from "../tools/edit-mode";
 
 let booted = false;
@@ -44,6 +45,7 @@ export function boot(): void {
   booted = true;
   initViewport();
   installIkRenderHook(state.scene);
+  initNavGizmo(); // the clickable axis widget in the view's corner
   initInput();
   connectStore(store, state, state.scene, screenFingerprint);
   // For browser checks (Playwright) in development only.

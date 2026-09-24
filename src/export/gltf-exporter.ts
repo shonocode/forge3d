@@ -16,7 +16,6 @@ import type { SkeletonData } from "../state";
 import { modelStore } from "../storage/model-store";
 import { metadataStore, getStorageEstimate, type ModelMetadata } from "../storage/metadata-store";
 import { selectMesh } from "../tools/selection";
-import { updateHierarchy, updateBoneUI, updateAnimUI } from "../ui/panels";
 import { applyDefaultEdges } from "../tools/mesh-utils";
 import { addShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
@@ -26,6 +25,7 @@ import { assignToActiveLayer } from "../tools/layers";
 import { openFileDialog } from "../ui/file-input";
 import { prepareExportRig, disposeExportRig } from "./skeleton-export-bridge";
 import type { ExportRig } from "./skeleton-export-bridge";
+import { store } from "../store";
 
 function sanitizeFilename(name: string): string {
   return name
@@ -439,9 +439,7 @@ export async function loadFileDirectly(file: File): Promise<void> {
 
     frameOnCamera(result.meshes);
 
-    updateHierarchy();
-    updateBoneUI();
-    updateAnimUI();
+    store.notify();
     const meshCount = result.meshes.filter(m => m.name !== "__root__").length;
     if (isOBJ) {
       status(`Loaded: ${file.name} (${meshCount} meshes)`);

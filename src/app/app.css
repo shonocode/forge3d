@@ -82,3 +82,7 @@
   .rp .tb{flex:1 0 auto;padding:8px 4px;letter-spacing:.3px;}
 }
 .rp{overflow-x:hidden;}
+
+/* The orientation gizmo (nav-gizmo.ts, 84px at top:10 right:10) covered the
+   camera buttons and took their clicks; put the buttons under it. */
+.vp .vp-camera{top:102px;}

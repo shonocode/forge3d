@@ -6,7 +6,7 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { state, status } from "../state";
 import type { LightData, LightType } from "../state";
-import { updateLightUI } from "../ui/panels";
+import { store } from "../store";
 
 const MAX_LIGHTS = 8;
 
@@ -77,13 +77,13 @@ export function addLight(type: LightType): LightData | null {
       data.visual.setEnabled(false);
       state.lightMap.delete(id);
       if (state.selectedLightId === id) state.selectedLightId = null;
-      updateLightUI();
+      store.notify();
     },
     redo() {
       data.light.setEnabled(true);
       data.visual.setEnabled(true);
       state.lightMap.set(id, data);
-      updateLightUI();
+      store.notify();
     },
   });
 
@@ -106,14 +106,14 @@ export function removeLight(id: string): void {
       data.light.setEnabled(true);
       data.visual.setEnabled(true);
       state.lightMap.set(id, data);
-      updateLightUI();
+      store.notify();
     },
     redo() {
       data.light.setEnabled(false);
       data.visual.setEnabled(false);
       state.lightMap.delete(id);
       if (state.selectedLightId === id) state.selectedLightId = null;
-      updateLightUI();
+      store.notify();
     },
   });
 }
@@ -177,8 +177,8 @@ export function updateLightParam(id: string, key: string, value: number | string
 
   state.history.push({
     label: "Light Param",
-    undo() { applyLightParam(data, key, prev); updateLightUI(); },
-    redo() { applyLightParam(data, key, value); updateLightUI(); },
+    undo() { applyLightParam(data, key, prev); store.notify(); },
+    redo() { applyLightParam(data, key, value); store.notify(); },
   });
 }
 

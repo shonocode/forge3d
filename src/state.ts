@@ -585,11 +585,13 @@ export function hideLoading(): void {
 /**
  * The old screen's element by id.
  *
- * **Migration shim (ADR-014):** the new React screen has none of the old
- * screen's ~180 ids, but the tools still call the old panels' updaters
- * (`ui/panels.ts`, from 15 modules) after they act. A missing id returns a
- * detached stand-in element, so those writes go nowhere instead of throwing.
- * Remove this when `src/ui/*.ts` is gone.
+ * The old screen (`src/ui/panels.ts` etc.) is gone (ADR-014); its callers now
+ * notify the store. What still asks for an element by id: the graph editor
+ * and dopesheet (their canvases are in the Anim tab), the sculpt brush circle
+ * and the drop target (in the viewport overlay), and input.ts's mode label
+ * `modeL`, which the new screen does not have. A missing id returns a detached
+ * stand-in, so a write to it goes nowhere instead of throwing — the graph
+ * editor's ids exist only while the Anim tab is open.
  */
 export function E(id: string): HTMLElement {
   const el = document.getElementById(id);
