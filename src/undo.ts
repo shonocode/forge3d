@@ -1,4 +1,7 @@
-import { status } from "./state";
+// Status goes to the store directly: importing `status` from state.ts made
+// undo.ts and state.ts import each other, and whichever loaded second saw
+// the other half-built (`UndoHistory is not a constructor`).
+import { store } from "./store";
 
 export interface UndoCommand {
   label: string;
@@ -11,6 +14,7 @@ export class UndoHistory {
   private redoStack: UndoCommand[] = [];
   private readonly maxSize = 50;
   private onChange: (() => void) | null = null;
+  private listeners = new Set<() => void>();
   private _version = 0;
 
   /**
@@ -22,6 +26,23 @@ export class UndoHistory {
 
   setOnChange(cb: () => void): void { this.onChange = cb; }
 
+  /**
+   * Hear every history change, alongside the single `setOnChange` callback.
+   * Returns the function that stops listening. The GUI's store listens here
+   * (ADR-014).
+   */
+  subscribe(cb: () => void): () => void {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  }
+
+  private changed(): void {
+    this.onChange?.();
+    for (const l of [...this.listeners]) l();
+  }
+
   push(cmd: UndoCommand): void {
     this.undoStack.push(cmd);
     if (this.undoStack.length > this.maxSize) {
@@ -29,7 +50,7 @@ export class UndoHistory {
     }
     this.redoStack.length = 0;
     this._version++;
-    this.onChange?.();
+    this.changed();
   }
 
   undo(): boolean {
@@ -41,9 +62,9 @@ export class UndoHistory {
       console.warn("Undo failed:", cmd.label, e);
     }
     this.redoStack.push(cmd);
-    status("Undo: " + cmd.label);
+    store.setStatus("Undo: " + cmd.label);
     this._version++;
-    this.onChange?.();
+    this.changed();
     return true;
   }
 
@@ -56,9 +77,9 @@ export class UndoHistory {
       console.warn("Redo failed:", cmd.label, e);
     }
     this.undoStack.push(cmd);
-    status("Redo: " + cmd.label);
+    store.setStatus("Redo: " + cmd.label);
     this._version++;
-    this.onChange?.();
+    this.changed();
     return true;
   }
 
@@ -66,7 +87,7 @@ export class UndoHistory {
   popUndo(): UndoCommand | undefined {
     const cmd = this.undoStack.pop();
     if (cmd) this._version++;
-    this.onChange?.();
+    this.changed();
     return cmd;
   }
 
@@ -79,6 +100,6 @@ export class UndoHistory {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this._version++;
-    this.onChange?.();
+    this.changed();
   }
 }

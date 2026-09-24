@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import viteCompression from "vite-plugin-compression";
+import react from "@vitejs/plugin-react";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 
@@ -17,7 +18,7 @@ export default defineConfig({
       },
     },
   },
-  plugins: [VitePWA({
+  plugins: [react(), VitePWA({
     registerType: "autoUpdate",
     includeAssets: ["favicon.svg"],
     manifest: {

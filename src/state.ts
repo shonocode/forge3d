@@ -6,6 +6,7 @@ import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { PointLight } from "@babylonjs/core/Lights/pointLight";
 import type { SpotLight } from "@babylonjs/core/Lights/spotLight";
 import { UndoHistory } from "./undo";
+import { store } from "./store";
 import type { EditMesh } from "./tools/edit-mode/half-edge";
 
 export type ToolId = "select" | "move" | "rotate" | "scale" | "sculpt" | "paint" | "bone" | "weight" | "anim";
@@ -561,6 +562,10 @@ export const state = {
 
 let _statusTimer: ReturnType<typeof setTimeout> | null = null;
 export function status(s: string): void {
+  // The GUI reads the line from the store (ADR-014); the element below is the
+  // old screen's and is absent from the new one.
+  store.setStatus(s);
+  if (typeof document === "undefined") return;
   const el = document.getElementById("stxt");
   const bar = el?.parentElement;
   if (!el || !bar) return;
