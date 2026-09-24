@@ -595,6 +595,93 @@ export function compactMesh(data: MeshData, keep: ReadonlySet<number>): MeshData
 }
 
 /**
+ * Split off a set of faces — Blender's **Separate ▸ Selection**
+ * (`mesh_separate_tagged`).
+ *
+ * `part` is a copy of the chosen faces and every vertex and edge they use, in
+ * the input's order. `rest` is what is left once those faces are deleted the
+ * way Blender's `DEL_FACES` deletes them: a vertex or edge of a chosen face
+ * goes too **unless** a remaining face or a remaining loose edge still uses
+ * it — so the seam between the two keeps its vertices on both sides.
+ *
+ * Face materials (`materials`) travel with their faces.
+ */
+export function separateSelected(
+  data: MeshData,
+  faces: ReadonlySet<number>,
+): { part: MeshData; rest: MeshData } {
+  const count = data.positions.length / 3;
+  const pick = (keep: (f: number) => boolean, keepLooseEdges: boolean): MeshData => {
+    const used = new Uint8Array(count);
+    const polys: number[][] = [];
+    const materials: number[] = [];
+    data.polys.forEach((p, f) => {
+      if (!keep(f)) return;
+      polys.push([...p]);
+      materials.push(data.materials?.[f] ?? 0);
+      for (const v of p) used[v] = 1;
+    });
+    const loose = keepLooseEdges ? (data.edges ?? []).map((e) => [...e]) : [];
+    for (const e of loose) for (const v of e) used[v] = 1;
+    if (keepLooseEdges) {
+      // A vertex no chosen face touched, and no edge either, stays with the rest.
+      const touched = new Uint8Array(count);
+      data.polys.forEach((p, f) => {
+        if (faces.has(f)) for (const v of p) touched[v] = 1;
+      });
+      for (let v = 0; v < count; v++) if (!touched[v]) used[v] = 1;
+    }
+    const remap = new Int32Array(count).fill(-1);
+    const positions: number[] = [];
+    for (let v = 0; v < count; v++) {
+      if (!used[v]) continue;
+      remap[v] = positions.length / 3;
+      positions.push(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
+    }
+    return {
+      positions: Float32Array.from(positions),
+      polys: polys.map((p) => p.map((v) => remap[v]!)),
+      ...(loose.length > 0 ? { edges: loose.map((e) => e.map((v) => remap[v]!)) } : {}),
+      ...(data.materials ? { materials } : {}),
+    };
+  };
+  return {
+    part: pick((f) => faces.has(f), false),
+    rest: pick((f) => !faces.has(f), true),
+  };
+}
+
+/**
+ * Split a mesh by face material — Blender's **Separate ▸ By Material**.
+ *
+ * Blender takes the material of the **first** remaining face, separates every
+ * face with it into a new object, and repeats; whatever is left when one
+ * material remains stays in the original object. The pieces come back in that
+ * order — each new object first, the original last — each keyed by the
+ * material it holds.
+ */
+export function separateByMaterial(data: MeshData): { material: number; mesh: MeshData }[] {
+  const out: { material: number; mesh: MeshData }[] = [];
+  let current = data;
+  for (;;) {
+    if (current.polys.length === 0) break;
+    const mat = current.materials?.[0] ?? 0;
+    const chosen = new Set<number>();
+    current.polys.forEach((_, f) => {
+      if ((current.materials?.[f] ?? 0) === mat) chosen.add(f);
+    });
+    if (chosen.size === current.polys.length) {
+      out.push({ material: mat, mesh: current });
+      break;
+    }
+    const { part, rest } = separateSelected(current, chosen);
+    out.push({ material: mat, mesh: part });
+    current = rest;
+  }
+  return out;
+}
+
+/**
  * Split a mesh into its disconnected pieces — Blender's **Separate ▸ By Loose
  * Parts**.
  *

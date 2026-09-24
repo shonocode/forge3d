@@ -21,7 +21,7 @@
  *
  * Pure and headless — Vitest-pinned.
  */
-import { faceVerts, facePolyNormal, type EditMesh } from "./half-edge";
+import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh } from "./half-edge";
 import { extrudeFaces, insetFaces } from "./operators";
 
 /** Every distinct vertex used by the given faces. */
@@ -264,4 +264,87 @@ export function extrudeFacesBy(
   const caps = extrudeFaces(em, faces);
   offsetFaces(em, caps, distance);
   return caps;
+}
+
+/**
+ * Extrude the same faces again and again, each time moving the new cap by
+ * the same vector — Blender's **Extrude Repeat** (`MESH_OT_extrude_repeat`).
+ *
+ * Blender's operator is exactly this loop: `steps` times, extrude the
+ * selected region (`extrude_face_region`, originals removed) and translate
+ * the new selection by `offset × scaleOffset`. A column of rings, a stack of
+ * segments, a tentacle before it is bent.
+ *
+ * `offset` has no default here: Blender's falls back to the **view**
+ * direction, which a function without a view does not have.
+ *
+ * Returns the last cap.
+ */
+export function extrudeRepeat(
+  em: EditMesh,
+  faces: ReadonlySet<number>,
+  opts: { steps: number; offset: readonly [number, number, number]; scaleOffset?: number },
+): Set<number> {
+  const k = opts.scaleOffset ?? 1;
+  const usedBefore = usedVertices(em);
+  const countBefore = em.positions.length / 3;
+  let caps = new Set(faces);
+  for (let i = 0; i < opts.steps; i++) {
+    // `extrude_face_region` deletes the original faces only when the region
+    // borders a face outside it. A region with no such neighbour — a whole
+    // open sheet, a whole closed shell — keeps its originals, flipped, so a
+    // plane extrudes into a solid (measured: a 4×4 grid, 25 → 50 vertices at
+    // the first step, `probe-extrude-repeat2.py`). `extrudeFaces` always
+    // re-points them, so the kept copies are put back here.
+    const polysBefore = toPolygons(em);
+    const edgeOwners = new Map<string, number>();
+    polysBefore.forEach((p, f) => {
+      if (caps.has(f)) return;
+      for (let j = 0; j < p.length; j++) {
+        const a = p[j]!;
+        const b = p[(j + 1) % p.length]!;
+        edgeOwners.set(a < b ? `${a}_${b}` : `${b}_${a}`, f);
+      }
+    });
+    let bordersOutside = false;
+    for (const f of caps) {
+      const p = polysBefore[f]!;
+      for (let j = 0; j < p.length && !bordersOutside; j++) {
+        const a = p[j]!;
+        const b = p[(j + 1) % p.length]!;
+        if (edgeOwners.has(a < b ? `${a}_${b}` : `${b}_${a}`)) bordersOutside = true;
+      }
+    }
+    const kept = bordersOutside ? [] : [...caps].map((f) => [...polysBefore[f]!].reverse());
+
+    caps = extrudeFaces(em, caps);
+    if (kept.length > 0) rebuildPolygons(em, em.positions, [...toPolygons(em), ...kept]);
+    moveFaces(em, caps, opts.offset[0] * k, opts.offset[1] * k, opts.offset[2] * k);
+  }
+  // Blender's extrude takes the region's edges along, so the vertices inside
+  // the old region go with its faces; `extrudeFaces` leaves them loose.
+  // Measured: on `body`, 40 per step — each step's cap becomes the next
+  // step's interior. Loose vertices that were loose before are the caller's
+  // and stay.
+  const used = usedVertices(em);
+  const polys = toPolygons(em);
+  const count = em.positions.length / 3;
+  const remap = new Int32Array(count).fill(-1);
+  const positions: number[] = [];
+  for (let v = 0; v < count; v++) {
+    const callersLoose = v < countBefore && !usedBefore.has(v);
+    if (!used.has(v) && !callersLoose) continue;
+    remap[v] = positions.length / 3;
+    positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+  }
+  if (positions.length !== em.positions.length)
+    rebuildPolygons(em, Float32Array.from(positions), polys.map((p) => p.map((v) => remap[v]!)));
+  return caps;
+}
+
+/** Vertices some face uses. */
+function usedVertices(em: EditMesh): Set<number> {
+  const out = new Set<number>();
+  for (const p of toPolygons(em)) for (const v of p) out.add(v);
+  return out;
 }

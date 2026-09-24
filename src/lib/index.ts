@@ -96,6 +96,13 @@ export {
   type Vec3,
 } from "../tools/generate";
 
+// ── Merging by distance, and the Build modifier ────────────────────────────
+// `removeDoubles` is Blender's `remove_doubles` ported to the vertex — the same
+// survivors, the same faces; `weldMesh` (below) stays the generators' quick
+// seam-closer. `build` is the Build modifier at one frame.
+export { removeDoubles } from "../tools/remove-doubles";
+export { build, type BuildOptions } from "../tools/build";
+
 // ── Assembly ───────────────────────────────────────────────────────────────
 // Placing, repeating and combining meshes, with creases and seams carried
 // through so a creased box survives being mirrored into a scene.
@@ -272,6 +279,7 @@ export {
   averageNormal,
   facesFacing,
   extrudeFacesBy,
+  extrudeRepeat,
   insetFacesByWidth,
 } from "../tools/edit-mode/face-transform";
 

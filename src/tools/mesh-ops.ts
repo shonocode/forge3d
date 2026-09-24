@@ -426,6 +426,10 @@ function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
  *
  * Faces that collapse to fewer than three distinct vertices are dropped —
  * that is the intended outcome when welding closes a seam.
+ *
+ * For Blender's answer — the same survivors as `remove_doubles`, loose edges
+ * where a face collapsed — use {@link removeDoubles} (`remove-doubles.ts`).
+ * This one is the generators' seam-closer and picks survivors its own way.
  */
 export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
   const count = data.positions.length / 3;

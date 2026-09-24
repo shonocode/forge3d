@@ -116,6 +116,15 @@ export interface MeshData {
    * `EditMesh`.
    */
   groups?: Map<string, Map<number, number>>;
+  /**
+   * A material slot per **face**, aligned with {@link polys} — Blender's
+   * `material_index`. Absent means every face uses slot 0.
+   *
+   * Added 2026-09-25 for `separateByMaterial` (Blender's Separate ▸ By
+   * Material). Like {@link groups}, `meshFromData` does not carry it into an
+   * `EditMesh`; the functions that read it are pure `MeshData` functions.
+   */
+  materials?: number[];
 }
 
 /**
@@ -173,6 +182,8 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     // round trip through the half-edge operators loses the groups visibly
     // rather than silently mis-indexing them — see `MeshData.groups`.
     groups: new Map(),
+    // Likewise per-face materials: face indices move under the operators.
+    materials: [],
   };
 }
 
