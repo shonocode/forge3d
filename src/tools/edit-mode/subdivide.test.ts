@@ -223,3 +223,58 @@ describe("catmullClark creases", () => {
     expect(Math.abs(h0 - s0)).toBeLessThanOrEqual(Math.abs(p0 - s0) + 1e-9);
   });
 });
+
+describe("catmullClark UVs (Blender's UV Smooth = Keep Boundaries)", () => {
+  /** A flat 2×2 grid with one UV island whose centre value is off-centre. */
+  const grid = (): { positions: Float32Array; polys: number[][]; uvs: number[][][] } => {
+    const positions: number[] = [];
+    for (let j = 0; j <= 2; j++) for (let i = 0; i <= 2; i++) positions.push(i, 0, j);
+    const uvOf = (i: number, j: number): number[] => (i === 1 && j === 1 ? [0.6, 0.5] : [i / 2, j / 2]);
+    const polys: number[][] = [];
+    const uvs: number[][][] = [];
+    for (let j = 0; j < 2; j++)
+      for (let i = 0; i < 2; i++) {
+        const a = j * 3 + i;
+        polys.push([a, a + 3, a + 4, a + 1]);
+        uvs.push([uvOf(i, j), uvOf(i, j + 1), uvOf(i + 1, j + 1), uvOf(i + 1, j)]);
+      }
+    return { positions: Float32Array.from(positions), polys, uvs };
+  };
+
+  it("smooths UVs inside an island and keeps its boundary where it was", () => {
+    const g = grid();
+    const r = catmullClark(g.positions, g.polys, 1, undefined, g.uvs);
+    expect(r.uvs).toHaveLength(16);
+    // Corner 0 of each child quad is an original vertex.
+    const centre = r.uvs!.filter((_, f) => r.polys[f]![0] === 4).map((f) => f[0]!);
+    expect(centre).toHaveLength(4);
+    // Interior value: (Q + 2R + (n-3)S)/n pulls 0.6 back toward 0.5 in u.
+    for (const c of centre) {
+      expect(c[0]!).toBeGreaterThan(0.5);
+      expect(c[0]!).toBeLessThan(0.6);
+      expect(c[1]!).toBeCloseTo(0.5, 6);
+    }
+    // A boundary corner does not move (linear boundary).
+    const corner = r.uvs!.find((_, f) => r.polys[f]![0] === 0)![0]!;
+    expect(corner).toEqual([0, 0]);
+  });
+
+  it("treats a UV seam as a boundary — linear on both sides", () => {
+    const g = grid();
+    // Cut the island down the middle column: the right-hand faces get their own u range.
+    g.uvs = g.uvs.map((face, f) => (f % 2 === 1 ? face.map(([u, v]) => [u! + 1, v!]) : face));
+    const r = catmullClark(g.positions, g.polys, 1, undefined, g.uvs);
+    // The centre vertex sits on the seam now: every corner keeps its face's value.
+    for (let f = 0; f < r.polys.length; f++)
+      if (r.polys[f]![0] === 4) {
+        const src = Math.floor(f / 4);
+        const i = g.polys[src]!.indexOf(4);
+        expect(r.uvs![f]![0]).toEqual(g.uvs[src]![i]);
+      }
+  });
+
+  it("returns no UVs when none were given", () => {
+    const g = grid();
+    expect(catmullClark(g.positions, g.polys, 1).uvs).toBeUndefined();
+  });
+});

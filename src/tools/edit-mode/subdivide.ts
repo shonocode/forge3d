@@ -46,6 +46,127 @@ export interface SubdivResult {
   polys: number[][];
   /** Propagated crease map keyed by child-edge "min_max" vertex ids. */
   creases: Map<string, number>;
+  /**
+   * Per face corner UVs, when UVs were given — `uvs[f][i]` is corner `i` of
+   * output face `f`, the same shape `MeshData.uvs` has.
+   */
+  uvs?: number[][][];
+}
+
+/**
+ * Two corners at one vertex hold the same UV value when they are this close —
+ * Blender's `STD_UV_CONNECT_LIMIT`, which its subdivision converter uses to
+ * decide which corners share a face-varying value.
+ */
+const UV_CONNECT_LIMIT = 0.0001;
+
+/**
+ * One level of **face-varying** Catmull-Clark on a UV layer — what Blender's
+ * Subdivision Surface does with UVs under its default UV Smooth, "Keep
+ * Boundaries" (OpenSubdiv's `FVAR_LINEAR_BOUNDARIES`):
+ *
+ * - corners at a vertex share a UV value when their UVs are within
+ *   `UV_CONNECT_LIMIT`; an edge is **continuous** in UV when both faces on it
+ *   share the values at both ends — otherwise it is a UV boundary (a seam or
+ *   the mesh's own boundary);
+ * - on UV boundaries interpolation is **linear**: a boundary edge's point is
+ *   its midpoint and a boundary value does not move;
+ * - everywhere else the UVs are smoothed by the same Catmull-Clark rules as
+ *   the positions: face point = mean, edge point = (a + b + two face points)
+ *   / 4, value point = (Q + 2R + (n − 3)S) / n.
+ *
+ * Output corners follow `subdivideOnce`'s quads, `[V(vi), E(vi,vi+1), F, E(vi-1,vi)]`.
+ */
+function subdivideUVOnce(polys: number[][], uvs: number[][][]): number[][][] {
+  const F = polys.length;
+  // ── face-varying values: corners at one vertex with (nearly) equal UVs ────
+  const values: number[][] = [];
+  const valueAt = new Map<number, number[]>(); // vertex → its value ids
+  const cid: number[][] = polys.map((p, f) =>
+    p.map((v, i) => {
+      const uv = uvs[f]![i]!;
+      const ids = valueAt.get(v) ?? [];
+      for (const id of ids) {
+        const w = values[id]!;
+        if (Math.abs(w[0]! - uv[0]!) < UV_CONNECT_LIMIT && Math.abs(w[1]! - uv[1]!) < UV_CONNECT_LIMIT) return id;
+      }
+      values.push([uv[0]!, uv[1]!]);
+      ids.push(values.length - 1);
+      valueAt.set(v, ids);
+      return values.length - 1;
+    }),
+  );
+  // ── which edge uses are continuous in UV ─────────────────────────────────
+  const uses = new Map<string, Array<[number, number]>>(); // edge → [face, corner]
+  polys.forEach((p, f) =>
+    p.forEach((v, i) => {
+      const k = edgeKey(v, p[(i + 1) % p.length]!);
+      const l = uses.get(k) ?? [];
+      l.push([f, i]);
+      uses.set(k, l);
+    }),
+  );
+  const next = (f: number, i: number): number => (i + 1) % polys[f]!.length;
+  const continuous = (f: number, i: number): [number, number] | null => {
+    const l = uses.get(edgeKey(polys[f]![i]!, polys[f]![next(f, i)]!))!;
+    if (l.length !== 2) return null;
+    const [g, j] = l[0]![0] === f && l[0]![1] === i ? l[1]! : l[0]!;
+    // The other face runs the edge the other way round.
+    return cid[g]![j] === cid[f]![next(f, i)] && cid[g]![next(g, j)] === cid[f]![i] ? [g, j] : null;
+  };
+  const boundaryValue = new Uint8Array(values.length);
+  polys.forEach((p, f) =>
+    p.forEach((_, i) => {
+      if (!continuous(f, i)) {
+        boundaryValue[cid[f]![i]!] = 1;
+        boundaryValue[cid[f]![next(f, i)]!] = 1;
+      }
+    }),
+  );
+  const facePoint = polys.map((p, f) => {
+    let u = 0, w = 0;
+    for (let i = 0; i < p.length; i++) {
+      u += values[cid[f]![i]!]![0]!;
+      w += values[cid[f]![i]!]![1]!;
+    }
+    return [u / p.length, w / p.length];
+  });
+  const edgePoint = (f: number, i: number): number[] => {
+    const a = values[cid[f]![i]!]!;
+    const b = values[cid[f]![next(f, i)]!]!;
+    const o = continuous(f, i);
+    if (!o) return [(a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2];
+    const fa = facePoint[f]!, fb = facePoint[o[0]]!;
+    return [(a[0]! + b[0]! + fa[0]! + fb[0]!) / 4, (a[1]! + b[1]! + fa[1]! + fb[1]!) / 4];
+  };
+  // ── value points ─────────────────────────────────────────────────────────
+  const around: Array<Array<[number, number]>> = values.map(() => []);
+  polys.forEach((p, f) => p.forEach((_, i) => around[cid[f]![i]!]!.push([f, i])));
+  const valuePoint = values.map((s, id) => {
+    if (boundaryValue[id]) return [s[0]!, s[1]!];
+    const corners = around[id]!;
+    const n = corners.length;
+    let qu = 0, qv = 0, ru = 0, rv = 0;
+    for (const [f, i] of corners) {
+      qu += facePoint[f]![0]!;
+      qv += facePoint[f]![1]!;
+      // Each face contributes its outgoing edge; round an interior value the
+      // outgoing edges are exactly the incident edges, each once.
+      const b = values[cid[f]![next(f, i)]!]!;
+      ru += (s[0]! + b[0]!) / 2;
+      rv += (s[1]! + b[1]!) / 2;
+    }
+    return [(qu / n + (2 * ru) / n + (n - 3) * s[0]!) / n, (qv / n + (2 * rv) / n + (n - 3) * s[1]!) / n];
+  });
+  const out: number[][][] = [];
+  for (let f = 0; f < F; f++) {
+    const nn = polys[f]!.length;
+    for (let i = 0; i < nn; i++) {
+      const prev = (i - 1 + nn) % nn;
+      out.push([valuePoint[cid[f]![i]!]!, edgePoint(f, i), facePoint[f]!, edgePoint(f, prev)]);
+    }
+  }
+  return out;
 }
 
 const SHARP = Infinity;
@@ -263,20 +384,27 @@ function subdivideOnce(
 /**
  * Apply `level` (≥1) Catmull-Clark subdivision steps. Level 0 returns a copy.
  * `creases` (optional) maps edge keys ("min_max" of vertex ids) to sharpness.
+ * `uvs` (optional, per face corner) are subdivided with them as Blender's
+ * Subdivision Surface does under its default UV Smooth, "Keep Boundaries" —
+ * see `subdivideUVOnce`.
  */
 export function catmullClark(
   positions: Float32Array,
   polys: number[][],
   level = 1,
   creases?: Map<string, number>,
+  uvs?: number[][][],
 ): SubdivResult {
   let result: SubdivResult = {
     positions: Float32Array.from(positions),
     polys: polys.map((p) => p.slice()),
     creases: new Map(creases ?? []),
+    ...(uvs ? { uvs: uvs.map((f) => f.map((c) => [...c])) } : {}),
   };
   for (let l = 0; l < level; l++) {
+    const nextUV = result.uvs ? subdivideUVOnce(result.polys, result.uvs) : undefined;
     result = subdivideOnce(result.positions, result.polys, result.creases);
+    if (nextUV) result.uvs = nextUV;
   }
   return result;
 }
