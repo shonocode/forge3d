@@ -90,6 +90,32 @@ export interface MeshData {
    * exactly what {@link sharp} forbids, so the two layers are read together.
    */
   normals?: number[][][];
+  /**
+   * Vertex groups — a weight per vertex, keyed by group name, as Blender's
+   * `vertex_groups` are.
+   *
+   * **A `Map` and not an array, because "not in the group" is a state.**
+   * Blender distinguishes a vertex with weight 0 from a vertex that is not a
+   * member at all, and the three `VERTEX_WEIGHT_*` modifiers exist largely to
+   * move vertices across that line — `use_add` puts them in, `use_remove`
+   * takes them out, and `mix_set` decides which side of it the mix touches. A
+   * `Float32Array` per group would erase the distinction and quietly make
+   * three of those options meaningless.
+   *
+   * Added 2026-09-24 with `tools/edit-mode/vertex-weight.ts`. The same shape
+   * that wire edges, the loop layers and the custom normals had: one field,
+   * several operators behind it.
+   *
+   * **`EditMesh` does not carry these, and that is deliberate.** Weights are
+   * keyed by vertex index, so an operator that renumbers vertices would leave
+   * them pointing at the wrong ones — `MeshData.edges` has the same exposure
+   * and `compactMesh` remaps it. Rather than half-carry them and be silently
+   * wrong, `meshFromData` drops them: a round trip through the half-edge
+   * operators loses the groups **visibly**. The three operators that read and
+   * write this field are pure `MeshData` functions and never go through
+   * `EditMesh`.
+   */
+  groups?: Map<string, Map<number, number>>;
 }
 
 /**
@@ -141,6 +167,12 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     colors: (em.loopColors ?? []).map((f) => f.map((c) => [...c])),
     sharp: new Set(em.sharpEdges ?? []),
     normals: (em.loopNormals ?? []).map((f) => f.map((c) => [...c])),
+    // **Always empty, and that is the contract.** `EditMesh` does not carry
+    // vertex groups, because their keys are vertex indices and an operator
+    // that renumbers vertices would leave them pointing at the wrong ones. A
+    // round trip through the half-edge operators loses the groups visibly
+    // rather than silently mis-indexing them — see `MeshData.groups`.
+    groups: new Map(),
   };
 }
 

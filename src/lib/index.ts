@@ -380,6 +380,21 @@ export {
   type ShrinkwrapMode,
   type ShrinkwrapProjectOptions,
 } from "../tools/edit-mode/shrinkwrap";
+
+// ── Vertex groups ──────────────────────────────────────────────────────────
+// `MeshData.groups` is where the weights live; these three reshape them.
+export {
+  vertexWeightEdit,
+  vertexWeightMix,
+  vertexWeightProximity,
+  type VertexWeightEditOptions,
+  type VertexWeightMixOptions,
+  type VertexWeightProximityOptions,
+  type VertexWeightFalloff,
+  type VertexWeightMixMode,
+  type VertexWeightMixSet,
+  type ProximityGeometry,
+} from "../tools/edit-mode/vertex-weight";
 export { computeLSCM, type LSCMResult, type LSCMOptions } from "../tools/edit-mode/lscm";
 
 // ── Sculpt maths ───────────────────────────────────────────────────────────
