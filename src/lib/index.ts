@@ -394,6 +394,12 @@ export { skin, type SkinOptions } from "../tools/edit-mode/skin";
 export { intersect, type IntersectOptions, type IntersectResult } from "../tools/boolean/intersect";
 export { booleanMesh, type BooleanOptions, type BooleanOperation } from "../tools/boolean/boolean";
 
+// ── Remesh ─────────────────────────────────────────────────────────────────
+// Blender's Remesh modifier in its dual-contouring modes (Blocks / Smooth /
+// Sharp): a quad mesh on an octree grid, holes closed, small pieces dropped.
+// The Voxel mode is OpenVDB and is not provided.
+export { remesh, type RemeshOptions, type RemeshMode } from "../tools/remesh/remesh";
+
 // ── Vertex groups ──────────────────────────────────────────────────────────
 // `MeshData.groups` is where the weights live; these three reshape them.
 export {

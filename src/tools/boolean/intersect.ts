@@ -47,9 +47,11 @@
  * - The n-gon split is `BLI_polyfill_calc`'s, not a fan: it decides which
  *   triangles the uncut hexagon comes back as.
  *
+ * `separate_mode` `ALL` / `CUT` and the two-set mode are measured too
+ * (`intersect-all` / `-two` / `-cut`).
+ *
  * ## Not yet
  *
- * - `separate_mode` `ALL` / `CUT` — post-processing on top of this.
  * - Ties: cocircular points in the Delaunay step and equal edge lengths in
  *   the merge order are decided by the algorithm in Blender and may be
  *   decided otherwise here.
@@ -244,7 +246,7 @@ interface Tri {
  * — the two cross products about the 0–2 diagonal agree — in which case
  * `(0,1,3) + (1,2,3)`. Larger polygons: `BLI_polyfill_calc`, as the edit mesh has them.
  */
-function triangulate(poly: number[], P: Float32Array): [number[], number[]][] {
+export function triangulate(poly: number[], P: ArrayLike<number>): [number[], number[]][] {
   if (poly.length === 3) return [[poly, [ORIG, ORIG, ORIG]]];
   if (poly.length === 4) {
     const at = (i: number): number[] => [P[poly[i]! * 3]!, P[poly[i]! * 3 + 1]!, P[poly[i]! * 3 + 2]!];
