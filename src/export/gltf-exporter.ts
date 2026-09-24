@@ -298,18 +298,46 @@ export function exportOBJ(): void {
   if (!raw) return;
   const name = sanitizeFilename(raw);
 
-  const obj = OBJExport.OBJ(meshes, true, name + ".mtl", false);
+  // Babylon appends ".mtl" itself — passing name + ".mtl" wrote "mtllib x.mtl.mtl".
+  const obj = OBJExport.OBJ(meshes, true, name, false);
   const seen = new Set<string>();
   let mtl = "";
   for (const m of meshes) {
-    if (m.material && !seen.has(m.material.uniqueId.toString())) {
-      seen.add(m.material.uniqueId.toString());
-      mtl += OBJExport.MTL(m);
+    if (m.material && !seen.has(m.material.id)) {
+      seen.add(m.material.id);
+      mtl += mtlBlock(m.material);
     }
   }
   downloadText(obj, name + ".obj");
   if (mtl) downloadText(mtl, name + ".mtl");
   status("OBJ exported: " + name + ".obj");
+}
+
+/**
+ * One MTL material, named by the material's id — the name Babylon's OBJ
+ * writer puts after `usemtl`.
+ *
+ * Not `OBJExport.MTL`: it reads StandardMaterial's fields (ambient / diffuse /
+ * specular colour) and threw on forge3d's PBR materials ("reading 'toFixed'"),
+ * and it names every material `mat1` unless told otherwise, which matched no
+ * `usemtl` line. PBR maps to MTL as base colour → Kd, emissive → Ke, alpha → d,
+ * roughness → Ns (glossy = high).
+ */
+function mtlBlock(mat: import("@babylonjs/core/Materials/material").Material): string {
+  const f = (x: number): string => x.toFixed(4);
+  const rgb = (c: Color3): string => `${f(c.r)} ${f(c.g)} ${f(c.b)}`;
+  const lines = [`newmtl ${mat.id}`];
+  if (mat instanceof PBRMaterial) {
+    const rough = mat.roughness ?? 1;
+    lines.push(`  Ns ${f((1 - rough) * (1 - rough) * 1000)}`, `  d ${f(mat.alpha)}`, "  illum 2");
+    lines.push(`  Kd ${rgb(mat.albedoColor)}`, `  Ks ${rgb(new Color3(0.04, 0.04, 0.04).scale(1 - rough))}`, `  Ke ${rgb(mat.emissiveColor)}`);
+  } else if (mat instanceof StandardMaterial) {
+    lines.push(`  Ns ${f(mat.specularPower)}`, `  d ${f(mat.alpha)}`, "  illum 2");
+    lines.push(`  Ka ${rgb(mat.ambientColor)}`, `  Kd ${rgb(mat.diffuseColor)}`, `  Ks ${rgb(mat.specularColor)}`, `  Ke ${rgb(mat.emissiveColor)}`);
+  } else {
+    lines.push(`  d ${f(mat.alpha)}`, "  Kd 0.8000 0.8000 0.8000");
+  }
+  return lines.join("\n") + "\n\n";
 }
 
 /** Convert StandardMaterial to PBRMaterial (for OBJ imports) */
