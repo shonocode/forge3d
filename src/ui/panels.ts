@@ -12,6 +12,7 @@ import { escapeHtml } from "./escape";
 import { selectBone, getActiveSkeleton, syncBoneFromVisual, setBoneRollLive, commitBoneRoll } from "../tools/skeleton-tool";
 import { getRootMeshes, getChildren } from "../tools/parenting";
 import { getModifiers, removeModifier, toggleModifier, updateModifierParam, applyModifier } from "../tools/modifiers";
+import { MODIFIER_HELP } from "../app/guide/guide";
 import { setActiveLayer, toggleLayerVisibility, deleteLayer, getMeshesOnLayer, isLayerEffectivelyVisible, createLayer } from "../tools/layers";
 import { removeLight, updateLightParam, selectLight } from "../tools/lighting";
 import { getBoundingDimensions } from "../tools/measure";
@@ -263,17 +264,6 @@ function modLabel(mod: Modifier): string {
   }
 }
 
-/** One line under each modifier's header: what it does, in plain words. */
-const MOD_HINT: Record<Modifier["type"], string> = {
-  subdivision: "面を細かく割る。「丸く」は角を丸め、「割るだけ」は形を変えない",
-  mirror: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点はくっつく",
-  array: "同じ形を Offset ずつずらして Count 個並べる",
-  solidify: "面を法線の内側へ押し出して厚みをつける。マイナスで外側",
-  decimate: "形をなるべく保ったまま面を減らす。Ratio は残す割合",
-  smooth: "頂点を隣の平均へ寄せて、でこぼこをならす",
-  triangulate: "四角形以上の面を三角形に割る（書き出し先が三角形しか読めないとき）",
-  weld: "Distance より近い頂点をひとつにまとめる",
-};
 
 /** A slider bound to one numeric parameter; the stack re-runs when the slider is let go. */
 function bindSlider(
@@ -331,7 +321,7 @@ function bindChoice(
 function buildModParams(el: HTMLElement, mesh: import("@babylonjs/core").AbstractMesh, mod: Modifier): void {
   const hint = document.createElement("div");
   hint.style.cssText = "font-size:9px;color:var(--t3);line-height:1.4;";
-  hint.textContent = MOD_HINT[mod.type];
+  hint.textContent = MODIFIER_HELP[mod.type].one;
   el.appendChild(hint);
   switch (mod.type) {
     case "subdivision":

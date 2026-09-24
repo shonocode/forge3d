@@ -234,15 +234,9 @@ export interface MapInstance {
 }
 
 // ── Modifier Stack ──
-export type ModifierType =
-  | "subdivision"
-  | "mirror"
-  | "array"
-  | "solidify"
-  | "decimate"
-  | "smooth"
-  | "triangulate"
-  | "weld";
+/** Every modifier the stack can add, in menu order. */
+export const MODIFIER_TYPES = ["subdivision", "mirror", "array", "solidify", "decimate", "smooth", "triangulate", "weld"] as const;
+export type ModifierType = (typeof MODIFIER_TYPES)[number];
 
 export interface OriginalGeometry {
   positions: Float32Array;
