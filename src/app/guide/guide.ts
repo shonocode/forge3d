@@ -21,8 +21,8 @@
  * marker names a real action, the modifier and primitive lists are the real
  * ones.
  */
-import type { ModifierType, ToolId } from "../../state";
-import { keyLabel, type ActionId } from "../../keymap";
+import type { ModifierType, ToolId } from "../../state.ts";
+import { keyLabel, type ActionId } from "../../keymap.ts";
 
 /** The right panel's tabs. */
 export type TabId = "xform" | "mat" | "morph" | "sculpt" | "paint" | "bone" | "weight" | "anim" | "edit" | "map" | "scene";

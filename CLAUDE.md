@@ -47,40 +47,27 @@ src/
 
 ## Documentation Sync Rule
 
-Two user-facing HTML documents live alongside the code. **Both MUST be updated
-in the same commit whenever the underlying code changes**:
+The help the user reads — the tool card, each panel section's note, the
+modifier lines, the glossary, the shortcut table — and `MANUAL.html` are all
+made from **one place** (ADR-014):
 
-### `MANUAL.html` — reference manual (Japanese)
-- Keybindings (add / remove / repurpose) → update §14 ショートカット早見表
-  and the affected feature section
-- New features or operators → add to the appropriate section, or create a new
-  one if it's a major addition
-- Behavior changes of existing features (e.g. lifting a V1 restriction,
-  changing default parameters, adding modes) → update the relevant section
-- UI layout changes (new tabs, panel reorganization) → update §1.1 画面構成
-  and the affected feature section
-- New domain terminology → add to §15 用語解説
+- `src/app/guide/guide.ts` — the text. Keys are never written into it: a
+  `{key:<action>}` marker is filled from `src/keymap.ts`.
+- `src/keymap.ts` — the keys (Blender's).
+- `MANUAL.html` is **generated**: `npm run manual`. Don't edit it by hand;
+  `manual.test.ts` fails when it differs from what the guide produces.
 
-### `TUTORIAL-KURIMANJU.html` — step-by-step character build guide
-- Keybindings used in the tutorial change → update the steps that reference them
-- An operator's parameter / default changes (e.g. Bevel width range) → update
-  any step that suggests specific values
-- Workflow order changes (e.g. UV unwrap must now happen before X) → update
-  the affected step's prerequisites
-- Bone naming convention for chiikawa-reign integration changes → update §13.2
-- New essential operator that should be in the workflow → fold it into the
-  appropriate step (e.g. Phase 8's UV editor → add to §7 UV 展開)
+When the code changes what a user sees or does — a new operator, a changed
+default, a rebound key, a new tab or section — change `guide.ts` in the same
+commit and run `npm run manual`. `guide.test.ts` holds the guide to the code
+(every marker names a bound key, the modifier list is the real one, …).
 
-Both docs are the single source of truth for what's "supposed to work" from
-a user's perspective. If code says one thing and the manual / tutorial says
-another, users hit confused dead-ends. Keep them in lockstep.
-
-Files live at `forge3d/MANUAL.html` and `forge3d/TUTORIAL-KURIMANJU.html` —
-open directly in a browser, no server needed.
+`TUTORIAL-KURIMANJU.html` was removed with the old screen (2026-09-25); a
+tutorial for the new screen does not exist yet.
 
 ## Testing
 
 - **Framework:** Vitest (node 環境、globals: true)
 - **Storage mock:** fake-indexeddb
-- **テストファイル:** `src/**/*.test.ts`（tsconfig.json の exclude で tsc ビルドから除外済み）
+- **テストファイル:** `src/**/*.test.ts` / `*.test.tsx`（tsconfig.json の exclude で tsc ビルドから除外済み）。React の部品は先頭に `// @vitest-environment jsdom`
 - **設定:** `vitest.config.ts`（vite.config.ts とは独立）

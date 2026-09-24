@@ -36,13 +36,22 @@ describe("App", () => {
     expect(within(right).getByRole("region", { name: "Select の説明" })).toBeTruthy();
     expect(within(right).getByText("Modifiers")).toBeTruthy();
     // No mesh selected: the Transform and Modifiers sections say so.
-    expect(within(right).getAllByText("メッシュを選択").length).toBe(2);
+    expect(within(right).getAllByText("メッシュを選択").length).toBeGreaterThanOrEqual(2);
 
     fireEvent.click(within(right).getByRole("tab", { name: "Material" }));
     expect(within(right).getByRole("region", { name: "Material の説明" })).toBeTruthy();
-    expect(within(right).getByText("Albedo")).toBeTruthy();
-    // Material's controls are not on the new screen yet, and it says so.
-    expect(within(right).getAllByText("操作部品は新しい画面へ移植中").length).toBeGreaterThan(0);
+    expect(within(right).getAllByText("Albedo").length).toBeGreaterThan(0);
+  });
+
+  it("every tab opens, and none says its controls are still being ported", () => {
+    render(<App />);
+    const right = screen.getByRole("complementary", { name: "右パネル" });
+    for (const tab of within(right).getAllByRole("tab")) {
+      fireEvent.click(tab);
+      expect(within(right).queryByText("操作部品は新しい画面へ移植中"), tab.textContent!).toBeNull();
+      // Export / Save closes every tab.
+      expect(within(right).getAllByText("Export / Save").length, tab.textContent!).toBe(1);
+    }
   });
 
   it("the status line shows what the last action reported", async () => {
@@ -66,11 +75,15 @@ describe("App", () => {
     state.history.clear();
   });
 
-  it("the glossary opens from ? and closes", () => {
+  it("help opens from ? on the glossary, switches to the shortcuts, and closes", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "用語集" }));
-    const dialog = screen.getByRole("dialog", { name: "用語集" });
+    const dialog = screen.getByRole("dialog", { name: "ヘルプ" });
     expect(within(dialog).getByText("Mesh")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("tab", { name: "ショートカット" }));
+    // Rows come from keymap.ts: Move is G, Extrude is E in Edit Mode.
+    expect(within(dialog).getByText("Move（移動）").previousElementSibling!.textContent).toBe("G");
+    expect(within(dialog).getByText("Edit Mode（Tab で入る）")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });

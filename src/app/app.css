@@ -1,7 +1,7 @@
 /* The new screen's own pieces (ADR-014), on styles.css's tokens. */
 
 #root{height:100%;}
-@media(min-width:901px){.mob-toggle{display:none;}}
+@media(min-width:901px){.mob-toggle,.mob-bottom{display:none;}}
 
 .pill-key{opacity:.4;font-size:8px;margin-left:3px;}
 .undo-btns{display:flex;gap:4px;margin-left:auto;}
@@ -61,3 +61,24 @@
 .glossary-ja{font-weight:400;color:var(--t3);font-size:11px;margin-left:6px;}
 .glossary-entry dd{font-size:11px;line-height:1.6;color:var(--t2);}
 .glossary-empty{color:var(--t4);font-size:11px;}
+
+/* Help: tabs and the shortcut table */
+.help-tabs{flex:1;display:flex;gap:4px;}
+.help-tabs button{background:var(--bg2);border:1px solid var(--bd);color:var(--t2);font-size:11px;padding:5px 12px;border-radius:12px;cursor:pointer;}
+.help-tabs button[aria-selected="true"]{background:var(--ac);color:#0e0f14;border-color:var(--ac);}
+.shortcuts-note{font-size:11px;color:var(--t3);margin-bottom:8px;}
+.shortcuts table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:11px;}
+.shortcuts caption{text-align:left;font-family:var(--mono);font-size:9.5px;color:var(--t4);letter-spacing:1px;padding:6px 0;}
+.shortcuts td{padding:4px 6px;border-bottom:1px solid var(--bd);color:var(--t2);}
+.shortcuts td:first-child{width:40%;}
+.shortcuts kbd{font-family:var(--mono);color:var(--ac2);}
+.mbtn.on{border-color:var(--ac);color:var(--ac2);background:var(--acg);}
+
+/* Right-panel tabs: eleven do not fit 286px in one row (Weight → Scene ran
+   off the edge and could not be clicked), so on a desktop they wrap to two
+   rows. A phone keeps styles.css's one scrolling row. */
+@media(min-width:901px){
+  .rp .tabs{flex-wrap:wrap;}
+  .rp .tb{flex:1 0 auto;padding:8px 4px;letter-spacing:.3px;}
+}
+.rp{overflow-x:hidden;}

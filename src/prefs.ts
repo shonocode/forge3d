@@ -4,14 +4,14 @@
  * Previously only the snap config persisted; brush settings, Auto-Key,
  * viewport shading and environment reset every session, which is especially
  * painful on tablets. Saved to localStorage as one JSON blob, applied on
- * startup (after the UI is built, so the controls can be synced), and written
- * back on change (polled cheaply) + on page hide.
+ * startup, and written back on change (polled cheaply) + on page hide.
  */
 
 import { state } from "./state";
 import type { ViewportMode } from "./state";
 import { setViewportMode } from "./viewport/shading";
-import { setEnvironmentPreset } from "./viewport/environment";
+import { ENV_PRESETS, setEnvironmentPreset } from "./viewport/environment";
+import { store } from "./store";
 
 const PREFS_KEY = "forge3d_prefs_v1";
 
@@ -27,8 +27,6 @@ interface Prefs {
 }
 
 function collectPrefs(): Prefs {
-  const shadeBtn = document.querySelector<HTMLElement>(".shade-btn.on");
-  const envSel = document.getElementById("envPreset") as HTMLSelectElement | null;
   return {
     sculpt: { ...state.sculptConfig },
     paint: { ...state.paintConfig },
@@ -36,15 +34,24 @@ function collectPrefs(): Prefs {
     autoKey: state.autoKey,
     poseRotationSpace: state.poseRotationSpace,
     onionSkin: { ...state.onionSkin },
-    ...(shadeBtn?.dataset.mode ? { viewportMode: shadeBtn.dataset.mode } : {}),
-    ...(envSel?.value ? { envPreset: envSel.value } : {}),
+    viewportMode: state.viewportMode,
+    ...(state.activeEnvPresetId ? { envPreset: state.activeEnvPresetId } : {}),
   };
 }
 
+/**
+ * Apply saved prefs to the state. Everything is read from and written to
+ * `state` — the screen (React, ADR-014) draws from it; until 2026-09-25 this
+ * read two values off the old screen's DOM and pushed the rest back into its
+ * controls by id.
+ */
 function applyPrefs(p: Prefs): void {
   if (p.sculpt) Object.assign(state.sculptConfig, p.sculpt);
   if (p.paint) Object.assign(state.paintConfig, p.paint);
   if (p.weight) Object.assign(state.weightConfig, p.weight);
+  // The brush image itself isn't persisted — always come back in round mode
+  // so a stale stamp / stencil pref can't silently paint with no image.
+  state.paintConfig.brushMode = "round";
   if (typeof p.autoKey === "boolean") state.autoKey = p.autoKey;
   if (p.poseRotationSpace === "local" || p.poseRotationSpace === "world") {
     state.poseRotationSpace = p.poseRotationSpace;
@@ -56,73 +63,12 @@ function applyPrefs(p: Prefs): void {
     }
   }
   if (p.viewportMode) {
-    try {
-      setViewportMode(p.viewportMode as ViewportMode);
-      document.querySelectorAll<HTMLElement>(".shade-btn").forEach((b) =>
-        b.classList.toggle("on", b.dataset.mode === p.viewportMode),
-      );
-    } catch { /* mode may not exist in a newer build */ }
+    try { setViewportMode(p.viewportMode as ViewportMode); } catch { /* mode may not exist in a newer build */ }
   }
-  if (p.envPreset) {
-    const envSel = document.getElementById("envPreset") as HTMLSelectElement | null;
-    if (envSel && [...envSel.options].some((o) => o.value === p.envPreset)) {
-      envSel.value = p.envPreset;
-      try { setEnvironmentPreset(p.envPreset); } catch { /* keep default env */ }
-    }
+  if (p.envPreset && ENV_PRESETS.some((e) => e.id === p.envPreset)) {
+    try { setEnvironmentPreset(p.envPreset); } catch { /* keep default env */ }
   }
-  syncControls();
-}
-
-/** Push restored state values back into the DOM controls. */
-function syncControls(): void {
-  const num = (id: string, v: number, dispId?: string, digits?: number) => {
-    const el = document.getElementById(id) as HTMLInputElement | null;
-    if (el) el.value = String(v);
-    if (dispId) {
-      const d = document.getElementById(dispId);
-      if (d) d.textContent = digits !== undefined ? v.toFixed(digits) : String(v);
-    }
-  };
-  const chk = (id: string, v: boolean) => {
-    const el = document.getElementById(id) as HTMLInputElement | null;
-    if (el) el.checked = v;
-  };
-
-  const s = state.sculptConfig;
-  num("brushSize", s.radius, "bsV");
-  num("brushStr", s.strength, "btV");
-  num("brushFall", s.falloff, "bfV");
-  chk("dyntopo", s.dyntopo);
-  num("dyntopoDetail", s.detail, "dtV", 2);
-  chk("symX", s.symX);
-  chk("symY", s.symY);
-  chk("symZ", s.symZ);
-
-  const p = state.paintConfig;
-  const color = document.getElementById("paintColor") as HTMLInputElement | null;
-  if (color) color.value = p.color;
-  num("paintSize", p.size, "psV");
-  num("paintOpacity", p.opacity, "poV", 2);
-  num("paintHardness", p.hardness ?? 0.7, "phV", 2);
-  chk("paintEraser", p.eraser);
-  const res = document.getElementById("paintRes") as HTMLSelectElement | null;
-  if (res) res.value = String(p.resolution ?? 1024);
-  const pch = document.getElementById("paintChannel") as HTMLSelectElement | null;
-  if (pch) pch.value = p.channel ?? "albedo";
-  // Brush image itself isn't persisted — always come back in round mode so
-  // a stale stamp/stencil pref can't silently paint with no image.
-  p.brushMode = "round";
-  num("stencilScale", p.stencilScale ?? 1, "ssV", 2);
-
-  const wcfg = state.weightConfig;
-  num("weightRadius", wcfg.radius, "wrV");
-  num("weightStr", wcfg.strength, "wsV");
-  num("weightFall", wcfg.falloff, "wfV");
-
-  chk("autoKey", state.autoKey);
-  chk("poseLocalAxes", state.poseRotationSpace === "local");
-  chk("onionSkin", state.onionSkin.enabled);
-  num("onionOffset", state.onionSkin.offset, "onionOffV");
+  store.notify();
 }
 
 function save(): void {
@@ -133,8 +79,8 @@ function save(): void {
 
 /**
  * Restore saved prefs and start persisting changes. Call once at startup,
- * AFTER the UI is built and the viewport is initialized (both the DOM
- * controls and the scene must exist for apply/sync to land).
+ * after the viewport is initialized (the scene must exist for the shading
+ * and environment to land).
  */
 export function initPrefs(): void {
   try {

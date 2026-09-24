@@ -14,7 +14,8 @@
     "preview": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "manual": "node scripts/build-manual.ts"
   },
   "dependencies": {
     "@babylonjs/core": "^9.5.2",

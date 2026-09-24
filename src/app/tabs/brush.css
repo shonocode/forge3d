@@ -1,0 +1,89 @@
+/* Sculpt / Paint tab controls (src/app/tabs/brush.tsx). Reuses .sr / .abtn /
+   .pi / .pr / .empty from src/styles.css; these classes cover what those
+   don't: the symmetry checkbox row, the touch invert/smooth toggles, the
+   paint color swatch, the brush image name, and the paint layer list
+   (old id: paintLayersC, built by updatePaintLayersUI in texture-paint.ts). */
+
+.sym-row {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+}
+.sym-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.touch-mod-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.touch-mod-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--t4);
+  line-height: 1.6;
+}
+
+.paint-color {
+  flex: 1;
+  min-height: 26px;
+  border: none;
+  cursor: pointer;
+  background: var(--bg2);
+  border-radius: 3px;
+  padding: 0;
+}
+
+.brush-img-name {
+  font-size: 9px;
+  color: var(--t4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.play-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.play-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  padding: 2px 3px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.play-row.sel {
+  background: var(--acg, rgba(255, 200, 0, 0.12));
+}
+.play-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.play-row.sel .play-name {
+  color: var(--ac2);
+  font-weight: 600;
+}
+.play-blend {
+  width: 64px;
+  font-size: 9px;
+}
+.play-op {
+  width: 44px;
+}
+.play-del {
+  width: auto;
+  padding: 0 4px;
+  font-size: 9px;
+  min-width: 0;
+}

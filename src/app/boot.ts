@@ -16,16 +16,27 @@ import { initInput } from "../input";
 import { installIkRenderHook } from "../tools/animation-tool";
 import { updateMeasureOverlay } from "../tools/measure";
 import { startAutoSave } from "../storage/autosave";
+import { initPrefs } from "../prefs";
 import { connectStore } from "./connect";
+import { getEditGizmoMode } from "../tools/edit-mode";
 
 let booted = false;
 
-/** The selected mesh's transform, to 3 decimals — the Transform fields' part of the fingerprint. */
-function selectedTransform(): string {
+/**
+ * The screen's own part of the per-frame fingerprint: the selected mesh's
+ * transform to 3 decimals (the Transform fields follow a gizmo drag), and in
+ * Edit Mode the component mode, the selection size and the gizmo mode — keys
+ * (1 / 2 / 3, G / R / S) change those without pushing history — and the
+ * selected bone, clip, frame and playback, which a click in the viewport or
+ * the player changes the same way.
+ */
+function screenFingerprint(): string {
   const m = state.selectedMeshes[state.selectedMeshes.length - 1];
-  if (!m) return "";
   const r = (v: { x: number; y: number; z: number }): string => `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
-  return `${r(m.position)};${r(m.rotation)};${r(m.scaling)}`;
+  const xf = m ? `${r(m.position)};${r(m.rotation)};${r(m.scaling)}` : "";
+  const edit = state.editMesh ? `${state.editSelection.mode}:${state.editSelection.indices.size}:${getEditGizmoMode()}` : "";
+  const rig = `${state.selectedBoneId ?? ""}:${state.activeClipId ?? ""}:${state.currentFrame}:${state.isPlaying ? "P" : ""}`;
+  return xf + "|" + edit + "|" + rig;
 }
 
 export function boot(): void {
@@ -34,7 +45,7 @@ export function boot(): void {
   initViewport();
   installIkRenderHook(state.scene);
   initInput();
-  connectStore(store, state, state.scene, selectedTransform);
+  connectStore(store, state, state.scene, screenFingerprint);
   // For browser checks (Playwright) in development only.
   if (import.meta.env.DEV) (window as unknown as { __forge: unknown }).__forge = state;
 
@@ -49,6 +60,7 @@ export function boot(): void {
   });
   window.addEventListener("offline", () => status("⚠ Offline mode"));
   window.addEventListener("online", () => status("Back online"));
+  initPrefs(); // tool settings, shading and environment from the last session
   startAutoSave();
   status("Ready — プリミティブを追加して開始");
 }

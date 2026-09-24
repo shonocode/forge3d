@@ -6,6 +6,8 @@
 import { useEffect, useState } from "react";
 import { TOOL_TAB, type TabId } from "./guide/guide";
 import { Glossary } from "./guide/glossary";
+import { Shortcuts } from "./guide/shortcuts";
+import { MobileBar } from "./mobile-bar";
 import { Header } from "./header";
 import { LeftPanel } from "./left-panel";
 import { RightPanel } from "./right-panel";
@@ -21,7 +23,7 @@ export function App({ onCanvas }: AppProps) {
   const [tab, setTab] = useState<TabId>(TOOL_TAB[tool]);
   const [left, setLeft] = useState(false);
   const [right, setRight] = useState(false);
-  const [glossary, setGlossary] = useState(false);
+  const [help, setHelp] = useState<null | "glossary" | "keys">(null);
   const status = useStatus();
 
   // A tool switch opens its tab, as the old screen did.
@@ -30,23 +32,27 @@ export function App({ onCanvas }: AppProps) {
 
   return (
     <div id="app">
-      <Header onToggleLeft={() => setLeft(!left)} onToggleRight={() => setRight(!right)} onGlossary={() => setGlossary(true)} />
+      <Header onToggleLeft={() => setLeft(!left)} onToggleRight={() => setRight(!right)} onGlossary={() => setHelp("glossary")} />
       <LeftPanel open={left} />
       <main className="vp">
         <canvas id="rc" aria-label="3D ビュー" />
       </main>
       <RightPanel open={right} tab={tab} onTab={setTab} />
+      <MobileBar onPrimitives={() => { setLeft(true); setRight(false); }} />
       <footer className={"stat" + (status?.kind === "error" ? " stat-err" : status?.kind === "ok" ? " stat-ok" : "")} role="status">
         <span id="stxt">{status?.text ?? ""}</span>
       </footer>
-      {glossary && (
-        <div className="glossary-overlay" role="dialog" aria-label="用語集" onClick={() => setGlossary(false)}>
+      {help && (
+        <div className="glossary-overlay" role="dialog" aria-label="ヘルプ" onClick={() => setHelp(null)}>
           <div className="glossary-modal" onClick={(e) => e.stopPropagation()}>
             <div className="glossary-head">
-              <h2>用語集</h2>
-              <button type="button" onClick={() => setGlossary(false)} aria-label="閉じる">✕</button>
+              <div className="help-tabs" role="tablist">
+                <button type="button" role="tab" aria-selected={help === "glossary"} onClick={() => setHelp("glossary")}>用語集</button>
+                <button type="button" role="tab" aria-selected={help === "keys"} onClick={() => setHelp("keys")}>ショートカット</button>
+              </div>
+              <button type="button" onClick={() => setHelp(null)} aria-label="閉じる">✕</button>
             </div>
-            <Glossary />
+            {help === "glossary" ? <Glossary /> : <Shortcuts />}
           </div>
         </div>
       )}

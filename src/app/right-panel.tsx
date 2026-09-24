@@ -1,8 +1,7 @@
 /**
  * The right panel: tabs, the tool card for what is in use (variant A), and
- * the open tab's sections with their notes (variant C). Transform's sections
- * have their controls; the other tabs show their notes and say the controls
- * are still being moved over from the old screen.
+ * the open tab's sections with their notes (variant C) and their controls
+ * (`tabs/*.tsx`, ported from the old screen).
  */
 import type { ReactNode } from "react";
 import { TAB_LABELS, TAB_SECTIONS, topicFor, type TabId } from "./guide/guide";
@@ -11,13 +10,28 @@ import { SectionNote } from "./guide/section-note";
 import { TransformFields } from "./transform-fields";
 import { ModifierPanel } from "./modifier-panel";
 import { useForge } from "./use-forge";
+import { editControls, ioControls, snapControls } from "./tabs/edit";
+import { paintControls, sculptControls } from "./tabs/brush";
+import { animControls, boneControls, weightControls } from "./tabs/rig";
+import { mapControls, matControls, morphControls, sceneControls } from "./tabs/surface";
 
-/** Sections that have their controls on the new screen, by tab and section id. */
-const CONTROLS: Partial<Record<TabId, Record<string, () => ReactNode>>> = {
+/** Each tab's section controls, by section id. Export / Save (`io`) is the same on every tab. */
+const CONTROLS: Record<TabId, Record<string, () => ReactNode>> = {
   xform: {
+    snap: snapControls,
     tf: () => <TransformFields />,
     mod: () => <ModifierPanel />,
   },
+  mat: matControls,
+  morph: morphControls,
+  sculpt: sculptControls,
+  paint: paintControls,
+  bone: boneControls,
+  weight: weightControls,
+  anim: animControls,
+  edit: editControls,
+  map: mapControls,
+  scene: sceneControls,
 };
 
 export interface RightPanelProps {
@@ -28,7 +42,7 @@ export interface RightPanelProps {
 
 export function RightPanel({ open, tab, onTab }: RightPanelProps) {
   const tool = useForge((s) => s.tool);
-  const controls = CONTROLS[tab] ?? {};
+  const controls = CONTROLS[tab];
   return (
     <aside className={"rp" + (open ? " open" : "")} aria-label="右パネル">
       <div className="tabs" role="tablist">
@@ -40,7 +54,7 @@ export function RightPanel({ open, tab, onTab }: RightPanelProps) {
       </div>
       <ToolCard key={tab + tool} topic={topicFor(tool, tab)} />
       {TAB_SECTIONS[tab].map((sec) => {
-        const body = controls[sec.id];
+        const body = sec.id === "io" ? ioControls : controls[sec.id];
         return (
           <SectionNote key={tab + sec.id} section={sec}>
             {body ? body() : <div className="empty porting">操作部品は新しい画面へ移植中</div>}
