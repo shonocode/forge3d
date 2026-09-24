@@ -29,6 +29,15 @@
  * hexagon and a quad. `separate_mode = 'NONE'` keeps everything welded, so
  * the cut edges are each shared by four faces.
  *
+ * The parity row `intersect` (a cube and a UV sphere, the kurimanju cage with
+ * a box through it) agrees down to the vertex set of every face. It first
+ * disagreed on one rule the cubes cannot ask: **self mode intersects the two
+ * halves of the same face with each other** (`nshapes == 1` has no pair
+ * filter). A bent quad's halves meet in their diagonal, which therefore comes
+ * out as an intersection edge and is never dissolved — a cut across a bent
+ * quad leaves four faces, not two. An uncut bent quad still comes back whole
+ * (the "quad recovery" in `merge_tris_for_face`).
+ *
  * ## Not yet
  *
  * - `separate_mode` `ALL` / `CUT` — post-processing on top of this.
@@ -37,7 +46,10 @@
  *   and says so in `holes` on the result.
  * - Non-planar polygons of five or more vertices, whose triangulation here is
  *   a fan where Blender's is `BLI_polyfill_calc`. For planar ones the diagonals
- *   dissolve and it does not matter.
+ *   dissolve and it does not matter. For bent ones it does, and more than for
+ *   cut placement: by the rule above their diagonals are intersection edges,
+ *   and quad recovery covers only quads — so **an uncut bent n-gon should come
+ *   out triangulated**. Read from the code, not yet measured.
  */
 import type { MeshData } from "../../lib/mesh";
 import {
@@ -371,12 +383,25 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
     for (let j = i + 1; j < tris.length; j++) {
       const A = tris[i]!;
       const B = tris[j]!;
-      if (A.face === B.face) continue;
       if (mode === "twoSets" && options.set!.has(A.face) === options.set!.has(B.face)) continue;
       const a = boxes[i]!;
       const b = boxes[j]!;
       if (a.lo.some((c, k) => c > b.hi[k]!) || b.lo.some((c, k) => c > a.hi[k]!)) continue;
       const r = intersectTriTri(A.t, B.t);
+      if (A.face === B.face) {
+        // Blender's self mode (`nshapes == 1`) tests every pair, **the two
+        // halves of one face included**. Where the face is not exactly planar
+        // they meet in their shared diagonal, which then enters the CDT as a
+        // non-face edge and comes out `is_intersect` (`get_cdt_edge_orig`) —
+        // so it is never dissolved, and a cut crossing it keeps its vertex
+        // there. Measured on the kurimanju cage, whose quads are all bent.
+        // A planar face's halves are coplanar and add nothing.
+        if (r.kind === "segment") {
+          cuts[i]!.segs.push([r.p1, r.p2]);
+          cuts[j]!.segs.push([r.p1, r.p2]);
+        }
+        continue;
+      }
       if (r.kind === "segment") {
         cuts[i]!.segs.push([r.p1, r.p2]);
         cuts[j]!.segs.push([r.p1, r.p2]);
@@ -450,6 +475,18 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
   const byFace = new Map<number, typeof pieces>();
   for (const p of pieces) (byFace.get(p.face) ?? byFace.set(p.face, []).get(p.face)!).push(p);
   for (const [face, list] of [...byFace].sort((a, b) => a[0] - b[0])) {
+    // A quad whose two triangles came through uncut is the quad again, even
+    // when its diagonal is marked as an intersection above (Blender's "quad
+    // recovery" in `merge_tris_for_face`).
+    const poly = data.polys[face]!;
+    if (
+      poly.length === 4 &&
+      list.length === 2 &&
+      list.every((p) => p.ids.length === 3 && p.ids.every((v) => poly.includes(v)))
+    ) {
+      out.push([...poly]);
+      continue;
+    }
     const parent = list.map((_, i) => i);
     const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x]!)));
     const diagOwner = new Map<string, number>();
@@ -511,13 +548,30 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
     return true;
   });
 
-  const positions = new Float32Array(verts.length * 3);
+  // Keep every input vertex (in its place, so input indices stay valid) and
+  // only the new vertices some face still uses — a dissolved vertex is gone,
+  // as it is from Blender's output.
+  const inputCount = P.length / 3;
+  const used = new Set<number>(polys.flat());
+  const remap = new Map<number, number>();
+  const kept: EVert[] = [];
   verts.forEach((v, i) => {
+    if (i < inputCount || used.has(i)) {
+      remap.set(i, kept.length);
+      kept.push(v);
+    }
+  });
+  const positions = new Float32Array(kept.length * 3);
+  kept.forEach((v, i) => {
     positions[i * 3] = v.co[0];
     positions[i * 3 + 1] = v.co[1];
     positions[i * 3 + 2] = v.co[2];
   });
-  return { positions, polys, holes: [...new Set(holes)] };
+  return {
+    positions,
+    polys: polys.map((p) => p.map((v) => remap.get(v)!)),
+    holes: [...new Set(holes)],
+  };
 }
 
 /**

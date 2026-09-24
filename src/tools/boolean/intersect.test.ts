@@ -81,6 +81,41 @@ describe("intersect", () => {
     expect(manyFaceEdges(out.polys)).toBe(8);
   });
 
+  /** A quad with corner 2 lifted by `lift`, and a wall at x = 0.7 cutting across it. */
+  function quadAndWall(lift: number): MeshData {
+    return {
+      positions: Float32Array.from([
+        0, 0, 0, 2, 0, 0, 2, 2, lift, 0, 2, 0,
+        0.7, -1, -1, 0.7, 3, -1, 0.7, 3, 1, 0.7, -1, 1,
+      ]),
+      polys: [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+      ],
+    };
+  }
+
+  it("keeps the diagonal of a bent quad where a cut crosses it", () => {
+    // Blender's self mode intersects the two halves of a face with each other
+    // too; a bent quad's halves meet in their diagonal, which becomes an
+    // intersection edge and is never dissolved. The parity row `cageBox`
+    // found this: every quad of the kurimanju cage is bent.
+    const bent = intersect(quadAndWall(0.5));
+    const quadPieces = bent.polys.filter((p) => p.some((v) => v < 4));
+    expect(quadPieces).toHaveLength(4);
+    // A flat quad's halves are coplanar: the diagonal dissolves, two pieces.
+    const flat = intersect(quadAndWall(0));
+    expect(flat.polys.filter((p) => p.some((v) => v < 4))).toHaveLength(2);
+  });
+
+  it("gives a bent quad that nothing cuts back whole", () => {
+    // Its diagonal is still an "intersection" of its own halves; Blender's
+    // quad recovery in `merge_tris_for_face` returns the input quad.
+    const m = quadAndWall(0.5);
+    const out = intersect({ positions: m.positions.slice(0, 12), polys: [[0, 1, 2, 3]] });
+    expect(out.polys).toEqual([[0, 1, 2, 3]]);
+  });
+
   it("leaves a mesh that does not touch itself alone", () => {
     const out = intersect(twoCubes([3, 0, 0]));
     expect(sizes(out.polys)).toEqual({ 4: 12 });
