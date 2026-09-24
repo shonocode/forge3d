@@ -139,9 +139,9 @@ function along(p: Q2, a: Q2, b: Q2): Q {
 }
 
 /** Edge kinds, as a bit set: what an edge of the arrangement *is*. */
-const ORIG = 1; // an edge of the input polygon
-const DIAG = 2; // a diagonal added by triangulating the polygon
-const CUT = 4; // an intersection segment lies along it
+export const ORIG = 1; // an edge of the input polygon
+export const DIAG = 2; // a diagonal added by triangulating the polygon
+export const CUT = 4; // an intersection segment lies along it
 
 /**
  * `get_cdt_edge_orig`'s `is_intersect`: a segment lies along the edge **and
@@ -287,6 +287,76 @@ function triangulate(poly: number[], P: Float32Array): [number[], number[]][] {
  */
 export function intersect(data: MeshData, options: IntersectOptions = {}): IntersectResult {
   const mode = options.mode ?? "self";
+  const { verts, pieces } = subdivide(data, mode === "twoSets" ? options.set! : null);
+  const merged = mergePieces(pieces, data, verts);
+
+  // A face with exactly the vertex set of an earlier one is the same face:
+  // BMesh cannot hold two, and Blender's output has one. This is where the
+  // coplanar overlap of two cubes goes — both cubes produce the shared piece,
+  // and it appears once (measured: 16 faces, not 20).
+  const setKey = (p: readonly number[]): string => [...p].sort((a, b) => a - b).join(",");
+  const seen = new Set<string>();
+  const faces = merged.filter((f) => {
+    const k = setKey(f.vert);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  // `separate_mode`. Which edges come apart: for "all", those
+  // `apply_mesh_output_to_bmesh` tagged — each face it **creates** writes its
+  // edges' intersection flags, the last write winning; a face identical to
+  // one already there (an input face left uncut, or a duplicate) is reused
+  // and writes nothing. For "cut", the edges between faces from `set` and
+  // faces from outside it.
+  const separate = options.separate === "cut" && mode === "self" ? "all" : (options.separate ?? "none");
+  let polys = faces.map((f) => f.vert);
+  if (separate !== "none") {
+    const ek = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+    const split = new Set<string>();
+    if (separate === "all") {
+      const exists = new Set(data.polys.map(setKey));
+      const tag = new Map<string, boolean>();
+      for (const f of merged) {
+        const k = setKey(f.vert);
+        if (exists.has(k)) continue;
+        exists.add(k);
+        f.vert.forEach((v, i) => tag.set(ek(v, f.vert[(i + 1) % f.vert.length]!), f.isect[i]!));
+      }
+      for (const [k, on] of tag) if (on) split.add(k);
+    } else {
+      const sides = new Map<string, number>();
+      faces.forEach((f) => {
+        const bit = options.set!.has(f.face) ? 1 : 2;
+        f.vert.forEach((v, i) => {
+          const k = ek(v, f.vert[(i + 1) % f.vert.length]!);
+          sides.set(k, (sides.get(k) ?? 0) | bit);
+        });
+      });
+      for (const [k, s] of sides) if (s === 3) split.add(k);
+    }
+    polys = splitAlongEdges(polys, split, verts, (f) =>
+      separate === "all" ? f : options.set!.has(faces[f]!.face) ? 1 : 0,
+    );
+  }
+
+  return toMeshData(polys, verts);
+}
+
+/** The subdivided triangles of a mesh, and the vertices they use (inputs first). */
+export interface Subdivided {
+  verts: EVert[];
+  /** Every piece of every input triangle, wound like its input face. */
+  pieces: Piece[];
+}
+
+/**
+ * Stage 1 up to the triangles: tessellate, intersect every pair that may
+ * (all pairs, or with `set` only pairs across it — Blender's `nshapes == 2`),
+ * and cut each triangle by the constrained Delaunay triangulation of its
+ * arrangement. This is Blender's `trimesh_nary_intersect`; the boolean
+ * (`boolean.ts`) classifies these same triangles.
+ */
+export function subdivide(data: MeshData, set: ReadonlySet<number> | null): Subdivided {
   const P = data.positions;
 
   // Vertices: the input's, then every new exact point, deduplicated exactly.
@@ -341,7 +411,7 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
     for (let j = i + 1; j < tris.length; j++) {
       const A = tris[i]!;
       const B = tris[j]!;
-      if (mode === "twoSets" && options.set!.has(A.face) === options.set!.has(B.face)) continue;
+      if (set && set.has(A.face) === set.has(B.face)) continue;
       const a = boxes[i]!;
       const b = boxes[j]!;
       if (a.lo.some((c, k) => c > b.hi[k]!) || b.lo.some((c, k) => c > a.hi[k]!)) continue;
@@ -438,73 +508,35 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
     }
   });
 
-  // Merge each original face's triangles back into polygons, as Blender does.
+  return { verts, pieces };
+}
+
+/**
+ * Merge each input face's triangles back into polygons (`merge_tris_for_face`),
+ * then drop the new vertices left in the middle of straight edges
+ * (`dissolve_verts`). Faces come out in input-face order.
+ */
+export function mergePieces(pieces: Piece[], data: MeshData, verts: EVert[]): OutFace[] {
   const out: OutFace[] = [];
   const byFace = new Map<number, Piece[]>();
   for (const p of pieces) (byFace.get(p.face) ?? byFace.set(p.face, []).get(p.face)!).push(p);
   for (const [face, list] of [...byFace].sort((a, b) => a[0] - b[0]))
     for (const m of mergeTrisForFace(list, data.polys[face]!, verts)) out.push({ ...m, face });
+  return dissolveVerts(out, verts, data.positions.length / 3);
+}
 
-  // A face with exactly the vertex set of an earlier one is the same face:
-  // BMesh cannot hold two, and Blender's output has one. This is where the
-  // coplanar overlap of two cubes goes — both cubes produce the shared piece,
-  // and it appears once (measured: 16 faces, not 20).
-  const setKey = (p: readonly number[]): string => [...p].sort((a, b) => a - b).join(",");
-  const merged = dissolveVerts(out, verts, P.length / 3);
-  const seen = new Set<string>();
-  const faces = merged.filter((f) => {
-    const k = setKey(f.vert);
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-
-  // `separate_mode`. Which edges come apart: for "all", those
-  // `apply_mesh_output_to_bmesh` tagged — each face it **creates** writes its
-  // edges' intersection flags, the last write winning; a face identical to
-  // one already there (an input face left uncut, or a duplicate) is reused
-  // and writes nothing. For "cut", the edges between faces from `set` and
-  // faces from outside it.
-  const separate = options.separate === "cut" && mode === "self" ? "all" : (options.separate ?? "none");
-  let polys = faces.map((f) => f.vert);
-  if (separate !== "none") {
-    const ek = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
-    const split = new Set<string>();
-    if (separate === "all") {
-      const exists = new Set(data.polys.map(setKey));
-      const tag = new Map<string, boolean>();
-      for (const f of merged) {
-        const k = setKey(f.vert);
-        if (exists.has(k)) continue;
-        exists.add(k);
-        f.vert.forEach((v, i) => tag.set(ek(v, f.vert[(i + 1) % f.vert.length]!), f.isect[i]!));
-      }
-      for (const [k, on] of tag) if (on) split.add(k);
-    } else {
-      const sides = new Map<string, number>();
-      faces.forEach((f) => {
-        const bit = options.set!.has(f.face) ? 1 : 2;
-        f.vert.forEach((v, i) => {
-          const k = ek(v, f.vert[(i + 1) % f.vert.length]!);
-          sides.set(k, (sides.get(k) ?? 0) | bit);
-        });
-      });
-      for (const [k, s] of sides) if (s === 3) split.add(k);
-    }
-    polys = splitAlongEdges(polys, split, verts, (f) =>
-      separate === "all" ? f : options.set!.has(faces[f]!.face) ? 1 : 0,
-    );
-  }
-
-  // Keep every input vertex (in its place, so input indices stay valid) and
-  // only the new vertices some face still uses — a dissolved vertex is gone,
-  // as it is from Blender's output.
-  const inputCount = P.length / 3;
+/**
+ * Polygons over `verts` → `MeshData`, keeping only the vertices some polygon
+ * uses, in their order — what `apply_mesh_output_to_bmesh` keeps. Input
+ * vertices keep their relative order, so an input vertex that survives is
+ * still found where it was relative to the others.
+ */
+export function toMeshData(polys: number[][], verts: EVert[]): MeshData {
   const used = new Set<number>(polys.flat());
   const remap = new Map<number, number>();
   const kept: EVert[] = [];
   verts.forEach((v, i) => {
-    if (i < inputCount || used.has(i)) {
+    if (used.has(i)) {
       remap.set(i, kept.length);
       kept.push(v);
     }
@@ -515,24 +547,21 @@ export function intersect(data: MeshData, options: IntersectOptions = {}): Inter
     positions[i * 3 + 1] = v.co[1];
     positions[i * 3 + 2] = v.co[2];
   });
-  return {
-    positions,
-    polys: polys.map((p) => p.map((v) => remap.get(v)!)),
-  };
+  return { positions, polys: polys.map((p) => p.map((v) => remap.get(v)!)) };
 }
 
 /** A merged polygon, with per edge (vert[i] → vert[i+1]) whether it is an intersection edge. */
-interface Merged {
+export interface Merged {
   vert: number[];
   isect: boolean[];
 }
 
 /** …and the input face it came from. */
-interface OutFace extends Merged {
+export interface OutFace extends Merged {
   face: number;
 }
 
-interface Piece {
+export interface Piece {
   face: number;
   ids: number[];
   /** Per edge i (ids[i] → ids[i+1]): the arrangement kind, 0 if the CDT added it. */

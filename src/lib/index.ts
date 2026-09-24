@@ -386,6 +386,14 @@ export {
 // Chains only for now — a vertex with three or more edges throws.
 export { skin, type SkinOptions } from "../tools/edit-mode/skin";
 
+// ── Boolean ────────────────────────────────────────────────────────────────
+// Blender's exact solver (ADR-012), in exact rational arithmetic. `intersect`
+// cuts where a mesh passes through itself (or one part through another);
+// `booleanMesh` keeps the union, difference or intersection of two parts.
+// Parts must be closed for `booleanMesh` — the open-mesh fallback is not in.
+export { intersect, type IntersectOptions, type IntersectResult } from "../tools/boolean/intersect";
+export { booleanMesh, type BooleanOptions, type BooleanOperation } from "../tools/boolean/boolean";
+
 // ── Vertex groups ──────────────────────────────────────────────────────────
 // `MeshData.groups` is where the weights live; these three reshape them.
 export {
