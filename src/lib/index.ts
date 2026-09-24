@@ -365,6 +365,8 @@ export {
 // already above -- Planar is `dissolveLimit` (measured: the modifier and
 // `bmesh.ops.dissolve_limit` agree), Un-Subdivide is deliberately unwritten.
 export { decimateCollapse, type DecimateOptions } from "../tools/decimate";
+export { triangulate, type TriangulateOptions, type QuadMethod, type NgonMethod } from "../tools/triangulate";
+export { bridgeLoops, type BridgeLoopsOptions } from "../tools/bridge-loops";
 
 // ── Subdivision ────────────────────────────────────────────────────────────
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp
