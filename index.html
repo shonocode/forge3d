@@ -362,9 +362,8 @@
           <input type="range" min="0.25" max="4" step="0.05" value="1" id="boneSize" aria-label="Bone visual size"></div>
         <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="メッシュ越しにボーンを表示 (Blender の X-Ray armature 相当)">X-Ray</span>
           <input type="checkbox" checked id="boneXray" aria-label="Bone X-ray (show through mesh)" style="margin-left:auto"></div>
-        <div style="margin-top:6px;font-size:9px;color:var(--t4);line-height:1.5;">
-          <kbd style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 4px;border-radius:2px">Shift+H</kbd> でボーン全体の表示/非表示
-        </div>
+        <div class="pr"><span class="pl" style="font-size:10px;color:var(--t3)" title="ボーン全体の表示 / 非表示（Blender の Overlay ▸ Bones 相当。以前の Shift+H は Blender に合わせて「選択以外を隠す」になった）">Show Bones</span>
+          <input type="checkbox" checked id="boneVisible" aria-label="Show bones" style="margin-left:auto"></div>
       </div>
       <div class="pg">
         <div class="pgt">Selected Bone</div>
@@ -551,29 +550,8 @@
     <div class="help-sec">
       <div class="help-t">Keyboard Shortcuts</div>
       <div class="help-sec-body">
-        <table class="help-keys">
-          <tr><td>V</td><td>Select（選択）</td></tr>
-          <tr><td>G</td><td>Move（移動）</td></tr>
-          <tr><td>R</td><td>Rotate（回転）</td></tr>
-          <tr><td>S</td><td>Scale（拡縮）</td></tr>
-          <tr><td>D</td><td>Sculpt（彫刻）</td></tr>
-          <tr><td>P</td><td>Paint（ペイント）</td></tr>
-          <tr><td>B</td><td>Bone（ボーン）</td></tr>
-          <tr><td>W</td><td>Weight（ウェイト）</td></tr>
-          <tr><td>A</td><td>Anim（アニメーション）</td></tr>
-          <tr><td>Ctrl+D</td><td>Duplicate（複製）</td></tr>
-          <tr><td>Delete</td><td>Delete（削除）</td></tr>
-          <tr><td>Esc</td><td>Deselect（選択解除）</td></tr>
-          <tr><td>Ctrl+Z</td><td>Undo（元に戻す）</td></tr>
-          <tr><td>Ctrl+Shift+Z</td><td>Redo（やり直し）</td></tr>
-          <tr><td>F</td><td>Focus（選択メッシュにフォーカス）</td></tr>
-          <tr><td>Ctrl+A</td><td>Select All（全選択）</td></tr>
-          <tr><td>Ctrl+N</td><td>New Scene（シーンクリア）</td></tr>
-          <tr><td>Numpad 1</td><td>Front（正面）/ Ctrl: Back（背面）</td></tr>
-          <tr><td>Numpad 3</td><td>Right（右側面）/ Ctrl: Left（左側面）</td></tr>
-          <tr><td>Numpad 7</td><td>Top（上面）/ Ctrl: Bottom（下面）</td></tr>
-          <tr><td>Numpad 5</td><td>Orthographic Toggle（正射影切替）</td></tr>
-        </table>
+        <!-- 中身は src/keymap.ts から buildHelpKeys() が書く（Blender と同じキー） -->
+        <table class="help-keys"></table>
       </div>
     </div>
 

@@ -14,7 +14,8 @@ import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { creaseOf, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
+import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
+import { edgeFaceAdd } from "./face-add";
 import { lastSelected, updateGizmo } from "../selection";
 import { updateProperties } from "../../ui/panels";
 import { refreshEditToolsUI } from "../../ui/builders";
@@ -114,7 +115,7 @@ export function exitEditMode(): void {
 }
 
 /**
- * Switch the component gizmo between Move / Rotate / Scale (keys T / R / S
+ * Switch the component gizmo between Move / Rotate / Scale (keys G / R / S
  * in Edit Mode). No-op outside Edit Mode.
  */
 export function setEditGizmoMode(mode: EditGizmoMode): void {
@@ -911,6 +912,49 @@ export function mergeSelection(): void {
     }
     state.editSelection.mode = "vertex";
     return result;
+  });
+}
+
+/**
+ * Make a face from the selected vertices (or the vertices of the selected
+ * edges) — Blender's F, "Make Edge/Face", through `edgeFaceAdd`. Three or more
+ * vertices make one face, ordered around their centre and wound to agree with
+ * the faces beside it. Two vertices would make a wire edge in Blender; the
+ * edit mesh's overlay does not draw wire edges yet, so that case is refused.
+ */
+export function fillSelection(): void {
+  const em = state.editMesh;
+  if (!em) return;
+  const mode = state.editSelection.mode;
+  const verts = new Set<number>();
+  if (mode === "vertex") for (const v of state.editSelection.indices) verts.add(v);
+  else if (mode === "edge")
+    for (const he of state.editSelection.indices) {
+      verts.add(edgeOrigin(em, he));
+      verts.add(edgeEnd(em, he));
+    }
+  else {
+    status("⚠ Fill (F): vertex / edge mode only");
+    return;
+  }
+  if (verts.size < 3) {
+    status("⚠ Fill (F): 頂点を 3 つ以上選択（2 頂点の辺は未対応）");
+    return;
+  }
+  applyTopologyOp("Fill", () => {
+    let face: number | null = null;
+    try {
+      face = edgeFaceAdd(em, verts);
+    } catch (err) {
+      status("⚠ Fill: " + (err as Error).message);
+      return new Set<number>();
+    }
+    if (face === null) {
+      status("⚠ Fill: 既に同じ面があるか、面を作れない配置です");
+      return new Set<number>();
+    }
+    state.editSelection.mode = "face";
+    return new Set([face]);
   });
 }
 

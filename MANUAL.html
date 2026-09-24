@@ -269,7 +269,7 @@ Edit Mode に相当。形状の細部調整、ループ追加、コーナー処�
 
 <h4 id="edit-transform">4.2.1 コンポーネントの Move / Rotate / Scale</h4>
 <p>Gizmo は 3 種類あり、右パネル「Transform」の Move / Rotate / Scale ボタン、
-またはキーで切り替える: <strong><kbd>T</kbd> = Move、<kbd>R</kbd> = Rotate、<kbd>S</kbd> = Scale</strong>。</p>
+またはキーで切り替える: <strong><kbd>G</kbd> = Move、<kbd>R</kbd> = Rotate、<kbd>S</kbd> = Scale</strong>（Blender と同じ。以前の T は Blender ではツールバーの表示切替なので外した）。</p>
 <ul>
   <li><strong>Move</strong>: 選択要素を平行移動（従来動作）</li>
   <li><strong>Rotate</strong>: 選択要素をドラッグ開始時の<strong>重心まわりに回転</strong>。
@@ -379,11 +379,11 @@ GUI は今のところ segments=1 / profile=0.5 固定。立方体の1辺は Ble
 
 <h4 id="edit-slide">4.6.1 Edge Slide (エッジスライド)</h4>
 <p>選択した辺ループを、隣の辺 (レール) に沿って横滑りさせる。Loop Cut で入れたループの
-「位置決め」に必須の操作。<strong>キー: <kbd>G</kbd></strong> (Edge モード)</p>
+「位置決め」に必須の操作。<strong>キー: <kbd>G</kbd> を 2 回</strong> (Edge モード。Blender の G G と同じ — 1 回目の G は Move)</p>
 <ol>
   <li>Edge モードでスライドさせたい辺 (ループ) を選択</li>
   <li>右パネルの <strong>Slide Amount</strong> スライダーで量を設定 (−0.95〜0.95、符号 = 方向)</li>
-  <li><kbd>G</kbd> または <strong>Edge Slide</strong> ボタン → 1 回押すごとに設定量だけ滑る (押すたび累積、各 1 Undo)</li>
+  <li><kbd>G</kbd> <kbd>G</kbd> または <strong>Edge Slide</strong> ボタン → 1 回ごとに設定量だけ滑る (累積、各 1 Undo)。Vertex モードでの G G は Vertex Slide</li>
 </ol>
 <p>各頂点はループ接線に<strong>最も垂直な</strong>隣接辺をレールに選ぶので、三角化された
 quad メッシュでも対角線に引っ張られない。トポロジは変わらない (位置のみ)。
@@ -419,15 +419,26 @@ Blender の Knife (cut through ON) 相当。<strong>キー: <kbd>K</kbd></strong
 
 <h4 id="edit-flip-diagonal">4.7.2 Flip Diagonal (対角線フリップ)</h4>
 <p>隣接 2 三角形の共有辺 (対角線) を、反対側の 2 頂点を結ぶ辺に張り替える。
-<strong>キー: <kbd>F</kbd></strong></p>
-<div class="note">以前は「Knife」の名前で K キーに割り当てられていたが、本物の Knife (§4.7.1)
-実装に伴い <kbd>F</kbd> = Flip へ移動した。</div>
+<strong>キー: なし（右パネルのボタン）</strong></p>
+<div class="note">以前は <kbd>F</kbd> だったが、Blender の <kbd>F</kbd> は Make Edge/Face なので
+2026-09-25 にそちらへ譲った（§4.7.3）。</div>
 <ol>
   <li>Vertex モードで <strong>ちょうど 2 つ</strong>の頂点を選択</li>
   <li>2 頂点が「隣接 2 三角形の各 off-edge vertex」になっているとき有効</li>
-  <li><kbd>F</kbd> → 共有辺が消えて、2 頂点を直結する新しい辺に置換 (= edge flip)</li>
+  <li><strong>Flip Diagonal</strong> ボタン → 共有辺が消えて、2 頂点を直結する新しい辺に置換 (= edge flip)</li>
 </ol>
 <p>三角化の整理に重宝。Bevel / Inset の後で対角線の向きを変えたい時など。</p>
+
+<h4 id="edit-fill">4.7.3 Fill — 面を張る (Make Edge/Face)</h4>
+<p>選んだ頂点（または選んだ辺の頂点）から面を 1 枚作る。Blender の <kbd>F</kbd> と同じ操作で、
+中身は Blender と実測で一致させた <code>edgeFaceAdd</code>。<strong>キー: <kbd>F</kbd></strong></p>
+<ol>
+  <li>Vertex モードで 3 つ以上の頂点、または Edge モードで穴の縁の辺を選択</li>
+  <li><kbd>F</kbd> または右パネルの <strong>Fill</strong> ボタン</li>
+  <li>頂点は重心まわりの角度順に並べられ、面の向きは隣の面に合わせる。できた面が選択される</li>
+</ol>
+<div class="note">Blender は 2 頂点なら辺を 1 本作るが、Edit Mode の表示がまだ単独の辺を描けないので、
+forge3d の GUI では 3 頂点以上だけにしている（ライブラリの <code>edgeFaceAdd</code> は 2 頂点も扱う）。</div>
 
 <h3 id="edit-delete">4.8 Delete</h3>
 <p>選択した要素を削除。<strong>キー: <kbd>X</kbd> / <kbd>Delete</kbd> / <kbd>Backspace</kbd></strong></p>
@@ -489,7 +500,7 @@ UV とスキンウェイトは分割後も元頂点から引き継がれる。�
 <p>シーム = メッシュを「ハサミで切る」境界。UV 展開時にここで島が分かれる。</p>
 <ol>
   <li>Edit Mode の Edge mode (<kbd>2</kbd>) で辺を選択</li>
-  <li><kbd>Shift+S</kbd> または右パネルの <strong>Mark Seam</strong> ボタン</li>
+  <li>右パネルの <strong>Mark Seam</strong> ボタン（キーなし — Blender の <kbd>Shift+S</kbd> はスナップメニューなので外した）</li>
   <li>選択辺が<span style="color:var(--red)">赤色</span>で表示される (シーム指定済み)</li>
   <li>もう一度押すと解除 (トグル)</li>
 </ol>
@@ -592,15 +603,15 @@ Edit Mode を抜けても、プロジェクトを保存して開き直しても�
 <h4 id="tris-to-quads">4.10.1 Tris to Quads (三角形→四角形)</h4>
 <p>隣り合う三角形のペアを四角形に結合する (Blender の Tris to Quads 相当)。三角化された
 インポートメッシュや、彫刻後のメッシュを<strong>クリーンな quad フロー</strong>に整える。
-<strong>キー: <kbd>J</kbd></strong></p>
+<strong>キー: <kbd>Alt+J</kbd></strong>（Blender と同じ。Blender の <kbd>J</kbd> は Connect Vertex Path）</p>
 <ol>
   <li>結合したい面を Face モードで選択 (無選択、または Vertex / Edge モードならメッシュ全体が対象)</li>
-  <li><kbd>J</kbd> または右パネルの <strong>Tris to Quads</strong> ボタン</li>
+  <li><kbd>Alt+J</kbd> または右パネルの <strong>Tris to Quads</strong> ボタン</li>
   <li>共面 (法線が 40° 以内) かつ<strong>凸</strong>になる三角形ペアだけが結合される。
     ペアは<strong>形の良さ優先</strong> (コーナー角が 90° に近い = 長方形に近い順、同点なら
     法線の一致度) で貪欲に選ばれ、各三角形は最大 1 回だけ使われる</li>
 </ol>
-<div class="note">三角化された立方体を全選択して <kbd>J</kbd> を押すと、対角線が消えて 6 枚の
+<div class="note">三角化された立方体を全選択して <kbd>Alt+J</kbd> を押すと、対角線が消えて 6 枚の
 きれいな quad に戻る。三角化されたグリッドも、セルをまたぐ「ひし形」ペアではなく各セルが
 そのまま正方形 quad に戻る (形状スコアの効果)。急な折り目 (法線がしきい値を超える所) は
 またがず結合しない。</div>
@@ -621,10 +632,10 @@ Knife を当てると、その面は自動で三角形化されてから切断�
 <p>メッシュ全体を <strong>Catmull-Clark サブディビジョンサーフェス</strong>で滑らかに細分割する。
 1 回押すごとに 1 レベル細かくなり、各面が <strong>n 個の quad</strong> に分割されつつ、
 リミットサーフェスに向かって表面が丸くなる。ローポリのベースメッシュから有機的な曲面を
-作る王道ワークフロー。<strong>キー: <kbd>Ctrl+D</kbd></strong></p>
+作る王道ワークフロー。<strong>キー: なし（右パネルのボタン）</strong> — Blender の Subdivide もメニューからで、以前の <kbd>Ctrl+D</kbd> は外した。</p>
 <ol>
   <li>Edit Mode でメッシュを開く (選択は不要 — 常にメッシュ全体が対象)</li>
-  <li><kbd>Ctrl+D</kbd> または右パネルの <strong>Subdivide (CC)</strong> ボタン</li>
+  <li>右パネルの <strong>Subdivide (CC)</strong> ボタン</li>
   <li>面数が約 4 倍になり、角が丸まる。もう一度押すとさらに 1 レベル細かく</li>
 </ol>
 <p>アルゴリズム: 各面に<strong>フェイスポイント</strong>(重心)、各辺に<strong>エッジポイント</strong>
@@ -652,7 +663,7 @@ Pixar OpenSubdiv と同じ<strong>セミシャープクリース</strong>方式�
   <li>右パネルの <strong>Crease Weight</strong> スライダーで重み σ を設定 (0〜4)</li>
   <li><kbd>Shift+E</kbd> または <strong>Mark Crease</strong> ボタン → 選択辺が
     <span style="color:#2ad;">シアン色</span>で表示される</li>
-  <li><kbd>Ctrl+D</kbd> で Subdivide → 折り目の辺は鋭いまま、他は滑らかに丸まる</li>
+  <li><strong>Subdivide (CC)</strong> → 折り目の辺は鋭いまま、他は滑らかに丸まる</li>
   <li>もう一度 <kbd>Shift+E</kbd> で解除 (トグル)</li>
 </ol>
 <p><strong>辺ごとの σ を個別に調整する</strong>: <kbd>Shift+E</kbd> はトグル (付け外し) だが、
@@ -681,7 +692,7 @@ Pixar OpenSubdiv と同じ<strong>セミシャープクリース</strong>方式�
 <!-- =================================================================== -->
 <section id="sculpt">
 <h2>5. Sculpt (スカルプト)</h2>
-<p>有機的な凹凸を「塗る」感覚で作る。筋肉、しわ、形状調整に。<strong>キー: <kbd>D</kbd></strong></p>
+<p>有機的な凹凸を「塗る」感覚で作る。筋肉、しわ、形状調整に。<strong>切替: ツールバーから（キーなし — Blender はモード切替を Ctrl+Tab で行い、ブラウザはこのキーを使わせない）</strong></p>
 
 <h3>5.1 ブラシの種類</h3>
 <table>
@@ -734,7 +745,7 @@ Pixar OpenSubdiv と同じ<strong>セミシャープクリース</strong>方式�
 <!-- =================================================================== -->
 <section id="paint">
 <h2>6. Paint (テクスチャペイント)</h2>
-<p>UV 座標を持つメッシュの表面に色を塗る。<strong>キー: <kbd>P</kbd></strong></p>
+<p>UV 座標を持つメッシュの表面に色を塗る。<strong>切替: ツールバーから（キーなし — Blender はモード切替を Ctrl+Tab で行い、ブラウザはこのキーを使わせない）</strong></p>
 <ul>
   <li>動的テクスチャに直接描画。<strong>Resolution</strong> (512 / 1024 / 2048) は
     新しく作られるペイントテクスチャに適用される (既存はそのまま。ブラシサイズは
@@ -811,11 +822,11 @@ Pixar OpenSubdiv と同じ<strong>セミシャープクリース</strong>方式�
 <!-- =================================================================== -->
 <section id="bone">
 <h2>7. Bone / Rigging (ボーン / リギング)</h2>
-<p>キャラクターを動かすためのスケルトンを組む。<strong>キー: <kbd>B</kbd></strong></p>
+<p>キャラクターを動かすためのスケルトンを組む。<strong>切替: ツールバーから（キーなし — Blender はモード切替を Ctrl+Tab で行い、ブラウザはこのキーを使わせない）</strong></p>
 
 <h3>7.1 ボーン作成</h3>
 <ol>
-  <li>Bone ツール (<kbd>B</kbd>) に入る</li>
+  <li>ツールバーの <strong>BONE</strong> で Bone ツールに入る</li>
   <li>ビューポートをクリックでその位置にボーンを追加 (球状のビジュアル表示)</li>
   <li>既存ボーンをクリックして親選択 → 次のクリックで子ボーン</li>
 </ol>
@@ -956,7 +967,7 @@ Roll を符号反転してコピーする。</div>
 <!-- =================================================================== -->
 <section id="weight">
 <h2>8. Weight Paint (ウェイトペイント)</h2>
-<p>各頂点がどのボーンにどれだけ影響されるかを塗る。<strong>キー: <kbd>W</kbd></strong></p>
+<p>各頂点がどのボーンにどれだけ影響されるかを塗る。<strong>切替: ツールバーから（キーなし — Blender はモード切替を Ctrl+Tab で行い、ブラウザはこのキーを使わせない）</strong></p>
 
 <h3>8.1 Auto Weights (自動ウェイト)</h3>
 <p>手塗りの前に、まず <strong>⚡ Auto Weights</strong> で全頂点を最寄りのボーンへ一括バインドするのが基本ワークフロー。
@@ -996,7 +1007,7 @@ Roll を符号反転してコピーする。</div>
 <!-- =================================================================== -->
 <section id="anim">
 <h2>9. Animation (アニメーション)</h2>
-<p>ボーンを動かして時間軸上にキーフレームを置く。<strong>キー: <kbd>A</kbd></strong></p>
+<p>ボーンを動かして時間軸上にキーフレームを置く。<strong>切替: ツールバーから（キーなし — Blender はモード切替を Ctrl+Tab で行い、ブラウザはこのキーを使わせない）</strong></p>
 
 <h3>9.1 クリップ管理</h3>
 <ul>
@@ -1376,29 +1387,31 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
 <section id="shortcuts">
 <h2>14. ショートカット早見表</h2>
 
-<h3>14.1 グローバル</h3>
+<p><strong>2026-09-25 から Blender 5.1 の既定キーに合わせた。</strong> Blender に同じ操作があるものは同じキー、
+Blender にキーの無いもの（Sculpt / Paint / Bone / Weight / Anim への切替、Subdivide、Mark Seam、Flip Diagonal）は
+キーを付けずツールバー・右パネルから。Blender はモード切替を <kbd>Ctrl+Tab</kbd> で行うが、ブラウザがこのキーを使わせない。
+割り当ての実体は <code>src/keymap.ts</code> の 1 つの表で、アプリ内ヘルプ（? ボタン）の表もそこから作られる。</p>
+
+<h3>14.1 Object Mode ／ 共通</h3>
 <table class="cheat">
-  <tr><th>キー</th><th>場面</th><th>動作</th></tr>
-  <tr><td>V</td><td>any</td><td>Select ツール</td></tr>
-  <tr><td>G / R / S</td><td>any</td><td>Move / Rotate / Scale Gizmo</td></tr>
-  <tr><td>D</td><td>any</td><td>Sculpt ツール</td></tr>
-  <tr><td>P</td><td>any</td><td>Paint ツール</td></tr>
-  <tr><td>B</td><td>Object</td><td>Bone ツール</td></tr>
-  <tr><td>W</td><td>Object</td><td>Weight Paint ツール</td></tr>
-  <tr><td>A</td><td>Object</td><td>Anim ツール</td></tr>
-  <tr><td>Tab</td><td>Object↔Edit</td><td>Edit Mode toggle</td></tr>
-  <tr><td>F</td><td>any</td><td>選択メッシュへフォーカス</td></tr>
-  <tr><td>H / Shift+H</td><td>any</td><td>メッシュ / ボーン表示トグル</td></tr>
-  <tr><td>Ctrl+D</td><td>any</td><td>選択メッシュ複製</td></tr>
-  <tr><td>Ctrl+A</td><td>Object</td><td>全選択</td></tr>
-  <tr><td>Ctrl+N</td><td>any</td><td>シーン新規作成 (確認あり)</td></tr>
-  <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>any</td><td>Undo / Redo</td></tr>
-  <tr><td>Delete / Backspace</td><td>Object</td><td>選択メッシュ削除</td></tr>
-  <tr><td>Esc</td><td>any</td><td>選択解除</td></tr>
+  <tr><th>キー</th><th>場面</th><th>動作</th><th>以前</th></tr>
+  <tr><td>W</td><td>Object</td><td>Select ツール</td><td>V</td></tr>
+  <tr><td>G / R / S</td><td>Object</td><td>Move / Rotate / Scale Gizmo</td><td></td></tr>
+  <tr><td>—</td><td>Object</td><td>Sculpt / Paint / Bone / Weight / Anim はツールバーから</td><td>D / P / B / W / A</td></tr>
+  <tr><td>Tab</td><td>Object↔Edit</td><td>Edit Mode toggle</td><td></td></tr>
+  <tr><td>A / Alt+A</td><td>Object</td><td>全選択 / 選択解除</td><td>Ctrl+A</td></tr>
+  <tr><td>Esc</td><td>any</td><td>選択解除（Blender の Esc はキャンセル。forge3d は解除も兼ねる）</td><td></td></tr>
+  <tr><td>Shift+D</td><td>Object</td><td>選択メッシュ複製</td><td>Ctrl+D</td></tr>
+  <tr><td>X / Delete / Backspace</td><td>Object</td><td>選択メッシュ削除（Backspace は Delete キーの無いキーボード用）</td><td>Delete / Backspace</td></tr>
+  <tr><td>H / Shift+H / Alt+H</td><td>Object</td><td>選択を隠す / 選択以外を隠す / 全部表示</td><td>H = 全メッシュ表示トグル、Shift+H = ボーン表示</td></tr>
+  <tr><td>Numpad . / Home</td><td>Object</td><td>選択へ視点を合わせる / 全体が入るように</td><td>F</td></tr>
+  <tr><td>Ctrl+N</td><td>Object</td><td>シーン新規作成 (確認あり)</td><td></td></tr>
+  <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>any</td><td>Undo / Redo</td><td></td></tr>
   <tr><td>Numpad 1/3/7</td><td>any</td><td>前/右/上ビュー (Ctrl で反対)。ビューポート右上の <strong>F / Bk / R / L / T</strong> と同じ<br>
-    <span style="color:var(--t4)">2026-09-18 まで水平の4つが 90° ずれていて、F で横、R で正面が出ていた</span></td></tr>
-  <tr><td>Numpad 5</td><td>any</td><td>透視/正投影</td></tr>
+    <span style="color:var(--t4)">2026-09-18 まで水平の4つが 90° ずれていて、F で横、R で正面が出ていた</span></td><td></td></tr>
+  <tr><td>Numpad 5</td><td>any</td><td>透視/正投影</td><td></td></tr>
 </table>
+<p>ボーンの表示 / 非表示は Bone タブ ▸ Display の <strong>Show Bones</strong>（Blender の Overlay ▸ Bones 相当）。</p>
 
 <h3>14.2 Edit Mode 専用</h3>
 <table class="cheat">
@@ -1407,22 +1420,21 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
   <tr><td>クリック</td><td>Edit</td><td>選択</td></tr>
   <tr><td>Ctrl+クリック</td><td>Edit</td><td>選択追加 / 解除</td></tr>
   <tr><td>B</td><td>Edit</td><td>Box Select</td></tr>
-  <tr><td>A</td><td>Edit</td><td>全コンポーネント選択</td></tr>
-  <tr><td>T / R / S</td><td>Edit</td><td>Gizmo を Move / Rotate / Scale に切替</td></tr>
+  <tr><td>A / Alt+A</td><td>Edit</td><td>全選択 / 選択解除</td></tr>
+  <tr><td>G / R / S</td><td>Edit</td><td>Gizmo を Move / Rotate / Scale に切替（以前の T は外した）</td></tr>
+  <tr><td>G G</td><td>Edit / edge, vertex</td><td>Edge Slide / Vertex Slide (Slide Amount 分、押すたび累積)</td></tr>
   <tr><td>E</td><td>Edit / face,edge</td><td>Extrude</td></tr>
   <tr><td>I</td><td>Edit / face</td><td>Inset</td></tr>
   <tr><td>Ctrl+B</td><td>Edit / edge</td><td>Bevel</td></tr>
   <tr><td>Ctrl+R</td><td>Edit / edge</td><td>Loop Cut</td></tr>
-  <tr><td>G</td><td>Edit / edge</td><td>Edge Slide (Slide Amount 分、押すたび累積)</td></tr>
   <tr><td>Shift+V</td><td>Edit / vertex</td><td>Vertex Slide (アンカー → 動かす頂点の順に 2 選択)</td></tr>
+  <tr><td>F</td><td>Edit / vertex,edge</td><td>Fill — 選んだ頂点から面を張る（以前の Flip Diagonal はボタンのみ）</td></tr>
   <tr><td>M</td><td>Edit / vertex,edge</td><td>Merge (頂点マージ / 辺収縮)</td></tr>
-  <tr><td>Ctrl+E</td><td>Edit / edge</td><td>Bridge Loops (境界ループ 2 本を接続)</td></tr>
+  <tr><td>Ctrl+E</td><td>Edit / edge</td><td>Bridge Loops (Blender では Edge メニューの中)</td></tr>
   <tr><td>K</td><td>Edit</td><td>Knife (ドラッグで切断線 → 辺を切断)</td></tr>
-  <tr><td>F</td><td>Edit / vertex</td><td>Flip Diagonal (対角線フリップ、2 頂点)</td></tr>
-  <tr><td>Shift+S</td><td>Edit / edge</td><td>Mark Seam (UV 展開用シーム)</td></tr>
-  <tr><td>J</td><td>Edit</td><td>Tris to Quads (三角形ペアを四角形に結合)</td></tr>
+  <tr><td>Alt+J</td><td>Edit</td><td>Tris to Quads（以前は J）</td></tr>
   <tr><td>Ctrl+T</td><td>Edit</td><td>Quads to Tris (四角形 / 多角形を三角形化)</td></tr>
-  <tr><td>Ctrl+D</td><td>Edit</td><td>Subdivide (Catmull-Clark 細分割、1 レベル / 押下)</td></tr>
+  <tr><td>—</td><td>Edit</td><td>Subdivide / Mark Seam / Flip Diagonal は右パネルのボタン（以前は Ctrl+D / Shift+S / F）</td></tr>
   <tr><td>Shift+E</td><td>Edit / edge</td><td>Mark Crease (折り目トグル、Subdivide で鋭さを保つ)</td></tr>
   <tr><td>Ctrl+Shift+E</td><td>Edit / edge</td><td>Set Crease σ (Crease Weight の値を選択辺に上書き、0 でクリア)</td></tr>
   <tr><td>U</td><td>Edit</td><td>Smart UV Project (UV 展開)</td></tr>
@@ -1453,8 +1465,8 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
   <tr><td>Half-Edge</td><td>各辺を「向きのある半辺」として表現するデータ構造。Edit Mode の内部実装で使用。V2 以降は各 face が任意個 (3 以上) の half-edge を持ち、twin で隣接 face と繋がる (四角形・多角形対応)。</td></tr>
   <tr><td>Quad / 四角形</td><td>4 頂点の面。エッジフローが読みやすく Loop Cut / Subdivision と相性が良いため、業界標準のモデリングは quad を基本にする。forge3d は half-edge V2 以降 quad をそのまま保持する。</td></tr>
   <tr><td>N-gon / 多角形</td><td>5 頂点以上の面。forge3d の Edit Mode は内部で n-gon を保持できる (レンダリング / 書き出し時に扇状三角形分割される)。</td></tr>
-  <tr><td>Tris to Quads / Quads to Tris</td><td>三角形ペアを四角形に結合する操作 (<kbd>J</kbd>) / 四角形・多角形を三角形化する操作 (<kbd>Ctrl+T</kbd>)。§4.10 参照。</td></tr>
-  <tr><td>Catmull-Clark / サブディビジョンサーフェス</td><td>任意ポリゴンメッシュを全 quad で滑らかに細分割する業界標準アルゴリズム。1 レベルごとに各面が n 個の quad になりリミットサーフェスへ丸まる。<kbd>Ctrl+D</kbd>。§4.10.3 参照。</td></tr>
+  <tr><td>Tris to Quads / Quads to Tris</td><td>三角形ペアを四角形に結合する操作 (<kbd>Alt+J</kbd>) / 四角形・多角形を三角形化する操作 (<kbd>Ctrl+T</kbd>)。§4.10 参照。</td></tr>
+  <tr><td>Catmull-Clark / サブディビジョンサーフェス</td><td>任意ポリゴンメッシュを全 quad で滑らかに細分割する業界標準アルゴリズム。1 レベルごとに各面が n 個の quad になりリミットサーフェスへ丸まる。右パネルの Subdivide (CC)。§4.10.3 参照。</td></tr>
   <tr><td>Crease / 折り目 (セミシャープクリース)</td><td>辺に付ける鋭さの重み σ。Subdivide してもその辺だけ鋭さを保つ。σ≥1 で完全に鋭く、細分割ごとに σ-1 が子の辺へ伝播。Pixar OpenSubdiv 方式。<kbd>Shift+E</kbd>。§4.10.4 参照。</td></tr>
   <tr><td>Implicit Quad</td><td>三角メッシュで、隣接する 2 つの三角形を「論理的な四角形」として扱う考え方。三角化されたメッシュでの Loop Cut の検出に使う (本物の quad があればそちらを直接たどる)。</td></tr>
   <tr><td>Diagonal / 対角線</td><td>四角形を 2 つの三角形に分けるときの分割線。三角化の方向を決める。</td></tr>
@@ -1497,7 +1509,7 @@ Material タブの <strong>Nrm Bake</strong> 行 — ハイポリのメッシュ
   <tr><td>Proportional Editing / プロポーショナル編集</td><td>選択の周囲の頂点も減衰付きで一緒に変形する編集モード (soft select)。Blender の O キー相当。§4.2.2 参照。</td></tr>
   <tr><td>Merge / Collapse</td><td>複数の頂点 (または辺の両端) を 1 点にまとめる操作。§4.8.1 参照。</td></tr>
   <tr><td>Bridge (Edge Loops)</td><td>2 本の境界エッジループを面の帯で繋ぐ操作。筒どうしの連結に。§4.8.2 参照。</td></tr>
-  <tr><td>Seam / シーム</td><td>UV 展開時にメッシュを「切る」境界辺。指定された辺で島が分かれる。Edit Mode の Edge 選択 + <kbd>Shift+S</kbd> で指定。</td></tr>
+  <tr><td>Seam / シーム</td><td>UV 展開時にメッシュを「切る」境界辺。指定された辺で島が分かれる。Edit Mode の Edge 選択 + 右パネルの Mark Seam で指定。</td></tr>
   <tr><td>UV Unwrap / UV 展開</td><td>3D メッシュ表面を 2D 平面に展開すること。テクスチャマッピングの前提。Forge3D は Smart UV Project (法線クラスタリング + シーム尊重) を採用。展開方式は Project (平面投影) と Conformal (LSCM) から選べる。§4.9.2 参照。</td></tr>
   <tr><td>LSCM / 共形写像</td><td>Least Squares Conformal Maps。各三角形の角度を保つよう最小二乗で UV を解く展開方式。曲面の歪み (ストレッチ) が平面投影より大幅に少ない。Lévy et al. 2002。§4.9.3 参照。</td></tr>
   <tr><td>UV Pin / ピン</td><td>UV Editor で頂点に付ける固定マーク (<kbd>P</kbd>、赤ダイヤ)。⚓ Re-unwrap (LSCM 再展開) でピンした頂点は動かず、島の残りがそれに合わせて共形に再配置される。§4.9.5 参照。</td></tr>

@@ -415,6 +415,14 @@ export function bindActionButtons(): void {
     state.boneDisplay.xray = boneXray.checked;
     void import("../tools/skeleton-tool").then((mod) => mod.applyBoneDisplayConfig());
   });
+  const boneVisible = E("boneVisible") as HTMLInputElement;
+  boneVisible.addEventListener("change", () => {
+    void import("../tools/skeleton-tool").then((mod) => {
+      if (state.skeletonMap.size === 0) { status("No skeleton to show or hide"); return; }
+      mod.setBoneVisualsVisible(boneVisible.checked);
+      status(boneVisible.checked ? "Bones shown" : "Bones hidden");
+    });
+  });
 
   // IK controls
   E("ikEnabled").addEventListener("change", function () {

@@ -5,6 +5,7 @@ import { BRUSHES, setBrush } from "../tools/sculpt";
 import { doCSG, type CSGOp } from "../tools/csg";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
+import { KEYMAP, ACTION_TEXT, bindingLabel, keyLabel, type ActionId } from "../keymap";
 import { lastSelected } from "../tools/selection";
 import {
   recalcNormals, flipNormals, weldVertices, centerOrigin, applyShading,
@@ -13,26 +14,28 @@ import {
 
 export function buildToolPills(): void {
   const mobile = isMobile();
+  // Keys come from keymap.ts. Sculpt / Paint / Bone / Weight / Anim have none:
+  // Blender switches those modes with Ctrl+Tab, which the browser keeps.
   const TOOLS: { id: ToolId; label: string; key: string; aria: string }[] = [
-    { id: "select", label: "SEL", key: "V", aria: "Select tool" },
-    { id: "move", label: "MOV", key: "G", aria: "Move tool" },
-    { id: "rotate", label: "ROT", key: "R", aria: "Rotate tool" },
-    { id: "scale", label: "SCL", key: "S", aria: "Scale tool" },
-    { id: "sculpt", label: "SCP", key: "D", aria: "Sculpt tool" },
-    { id: "paint", label: "PNT", key: "P", aria: "Paint tool" },
-    { id: "bone", label: "BONE", key: "B", aria: "Bone tool" },
-    { id: "weight", label: "WGT", key: "W", aria: "Weight paint tool" },
-    { id: "anim", label: "ANM", key: "A", aria: "Animation tool" },
+    { id: "select", label: "SEL", key: keyLabel("tool.select", "object"), aria: "Select tool" },
+    { id: "move", label: "MOV", key: keyLabel("tool.move", "object"), aria: "Move tool" },
+    { id: "rotate", label: "ROT", key: keyLabel("tool.rotate", "object"), aria: "Rotate tool" },
+    { id: "scale", label: "SCL", key: keyLabel("tool.scale", "object"), aria: "Scale tool" },
+    { id: "sculpt", label: "SCP", key: "", aria: "Sculpt tool" },
+    { id: "paint", label: "PNT", key: "", aria: "Paint tool" },
+    { id: "bone", label: "BONE", key: "", aria: "Bone tool" },
+    { id: "weight", label: "WGT", key: "", aria: "Weight paint tool" },
+    { id: "anim", label: "ANM", key: "", aria: "Animation tool" },
   ];
   const el = E("pills");
   for (const t of TOOLS) {
     const b = document.createElement("button");
     b.className = "pill" + (t.id === "select" ? " on" : "");
     b.dataset.tool = t.id;
-    b.innerHTML = mobile
+    b.innerHTML = mobile || !t.key
       ? t.label
       : `${t.label}<span style="opacity:.4;font-size:8px;margin-left:2px">${t.key}</span>`;
-    b.title = t.label + " [" + t.key + "]";
+    b.title = t.key ? `${t.label} [${t.key}]` : `${t.label}（キーなし — Blender は Ctrl+Tab のモード切替で、ブラウザでは使えない）`;
     b.setAttribute("aria-label", t.aria);
     b.addEventListener("click", () => setTool(t.id));
     el.appendChild(b);
@@ -345,104 +348,111 @@ export function buildEditToolsPanel(): void {
   const ops: Op[] = [
     {
       label: "Extrude",
-      key: "E",
+      key: keyLabel("edit.extrude", "edit"),
       modes: ["face", "edge"],
       action: async () => (await import("../tools/edit-mode")).extrudeSelection(),
     },
     {
       label: "Inset",
-      key: "I",
+      key: keyLabel("edit.inset", "edit"),
       modes: ["face"],
       action: async () => (await import("../tools/edit-mode")).insetSelection(),
     },
     {
       label: "Bevel",
-      key: "Ctrl+B",
+      key: keyLabel("edit.bevel", "edit"),
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).bevelSelection(),
     },
     {
       label: "Loop Cut",
-      key: "Ctrl+R",
+      key: keyLabel("edit.loopCut", "edit"),
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).loopCutSelection(),
     },
     {
       label: "Knife",
-      key: "K",
+      key: keyLabel("edit.knife", "edit"),
       modes: ["vertex", "edge", "face"],
       action: async () => { (await import("../tools/edit-mode")).startKnifeCut(); },
     },
     {
-      // 実態は隣接 2 三角形の対角線フリップ（本物のカットは Knife）。
+      label: "Fill",
+      key: keyLabel("edit.fill", "edit"),
+      modes: ["vertex", "edge"],
+      action: async () => (await import("../tools/edit-mode")).fillSelection(),
+    },
+    {
+      // 実態は隣接 2 三角形の対角線フリップ（本物のカットは Knife）。Blender の
+      // F は Make Edge/Face なので、キーは Fill に譲った。
       label: "Flip Diagonal",
-      key: "F",
+      key: "",
       modes: ["vertex"],
       action: async () => (await import("../tools/edit-mode")).flipDiagonalSelection(),
     },
     {
       label: "Edge Slide",
-      key: "G",
+      key: "G G",
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).edgeSlideSelection(),
     },
     {
       label: "Vertex Slide",
-      key: "Shift+V",
+      key: keyLabel("edit.vertexSlide", "edit"),
       modes: ["vertex"],
       action: async () => (await import("../tools/edit-mode")).vertexSlideSelection(),
     },
     {
       label: "Merge",
-      key: "M",
+      key: keyLabel("edit.merge", "edit"),
       modes: ["vertex", "edge"],
       action: async () => (await import("../tools/edit-mode")).mergeSelection(),
     },
     {
       label: "Bridge Loops",
-      key: "Ctrl+E",
+      key: keyLabel("edit.bridge", "edit"),
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).bridgeSelection(),
     },
     {
       label: "Mark Seam",
-      key: "Shift+S",
+      key: "",
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).markSeamSelection(),
     },
     {
       label: "Mark Crease",
-      key: "Shift+E",
+      key: keyLabel("edit.markCrease", "edit"),
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).markCreaseSelection(),
     },
     {
       label: "Set Crease σ",
-      key: "Ctrl+Shift+E",
+      key: keyLabel("edit.setCrease", "edit"),
       modes: ["edge"],
       action: async () => (await import("../tools/edit-mode")).setCreaseSelection(),
     },
     {
       label: "Tris to Quads",
-      key: "J",
+      key: keyLabel("edit.trisToQuads", "edit"),
       modes: ["vertex", "edge", "face"],
       action: async () => (await import("../tools/edit-mode")).trisToQuadsSelection(),
     },
     {
       label: "Quads to Tris",
-      key: "Ctrl+T",
+      key: keyLabel("edit.quadsToTris", "edit"),
       modes: ["vertex", "edge", "face"],
       action: async () => (await import("../tools/edit-mode")).quadsToTrisSelection(),
     },
     {
       label: "Subdivide (CC)",
-      key: "Ctrl+D",
+      key: "",
       modes: ["vertex", "edge", "face"],
       action: async () => (await import("../tools/edit-mode")).subdivideSelection(),
     },
     {
       label: "Delete",
-      key: "X",
+      key: keyLabel("edit.delete", "edit"),
       modes: ["vertex", "edge", "face"],
       action: async () => (await import("../tools/edit-mode")).deleteSelection(),
     },
@@ -454,7 +464,7 @@ export function buildEditToolsPanel(): void {
     b.dataset.editModes = op.modes.join(",");
     b.dataset.editOp = op.label;
     b.innerHTML = `<span>${op.label}</span><span style="float:right;color:var(--t4);font-size:9px">${op.key}</span>`;
-    b.setAttribute("aria-label", `${op.label} (${op.key})`);
+    b.setAttribute("aria-label", op.key ? `${op.label} (${op.key})` : op.label);
     b.style.cssText = "text-align:left;display:block;width:100%;";
     b.addEventListener("click", () => { void op.action(); });
     opSection.appendChild(b);
@@ -466,10 +476,10 @@ export function buildEditToolsPanel(): void {
   selSection.className = "pg";
   selSection.innerHTML = '<div class="pgt">Selection</div>';
   for (const [label, key, handler] of [
-    ["Select All", "A", "selectAllComponents"],
-    ["Box Select", "B", "startBoxSelect"],
-    ["Clear",      "Esc", "clearComponentSelection"],
-  ] as const) {
+    ["Select All", keyLabel("select.all", "edit"), "selectAllComponents"],
+    ["Box Select", keyLabel("select.box", "edit"), "startBoxSelect"],
+    ["Clear",      `${keyLabel("select.none", "edit")} / Esc`, "clearComponentSelection"],
+  ] as [string, string, string][]) {
     const b = document.createElement("button");
     b.className = "abtn";
     b.innerHTML = `<span>${label}</span><span style="float:right;color:var(--t4);font-size:9px">${key}</span>`;
@@ -727,4 +737,35 @@ export function buildMobileBar(): void {
     void import("../tools/edit-mode").then((mod) => mod.toggleEditMode());
   });
   el.appendChild(editBtn);
+}
+
+/**
+ * The in-app shortcut table, written from keymap.ts so it cannot drift from
+ * what the keys do.
+ */
+export function buildHelpKeys(): void {
+  const table = document.querySelector<HTMLTableElement>("table.help-keys");
+  if (!table) return;
+  const rows: string[] = [];
+  const seen = new Set<string>();
+  const section = (title: string, ctx: "object" | "edit"): void => {
+    rows.push(`<tr><td colspan="2" style="padding-top:6px;color:var(--t3)">${title}</td></tr>`);
+    const byAction = new Map<ActionId, string[]>();
+    for (const bd of KEYMAP) {
+      if (bd.context !== ctx && !(ctx === "object" && bd.context === "any")) continue;
+      const list = byAction.get(bd.action) ?? [];
+      list.push(bindingLabel(bd));
+      byAction.set(bd.action, list);
+    }
+    for (const [action, keys] of byAction) {
+      const k = `${ctx}:${action}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows.push(`<tr><td>${keys.join(" / ")}</td><td>${ACTION_TEXT[action]}</td></tr>`);
+    }
+  };
+  section("Object Mode ／ 共通", "object");
+  section("Edit Mode（Tab で入る）", "edit");
+  rows.push(`<tr><td>G G</td><td>Edit Mode で 2 回：Edge / Vertex Slide</td></tr>`);
+  table.innerHTML = rows.join("");
 }

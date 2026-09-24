@@ -7,7 +7,7 @@ import { diffAttribute } from "./tools/sculpt-delta";
 import { paintAt, hasUVs, beginPaintStroke, getStrokeTarget } from "./tools/texture-paint";
 import { duplicateSelected, deleteSelected, cleanupMesh } from "./tools/actions";
 import { updateHierarchy, updateProperties, updateBoneUI, updateAnimUI } from "./ui/panels";
-import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, areBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
+import { handleBonePointerDown, isBoneVisual, setBoneVisualsVisible, deselectBone } from "./tools/skeleton-tool";
 import { paintWeightAt, hasWeightData, showWeightOverlay, hideWeightOverlay } from "./tools/weight-paint";
 import { stopPreview } from "./tools/animation-tool";
 import { applyCameraPreset, toggleOrthographic, PRESETS } from "./viewport/camera-presets";
@@ -32,7 +32,9 @@ function refreshAfterBoneSelection(): void {
 }
 import { addMeasurePoint, clearMeasurements } from "./tools/measure";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, flipDiagonalSelection, markSeamSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut, trisToQuadsSelection, quadsToTrisSelection, subdivideSelection, markCreaseSelection, setCreaseSelection } from "./tools/edit-mode";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { toggleEditMode, setComponentMode, selectAllComponents, clearComponentSelection, isEditMode, handleEditModePointerDown, startBoxSelect, extrudeSelection, deleteSelection, insetSelection, bevelSelection, loopCutSelection, unwrapMesh, edgeSlideSelection, mergeSelection, bridgeSelection, setEditGizmoMode, vertexSlideSelection, startKnifeCut, trisToQuadsSelection, quadsToTrisSelection, markCreaseSelection, setCreaseSelection, fillSelection } from "./tools/edit-mode";
+import { actionFor, type ActionId } from "./keymap";
 
 const TOOL_TABS: Partial<Record<ToolId, string>> = {
   sculpt: "sculpt", paint: "paint", bone: "bone", weight: "weight", anim: "anim",
@@ -136,181 +138,165 @@ export function initInput(): void {
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement).isContentEditable) return;
 
-    // Edit Mode: Tab toggle + component mode keys. Handled before the regular
-    // shortcut switch so 1/2/3/B/A don't collide with Object Mode bindings.
-    if (e.key === "Tab") {
-      e.preventDefault();
-      toggleEditMode();
-      return;
-    }
-    if (isEditMode()) {
-      if (e.key === "1" && !e.code.startsWith("Numpad")) { setComponentMode("vertex"); return; }
-      if (e.key === "2" && !e.code.startsWith("Numpad")) { setComponentMode("edge"); return; }
-      if (e.key === "3" && !e.code.startsWith("Numpad")) { setComponentMode("face"); return; }
-      if (e.key.toLowerCase() === "b" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); startBoxSelect(); return; }
-      if (e.key.toLowerCase() === "a" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); selectAllComponents(); return; }
-      if (e.key.toLowerCase() === "e" && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); extrudeSelection(); return; }
-      if (e.key.toLowerCase() === "i" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); insetSelection(); return; }
-      if (e.key.toLowerCase() === "b" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); bevelSelection(); return; }
-      if (e.key.toLowerCase() === "r" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); loopCutSelection(); return; }
-      if (e.key.toLowerCase() === "k" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); startKnifeCut(); return; }
-      if (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); flipDiagonalSelection(); return; }
-      if (e.key.toLowerCase() === "g" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); edgeSlideSelection(); return; }
-      if (e.key.toLowerCase() === "v" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); vertexSlideSelection(); return; }
-      if (e.key.toLowerCase() === "m" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); mergeSelection(); return; }
-      if (e.key.toLowerCase() === "j" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); trisToQuadsSelection(); return; }
-      if (e.key.toLowerCase() === "t" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); quadsToTrisSelection(); return; }
-      if (e.key.toLowerCase() === "d" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); subdivideSelection(); return; }
-      if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("move"); return; }
-      if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("rotate"); return; }
-      if (e.key.toLowerCase() === "s" && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setEditGizmoMode("scale"); return; }
-      if (e.key.toLowerCase() === "e" && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); setCreaseSelection(); return; }
-      if (e.key.toLowerCase() === "e" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); bridgeSelection(); return; }
-      if (e.key.toLowerCase() === "s" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); markSeamSelection(); return; }
-      if (e.key.toLowerCase() === "e" && e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); markCreaseSelection(); return; }
-      if (e.key.toLowerCase() === "u" && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); unwrapMesh(); return; }
-      if (e.key.toLowerCase() === "x" || e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
-      if (e.key === "Escape") { e.preventDefault(); clearComponentSelection(); return; }
-      // Allow undo/redo to pass through; everything else is suppressed so
-      // Object Mode tool-switch keys don't change the tool while editing.
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) state.history.redo();
-        else state.history.undo();
+    // Every key goes through the one table in keymap.ts (Blender's keymap).
+    const context = isEditMode() ? "edit" : "object";
+    const action = actionFor(e, context);
+    if (!action) return;
+    e.preventDefault();
+    runKeyAction(action);
+  });
+
+  /** G twice within this many ms is Blender's G G: slide instead of move. */
+  const DOUBLE_TAP_MS = 400;
+  let lastEditMoveAt = -Infinity;
+
+  const runKeyAction = (action: ActionId): void => {
+    switch (action) {
+      case "history.undo": state.history.undo(); return;
+      case "history.redo": state.history.redo(); return;
+      case "mode.editToggle": toggleEditMode(); return;
+      case "view.front": applyCameraPreset(PRESETS.front!); return;
+      case "view.back": applyCameraPreset(PRESETS.back!); return;
+      case "view.right": applyCameraPreset(PRESETS.right!); return;
+      case "view.left": applyCameraPreset(PRESETS.left!); return;
+      case "view.top": applyCameraPreset(PRESETS.top!); return;
+      case "view.bottom": applyCameraPreset(PRESETS.bottom!); return;
+      case "view.ortho": toggleOrthographic(); return;
+
+      // ── Object Mode ──
+      case "tool.select": setTool("select"); return;
+      case "tool.move": setTool("move"); return;
+      case "tool.rotate": setTool("rotate"); return;
+      case "tool.scale": setTool("scale"); return;
+      case "select.all":
+        if (isEditMode()) { selectAllComponents(); return; }
+        for (const m of state.allMeshes) if (m.isVisible) selectMesh(m, true);
+        status(state.selectedMeshes.length + " meshes selected");
+        return;
+      case "select.none":
+      case "select.cancel":
+        if (isEditMode()) { clearComponentSelection(); return; }
+        if (BONE_TOOLS.has(state.tool) && state.selectedBoneId) deselectBone();
+        else deselect();
+        return;
+      case "object.duplicate": duplicateSelected(); return;
+      case "object.delete": deleteSelected(); return;
+      case "view.hide": {
+        const sel = [...state.selectedMeshes];
+        if (!sel.length) { status("Nothing selected to hide"); return; }
+        for (const m of sel) m.isVisible = false;
+        deselect();
+        status(`Hidden: ${sel.length}`);
         return;
       }
-      return;
-    }
+      case "view.hideUnselected": {
+        const keep = new Set(state.selectedMeshes);
+        let n = 0;
+        for (const m of state.allMeshes) if (!keep.has(m) && m.isVisible) { m.isVisible = false; n++; }
+        status(`Hidden: ${n}`);
+        return;
+      }
+      case "view.reveal": {
+        let n = 0;
+        for (const m of state.allMeshes) if (!m.isVisible) { m.isVisible = true; n++; }
+        status(`Revealed: ${n}`);
+        return;
+      }
+      case "view.selected": {
+        const sel = lastSelected();
+        if (!sel) { status("Nothing selected"); return; }
+        const bounds = sel.getBoundingInfo().boundingSphere;
+        state.camera.setTarget(bounds.centerWorld);
+        state.camera.radius = Math.max(bounds.radiusWorld * 3, 2);
+        status("Frame Selected: " + sel.name);
+        return;
+      }
+      case "view.all": {
+        const shown = state.allMeshes.filter((m) => m.isVisible);
+        if (!shown.length) { status("Nothing to frame"); return; }
+        let min = shown[0]!.getBoundingInfo().boundingBox.minimumWorld.clone();
+        let max = shown[0]!.getBoundingInfo().boundingBox.maximumWorld.clone();
+        for (const m of shown) {
+          const bb = m.getBoundingInfo().boundingBox;
+          min = Vector3.Minimize(min, bb.minimumWorld);
+          max = Vector3.Maximize(max, bb.maximumWorld);
+        }
+        state.camera.setTarget(min.add(max).scale(0.5));
+        state.camera.radius = Math.max(Vector3.Distance(min, max) * 1.5, 2);
+        status("Frame All");
+        return;
+      }
+      case "file.new":
+      if (state.allMeshes.length === 0 || confirm("Clear scene? Unsaved changes will be lost.")) {
+        stopPreview();
+        const toRemove = [...state.allMeshes];
+        for (const m of toRemove) cleanupMesh(m);
+        state.selectedMeshes = [];
+        state.meshCounter = 0;
+        state.colorIndex = 0;
+        state.paintTextureMap.clear();
+        state.morphMap.clear();
+        state.modifierMap.clear();
+        state.originalGeometryMap.clear();
+        state.skeletonMap.clear();
+        state.activeSkeletonId = null;
+        state.selectedBoneId = null;
+        state.boneCounter = 0;
+        state.skeletonCounter = 0;
+        state.animClips = [];
+        state.activeClipId = null;
+        for (const ag of state.importedAnimGroups) {
+          try { ag.stop(); } catch { /* ignore */ }
+          try { ag.dispose(); } catch { /* ignore */ }
+        }
+        state.importedAnimGroups = [];
+        state.lightMap.clear();
+        state.selectedLightId = null;
+        state.lightCounter = 0;
+        state.mapInstances = [];
+        clearMeasurements();
+        state.history.clear();
+        updateGizmo();
+        updateHierarchy();
+        updateProperties();
+        status("New scene");
+      }
+        return;
 
-    switch (e.key.toLowerCase()) {
-      case "z":
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          if (e.shiftKey) state.history.redo();
-          else state.history.undo();
-        }
-        break;
-      case "v": setTool("select"); break;
-      case "g": setTool("move"); break;
-      case "r": if (!e.ctrlKey) setTool("rotate"); break;
-      case "s": if (!e.ctrlKey) setTool("scale"); break;
-      case "d":
-        if (e.ctrlKey || e.metaKey) { e.preventDefault(); duplicateSelected(); }
-        else setTool("sculpt");
-        break;
-      case "p": setTool("paint"); break;
-      case "b": setTool("bone"); break;
-      case "w": if (!e.ctrlKey) setTool("weight"); break;
-      case "a":
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          // Select all meshes
-          for (const m of state.allMeshes) selectMesh(m, true);
-          status(state.allMeshes.length + " meshes selected");
-        } else {
-          setTool("anim");
-        }
-        break;
-      case "n":
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          if (state.allMeshes.length === 0 || confirm("Clear scene? Unsaved changes will be lost.")) {
-            stopPreview();
-            const toRemove = [...state.allMeshes];
-            for (const m of toRemove) cleanupMesh(m);
-            state.selectedMeshes = [];
-            state.meshCounter = 0;
-            state.colorIndex = 0;
-            state.paintTextureMap.clear();
-            state.morphMap.clear();
-            state.modifierMap.clear();
-            state.originalGeometryMap.clear();
-            state.skeletonMap.clear();
-            state.activeSkeletonId = null;
-            state.selectedBoneId = null;
-            state.boneCounter = 0;
-            state.skeletonCounter = 0;
-            state.animClips = [];
-            state.activeClipId = null;
-            for (const ag of state.importedAnimGroups) {
-              try { ag.stop(); } catch { /* ignore */ }
-              try { ag.dispose(); } catch { /* ignore */ }
-            }
-            state.importedAnimGroups = [];
-            state.lightMap.clear();
-            state.selectedLightId = null;
-            state.lightCounter = 0;
-            state.mapInstances = [];
-            clearMeasurements();
-            state.history.clear();
-            updateGizmo();
-            updateHierarchy();
-            updateProperties();
-            status("New scene");
-          }
-        }
-        break;
-      case "f":
-        if (!e.ctrlKey && !e.metaKey) {
-          // Focus/frame selected mesh
-          const sel = lastSelected();
-          if (sel) {
-            const bounds = sel.getBoundingInfo().boundingSphere;
-            state.camera.setTarget(bounds.centerWorld);
-            state.camera.radius = Math.max(bounds.radiusWorld * 3, 2);
-            status("Focus: " + sel.name);
-          }
-        }
-        break;
-      case "h":
-        // Blender-style hide toggles for animation work:
-        //   H        → toggle all meshes
-        //   Shift+H  → toggle bones (overrides the auto-toggle from initTool;
-        //              switching tools will re-apply auto behaviour, which is
-        //              intentional — manual override is per-session, not sticky).
-        // Skip when modifiers (other than Shift) are held to avoid clashing
-        // with browser shortcuts.
-        if (e.ctrlKey || e.metaKey || e.altKey) break;
-        if (e.shiftKey) {
-          if (state.skeletonMap.size === 0) {
-            status("No skeleton to toggle");
-            break;
-          }
-          const newVisible = !areBoneVisualsVisible();
-          setBoneVisualsVisible(newVisible);
-          status(newVisible ? "Bones shown" : "Bones hidden");
-        } else {
-          if (state.allMeshes.length === 0) {
-            status("No meshes to toggle");
-            break;
-          }
-          // Use first mesh's state as the toggle reference (matches Blender's
-          // "if any visible → hide all; else show all" intuition closely enough
-          // for the common case where everything is in sync).
-          const first = state.allMeshes[0]!;
-          const newVisible = !first.isVisible;
-          for (const m of state.allMeshes) m.isVisible = newVisible;
-          status(newVisible ? "Meshes shown" : "Meshes hidden");
-        }
-        break;
-      case "delete":
-      case "backspace":
-        if (e.target === document.body) deleteSelected();
-        break;
-      case "escape":
-        if (BONE_TOOLS.has(state.tool) && state.selectedBoneId) {
-          deselectBone();
-        } else {
-          deselect();
-        }
-        break;
-      // Numpad camera presets
-      case "1": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.back! : PRESETS.front!); } break;
-      case "3": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.left! : PRESETS.right!); } break;
-      case "7": if (e.code.startsWith("Numpad")) { e.preventDefault(); applyCameraPreset((e.ctrlKey || e.metaKey) ? PRESETS.bottom! : PRESETS.top!); } break;
-      case "5": if (e.code.startsWith("Numpad")) { e.preventDefault(); toggleOrthographic(); } break;
+      // ── Edit Mode ──
+      case "comp.vertex": setComponentMode("vertex"); return;
+      case "comp.edge": setComponentMode("edge"); return;
+      case "comp.face": setComponentMode("face"); return;
+      case "select.box": startBoxSelect(); return;
+      case "edit.move": {
+        // Blender's G G: the second G slides along the edges instead.
+        const now = performance.now();
+        const again = now - lastEditMoveAt < DOUBLE_TAP_MS;
+        lastEditMoveAt = again ? -Infinity : now;
+        if (!again) { setEditGizmoMode("move"); return; }
+        if (state.editSelection.mode === "edge") edgeSlideSelection();
+        else if (state.editSelection.mode === "vertex") vertexSlideSelection();
+        return;
+      }
+      case "edit.rotate": setEditGizmoMode("rotate"); return;
+      case "edit.scale": setEditGizmoMode("scale"); return;
+      case "edit.extrude": extrudeSelection(); return;
+      case "edit.inset": insetSelection(); return;
+      case "edit.bevel": bevelSelection(); return;
+      case "edit.loopCut": loopCutSelection(); return;
+      case "edit.knife": startKnifeCut(); return;
+      case "edit.fill": fillSelection(); return;
+      case "edit.vertexSlide": vertexSlideSelection(); return;
+      case "edit.merge": mergeSelection(); return;
+      case "edit.bridge": bridgeSelection(); return;
+      case "edit.markCrease": markCreaseSelection(); return;
+      case "edit.setCrease": setCreaseSelection(); return;
+      case "edit.trisToQuads": trisToQuadsSelection(); return;
+      case "edit.quadsToTris": quadsToTrisSelection(); return;
+      case "edit.unwrap": unwrapMesh(); return;
+      case "edit.delete": deleteSelection(); return;
     }
-  });
+  };
 
   document.addEventListener("keyup", (e) => state.keysDown.delete(e.key));
   window.addEventListener("blur", () => state.keysDown.clear());
