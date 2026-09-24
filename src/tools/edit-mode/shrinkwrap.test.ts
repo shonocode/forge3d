@@ -271,6 +271,21 @@ describe("shrinkwrap", () => {
     expectPoint(up[2]!, [0.2, 0.1, 0.5], "from inside, upward");
   });
 
+  it("casts one diagonal ray when several axes are on", () => {
+    // `proj_axis` in shrinkwrap.cc: X and Z summed and normalised. The probe
+    // point above the box moves (-0.4, 0, -0.4) — the measurement that was
+    // once refused as "not a composition of the single-axis answers".
+    const out = firsts(
+      shrinkwrap(points(PROBES), {
+        target: box(),
+        method: "project",
+        project: { axis: ["x", "z"], negative: true, positive: true },
+      }),
+      4,
+    );
+    expectPoint(out[0]!, [-0.2, 0.1, 0.5], "down the negative diagonal");
+  });
+
   it("takes the nearer hit when both directions are on", () => {
     // The point inside the box is 0.4 from the +z face and 0.6 from the -z
     // one, and comes back on the near side.

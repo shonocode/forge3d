@@ -84,6 +84,17 @@ describe("edgeFaceAdd", () => {
     expect(added(before, data)).toEqual([0, 6, 8, 2]);
   });
 
+  it("free-standing faces come out exactly as Blender writes them, start and all", () => {
+    // The two grid cases once filed as "degenerate, not readable". Both are
+    // ties in the cloud normal that Blender breaks in float32: in double the
+    // triangle's two candidates for `co_b` are exactly equal and the face
+    // comes out facing the other way.
+    const tri = run(grid(), [0, 2, 6]);
+    expect(tri.data.polys[tri.face!]).toEqual([6, 2, 0]);
+    const quad = run(grid(), [0, 2, 6, 8]);
+    expect(quad.data.polys[quad.face!]).toEqual([2, 0, 6, 8]);
+  });
+
   it("does not depend on the order the vertices are handed over in", () => {
     // Measured: picking [0,2,6,8] and [8,0,6,2] gave Blender the same face.
     const a = run(grid(), [0, 2, 6, 8]);

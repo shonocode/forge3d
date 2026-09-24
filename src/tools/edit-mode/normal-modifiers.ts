@@ -29,13 +29,27 @@
  * smooth group, which is what `smoothGroups` already computes for
  * `averageNormals`.
  *
- * **Only the neutral weight is offered.** `MOD_weighted_normal.cc` divides
- * each *distinct value tier* at a vertex by `weight^tier`, the parameter
- * mapping through `weight / 50` — so 50 collapses every divisor to 1 and
- * anything else re-ranks the faces. A first reading of that did not reproduce
- * the measurement at the extremes (`weight` 100 on the fan is not the largest
- * face's normal), so the numbers are recorded in the probe and the option
- * throws rather than guesses. `thresh` moved nothing on any shape tried.
+ * **`weight` and `thresh`, read from `MOD_weighted_normal.cc`.** Every
+ * contribution (a face's area, a corner's angle, or their product) is sorted
+ * **largest first**, across the whole mesh, and fed to its vertex in that
+ * order. Each vertex keeps the value that opened its current *tier*; a value
+ * more than `thresh` below it opens the next tier. A contribution in tier `k`
+ * is divided by `w^k`, where `w` comes from `weight` by a mapping with two
+ * special cases:
+ *
+ * | `weight` | `w` |
+ * |---|---|
+ * | 100 | 32767 (`SHRT_MAX`) — effectively only the top tier counts |
+ * | 1 | 1 / 32767 — effectively only the bottom tier counts |
+ * | `(weight/50 − 1)·25 > 1` | `(weight/50 − 1)·25` |
+ * | otherwise | `weight / 50` |
+ *
+ * So 50 gives `w = 1` and every tier counts equally — which is why `thresh`
+ * "moved nothing on any shape tried": it was only ever tried at 50. This was
+ * refused as "the extremes do not reproduce `weight^tier`"; the
+ * `SHRT_MAX` cases and the `·25` stretch are what that reading missed, and
+ * the tiers are chained from the tier's first value, not from the previous
+ * contribution.
  *
  * ## `normalEdit`
  *
@@ -137,11 +151,17 @@ export interface WeightedNormalOptions {
   /** Blender's `mode`. Default `area`, as Blender's is. */
   mode?: WeightedNormalMode;
   /**
-   * Blender's `weight`, 1..100. **Only 50 — the neutral value — is
-   * implemented**; anything else throws rather than approximating. See the
-   * note at the top of this file.
+   * Blender's `weight`, 1..100. Default 50, where every contribution counts
+   * alike; above it the largest faces (or corners) dominate, below it the
+   * smallest. The mapping is in the note at the top of this file.
    */
   weight?: number;
+  /**
+   * Blender's `thresh`: how far below a tier's first value a contribution
+   * must fall to open the next tier. Default 0.01, Blender's. Does nothing at
+   * `weight` 50.
+   */
+  thresh?: number;
   /**
    * Blender's `keep_sharp`: average within each smooth group rather than
    * across the whole vertex, so sharp edges keep their crease.
@@ -189,26 +209,24 @@ const at = (P: Float32Array, v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v 
 
 /**
  * Write a weighted vertex normal into every corner — Blender's
- * `WEIGHTED_NORMAL` modifier at its neutral weight.
+ * `WEIGHTED_NORMAL` modifier.
  *
  * ```ts
  * weightedNormal(mesh);                                    // FACE_AREA
  * weightedNormal(mesh, { mode: "areaAngle" });             // FACE_AREA_WITH_ANGLE
  * weightedNormal(mesh, { mode: "angle", keepSharp: true }); // per smooth group
+ * weightedNormal(mesh, { weight: 100 });                   // the largest faces win
  * ```
- *
- * @throws if `weight` is anything but 50 — see the note at the top of this
- *   file. Approximating it would be a guess, and this project has paid for
- *   those.
  */
 export function weightedNormal(data: MeshData, options: WeightedNormalOptions = {}): MeshData {
   const weight = options.weight ?? 50;
-  if (weight !== 50)
-    throw new Error(
-      `weightedNormal: only Blender's neutral weight of 50 is implemented, not ${weight} — ` +
-        "the tiered division by weight^tier is measured but not read " +
-        "(see probe-normal-modifiers.py)",
-    );
+  const thresh = options.thresh ?? 0.01;
+  // `modify_mesh` in MOD_weighted_normal.cc.
+  const SHRT_MAX = 32767;
+  let w = weight / 50;
+  if (weight === 100) w = SHRT_MAX;
+  else if (weight === 1) w = 1 / SHRT_MAX;
+  else if ((w - 1) * 25 > 1) w = (w - 1) * 25;
   const mode = options.mode ?? "area";
   const P = data.positions;
 
@@ -223,25 +241,48 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
 
   const out: Vec3[][] = data.polys.map((poly) => poly.map(() => [0, 0, 0] as Vec3));
 
+  // Which accumulator each corner feeds. With `keepSharp`, one per smooth
+  // group — what sharp edges cut; the flat-shaded measurement (one face per
+  // group) falls out of this. Without it, one per vertex, crossing sharp
+  // edges — measured: with two edges marked sharp, all five corners at the
+  // apex still agree.
+  const itemOf: number[][] = data.polys.map((poly) => poly.map(() => 0));
   if (options.keepSharp) {
-    // Average within each smooth group, which is what sharp edges cut. The
-    // flat-shaded measurement — one face per group — falls out of this.
-    for (const group of smoothGroups(data)) {
-      let acc: Vec3 = [0, 0, 0];
-      for (const [f, i] of group) acc = add(acc, scale(normals[f]!, cornerWeight(f, i)));
-      const n = normalized(acc);
-      for (const [f, i] of group) out[f]![i] = [...n] as Vec3;
-    }
+    for (const [g, group] of smoothGroups(data).entries())
+      for (const [f, i] of group) itemOf[f]![i] = g;
   } else {
-    // One answer per vertex, crossing sharp edges — measured: with two edges
-    // marked sharp, all five corners at the apex still agree.
-    const acc = new Map<number, Vec3>();
     for (const [f, poly] of data.polys.entries())
-      for (const [i, v] of poly.entries())
-        acc.set(v, add(acc.get(v) ?? [0, 0, 0], scale(normals[f]!, cornerWeight(f, i))));
-    for (const [f, poly] of data.polys.entries())
-      for (const [i, v] of poly.entries()) out[f]![i] = normalized(acc.get(v)!);
+      for (const [i, v] of poly.entries()) itemOf[f]![i] = v;
   }
+
+  // `apply_weights_vertex_normal`: every contribution, largest first (the
+  // sort is stable here and `qsort` is not, but equal values land in the same
+  // tier with the same divisor, so their order cannot show).
+  const entries: [number, number, number][] = [];
+  for (const [f, poly] of data.polys.entries())
+    for (let i = 0; i < poly.length; i++) entries.push([f, i, cornerWeight(f, i)]);
+  entries.sort((x, y) => y[2] - x[2]);
+
+  // `aggregate_item_normal`: a tier opens when a value falls more than
+  // `thresh` below the value that opened the current one.
+  const acc = new Map<number, Vec3>();
+  const tierValue = new Map<number, number>();
+  const tier = new Map<number, number>();
+  for (const [f, i, val] of entries) {
+    const item = itemOf[f]![i]!;
+    let cur = tierValue.get(item) ?? 0;
+    if (cur === 0) cur = val;
+    if (!(Math.abs(cur - val) <= thresh)) {
+      tier.set(item, (tier.get(item) ?? 0) + 1);
+      cur = val;
+    }
+    tierValue.set(item, cur);
+    const k = tier.get(item) ?? 0;
+    acc.set(item, add(acc.get(item) ?? [0, 0, 0], scale(normals[f]!, val / w ** k)));
+  }
+
+  for (const [f, poly] of data.polys.entries())
+    for (let i = 0; i < poly.length; i++) out[f]![i] = normalized(acc.get(itemOf[f]![i]!)!);
   return withNormals(data, out);
 }
 

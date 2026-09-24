@@ -13,7 +13,7 @@
  * |---|---|
  * | `nearestSurface` | the closest point on the target's surface, face interiors and rims included |
  * | `nearestVertex` | the closest target **vertex** |
- * | `project` | a ray along one axis, or along the vertex's own normal |
+ * | `project` | a ray along an axis (or the sum of several), or along the vertex's own normal |
  *
  * `nearestSurface` was checked against a target that is a single quad with a
  * source grid slid so that one column hangs past the rim: the vertices over
@@ -61,11 +61,12 @@
  * the same vertex finds nothing and stays put. With no axis chosen Blender
  * uses the vertex's own normal, and a vertex whose ray misses is left alone.
  *
- * **Only one axis at a time.** Blender allows `use_project_x/y/z` together and
- * the result is not a composition of the single-axis answers — a vertex at
- * `(0.2, 0.1, 0.9)` outside a box came back at `(-0.2, 0.1, 0.5)`, which
- * neither axis produces alone and which no reading of "do one then the other"
- * gives. Rather than guess, this asks for one axis and says so.
+ * **Several axes make one diagonal ray, not a composition.** Blender sums the
+ * chosen unit axes and normalises (`proj_axis` in `shrinkwrap.cc`), so X and Z
+ * together cast along `(1, 0, 1)/√2`. That is what a measurement once refused
+ * as unreadable showed: a vertex at `(0.2, 0.1, 0.9)` above a box came back at
+ * `(-0.2, 0.1, 0.5)` — moved by `(-0.4, 0, -0.4)`, along the negative diagonal.
+ * Pass the axes as an array.
  *
  * ## What is not offered
  *
@@ -90,7 +91,6 @@
  *   across a quad (Blender's own triangulation picks a diagonal by shape).
  *   The numbers are in `probe-shrinkwrap2.py` and the row's note for whoever
  *   picks it up.
- * * **several projection axes at once** — see above.
  * * **`subsurf_levels`**, which subdivides the target first, and
  *   `use_invert_cull`, which moved nothing in any case measured.
  */
@@ -113,11 +113,11 @@ export interface ShrinkwrapProjectOptions {
    * Which way the ray goes. `"normal"` — Blender's "no axis selected" — uses
    * the vertex's own normal. Default `"normal"`.
    *
-   * **One axis only.** Blender lets several be on at once and the answer is
-   * not the composition of the single-axis ones; that branch is measured and
-   * unread (see the note at the top of this file).
+   * An array turns several of Blender's `use_project_x/y/z` on at once: the
+   * ray goes along their normalised sum, `["x", "z"]` → `(1, 0, 1)/√2`. An
+   * empty array is `"normal"`, as it is in Blender.
    */
-  axis?: "x" | "y" | "z" | "normal";
+  axis?: "x" | "y" | "z" | "normal" | readonly ("x" | "y" | "z")[];
   /** Blender's `use_negative_direction`. Default false, Blender's. */
   negative?: boolean;
   /** Blender's `use_positive_direction`. Default true, Blender's. */
@@ -386,8 +386,15 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   if (t.tris.length === 0) throw new Error("shrinkwrap: the target has no faces");
 
   const projectOpts = options.project ?? {};
-  const axis = projectOpts.axis ?? "normal";
-  const normals = method === "project" && axis === "normal" ? sourceNormals(data) : null;
+  // `proj_axis` in `shrinkwrap.cc`: the chosen unit axes summed; none is "normal".
+  const rawAxis = projectOpts.axis ?? "normal";
+  const axes = rawAxis === "normal" ? [] : typeof rawAxis === "string" ? [rawAxis] : rawAxis;
+  const axisDir: Vec3 = [
+    axes.includes("x") ? 1 : 0,
+    axes.includes("y") ? 1 : 0,
+    axes.includes("z") ? 1 : 0,
+  ];
+  const normals = method === "project" && axes.length === 0 ? sourceNormals(data) : null;
 
   const positions = Float32Array.from(data.positions);
   const count = positions.length / 3;
@@ -400,11 +407,7 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
     else if (method === "project") {
       const dir: Vec3 = normals
         ? [normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!]
-        : axis === "x"
-          ? [1, 0, 0]
-          : axis === "y"
-            ? [0, 1, 0]
-            : [0, 0, 1];
+        : axisDir;
       hit = project(t, p, normalized(dir), projectOpts);
     } else hit = nearestSurface(t, p);
 

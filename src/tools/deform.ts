@@ -209,14 +209,15 @@ export interface SimpleDeformOptions {
  * | `twist` | rotate `(u, v)` by `angle · t` | 45° on a ±1 grid puts the `z = −1` corners at −22.5° |
  * | `bend` | wrap around a cylinder of radius `R = extentOfU / angle`: with `φ = u / R` and `r = R − v`, the vertex lands at `(r sin φ, R − r cos φ)` | all eight corners of a cube exact to six places |
  * | `taper` | scale `(u, v)` by `1 + factor · t`; the axis is untouched | `factor` 0.5 → the ends are 0.75 and 1.25 across |
- * | `stretch` | **not implemented** — the axis is `z + factor · t`, but the perpendicular scale depends on the bounding box in a way six extents did not pin down | refuses, with the measured table in the message |
+ * | `stretch` | with `f = factor / extent`: the axis becomes `z · (1 + f)` and `(u, v)` scale by `z² · f − f + 1` | factor 0.5 → an end vertex scales by 0.0625, 0.625, 1.0, 1.9375 for extents 0.5, 1, 2, 8 |
  *
- * `stretch` is the one that would not resolve. Its perpendicular scale is a
- * parabola in the axis coordinate whose coefficients move with the bounding
- * box: at `factor` 0.5 an end vertex scales by 0.0625, 0.625, 1.0, 1.2083,
- * 1.375 and 1.9375 for extents 0.5, 1, 2, 3, 4 and 8. Three points fit many
- * curves and six still did not choose one, so it refuses rather than guess —
- * the same treatment `remove_doubles` and `unsubdivide` get.
+ * `stretch` was refused for four days as "six extents did not pin it down".
+ * Read from `MOD_simpledeform.cc` (`simpleDeform_stretch`), the rule is the
+ * one above: every mode receives `factor / extent`, but stretch squares the
+ * **raw** axis coordinate rather than `t`, so the extent appears once in the
+ * factor and not in `z²`. That is why the measured end-vertex scales looked
+ * like a parabola whose coefficients drifted with the bounding box. The
+ * measured table fits it exactly.
  *
  * `bend` is parameterised by `u`, not by the axis: the deform axis is what the
  * mesh bends **around**, so the length being bent lies across it. That is why
@@ -245,18 +246,6 @@ export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshDat
     }
     return [lo, hi];
   };
-
-  if (opts.mode === "stretch")
-    throw new Error(
-      `simpleDeform: "stretch" is not implemented — Blender's rule for it was ` +
-        `measured and could not be read. The axis is simple (z gains ` +
-        `factor · z / extent, confirmed on four extents), but the perpendicular ` +
-        `scale depends on the bounding box in a way six extents did not pin ` +
-        `down: with factor 0.5 an end vertex is scaled by 0.0625, 0.625, 1.0, ` +
-        `1.2083, 1.375, 1.9375 for extents 0.5, 1, 2, 3, 4, 8. Guessing a curve ` +
-        `through those would be inventing compatibility. "twist", "bend" and ` +
-        `"taper" are exact.`,
-    );
 
   if (opts.mode === "bend") {
     const [lo, hi] = range(u);
@@ -294,6 +283,15 @@ export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshDat
       const pv = P[k * 3 + v]!;
       out[k * 3 + u] = pu * c - pv * s;
       out[k * 3 + v] = pu * s + pv * c;
+    } else if (opts.mode === "stretch") {
+      // `simpleDeform_stretch`: the factor is divided by the extent, the axis
+      // coordinate is squared as it stands.
+      const f = extent < 1e-12 ? 0 : factor / extent;
+      const z = P[k * 3 + a]!;
+      const scale = z * z * f - f + 1;
+      out[k * 3 + u] = P[k * 3 + u]! * scale;
+      out[k * 3 + v] = P[k * 3 + v]! * scale;
+      out[k * 3 + a] = z * (1 + f);
     } else {
       const scale = 1 + factor * t;
       out[k * 3 + u] = P[k * 3 + u]! * scale;

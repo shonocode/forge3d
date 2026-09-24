@@ -9,39 +9,37 @@
  *
  * Pure and headless.
  *
- * ## What was measured, and what could not be
+ * ## The rules
  *
- * Read off Blender 5.1.1 with `tools/modeling/parity/probe-face-add*.py`.
- * Four things came out clean:
+ * Measured off Blender 5.1.1 with `tools/modeling/parity/probe-face-add.py`:
  *
- * - **The ring is the angular order about the selection's centroid**, in the
- *   plane the selection lies in. Six of seven cases matched, and the seventh
- *   had a vertex sitting exactly *on* the centroid, where the angle is not a
- *   number. The order the vertices are handed over in does not change the
- *   answer — the same four corners picked `[0,2,6,8]` and `[8,0,6,2]` gave the
- *   same face.
  * - **It refuses when the face already exists.** Selecting the four corners of
  *   a quad that is already there returns `CANCELLED` and changes nothing.
- * - **Two vertices make a wire edge**, not a face. `MeshData` grew somewhere
- *   to put one on 2026-09-22, so {@link edgeFaceAdd} now does it — before that
- *   it threw rather than doing something else that looked similar.
- * - **When the new face touches existing faces, the winding is the manifold
- *   one** — each shared edge is traversed opposite to the face already using
- *   it. Filling the hole in an open cube comes back agreeing with the shell;
- *   an L across a grid comes back reversed, and reversed is the consistent
- *   direction there.
+ * - **Two vertices make a wire edge**, not a face, and nothing at all when
+ *   they already share an edge.
  *
- * One thing did not come out. **For a face with no neighbours at all, which
- * side it ends up facing is not readable from seven measurements.** Blender's
- * choice follows the Newell normal of the selection in index order for the
- * three cases where that normal is not degenerate, and four of the seven are
- * degenerate (any set picked in ascending index order off a grid is), where
- * neither "the first three vertices" nor "the positive dominant axis" fits
- * what came back. So the free-standing winding here is forge3d's own,
- * deterministic and documented below, and **there is no parity row for it** —
- * the row covers the attached case, which is the one with an answer.
- * {@link recalcFaceNormals} is the fix if a free-standing face lands facing
- * the wrong way.
+ * Ported from `bmo_contextual_create_exec`'s last resort, "Fill Vertex Cloud"
+ * (`bmo_create.cc`), which is what F reaches with vertices and no edges:
+ *
+ * - **The ring** is `BM_verts_sort_radial_plane`: ascending signed angle about
+ *   a normal, measured from a tangent vertex. The normal is
+ *   `BM_verts_calc_normal_from_cloud_ex` — the vertex furthest from the
+ *   centroid, the one furthest from that one's line, and the cross of the two
+ *   diagonals to their opposites (as of Blender 5.1.1 — `main` has since added
+ *   a Newell refinement; see `cloudNormal`). Three vertices: a triangle normal.
+ * - **The winding** is `BM_face_create_ngon_verts(calc_winding)`: each of the
+ *   ring's edges that already has a face votes by the direction of its newest
+ *   face (`e->l`); the face is reversed when more run the ring's way than
+ *   against it. With no votes it keeps the ring's order.
+ *
+ * **The free-standing face was refused as unreadable** after seven
+ * measurements, and four of them sets picked off a grid, where "the Newell
+ * normal in index order" is degenerate. It is not the Newell normal in index
+ * order. And on a grid the cloud normal's choices are **ties** (equal
+ * distances from the centroid) that Blender breaks in float32 and in C's
+ * evaluation order; so this part is computed the same way (`f32` below), the
+ * same lesson as `SKIN`'s frames. The three corners `[0, 2, 6]` of a grid tie
+ * exactly in double and come out facing the other way.
  */
 import {
   rebuildPolygons,
@@ -49,98 +47,181 @@ import {
   type EditMesh,
 } from "./half-edge";
 
-/** `p - q`, three components at a time out of a flat array. */
-function sub(P: Float32Array, p: number, c: readonly number[]): [number, number, number] {
-  return [P[p * 3]! - c[0]!, P[p * 3 + 1]! - c[1]!, P[p * 3 + 2]! - c[2]!];
-}
+// ── float32, in C's evaluation order ───────────────────────────────────────
+// Blender does this in `float` with no fused multiply-add, and on a grid the
+// choices below are ties that only its rounding breaks. Every operation is
+// rounded where C would round it; the helpers mirror BLI's one for one.
 
-function cross(
-  a: readonly number[],
-  b: readonly number[],
-): [number, number, number] {
-  return [
-    a[1]! * b[2]! - a[2]! * b[1]!,
-    a[2]! * b[0]! - a[0]! * b[2]!,
-    a[0]! * b[1]! - a[1]! * b[0]!,
-  ];
-}
+type V3 = [number, number, number];
+const f32 = Math.fround;
 
-const dot = (a: readonly number[], b: readonly number[]): number =>
-  a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+const at3 = (P: Float32Array, v: number): V3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+/** `sub_v3_v3v3` */
+const subF = (a: V3, b: V3): V3 => [f32(a[0] - b[0]), f32(a[1] - b[1]), f32(a[2] - b[2])];
+/** `dot_v3v3`: left to right. */
+const dotF = (a: V3, b: V3): number =>
+  f32(f32(f32(a[0] * b[0]) + f32(a[1] * b[1])) + f32(a[2] * b[2]));
+/** `cross_v3_v3v3` */
+const crossF = (a: V3, b: V3): V3 => [
+  f32(f32(a[1] * b[2]) - f32(a[2] * b[1])),
+  f32(f32(a[2] * b[0]) - f32(a[0] * b[2])),
+  f32(f32(a[0] * b[1]) - f32(a[1] * b[0])),
+];
+/** `normalize_v3_v3_length`: multiplies by `1 / len`, zero below 1e-35. */
+function normalizeF(a: V3): [V3, number] {
+  const d = dotF(a, a);
+  if (!(d > 1.0e-35)) return [[0, 0, 0], 0];
+  const len = f32(Math.sqrt(d));
+  const k = f32(1 / len);
+  return [[f32(a[0] * k), f32(a[1] * k), f32(a[2] * k)], len];
+}
+/** `project_plane_normalized_v3_v3v3`: `p + v * -dot(p, v)`. */
+function projectPlaneF(p: V3, v: V3): V3 {
+  const mul = -dotF(p, v);
+  return [f32(p[0] + f32(v[0] * mul)), f32(p[1] + f32(v[1] * mul)), f32(p[2] + f32(v[2] * mul))];
+}
+/** `len_v3` */
+const lenF = (a: V3): number => f32(Math.sqrt(dotF(a, a)));
+/** `safe_asinf` */
+const safeAsin = (x: number): number =>
+  f32(Math.abs(x) <= 1 ? Math.asin(x) : Math.sign(x) * (Math.PI / 2));
+/** `angle_normalized_v3v3` */
+function angleNormalizedF(a: V3, b: V3): number {
+  if (dotF(a, b) >= 0) {
+    return f32(2 * safeAsin(f32(lenF(subF(b, a)) / 2)));
+  }
+  const len = lenF(subF([-b[0], -b[1], -b[2]], a));
+  return f32(f32(Math.PI) - f32(2 * safeAsin(f32(len / 2))));
+}
+/** `angle_signed_on_axis_v3v3_v3`: in [0, 2π), counter-clockwise about `axis`. */
+function angleSignedOnAxisF(v1: V3, v2: V3, axis: V3): number {
+  const p1 = projectPlaneF(v1, axis);
+  const p2 = projectPlaneF(v2, axis);
+  let angle = angleNormalizedF(normalizeF(p1)[0], normalizeF(p2)[0]);
+  if (dotF(crossF(p2, p1), axis) < 0) angle = f32(f32(Math.PI * 2) - angle);
+  return angle;
+}
 
 /**
- * The ring through a set of vertices: their angular order about their own
- * centroid, in the plane they lie in.
+ * `BM_verts_calc_normal_from_cloud_ex`: the normal of an unordered set, and
+ * which of the set is the tangent the ring is measured from.
+ */
+function cloudNormal(P: Float32Array, varr: readonly number[]): { normal: V3; center: V3; tangent: number } {
+  const n = varr.length;
+  const inv = f32(1 / n);
+  const center: V3 = [0, 0, 0];
+  for (const v of varr) {
+    const co = at3(P, v);
+    for (let k = 0; k < 3; k++) center[k] = f32(center[k]! + f32(co[k]! * inv));
+  }
+
+  // `!(d <= max)`: the first of equals wins.
+  let a = 0;
+  let max = -1;
+  for (let i = 0; i < n; i++) {
+    const d = dotF(subF(center, at3(P, varr[i]!)), subF(center, at3(P, varr[i]!)));
+    if (!(d <= max)) {
+      a = i;
+      max = d;
+    }
+  }
+  const coA = at3(P, varr[a]!);
+  const dirA = normalizeF(subF(coA, center))[0];
+
+  let b = -1;
+  let dirB: V3 = [0, 0, 0];
+  max = -1;
+  for (let i = 0; i < n; i++) {
+    if (i === a) continue;
+    const t = projectPlaneF(subF(at3(P, varr[i]!), center), dirA);
+    const d = dotF(t, t);
+    if (!(d <= max)) {
+      b = i;
+      max = d;
+      dirB = t;
+    }
+  }
+  const coB = at3(P, varr[b]!);
+
+  let normal: V3;
+  const tangent = a;
+  if (n <= 3) {
+    // `normal_tri_v3(center, co_a, co_b)`
+    normal = normalizeF(crossF(subF(center, coA), subF(coA, coB)))[0];
+  } else {
+    dirB = normalizeF(dirB)[0];
+    // Opposites: the smallest dot with each direction — of the raw
+    // coordinate, not of its offset from the centre, exactly as Blender has it.
+    const FLT_MAX = 3.4028234663852886e38;
+    let aOpp = -1;
+    let bOpp = -1;
+    let aMin = FLT_MAX;
+    let bMin = FLT_MAX;
+    for (let i = 0; i < n; i++) {
+      const co = at3(P, varr[i]!);
+      if (i !== a) {
+        const d = dotF(dirA, co);
+        if (d < aMin) {
+          aMin = d;
+          aOpp = i;
+        }
+      }
+      if (i !== b) {
+        const d = dotF(dirB, co);
+        if (d < bMin) {
+          bMin = d;
+          bOpp = i;
+        }
+      }
+    }
+    // `normal_quad_v3(co_a, co_b, co_a_opposite, co_b_opposite)`. Blender's
+    // `main` goes on to refine this with a Newell sum round the vertices in
+    // angular order and to re-pick the tangent; **5.1.1 does not**, and the
+    // parity row on `body` and `arm` — non-planar clouds, where the two differ
+    // — agrees with 5.1.1. Revisit on a Blender upgrade.
+    normal = normalizeF(crossF(subF(coA, at3(P, varr[aOpp]!)), subF(coB, at3(P, varr[bOpp]!))))[0];
+  }
+  return { normal, center, tangent };
+}
+
+/**
+ * The ring through a set of vertices, in the order Blender's F key puts them —
+ * `BM_verts_sort_radial_plane` over the set in ascending index order:
+ * ascending signed angle about the cloud normal, starting from its tangent
+ * vertex. The face {@link edgeFaceAdd} makes follows this order unless the
+ * faces it touches say to reverse it.
  *
- * The plane comes from the **largest** cross product between two spokes out of
- * the centroid, taking the first such pair in ascending index order when
- * several tie. Largest because it is the pair least sensitive to a nearly
- * collinear selection; first-in-index-order because something has to break the
- * tie and a tie is the common case — four corners of a grid produce four pairs
- * of equal magnitude. That tiebreak is **forge3d's, not a reading of
- * Blender's**; it is what reproduces the measured cases, and the module note
- * says where that stops being enough.
+ * Angular order is not the outline: a genuinely non-convex set does not come
+ * back as the polygon a person would draw, in Blender either.
  *
  * Throws when the selection is collinear, which has no ring at all.
  */
 export function ringOf(positions: Float32Array, verts: ReadonlySet<number>): number[] {
-  const picked = [...verts].sort((a, b) => a - b);
-  const c: [number, number, number] = [0, 0, 0];
-  for (const v of picked) {
-    c[0] += positions[v * 3]!;
-    c[1] += positions[v * 3 + 1]!;
-    c[2] += positions[v * 3 + 2]!;
-  }
-  for (let i = 0; i < 3; i++) c[i] = c[i]! / picked.length;
+  const varr = [...verts].sort((a, b) => a - b);
 
-  let n: [number, number, number] = [0, 0, 0];
-  let best = 0;
-  for (let i = 0; i < picked.length; i++)
-    for (let j = i + 1; j < picked.length; j++) {
-      const x = cross(sub(positions, picked[i]!, c), sub(positions, picked[j]!, c));
-      const mag = dot(x, x);
-      if (mag > best * (1 + 1e-9)) {
-        best = mag;
-        n = x;
-      }
+  // Blender goes ahead and makes a degenerate face here; forge3d refuses.
+  let area = 0;
+  const o = at3(positions, varr[0]!);
+  for (let i = 1; i < varr.length; i++)
+    for (let j = i + 1; j < varr.length; j++) {
+      const x = crossF(subF(at3(positions, varr[i]!), o), subF(at3(positions, varr[j]!), o));
+      area = Math.max(area, dotF(x, x));
     }
-  if (best <= 1e-24)
+  if (area <= 1e-24)
     throw new Error(
       "edgeFaceAdd: the selected vertices are collinear (or coincident), so " +
         "there is no ring through them and no face to make.",
     );
 
-  const len = Math.sqrt(dot(n, n));
-  for (let i = 0; i < 3; i++) n[i] = n[i]! / len;
-
-  // Any in-plane axis will do for measuring angles from; the ring is a cycle,
-  // so where it starts does not matter. The first vertex furthest from the
-  // centroid is used because a spoke of length ~0 makes a useless basis.
-  let seed = picked[0]!;
-  let far = -1;
-  for (const v of picked) {
-    const d = dot(sub(positions, v, c), sub(positions, v, c));
-    if (d > far * (1 + 1e-9)) {
-      far = d;
-      seed = v;
-    }
-  }
-  const s = sub(positions, seed, c);
-  const proj = dot(s, n);
-  const u: [number, number, number] = [s[0] - proj * n[0]!, s[1] - proj * n[1]!, s[2] - proj * n[2]!];
-  const ulen = Math.sqrt(dot(u, u));
-  for (let i = 0; i < 3; i++) u[i] = u[i]! / ulen;
-  const w = cross(n, u);
-
-  const angle = new Map<number, number>();
-  for (const v of picked) {
-    const d = sub(positions, v, c);
-    angle.set(v, Math.atan2(dot(d, w), dot(d, u)));
-  }
-  // Ascending angle about `n`, then reversed — Blender's free-standing faces
-  // came back clockwise in every case that had a readable plane.
-  return picked.sort((a, b) => angle.get(a)! - angle.get(b)!).reverse();
+  const { normal, center, tangent } = cloudNormal(positions, varr);
+  const far = subF(at3(positions, varr[tangent]!), center);
+  const angle = varr.map((v) => angleSignedOnAxisF(far, subF(at3(positions, v), center), normal));
+  return varr
+    .map((v, i) => [v, angle[i]!] as const)
+    .sort((x, y) => x[1] - y[1])
+    .map(([v]) => v);
 }
+
 
 /**
  * Make one face from a set of vertices — Blender's F key.
@@ -161,9 +242,8 @@ export function ringOf(positions: Float32Array, verts: ReadonlySet<number>): num
  * Throws on fewer than two vertices and on a collinear selection of three or
  * more.
  *
- * The winding follows the faces the new one touches. See the module note for
- * the case where it touches none, which is the one Blender's own answer could
- * not be read for.
+ * The winding follows the faces the new one touches, and with none it is the
+ * ring's own order — see the module note.
  */
 export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | null {
   if (verts.size < 2)
@@ -195,24 +275,35 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
 
   const ring = ringOf(em.positions, verts);
 
-  // Every directed edge the existing faces use. A new face sharing one has to
-  // run the other way down it, or the surface disagrees with itself there.
-  const directed = new Set<string>();
+  // `BM_face_create_ngon_verts(calc_winding)`: each ring edge that already has
+  // a face votes by the direction of its **newest** face (`e->l` — the radial
+  // cycle is appended in face order, so the highest-numbered face on the edge).
+  // Running the same way as that face is a vote to reverse.
+  const newest = new Map<string, [number, number]>();
   for (const poly of polys)
-    for (let i = 0; i < poly.length; i++)
-      directed.add(`${poly[i]}_${poly[(i + 1) % poly.length]}`);
-
-  let agree = 0;
-  let clash = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      newest.set(a < b ? `${a}_${b}` : `${b}_${a}`, [a, b]);
+    }
+  let keep = 0;
+  let flip = 0;
   for (let i = 0; i < ring.length; i++) {
-    const a = ring[i]!;
-    const b = ring[(i + 1) % ring.length]!;
-    if (directed.has(`${b}_${a}`)) agree++;
-    if (directed.has(`${a}_${b}`)) clash++;
+    const prev = ring[(i + ring.length - 1) % ring.length]!;
+    const cur = ring[i]!;
+    const face = newest.get(prev < cur ? `${prev}_${cur}` : `${cur}_${prev}`);
+    if (!face) continue;
+    if (face[0] === prev) flip++;
+    else keep++;
   }
-  if (clash > agree) ring.reverse();
+  // The face starts where `BM_face_create_ngon` is handed it: at the ring's
+  // last vertex then its first, or reversed, at its first then its last.
+  const face =
+    keep < flip
+      ? [ring[0]!, ...ring.slice(1).reverse()]
+      : [ring[ring.length - 1]!, ...ring.slice(0, -1)];
 
-  polys.push(ring);
+  polys.push(face);
   rebuildPolygons(em, em.positions, polys);
   return polys.length - 1;
 }

@@ -186,12 +186,26 @@ describe("weightedNormal", () => {
     expectVec(got[4]!, [-0.28095, -0.93651, 0.20981], "face 4");
   });
 
-  it("refuses a weight other than the neutral 50", () => {
-    // The tiered division by `weight^tier` is measured but not read. Guessing
-    // it would produce a plausible wrong answer, which is the expensive kind.
-    expect(() => weightedNormal(fan(), { weight: 50 })).not.toThrow();
-    expect(() => weightedNormal(fan(), { weight: 1 })).toThrow(/neutral weight/);
-    expect(() => weightedNormal(fan(), { weight: 100 })).toThrow(/neutral weight/);
+  it("weight 100 with a fine thresh leaves the largest face's normal", () => {
+    // w = SHRT_MAX: every tier after the first is divided to nothing.
+    const mesh = fan();
+    const P = mesh.positions;
+    let best = -1;
+    let bestNormal: [number, number, number] = [0, 0, 0];
+    for (const poly of mesh.polys) {
+      const [a, b, c] = poly.map((v) => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]) as [
+        number[], number[], number[],
+      ];
+      const u = [b[0]! - a[0]!, b[1]! - a[1]!, b[2]! - a[2]!];
+      const v = [c[0]! - a[0]!, c[1]! - a[1]!, c[2]! - a[2]!];
+      const n = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+      const len = Math.hypot(n[0]!, n[1]!, n[2]!);
+      if (len > best) {
+        best = len;
+        bestNormal = [n[0]! / len, n[1]! / len, n[2]! / len];
+      }
+    }
+    expectVec(apex(weightedNormal(mesh, { weight: 100, thresh: 1e-6 }))[0]!, bestNormal, "largest face");
   });
 
   it("moves nothing and changes no face", () => {

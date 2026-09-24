@@ -347,17 +347,24 @@ describe("faceAttributeFill", () => {
     expect(faceAttributeFill(touching, [1]).uvs).toEqual(touching.uvs);
   });
 
-  it("refuses a corner whose two neighbours disagree", () => {
-    // The centre of a 2x2 grid. Seven arrangements did not say which of the
-    // two wins, so this throws rather than picking one.
-    expect(() => faceAttributeFill(grid2x2(), [0])).toThrow(/could not be read/);
+  it("at a corner two neighbours share, the corner walk decides (probe-fill2.py)", () => {
+    // Blender, filling each quad of the 2x2 grid alone: the centre corner
+    // takes the edge *into* it — except face 3, whose centre corner is its
+    // corner 0 and is reached first by the edge going *out*. Once refused as
+    // "not a rule"; it is `BM_face_copy_shared`'s first-write-wins walk.
+    expect(uAt(faceAttributeFill(grid2x2(), [0]), 0, 4)).toBe(1.3); // in: face 1
+    expect(uAt(faceAttributeFill(grid2x2(), [1]), 1, 4)).toBe(3.0); // in: face 3
+    expect(uAt(faceAttributeFill(grid2x2(), [2]), 2, 4)).toBe(0.2); // in: face 0
+    expect(uAt(faceAttributeFill(grid2x2(), [3]), 3, 4)).toBe(1.3); // out: face 1
   });
 
-  it("is fine at the centre once the conflict is given as well", () => {
-    // Giving faces 0 and 1 leaves faces 2 and 3 as sources; face 0's centre
-    // corner then has only face 2 across an edge it shares, so there is one
-    // offer and no ambiguity.
+  it("fills in waves, so a filled face is a source for the next", () => {
+    // Faces 0 and 1 given. The stack pops face 1 first; it takes face 3's
+    // values, and face 0 — filled after it — then takes its centre corner from
+    // face 1 across the edge into it: face 3's 3.0 arriving by way of face 1,
+    // not face 2's 2.1 from the only original neighbour it has there.
     const out = faceAttributeFill(grid2x2(), [0, 1]);
-    expect(uAt(out, 0, 4)).toBe(2.1);
+    expect(uAt(out, 1, 4)).toBe(3.0);
+    expect(uAt(out, 0, 4)).toBe(3.0);
   });
 });

@@ -120,11 +120,19 @@ describe("simpleDeform", () => {
     expect(at(out, 0)[1]).toBeCloseTo(-0.5 * Math.sin(th), 6);
   });
 
-  it("refuses stretch rather than guessing its perpendicular scale", () => {
-    // Six extents did not pin the rule down; the message carries the numbers.
-    expect(() => simpleDeform(cube(), { mode: "stretch", axis: "z", factor: 0.5 })).toThrow(
-      /not implemented/,
-    );
+  it("stretch reproduces the end-vertex scales measured from Blender", () => {
+    // The table that was once refused (factor 0.5, strips centred on the
+    // origin): extent → perpendicular scale of the top vertex.
+    for (const [extent, want] of [
+      [0.5, 0.0625],
+      [1, 0.625],
+      [2, 1.0],
+      [8, 1.9375],
+    ] as const) {
+      const out = simpleDeform(strip(-extent / 2, extent / 2), { mode: "stretch", axis: "z", factor: 0.5 });
+      expect(at(out, 2)[0]).toBeCloseTo(0.5 * want, 6);
+      expect(at(out, 2)[2]).toBeCloseTo((extent / 2) * (1 + 0.5 / extent), 6);
+    }
   });
 });
 

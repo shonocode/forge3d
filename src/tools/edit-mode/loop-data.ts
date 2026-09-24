@@ -276,88 +276,127 @@ export function averageVertLoopData(
  * Filling it makes it agree with its neighbours along the edges they share,
  * rather than leaving a hole in the layer.
  *
- * ## The rules that came out clean
+ * ## The rule, ported from `bmo_fill_attribute.cc`
  *
- * - **The sources are the faces you did *not* give.** A chosen face takes from
- *   its neighbours, never the other way round.
- * - **An edge has to be shared.** Two quads meeting at a single point exchange
- *   nothing, measured in both directions — a corner in common is not enough.
- * - Where exactly one neighbour offers a value at a corner, that value is
- *   taken. Where none does, the corner is left as it was.
+ * **A flood fill in waves.** The first wave is every chosen face with an edge
+ * against a face that was not chosen. As a face is filled it becomes a source,
+ * and the chosen faces across its other edges make up the next wave — so a
+ * block of chosen faces fills inward from its rim, and a face deep inside it
+ * takes from a face that was filled a moment before, not from the original
+ * neighbours. Chosen faces with no path to an unchosen one are left alone.
  *
- * ## The rule that did not
+ * **Within a face** (`BM_face_copy_shared`), the edges are walked from the
+ * face's first corner. Edge `i` runs from corner `i` to corner `i + 1` and
+ * writes both, from the face across it, if that face is already a source;
+ * **the first write to a corner wins.** So corner `i` takes the edge coming
+ * *into* it — except corner 0, which the first edge reaches before the last
+ * one does, and so takes the edge going *out*.
  *
- * **Which neighbour wins when two offer at the same corner.** Seven
- * arrangements went into this and none of them produced a rule:
+ * That is the "rule that did not come out" of seven measured arrangements
+ * before this was read: filling each quad of a 2×2 grid, three took the edge
+ * into their centre corner and the one whose centre corner is its first took
+ * the edge out of it. Not the face index, not geometry — the corner walk.
  *
- * - it is **not the face index** — renumbering the same four quads so the
- *   previous winner became face 2 instead of face 1 did not change which face
- *   won, so the answer is geometric
- * - it is **not consistently the edge into the corner either**: filling each
- *   quad of a 2×2 grid in turn, three took the value across the edge *into*
- *   their centre corner and the fourth took the one across the edge *out* of
- *   it. The odd one out is the face whose centre corner is its **first**, which
- *   looks like an artefact of the order Blender walks a face's corners in —
- *   and one sample of an artefact is not a rule.
+ * **Which face is "across"** is Blender's `radial_next`: on an edge with more
+ * than two faces, the next face using it in index order, wrapping round
+ * (`bmesh_radial_loop_append` builds the cycle in creation order). Within a
+ * wave the pending corners come off a **stack**, last pushed first — that
+ * order decides which chosen face fills first, and so what the next one can
+ * take from.
  *
- * So a corner with two disagreeing sources **throws**. Everything else is
- * exact. `tools/modeling/parity/probe-fill.py` and `probe-fill2.py` hold the
- * numbers for whoever picks this up.
+ * Not ported: `use_normals` (copying the neighbour's winding) and the face
+ * attributes (`BM_elem_attrs_copy` — material index and the like). This copies
+ * the corner layer only.
  */
 export function faceAttributeFill(
   data: MeshData,
   faces: ReadonlySet<number> | readonly number[],
   layer: LoopLayer = "uv",
 ): MeshData {
-  const chosen = new Set(faces);
+  const polys = data.polys;
+  // Blender's BM_ELEM_TAG: still waiting to be filled.
+  const tagged = new Set<number>();
+  for (const f of faces) {
+    if (polys[f] === undefined) throw new Error(`faceAttributeFill: no face ${f}`);
+    tagged.add(f);
+  }
   const current = requireLayer(data, layer, "faceAttributeFill");
+  // One live layer: a face filled earlier is read as a source later.
   const next = current.map((corners) => corners.map((c) => [...c]));
 
+  type Loop = readonly [face: number, corner: number];
   const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const edgeKey = (f: number, i: number): string => {
+    const poly = polys[f]!;
+    return key(poly[i]!, poly[(i + 1) % poly.length]!);
+  };
 
-  // Which faces use each edge, so a corner can ask what is across its two.
-  const atEdge = new Map<string, number[]>();
-  for (let f = 0; f < data.polys.length; f++) {
-    const poly = data.polys[f]!;
-    for (let i = 0; i < poly.length; i++) {
-      const k = key(poly[i]!, poly[(i + 1) % poly.length]!);
-      const list = atEdge.get(k);
-      if (list) list.push(f);
-      else atEdge.set(k, [f]);
+  // The radial cycle of each edge, in creation order — which is face order,
+  // then corner order (`bmesh_radial_loop_append`).
+  const radial = new Map<string, Loop[]>();
+  for (let f = 0; f < polys.length; f++)
+    for (let i = 0; i < polys[f]!.length; i++) {
+      const k = edgeKey(f, i);
+      const cycle = radial.get(k);
+      if (cycle) cycle.push([f, i]);
+      else radial.set(k, [[f, i]]);
     }
-  }
+  /** The other loops on this loop's edge, starting at `radial_next`. */
+  const othersAround = (f: number, i: number): Loop[] => {
+    const cycle = radial.get(edgeKey(f, i))!;
+    const at = cycle.findIndex(([g, j]) => g === f && j === i);
+    const out: Loop[] = [];
+    for (let s = 1; s < cycle.length; s++) out.push(cycle[(at + s) % cycle.length]!);
+    return out;
+  };
 
-  const sameValue = (a: readonly number[], b: readonly number[]): boolean =>
-    a.length === b.length && a.every((x, k) => Math.abs(x - b[k]!) < 1e-9);
-
-  for (const f of chosen) {
-    const poly = data.polys[f];
-    if (poly === undefined) throw new Error(`faceAttributeFill: no face ${f}`);
+  // `BM_face_copy_shared` with the "source is not tagged" filter.
+  const copyShared = (f: number): void => {
+    const poly = polys[f]!;
     const n = poly.length;
-
+    const written = new Array<boolean>(n).fill(false);
     for (let i = 0; i < n; i++) {
-      const v = poly[i]!;
-      // The two edges meeting at this corner, and what is across each.
-      const offers: number[][] = [];
-      for (const k of [key(poly[(i + n - 1) % n]!, v), key(v, poly[(i + 1) % n]!)])
-        for (const g of atEdge.get(k) ?? []) {
-          if (g === f || chosen.has(g)) continue;
-          const j = data.polys[g]!.indexOf(v);
-          if (j >= 0) offers.push(current[g]![j]!);
-        }
-
-      if (offers.length === 0) continue;
-      const first = offers[0]!;
-      if (!offers.every((o) => sameValue(o, first)))
-        throw new Error(
-          `faceAttributeFill: face ${f}'s corner on vertex ${v} has two ` +
-            `neighbours offering different values, and which one Blender takes ` +
-            `could not be read from seven arrangements — it is not the face ` +
-            `index and not consistently either of the corner's two edges. ` +
-            `Give the conflicting neighbour as well, or fill in two passes.`,
-        );
-      next[f]![i] = [...first];
+      const other = othersAround(f, i)[0];
+      if (!other) continue; // boundary: radial_next is the loop itself
+      const [g, j] = other;
+      if (tagged.has(g)) continue;
+      const gn = polys[g]!.length;
+      // Match the two corners by vertex: the neighbour runs the edge the same
+      // way or the other way round.
+      const src =
+        polys[g]![j] === poly[i] ? [j, (j + 1) % gn] : [(j + 1) % gn, j];
+      const dst = [i, (i + 1) % n];
+      for (let k = 0; k < 2; k++) {
+        if (written[dst[k]!]) continue;
+        next[f]![dst[k]!] = [...next[g]![src[k]!]!];
+        written[dst[k]!] = true;
+      }
     }
+  };
+
+  // `bmesh_face_attribute_fill`. The first wave: every corner of a tagged face
+  // whose edge has an untagged face on it, in face and corner order.
+  let prev: Loop[] = [];
+  for (let f = 0; f < polys.length; f++) {
+    if (!tagged.has(f)) continue;
+    for (let i = 0; i < polys[f]!.length; i++)
+      if (othersAround(f, i).some(([g]) => !tagged.has(g))) prev.push([f, i]);
+  }
+  while (prev.length > 0) {
+    const nextWave: Loop[] = [];
+    // A stack: last pushed, first filled.
+    for (let loop = prev.pop(); loop; loop = prev.pop()) {
+      const [f, i] = loop;
+      if (!tagged.has(f)) continue;
+      tagged.delete(f);
+      const n = polys[f]!.length;
+      // The face's other edges, from the one after this loop's round to it.
+      for (let s = 1; s < n; s++)
+        for (const [g, j] of othersAround(f, (i + s) % n))
+          if (tagged.has(g)) nextWave.push([g, j]);
+      copyShared(f);
+    }
+    prev = nextWave;
   }
   return withLayer(data, layer, next);
 }
