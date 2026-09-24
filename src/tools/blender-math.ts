@@ -145,6 +145,46 @@ export function newell(ring: V3[]): V3 {
   }
   return n;
 }
+/**
+ * `face_normal_calc` (`mesh_normals.cc`): a quad by its two diagonals, a
+ * triangle by its cross product, anything larger by Newell — straight up when
+ * degenerate. A non-planar quad's diagonal normal is not its Newell normal.
+ */
+export function faceNormalCalc(P: readonly V3[], poly: readonly number[]): V3 {
+  if (poly.length === 4) return normalQuad(P[poly[0]!]!, P[poly[1]!]!, P[poly[2]!]!, P[poly[3]!]!);
+  if (poly.length === 3) return normalTri(P[poly[0]!]!, P[poly[1]!]!, P[poly[2]!]!);
+  const n = newell(poly.map((v) => P[v]!));
+  if (normalizeInPlace(n) === 0) n[2] = 1;
+  return n;
+}
+
+/**
+ * `Mesh::vert_normals()` / `normals_calc_verts`: each face's normal weighted by
+ * the corner's angle (`safe_acos_approx`), summed and normalised. A vertex on
+ * no face takes its own position, normalised — Blender's.
+ */
+export function meshVertNormals(P: readonly V3[], polys: readonly (readonly number[])[]): V3[] {
+  const faceNo = polys.map((p) => faceNormalCalc(P, p));
+  const acc: V3[] = P.map(() => [0, 0, 0]);
+  const has = new Uint8Array(P.length);
+  polys.forEach((p, fi) => {
+    for (let c = 0; c < p.length; c++) {
+      const v = p[c]!;
+      if (p.indexOf(v) !== c) continue; // face_find_adjacent_verts takes the first corner
+      has[v] = 1;
+      const prev = p[(c - 1 + p.length) % p.length]!;
+      const next = p[(c + 1) % p.length]!;
+      const dp = mathNormalize(sub(P[prev]!, P[v]!));
+      const dn = mathNormalize(sub(P[next]!, P[v]!));
+      const w = safeAcosApprox(dot(dp, dn));
+      const a = acc[v]!;
+      const fn = faceNo[fi]!;
+      for (let k = 0; k < 3; k++) a[k] = f(a[k]! + f(fn[k]! * w));
+    }
+  });
+  return acc.map((a, v) => (has[v] ? mathNormalize(a) : mathNormalize(P[v]!)));
+}
+
 export function safeAcosApprox(x: number): number {
   const fa = Math.abs(x);
   const m = fa < 1 ? f(1 - f(1 - fa)) : 1;

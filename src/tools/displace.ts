@@ -22,10 +22,15 @@
  * That is what a build script actually needs. A render that changes because
  * `Math.random` was called somewhere is the failure this exists to prevent.
  *
+ * The one exception is {@link offsetAlongNormals}: the Displace modifier with
+ * **no** texture is a plain push along the normal, and that one is measured
+ * (`displace-mod`).
+ *
  * Pure and headless.
  */
 import type { MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
+import { f, meshVertNormals, type V3 } from "./blender-math";
 
 /**
  * A hash-based value in [0, 1) from three integers.
@@ -138,6 +143,37 @@ export function displace(data: MeshData, opts: DisplaceOptions): MeshData {
     }
   }
 
+  return {
+    positions: out,
+    polys: data.polys.map((p) => [...p]),
+    creases: data.creases ? new Map(data.creases) : undefined,
+    seams: data.seams ? new Set(data.seams) : undefined,
+  };
+}
+
+/**
+ * Push every vertex the same distance along its normal — Blender's
+ * **Displace** modifier with no texture, direction `NORMAL`, where every
+ * vertex reads the value 1 and moves `(1 − mid_level) · strength`. Pass that
+ * product as `distance`; negative pulls inward.
+ *
+ * The normal is Blender's (`Mesh::vert_normals`): face normals weighted by the
+ * corner angle. {@link displace}'s `"normal"` weights by area instead and is
+ * kept that way on purpose — its promise is that a seed rebuilds the same
+ * stone in any version, and changing its normals would move every one. The
+ * two agree on a cube and part on anything with uneven faces: at 0.1 m, up to
+ * 2.4 mm on the `body` cage and 11 mm on the irregular fan.
+ */
+export function offsetAlongNormals(data: MeshData, distance: number): MeshData {
+  const P: V3[] = [];
+  for (let v = 0; v < data.positions.length / 3; v++)
+    P.push([f(data.positions[v * 3]!), f(data.positions[v * 3 + 1]!), f(data.positions[v * 3 + 2]!)]);
+  const normals = meshVertNormals(P, data.polys);
+  const d = f(distance);
+  // `madd_v3_v3fl(positions[i], vert_normals[i], delta)`
+  const out = new Float32Array(data.positions.length);
+  for (let v = 0; v < P.length; v++)
+    for (let k = 0; k < 3; k++) out[v * 3 + k] = f(P[v]![k]! + f(normals[v]![k]! * d));
   return {
     positions: out,
     polys: data.polys.map((p) => [...p]),

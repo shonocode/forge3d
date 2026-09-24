@@ -177,6 +177,58 @@ export function removeDoubles(data: MeshData, dist: number): MeshData {
 }
 
 /**
+ * Blender's **Weld** modifier (mode All) and the Geometry Nodes *Merge by
+ * Distance* — `mesh_merge_by_distance_all`. A different procedure from
+ * {@link removeDoubles}, and a different answer:
+ *
+ * - **Clusters** (`kdtree_calc_duplicates_fast`, index order): vertices are
+ *   visited by index, and each one not yet taken claims every untaken vertex
+ *   within `dist`. The lowest index of a cluster survives — no centroid test.
+ * - **The survivor moves to the cluster's mean** (`do_mix_data`: every
+ *   attribute, position included, is interpolated over the sources).
+ * - Faces are rebuilt by {@link weldByMap}, the `weld_verts` rules. Blender's
+ *   weld has its own face pass (`weld_poly_split_recursive`, not ported); the
+ *   two gave the same faces on all three cases of the `weld-mod` row
+ *   (the production cage among them), which is a measurement, not a proof —
+ *   an input where a face folds onto itself in a new way could part them.
+ *
+ * ```ts
+ * const closed = mergeByDistance(mesh, 0.001); // the Weld modifier's answer
+ * ```
+ */
+export function mergeByDistance(data: MeshData, dist: number): MeshData {
+  const n = data.positions.length / 3;
+  const P = data.positions;
+  const range = f(dist);
+  const rangeSq = f(range * range);
+  const dest = new Int32Array(n).fill(-1);
+  for (let v = 0; v < n; v++) {
+    if (dest[v] !== -1 && dest[v] !== v) continue;
+    const co: V3 = [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+    for (let w = 0; w < n; w++) {
+      if (w === v || dest[w] !== -1) continue;
+      if (distSq([P[w * 3]!, P[w * 3 + 1]!, P[w * 3 + 2]!], co) <= rangeSq) {
+        dest[w] = v;
+        dest[v] = v;
+      }
+    }
+  }
+  const map = (v: number): number => (dest[v] === -1 ? v : dest[v]!);
+
+  const sum = new Float64Array(n * 3);
+  const count = new Uint32Array(n);
+  for (let v = 0; v < n; v++) {
+    const t = map(v);
+    count[t] = count[t]! + 1;
+    for (let k = 0; k < 3; k++) sum[t * 3 + k] = sum[t * 3 + k]! + P[v * 3 + k]!;
+  }
+  const moved = Float32Array.from(P);
+  for (let v = 0; v < n; v++)
+    if (count[v]! > 1) for (let k = 0; k < 3; k++) moved[v * 3 + k] = sum[v * 3 + k]! / count[v]!;
+  return weldByMap({ ...data, positions: moved }, map);
+}
+
+/**
  * Blender's `weld_verts`: every vertex `map` sends elsewhere merges into its
  * target, which stays where it is. A face holding a vertex and its target
  * apart is split between them first; faces are rebuilt on the survivors —

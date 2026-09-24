@@ -100,7 +100,7 @@ export {
 // `removeDoubles` is Blender's `remove_doubles` ported to the vertex — the same
 // survivors, the same faces; `weldMesh` (below) stays the generators' quick
 // seam-closer. `build` is the Build modifier at one frame.
-export { removeDoubles } from "../tools/remove-doubles";
+export { removeDoubles, mergeByDistance } from "../tools/remove-doubles";
 export { reorderSpatial } from "../tools/reorder-spatial";
 export { createMonkey, type MonkeyOptions } from "../tools/monkey";
 export { build, type BuildOptions } from "../tools/build";
@@ -126,6 +126,7 @@ export {
   maskMesh,
   type TransformOptions,
   type MirrorOptions,
+  type ArrayMeshOptions,
   type RadialArrayOptions,
   type PathArrayOptions,
   type SolidifyOptions,
@@ -229,6 +230,7 @@ export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
 export { laplacianSmooth, type LaplacianSmoothOptions } from "../tools/edit-mode/laplacian-smooth";
+export { smoothMesh, type SmoothMeshOptions } from "../tools/smooth-mesh";
 export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
 export { unsubdivide, type UnsubdivideOptions } from "../tools/edit-mode/unsubdivide";
 export { edgenetPrepare, type EdgenetPrepareOptions } from "../tools/edit-mode/edgenet-prepare";
@@ -320,6 +322,7 @@ export {
 // editor RNG), so the guarantee is determinism: same seed, same mesh.
 export {
   displace,
+  offsetAlongNormals,
   valueNoise,
   hashNoise,
   type DisplaceOptions,
@@ -429,6 +432,7 @@ export {
   type VertexWeightMixSet,
   type ProximityGeometry,
 } from "../tools/edit-mode/vertex-weight";
+export { transferWeights, type TransferWeightsOptions } from "../tools/data-transfer";
 export { computeLSCM, type LSCMResult, type LSCMOptions } from "../tools/edit-mode/lscm";
 
 // ── Sculpt maths ───────────────────────────────────────────────────────────

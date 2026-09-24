@@ -169,14 +169,47 @@ export function mirrorMesh(data: MeshData, axis: "x" | "y" | "z", opts: MirrorOp
   return opts.weld ? weldMesh(merged, opts.weld) : merged;
 }
 
-/** Repeat a mesh `count` times, each copy shifted by `offset` from the last. */
-export function arrayMesh(data: MeshData, count: number, offset: Vec3): MeshData {
+export interface ArrayMeshOptions {
+  /**
+   * Blender's `relative_offset_displace`: a further step of this many times
+   * the mesh's own size along each axis (its bounding box), added to
+   * `offset`. `[1, 0, 0]` lays copies end to end along X whatever their size.
+   */
+  relative?: Vec3;
+}
+
+/**
+ * Repeat a mesh `count` times, each copy shifted by `offset` from the last —
+ * Blender's **Array** modifier with a fixed count, its constant offset and
+ * (via `relative`) its relative one. Copies come after the original, vertices
+ * and faces alike, as Blender lays them out. Merging, caps and object offsets
+ * are not offered.
+ */
+export function arrayMesh(
+  data: MeshData,
+  count: number,
+  offset: Vec3,
+  options: ArrayMeshOptions = {},
+): MeshData {
+  const step: number[] = [offset[0], offset[1], offset[2]];
+  if (options.relative) {
+    const P = data.positions;
+    for (let k = 0; k < 3; k++) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = k; i < P.length; i += 3) {
+        lo = Math.min(lo, P[i]!);
+        hi = Math.max(hi, P[i]!);
+      }
+      if (hi >= lo) step[k] = step[k]! + options.relative[k]! * (hi - lo);
+    }
+  }
   const parts: MeshData[] = [];
   for (let i = 0; i < count; i++)
     parts.push(
       i === 0
         ? data
-        : transformMesh(data, { translate: [offset[0] * i, offset[1] * i, offset[2] * i] }),
+        : transformMesh(data, { translate: [step[0]! * i, step[1]! * i, step[2]! * i] }),
     );
   return mergeMeshes(parts);
 }

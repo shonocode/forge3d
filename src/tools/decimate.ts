@@ -40,8 +40,8 @@
  */
 import type { MeshData } from "../lib/mesh";
 import {
-  f, FLT_EPSILON, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, mathNormalize, newell,
-  safeAcosApprox, heapInsert, heapPopMin, heapRemove, heapUpdate, type V3, type Heap, type HeapNode,
+  f, FLT_EPSILON, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, meshVertNormals,
+  heapInsert, heapPopMin, heapRemove, heapUpdate, type V3, type Heap, type HeapNode,
 } from "./blender-math";
 import { isQuadConvex } from "./triangulate";
 import {
@@ -123,35 +123,6 @@ function quadricOptimize(q: Quadric, eps: number): number[] | null {
     -(m01 * v0 + m11 * v1 + m21 * v2),
     -(m02 * v0 + m12 * v1 + m22 * v2),
   ];
-}
-
-// ── Mesh-side inputs the modifier reads ────────────────────────────────────
-
-/** `Mesh::vert_normals()`: angle-weighted Newell face normals. */
-function meshVertNormals(P: V3[], polys: readonly (readonly number[])[]): V3[] {
-  const faceNo = polys.map((p) => {
-    const n = newell(p.map((v) => P[v]!));
-    if (normalizeInPlace(n) === 0) n[2] = 1;
-    return n;
-  });
-  const acc: V3[] = P.map(() => [0, 0, 0]);
-  const has = new Uint8Array(P.length);
-  polys.forEach((p, fi) => {
-    for (let c = 0; c < p.length; c++) {
-      const v = p[c]!;
-      if (p.indexOf(v) !== c) continue; // face_find_adjacent_verts takes the first corner
-      has[v] = 1;
-      const prev = p[(c - 1 + p.length) % p.length]!;
-      const next = p[(c + 1) % p.length]!;
-      const dp = mathNormalize(sub(P[prev]!, P[v]!));
-      const dn = mathNormalize(sub(P[next]!, P[v]!));
-      const w = safeAcosApprox(dot(dp, dn));
-      const a = acc[v]!;
-      const fn = faceNo[fi]!;
-      for (let k = 0; k < 3; k++) a[k] = f(a[k]! + f(fn[k]! * w));
-    }
-  });
-  return acc.map((a, v) => (has[v] ? mathNormalize(a) : mathNormalize(P[v]!)));
 }
 
 // ── the operator ───────────────────────────────────────────────────────────
