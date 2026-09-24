@@ -102,8 +102,24 @@ describe("booleanMesh", () => {
     expect(counts(run(A, far, "intersect"))).toEqual([0, 0]);
   });
 
-  it("refuses a part that is not closed", () => {
-    const open: MeshData = { positions: A.positions, polys: A.polys.slice(0, 5) };
-    expect(() => run(open, Bx, "union")).toThrow(/not closed/);
+  it("cuts with an open sheet by casting rays, as Blender does", () => {
+    // A tilted quad through the cube (parity case `boxSheet`): B has no
+    // inside, so there are no cells; Blender decides each patch by rays.
+    // A − B keeps the part of the cube above the sheet, capped by the piece
+    // of the sheet inside it — 8 vertices, 6 faces.
+    const sheet: MeshData = {
+      positions: Float32Array.from([-1, 0.05, -1, 1, 0.05, -1, 1, 0.15, 1, -1, 0.15, 1]),
+      polys: [[0, 3, 2, 1]],
+    };
+    const joined: MeshData = {
+      positions: Float32Array.from([...A.positions, ...sheet.positions]),
+      polys: [...A.polys, [8, 11, 10, 9]],
+    };
+    const out = booleanMesh(joined, { operation: "difference", set: new Set([6]) });
+    expect(counts(out)).toEqual([8, 6]);
+    // Above y = 0.1 + 0.05 z inside the unit cube: ∫(0.4 − 0.05 z) dz = 0.4.
+    expect(volume(out)).toBeCloseTo(0.4, 6);
+    // Hole Tolerant (per triangle) agrees here.
+    expect(counts(booleanMesh(joined, { operation: "difference", set: new Set([6]), holeTolerant: true }))).toEqual([8, 6]);
   });
 });

@@ -30,15 +30,24 @@
  * Blender's own quirks are kept where they can change the answer — they are
  * marked where they occur (`mergeCells`, `findCellsFromEdge`).
  *
+ * **Parts that are not closed** ("not PWN" — some edge's triangles do not
+ * cancel) have no cells to speak of. Blender then casts rays instead
+ * (`raycast_patches_boolean`, or per triangle with `holeTolerant` —
+ * `raycast_tris_boolean`): from just above a test triangle, six slightly
+ * tilted axis rays, counting signed crossings of the other part; "inside"
+ * when at least 1 in 10 of them says so, or half when the answer must be
+ * sure (the cutter in a difference, and intersection). Ported as it is,
+ * the ray–triangle test in float with its `FLT_EPSILON` margin. Blender
+ * finds the candidates with a BVH; every triangle is tried here, which the
+ * BVH only prunes.
+ *
  * ## Not yet
  *
- * - Parts that are not closed ("not PWN"): Blender falls back to ray casting
- *   (`raycast_patches_boolean`). This throws instead.
  * - Two input vertices at exactly the same position are one vertex to
  *   Blender (`add_or_find_vert`) and two here.
  */
 import type { MeshData } from "../../lib/mesh";
-import { add, cmp, div, mul, neg, orient3dExact, q, q3Cross, q3Dot, q3Sub, sign, sub, type Q, type Q3 } from "./exact";
+import { add, cmp, div, fromDouble, mul, neg, orient3dExact, q, q3Cross, q3Dot, q3Sub, sign, sub, type Q, type Q3 } from "./exact";
 import { mergePieces, subdivide, toMeshData, type Piece } from "./intersect";
 
 export type BooleanOperation = "union" | "difference" | "intersect";
@@ -51,6 +60,13 @@ export interface BooleanOptions {
    * part A. `"difference"` is A − B.
    */
   set: ReadonlySet<number>;
+  /**
+   * For parts that are not closed: decide each triangle by ray casting on
+   * its own rather than each patch at once (Blender's "Hole Tolerant",
+   * `raycast_tris_boolean`). Slower; right more often on messy input.
+   * No effect when both parts are closed.
+   */
+  holeTolerant?: boolean;
 }
 
 /**
@@ -64,7 +80,8 @@ export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
   const { verts, pieces } = subdivide(data, options.set);
   const coOf = (v: number): Q3 => verts[v]!.exact;
   const shapeOf = (t: number): number => (options.set.has(pieces[t]!.face) ? 1 : 0);
-  const kept = booleanTrimesh(pieces, coOf, options.operation, 2, shapeOf);
+  const coD = (v: number): readonly number[] => verts[v]!.co;
+  const kept = booleanTrimesh(pieces, coOf, coD, options.operation, 2, shapeOf, options.holeTolerant ?? false);
   const merged = mergePieces(kept, data, verts);
   // `apply_mesh_output_to_bmesh`: a face whose vertices another face already
   // has is that face (`BM_face_exists`), so it appears once.
@@ -738,25 +755,142 @@ function closestOnTriToPoint(p: Q3, a: Q3, b: Q3, c: Q3): { d2: Q; edge: number;
 function booleanTrimesh(
   pieces: Piece[],
   coOf: (v: number) => Q3,
+  coD: (v: number) => readonly number[],
   op: BooleanOperation,
   nshapes: number,
   shapeOf: (t: number) => number,
+  holeTolerant: boolean,
 ): Piece[] {
   const tris = pieces.map((p) => p.ids);
   if (tris.length === 0) return [];
   const arr = new Arrangement(tris, coOf);
-  if (!isPwn(tris, arr.topo))
-    throw new Error("booleanMesh: a part is not closed — Blender's ray-cast fallback is not ported yet");
+  const flipPiece = (p: Piece): Piece => ({
+    face: p.face,
+    ids: [p.ids[0]!, p.ids[2]!, p.ids[1]!],
+    kinds: [p.kinds[2]!, p.kinds[1]!, p.kinds[0]!],
+  });
+  if (!isPwn(tris, arr.topo)) {
+    const rc = new Raycaster(tris, coD, shapeOf, nshapes);
+    const out: Piece[] = [];
+    const decide = (t: number, members: readonly number[]): void => {
+      const shape = shapeOf(t);
+      const inShape = rc.insideShapes(t);
+      const winding = new Array<number>(nshapes).fill(0);
+      const high = (op === "difference" && shape !== 0) || op === "intersect";
+      for (let o = 0; o < nshapes; o++) if (o !== shape) winding[o] = inShape[o]! >= (high ? 0.5 : 0.1) ? 1 : 0;
+      // `raycast_test_remove`
+      winding[shape] = 0;
+      const iv0 = applyBoolOp(op, winding);
+      winding[shape] = 1;
+      const iv1 = applyBoolOp(op, winding);
+      if (iv0 === iv1) return;
+      const flip = op === "difference" && shape !== 0;
+      for (const m of members) out.push(flip ? flipPiece(pieces[m]!) : pieces[m]!);
+    };
+    if (holeTolerant) tris.forEach((_, t) => decide(t, [t]));
+    else {
+      arr.findPatches();
+      // "choose one in the middle of patch list"
+      for (const patch of arr.patches) decide(patch.tris[patch.tris.length >> 1]!, patch.tris);
+    }
+    return out;
+  }
   arr.findPatches();
   arr.findCells();
   arr.finishPatchCellGraph();
   if (!arr.graphOk()) throw new Error("booleanMesh: the patch/cell graph is disconnected");
   const cAmbient = arr.findAmbientCell(null);
   arr.propagateWindings(cAmbient, op, nshapes, shapeOf);
-  return arr.extract().map(({ t, flip }) => {
-    const p = pieces[t]!;
-    if (!flip) return p;
-    // `{tri[0], tri[2], tri[1]}` with edges `{e[2], e[1], e[0]}`.
-    return { face: p.face, ids: [p.ids[0]!, p.ids[2]!, p.ids[1]!], kinds: [p.kinds[2]!, p.kinds[1]!, p.kinds[0]!] };
-  });
+  // A flipped piece is `{tri[0], tri[2], tri[1]}` with edges `{e[2], e[1], e[0]}`.
+  return arr.extract().map(({ t, flip }) => (flip ? flipPiece(pieces[t]!) : pieces[t]!));
+}
+
+const fl = Math.fround;
+const FLT_EPSILON = 1.1920928955078125e-7;
+
+/** `isect_ray_tri_epsilon_v3`, in float. */
+function isectRayTriEpsilon(o: number[], d: number[], v0: number[], v1: number[], v2: number[], eps: number): boolean {
+  const subv = (a: number[], b: number[]): number[] => [fl(a[0]! - b[0]!), fl(a[1]! - b[1]!), fl(a[2]! - b[2]!)];
+  const cross = (a: number[], b: number[]): number[] => [
+    fl(fl(a[1]! * b[2]!) - fl(a[2]! * b[1]!)),
+    fl(fl(a[2]! * b[0]!) - fl(a[0]! * b[2]!)),
+    fl(fl(a[0]! * b[1]!) - fl(a[1]! * b[0]!)),
+  ];
+  const dot = (a: number[], b: number[]): number => fl(fl(fl(a[0]! * b[0]!) + fl(a[1]! * b[1]!)) + fl(a[2]! * b[2]!));
+  const e1 = subv(v1, v0);
+  const e2 = subv(v2, v0);
+  const p = cross(d, e2);
+  const a = dot(e1, p);
+  if (a === 0) return false;
+  const f = fl(1 / a);
+  const s = subv(o, v0);
+  const u = fl(f * dot(s, p));
+  if (u < -eps || u > fl(1 + eps)) return false;
+  const q = cross(s, e1);
+  const v = fl(f * dot(d, q));
+  if (v < -eps || fl(u + v) > fl(1 + eps)) return false;
+  const lambda = fl(f * dot(e2, q));
+  return lambda >= 0;
+}
+
+/** `test_tri_inside_shapes`, over every triangle (Blender prunes with a BVH). */
+class Raycaster {
+  private readonly ftris: number[][][];
+  // Plain fields, not parameter properties: Node's type stripping (the
+  // parity harness) cannot erase those.
+  private readonly tris: readonly (readonly number[])[];
+  private readonly coD: (v: number) => readonly number[];
+  private readonly shapeOf: (t: number) => number;
+  private readonly nshapes: number;
+
+  constructor(
+    tris: readonly (readonly number[])[],
+    coD: (v: number) => readonly number[],
+    shapeOf: (t: number) => number,
+    nshapes: number,
+  ) {
+    this.tris = tris;
+    this.coD = coD;
+    this.shapeOf = shapeOf;
+    this.nshapes = nshapes;
+    this.ftris = tris.map((t) => t.map((v) => coD(v).map(fl)));
+  }
+
+  /** For each shape, the fraction of the six rays that say the triangle is inside it. */
+  insideShapes(t: number): number[] {
+    const shape = this.shapeOf(t);
+    const [a, b, c] = this.tris[t]!.map((v) => this.coD(v)) as [readonly number[], readonly number[], readonly number[]];
+    const test = [0, 1, 2].map((k) => a[k]! / 3 + b[k]! / 3 + c[k]! / 3);
+    // `populate_plane(false)`: (v0 − v2) × (v1 − v2), then normalised.
+    const u = [0, 1, 2].map((k) => a[k]! - c[k]!);
+    const w = [0, 1, 2].map((k) => b[k]! - c[k]!);
+    let n = [u[1]! * w[2]! - u[2]! * w[1]!, u[2]! * w[0]! - u[0]! * w[2]!, u[0]! * w[1]! - u[1]! * w[0]!];
+    const len = Math.sqrt(n[0]! * n[0]! + n[1]! * n[1]! + n[2]! * n[2]!);
+    if (len > 0) n = n.map((x) => x / len);
+    const co = [0, 1, 2].map((k) => fl(test[k]! + 1e-5 * n[k]!));
+    const r1 = fl(0.9987025295199663);
+    const ra = fl(0.04993512647599832);
+    const rb = fl(0.009987025295199663);
+    const rays = [[r1, ra, rb], [-r1, -ra, -rb], [rb, r1, ra], [-rb, -r1, -ra], [ra, rb, r1], [-ra, -rb, -r1]];
+    const origin: Q3 = [fromNum(co[0]!), fromNum(co[1]!), fromNum(co[2]!)];
+    const countInsides = new Array<number>(this.nshapes).fill(0);
+    for (const dir of rays) {
+      const parity = new Array<number>(this.nshapes).fill(0);
+      this.tris.forEach((tri, i) => {
+        const sh = this.shapeOf(i);
+        const [f0, f1, f2] = this.ftris[i]!;
+        if (!isectRayTriEpsilon(co, dir, f0!, f1!, f2!, FLT_EPSILON)) return;
+        // `orient3d` on the doubles — Shewchuk's sign, positive below the plane.
+        const [p0, p1, p2] = tri.map((v) => this.coD(v).map(fromNum) as unknown as Q3);
+        parity[sh]! += -orient3dExact(p0!, p1!, p2!, origin);
+      });
+      for (let j = 0; j < this.nshapes; j++) if (j !== shape && parity[j]! > 0) countInsides[j]!++;
+    }
+    return countInsides.map((c, j) => (j === shape ? 1 : fl(c / 6)));
+  }
+}
+
+/** A double as an exact rational. */
+function fromNum(x: number): Q {
+  return fromDouble(x);
 }

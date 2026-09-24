@@ -16,6 +16,7 @@
  *
  * Pure and headless — Vitest-pinned.
  */
+import { scanfillTriangles } from "./triangle-fill";
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
 
 // ── poke ───────────────────────────────────────────────────────────────────
@@ -482,37 +483,31 @@ export function edgeloopFill(em: EditMesh, selectedEdges: ReadonlySet<number>): 
 }
 
 /**
- * The same, but filled with **triangles**.
+ * The same, but filled with **triangles** — Blender's
+ * `bmesh.ops.triangle_fill(use_beauty=False)`: the whole edge selection is
+ * projected onto one plane and filled by `BLI_scanfill`'s sweep line, holes
+ * and several loops at once, then wound like the faces already on the
+ * boundary. The port is `triangle-fill.ts`.
  *
- * Where {@link edgeloopFill} drops one n-gon over the hole, this fans it, so a
- * square hole comes back as two triangles rather than one quad: measured, 15
- * faces become 17 with the same area. Useful where the consumer cannot take
- * n-gons — a renderer, an exporter, or `catmullClark`, which wants quads and
- * treats a big n-gon poorly.
- *
- * ## Not the same algorithm as Blender's `triangle_fill`
- *
- * This fans **each loop separately**. Blender projects the whole edge
- * selection onto its best-fit plane and triangulates that, which is a
- * different job the moment there is more than one loop: measured on a tube's
- * two rims, Blender makes 18 faces where this makes 32, and on a holed sheet
- * the filled area comes out 0.30 against 0.32.
- *
- * The two agree on a single 4-edge loop, which is the one shape that cannot
- * tell them apart. Matching Blender would mean a constrained planar
- * triangulation with its own tie-breaks; that has not been measured, so the
- * gap is written down rather than papered over.
+ * (Until 2026-09-25 this fanned each loop on its own and was declared a
+ * different algorithm: a tube's two rims gave 32 faces where Blender gives
+ * 18, since the sweep line fills the *pair* of rims as one region with a
+ * hole.)
  */
 export function triangleFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
-  const loops = loopsFromEdges(em, selectedEdges);
-  if (loops.length === 0) return new Set();
-
+  const tris = scanfillTriangles(em, [...selectedEdges]);
+  if (tris.length === 0) return new Set();
   const out = toPolygons(em);
   const start = out.length;
-  for (const loop of loops)
-    for (let i = 1; i + 1 < loop.length; i++) out.push([loop[0]!, loop[i]!, loop[i + 1]!]);
+  // `BM_CREATE_NO_DOUBLE`: a triangle that is already a face is not made again.
+  const have = new Set(out.map((p) => [...p].sort((x, y) => x - y).join(",")));
+  for (const t of tris) {
+    const k = [...t].sort((x, y) => x - y).join(",");
+    if (have.has(k)) continue;
+    have.add(k);
+    out.push(t);
+  }
   rebuildPolygons(em, em.positions, out);
-
   const made = new Set<number>();
   for (let i = start; i < out.length; i++) made.add(i);
   return made;

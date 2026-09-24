@@ -389,8 +389,8 @@ export { skin, type SkinOptions } from "../tools/edit-mode/skin";
 // ── Boolean ────────────────────────────────────────────────────────────────
 // Blender's exact solver (ADR-012), in exact rational arithmetic. `intersect`
 // cuts where a mesh passes through itself (or one part through another);
-// `booleanMesh` keeps the union, difference or intersection of two parts.
-// Parts must be closed for `booleanMesh` — the open-mesh fallback is not in.
+// `booleanMesh` keeps the union, difference or intersection of two parts;
+// open parts are decided by ray casting, as Blender does (`holeTolerant`).
 export { intersect, type IntersectOptions, type IntersectResult } from "../tools/boolean/intersect";
 export { booleanMesh, type BooleanOptions, type BooleanOperation } from "../tools/boolean/boolean";
 
