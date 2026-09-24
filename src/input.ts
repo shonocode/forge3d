@@ -77,14 +77,17 @@ function updateToolUI(t: ToolId): void {
 }
 
 function initTool(t: ToolId): void {
-  updateGizmo();
-  applySnapToGizmos();
   if (BONE_TOOLS.has(t)) {
     setBoneVisualsVisible(true);
   } else {
     setBoneVisualsVisible(false);
+    // Before updateGizmo: deselectBone detaches the gizmo unconditionally, and
+    // run after it, switching from Select to Move with a mesh selected left the
+    // mesh without its arrows until it was clicked again.
     deselectBone();
   }
+  updateGizmo();
+  applySnapToGizmos();
   if (t === "weight") {
     const mesh = lastSelected();
     if (mesh?.skeleton && state.selectedBoneId) showWeightOverlay(mesh);

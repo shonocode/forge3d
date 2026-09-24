@@ -1,4 +1,4 @@
-import { getModifiers, setModifierShading } from "../tools/modifiers";
+import { MESH_TOOLS, runMeshTool } from "../tools/mesh-tools";
 import { E, isMobile, state, status } from "../state";
 import type { ToolId } from "../state";
 import { addPrimitive, PRIMS } from "../tools/primitives";
@@ -7,11 +7,6 @@ import { doCSG, type CSGOp } from "../tools/csg";
 import { duplicateSelected, deleteSelected } from "../tools/actions";
 import { setTool, switchTab, closeAllPanels, togglePanel } from "../input";
 import { KEYMAP, ACTION_TEXT, bindingLabel, keyLabel, type ActionId } from "../keymap";
-import { lastSelected } from "../tools/selection";
-import {
-  recalcNormals, flipNormals, weldVertices, centerOrigin, applyShading,
-  snapshotVertexData, restoreVertexData,
-} from "../tools/mesh-utils";
 
 export function buildToolPills(): void {
   const mobile = isMobile();
@@ -162,66 +157,22 @@ export function buildBrushButtons(): void {
   }
 }
 
-/** Shade a mesh — through its modifier stack when it has one. */
-function shade(m: import("@babylonjs/core").AbstractMesh, angle: number): boolean {
-  return setModifierShading(m, angle) || applyShading(m, angle);
-}
-
 export function buildMeshToolButtons(): void {
   const el = E("meshToolBtns");
-  const tools: { label: string; title?: string; action: (m: import("@babylonjs/core").AbstractMesh) => boolean }[] = [
-    { label: "Recalc Normals", action: recalcNormals },
-    { label: "Flip Normals", action: flipNormals },
-    {
-      label: "Shade Smooth",
-      title: "全面をなめらかにシェーディング（頂点法線を平均化）",
-      action: (m) => shade(m, Math.PI),
-    },
-    {
-      label: "Shade Flat",
-      title: "面ごとのフラットシェーディング（ハードエッジで頂点分割）",
-      action: (m) => shade(m, 0.02),
-    },
-    {
-      label: "Auto Smooth ∠",
-      title: "下の角度より急な折り目だけハードエッジに（Blender の Auto Smooth 相当）",
-      action: (m) => {
-        const inp = document.getElementById("autoSmoothAngle") as HTMLInputElement | null;
-        const deg = inp ? parseFloat(inp.value) : 30;
-        const clamped = Number.isNaN(deg) ? 30 : Math.max(1, Math.min(180, deg));
-        return shade(m, (clamped * Math.PI) / 180);
-      },
-    },
-    { label: "Weld Vertices", action: (m) => weldVertices(m) },
-    { label: "Center Origin", action: centerOrigin },
-  ];
-  for (const tool of tools) {
+  for (const tool of MESH_TOOLS) {
     const b = document.createElement("button");
     b.className = "cbtn";
     b.textContent = tool.label;
     b.setAttribute("aria-label", tool.label);
     if (tool.title) b.title = tool.title;
     b.addEventListener("click", () => {
-      const m = lastSelected();
-      if (!m) { status("メッシュを選択"); return; }
-      // A mesh with modifiers is re-evaluated from its base, so shading goes
-      // onto the stack (which pushes its own undo) instead of the buffer.
-      const snap = getModifiers(m).length ? null : snapshotVertexData(m);
-      const ok = tool.action(m);
-      if (!ok) { status("変更なし（モーフ付きメッシュはシェーディング変更不可）"); return; }
-      if (snap) {
-        state.history.push({
-          label: tool.label,
-          undo() { restoreVertexData(m, snap); },
-          redo() { tool.action(m); },
-        });
-      }
-      status(tool.label + " 完了");
+      const inp = document.getElementById("autoSmoothAngle") as HTMLInputElement | null;
+      runMeshTool(tool.id, inp ? parseFloat(inp.value) : 30);
     });
     el.appendChild(b);
 
     // Angle input rides directly under its button.
-    if (tool.label === "Auto Smooth ∠") {
+    if (tool.id === "autoSmooth") {
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:center;gap:4px;margin:2px 0 4px;";
       const lab = document.createElement("span");

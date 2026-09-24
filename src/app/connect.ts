@@ -18,11 +18,16 @@ export interface ConnectSource extends FingerprintSource {
   history: FingerprintSource["history"] & { subscribe(cb: () => void): () => void };
 }
 
-/** Start feeding `forge`; returns the function that stops. */
-export function connectStore(forge: ForgeStore, source: ConnectSource, frames: FrameSource): () => void {
+/**
+ * Start feeding `forge`; returns the function that stops. `extra` adds to the
+ * per-frame fingerprint — the app passes the selected mesh's transform, so the
+ * number fields follow a gizmo drag, which pushes no history until it ends.
+ */
+export function connectStore(forge: ForgeStore, source: ConnectSource, frames: FrameSource, extra?: () => string): () => void {
   const offHistory = source.history.subscribe(() => forge.notify());
-  forge.poll(fingerprint(source));
-  const observer = frames.onAfterRenderObservable.add(() => forge.poll(fingerprint(source)));
+  const fp = (): string => (extra ? fingerprint(source) + "|" + extra() : fingerprint(source));
+  forge.poll(fp());
+  const observer = frames.onAfterRenderObservable.add(() => forge.poll(fp()));
   return () => {
     offHistory();
     frames.onAfterRenderObservable.remove(observer);

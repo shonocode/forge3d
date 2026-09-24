@@ -582,8 +582,21 @@ export function hideLoading(): void {
   if (el) el.classList.remove("active");
 }
 
+/**
+ * The old screen's element by id.
+ *
+ * **Migration shim (ADR-014):** the new React screen has none of the old
+ * screen's ~180 ids, but the tools still call the old panels' updaters
+ * (`ui/panels.ts`, from 15 modules) after they act. A missing id returns a
+ * detached stand-in element, so those writes go nowhere instead of throwing.
+ * Remove this when `src/ui/*.ts` is gone.
+ */
 export function E(id: string): HTMLElement {
-  return document.getElementById(id)!;
+  const el = document.getElementById(id);
+  if (el) return el;
+  const stub = document.createElement("div");
+  stub.id = id;
+  return stub;
 }
 
 export function isMobile(): boolean {
