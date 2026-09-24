@@ -69,7 +69,7 @@ export function buildCSGButtons(): void {
     b.className = "cbtn";
     b.innerHTML = `<span class="sy">${sym}</span>${label}`;
     b.setAttribute("aria-label", label);
-    b.addEventListener("click", () => doCSG(op));
+    b.addEventListener("click", () => { void doCSG(op); });
     el.appendChild(b);
   }
 }
