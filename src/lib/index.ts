@@ -381,6 +381,11 @@ export {
   type ShrinkwrapProjectOptions,
 } from "../tools/edit-mode/shrinkwrap";
 
+// ── Skeleton to surface ────────────────────────────────────────────────────
+// Blender's Skin modifier: loose edges in, a quad mesh around them out.
+// Chains only for now — a vertex with three or more edges throws.
+export { skin, type SkinOptions } from "../tools/edit-mode/skin";
+
 // ── Vertex groups ──────────────────────────────────────────────────────────
 // `MeshData.groups` is where the weights live; these three reshape them.
 export {
