@@ -134,6 +134,8 @@ export function collectSidecar(): ProjectSidecar {
           normals: origGeo.normals ? float32ToBase64(origGeo.normals) : null,
           uvs: origGeo.uvs ? float32ToBase64(origGeo.uvs) : null,
           indices: origGeo.indices.slice(),
+          ...(origGeo.polys ? { polys: origGeo.polys.map((p) => [...p]) } : {}),
+          ...(origGeo.smoothAngle !== undefined ? { smoothAngle: origGeo.smoothAngle } : {}),
         },
         stack: mods.map((m) => ({ ...m })),
       };
@@ -345,7 +347,15 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
           stack.push(mod);
         }
         if (stack.length > 0 && numV >= 3 && indices.every((v) => v < numV)) {
-          state.originalGeometryMap.set(mesh.uniqueId, { positions, normals, uvs, indices });
+          const { polys, smoothAngle } = entry.modifiers.original;
+          state.originalGeometryMap.set(mesh.uniqueId, {
+            positions,
+            normals,
+            uvs,
+            indices,
+            ...(Array.isArray(polys) ? { polys } : {}),
+            ...(typeof smoothAngle === "number" && Number.isFinite(smoothAngle) ? { smoothAngle } : {}),
+          });
           state.modifierMap.set(mesh.uniqueId, stack);
         }
       } catch (e) {

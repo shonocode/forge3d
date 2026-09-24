@@ -38,7 +38,7 @@ import { applyCameraPreset, toggleOrthographic, PRESETS } from "../viewport/came
 import { applySnapToGizmos } from "../tools/snap";
 import { setParent, clearParent } from "../tools/parenting";
 import { updateHierarchy } from "./panels";
-import type { ViewportMode } from "../state";
+import type { ModifierType, ViewportMode } from "../state";
 
 function bindSlider(inputId: string, displayId: string, setter: (v: number) => void, formatter?: (v: number) => string): void {
   E(inputId).addEventListener("input", function () {
@@ -93,6 +93,9 @@ export function bindActionButtons(): void {
     const rc = state.history.redoCount();
     undoBtn.title = uc ? `Undo (${uc})` : "Undo";
     redoBtn.title = rc ? `Redo (${rc})` : "Redo";
+    // Undo / redo of a modifier change leaves the panel describing the old
+    // stack otherwise.
+    updateModifierUI();
   });
 
   E("btnExportGLB").addEventListener("click", async () => {
@@ -682,17 +685,11 @@ export function bindActionButtons(): void {
   });
 
   // Modifier buttons
-  E("btnAddSubdiv").addEventListener("click", () => {
+  E("modAddSelect").addEventListener("change", function (this: HTMLSelectElement) {
     const m = lastSelected();
-    if (m) { addModifier(m, "subdivision"); updateModifierUI(); }
-  });
-  E("btnAddMirror").addEventListener("click", () => {
-    const m = lastSelected();
-    if (m) { addModifier(m, "mirror"); updateModifierUI(); }
-  });
-  E("btnAddArray").addEventListener("click", () => {
-    const m = lastSelected();
-    if (m) { addModifier(m, "array"); updateModifierUI(); }
+    const type = this.value as ModifierType | "";
+    this.value = "";
+    if (m && type) { addModifier(m, type); updateModifierUI(); }
   });
 
   // Snap controls — restore from localStorage

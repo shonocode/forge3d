@@ -233,7 +233,15 @@ export interface MapInstance {
 }
 
 // ── Modifier Stack ──
-export type ModifierType = "subdivision" | "mirror" | "array";
+export type ModifierType =
+  | "subdivision"
+  | "mirror"
+  | "array"
+  | "solidify"
+  | "decimate"
+  | "smooth"
+  | "triangulate"
+  | "weld";
 
 export interface OriginalGeometry {
   positions: Float32Array;
@@ -241,6 +249,19 @@ export interface OriginalGeometry {
   /** Per-vertex UVs (2 floats each) — carried through modifier evaluation. */
   uvs: Float32Array | null;
   indices: number[];
+  /**
+   * The real faces (quads / n-gons) over the same render vertices, when the
+   * mesh had them — Subdivision needs quads, not the triangles drawn. Absent
+   * in pre-2026-09-25 files: the modifiers then see triangles.
+   */
+  polys?: number[][];
+  /**
+   * The shading the result is drawn with, as an Auto Smooth angle (radians):
+   * π smooth, ~0 flat. Read off the mesh's own normals when the stack is
+   * first built (see `modifier-core.renderToSurface`); the Shade buttons
+   * overwrite it on a mesh with modifiers.
+   */
+  smoothAngle?: number;
 }
 
 export interface BaseModifier {
@@ -251,7 +272,14 @@ export interface BaseModifier {
 
 export interface SubdivisionModifier extends BaseModifier {
   type: "subdivision";
-  level: number;  // 1 or 2
+  /** 1..3. */
+  level: number;
+  /**
+   * `"catmull-clark"` rounds the shape (Blender's default); `"simple"` only
+   * cuts the faces and keeps the shape. Absent = `"simple"`: files saved
+   * before 2026-09-25, whose subdivision never changed the shape.
+   */
+  mode?: "catmull-clark" | "simple";
 }
 
 export interface MirrorModifier extends BaseModifier {
@@ -269,7 +297,48 @@ export interface ArrayModifier extends BaseModifier {
   offsetZ: number;
 }
 
-export type Modifier = SubdivisionModifier | MirrorModifier | ArrayModifier;
+/** Thickness along the normals — `solidify`. Positive grows inward. */
+export interface SolidifyModifier extends BaseModifier {
+  type: "solidify";
+  thickness: number;
+}
+
+/** Fewer faces, same shape — `decimateCollapse`. */
+export interface DecimateModifier extends BaseModifier {
+  type: "decimate";
+  /** Share of faces kept, 0..1. */
+  ratio: number;
+}
+
+/** Each vertex toward its neighbours' average — `smoothVert`, `repeat` times. */
+export interface SmoothModifier extends BaseModifier {
+  type: "smooth";
+  factor: number;
+  repeat: number;
+}
+
+/** Every face into triangles — `triangulate`. */
+export interface TriangulateModifier extends BaseModifier {
+  type: "triangulate";
+  quadMethod: "beauty" | "fixed" | "alternate" | "shortEdge" | "longEdge";
+  ngonMethod: "beauty" | "earClip";
+}
+
+/** Fuse vertices closer than `distance` — `weldMesh`. */
+export interface WeldModifier extends BaseModifier {
+  type: "weld";
+  distance: number;
+}
+
+export type Modifier =
+  | SubdivisionModifier
+  | MirrorModifier
+  | ArrayModifier
+  | SolidifyModifier
+  | DecimateModifier
+  | SmoothModifier
+  | TriangulateModifier
+  | WeldModifier;
 
 // ── Snap Config ──
 export interface SnapConfig {

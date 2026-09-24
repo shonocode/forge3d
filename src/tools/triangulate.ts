@@ -295,9 +295,13 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
   const P = data.positions;
   const at = (v: number): V3 => [f(P[v * 3]!), f(P[v * 3 + 1]!), f(P[v * 3 + 2]!)];
   const polys: number[][] = [];
-  for (const p of data.polys) {
+  const uvs: number[][][] | undefined = data.uvs ? [] : undefined;
+  for (let fi = 0; fi < data.polys.length; fi++) {
+    const p = data.polys[fi]!;
+    const fuv = data.uvs?.[fi];
     if (p.length <= 3) {
       polys.push([...p]);
+      if (uvs) uvs.push(fuv!.map((c) => [...c]));
       continue;
     }
     const co = p.map(at);
@@ -308,7 +312,11 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
       normalizeInPlace(n);
       tris = ngonTriangles(co, n, ngonMethod);
     }
-    for (const t of tris) polys.push(t.map((k) => p[k]!));
+    for (const t of tris) {
+      polys.push(t.map((k) => p[k]!));
+      // Each triangle corner is a corner of the source face, so its UV is too.
+      if (uvs) uvs.push(t.map((k) => [...fuv![k]!]));
+    }
   }
-  return { positions: Float32Array.from(P), polys };
+  return uvs ? { positions: Float32Array.from(P), polys, uvs } : { positions: Float32Array.from(P), polys };
 }

@@ -1,3 +1,4 @@
+import { getModifiers, setModifierShading } from "../tools/modifiers";
 import { E, isMobile, state, status } from "../state";
 import type { ToolId } from "../state";
 import { addPrimitive, PRIMS } from "../tools/primitives";
@@ -161,6 +162,11 @@ export function buildBrushButtons(): void {
   }
 }
 
+/** Shade a mesh — through its modifier stack when it has one. */
+function shade(m: import("@babylonjs/core").AbstractMesh, angle: number): boolean {
+  return setModifierShading(m, angle) || applyShading(m, angle);
+}
+
 export function buildMeshToolButtons(): void {
   const el = E("meshToolBtns");
   const tools: { label: string; title?: string; action: (m: import("@babylonjs/core").AbstractMesh) => boolean }[] = [
@@ -169,12 +175,12 @@ export function buildMeshToolButtons(): void {
     {
       label: "Shade Smooth",
       title: "全面をなめらかにシェーディング（頂点法線を平均化）",
-      action: (m) => applyShading(m, Math.PI),
+      action: (m) => shade(m, Math.PI),
     },
     {
       label: "Shade Flat",
       title: "面ごとのフラットシェーディング（ハードエッジで頂点分割）",
-      action: (m) => applyShading(m, 0.02),
+      action: (m) => shade(m, 0.02),
     },
     {
       label: "Auto Smooth ∠",
@@ -183,7 +189,7 @@ export function buildMeshToolButtons(): void {
         const inp = document.getElementById("autoSmoothAngle") as HTMLInputElement | null;
         const deg = inp ? parseFloat(inp.value) : 30;
         const clamped = Number.isNaN(deg) ? 30 : Math.max(1, Math.min(180, deg));
-        return applyShading(m, (clamped * Math.PI) / 180);
+        return shade(m, (clamped * Math.PI) / 180);
       },
     },
     { label: "Weld Vertices", action: (m) => weldVertices(m) },
@@ -198,7 +204,9 @@ export function buildMeshToolButtons(): void {
     b.addEventListener("click", () => {
       const m = lastSelected();
       if (!m) { status("メッシュを選択"); return; }
-      const snap = snapshotVertexData(m);
+      // A mesh with modifiers is re-evaluated from its base, so shading goes
+      // onto the stack (which pushes its own undo) instead of the buffer.
+      const snap = getModifiers(m).length ? null : snapshotVertexData(m);
       const ok = tool.action(m);
       if (!ok) { status("変更なし（モーフ付きメッシュはシェーディング変更不可）"); return; }
       if (snap) {

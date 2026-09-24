@@ -307,8 +307,12 @@ describe("modifier stack sidecar field (.forge3d v2)", () => {
 
 describe("validateModifierEntry", () => {
   it("accepts well-formed subdivision / mirror / array entries", () => {
+    // No mode: a file from before Catmull-Clark, read as the shape-keeping split it was.
     expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 2 })).toEqual({
-      id: "m", type: "subdivision", enabled: true, level: 2,
+      id: "m", type: "subdivision", enabled: true, level: 2, mode: "simple",
+    });
+    expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 1, mode: "catmull-clark" })).toEqual({
+      id: "m", type: "subdivision", enabled: true, level: 1, mode: "catmull-clark",
     });
     expect(validateModifierEntry({ id: "m", type: "mirror", enabled: false, axis: "z", merge: false, mergeTolerance: 0.01 })).toEqual({
       id: "m", type: "mirror", enabled: false, axis: "z", merge: false, mergeTolerance: 0.01,
@@ -318,9 +322,26 @@ describe("validateModifierEntry", () => {
     });
   });
 
+  it("accepts the modifiers added 2026-09-25", () => {
+    expect(validateModifierEntry({ id: "m", type: "solidify", enabled: true, thickness: 0.2 })).toEqual({
+      id: "m", type: "solidify", enabled: true, thickness: 0.2,
+    });
+    expect(validateModifierEntry({ id: "m", type: "decimate", enabled: true, ratio: 0.3 })).toMatchObject({ ratio: 0.3 });
+    expect(validateModifierEntry({ id: "m", type: "smooth", enabled: true, factor: 0.5, repeat: 3 })).toMatchObject({ factor: 0.5, repeat: 3 });
+    expect(validateModifierEntry({ id: "m", type: "triangulate", enabled: true, quadMethod: "fixed", ngonMethod: "earClip" })).toMatchObject({
+      quadMethod: "fixed",
+      ngonMethod: "earClip",
+    });
+    expect(validateModifierEntry({ id: "m", type: "triangulate", enabled: true, quadMethod: "bogus" })).toMatchObject({ quadMethod: "beauty" });
+    expect(validateModifierEntry({ id: "m", type: "weld", enabled: true, distance: 0.002 })).toMatchObject({ distance: 0.002 });
+    expect(validateModifierEntry({ id: "m", type: "decimate", enabled: true, ratio: "half" })).toBeNull();
+  });
+
   it("clamps numeric params to safe UI ranges (memory-bomb guard)", () => {
     const sub = validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 99 });
-    expect(sub).toMatchObject({ level: 2 });
+    expect(sub).toMatchObject({ level: 3 });
+    expect(validateModifierEntry({ id: "m", type: "smooth", enabled: true, factor: 9, repeat: 1e6 })).toMatchObject({ factor: 1, repeat: 20 });
+    expect(validateModifierEntry({ id: "m", type: "decimate", enabled: true, ratio: 0 })).toMatchObject({ ratio: 0.05 });
     const arr = validateModifierEntry({ id: "m", type: "array", enabled: true, count: 5000, offsetX: 0, offsetY: 0, offsetZ: 0 });
     expect(arr).toMatchObject({ count: 10 });
   });

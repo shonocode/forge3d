@@ -434,3 +434,46 @@ describe("maskMesh", () => {
     expect([...out.creases!]).toEqual([["0_2", 0.5]]);
   });
 });
+
+describe("UVs through merge / transform / mirror / array / weld", () => {
+  /** A unit quad in XZ with the obvious UVs, corner by corner. */
+  const quad = (): MeshData => ({
+    positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+    polys: [[0, 1, 2, 3]],
+    uvs: [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+  });
+  /** UV of the corner sitting on vertex `v` of face `f`. */
+  const uvAt = (m: MeshData, f: number, v: number): number[] => m.uvs![f]![m.polys[f]!.indexOf(v)]!;
+
+  it("merge keeps each part's UVs and fills a part without them with (0, 0)", () => {
+    const bare: MeshData = { positions: Float32Array.from([0, 1, 0, 1, 1, 0, 0, 1, 1]), polys: [[0, 1, 2]] };
+    const out = mergeMeshes([quad(), bare]);
+    expect(out.uvs).toEqual([[[0, 0], [1, 0], [1, 1], [0, 1]], [[0, 0], [0, 0], [0, 0]]]);
+    expect(mergeMeshes([bare, bare]).uvs).toBeUndefined();
+  });
+
+  it("a mirroring transform reverses the corners and each UV stays on its vertex", () => {
+    const src = quad();
+    const out = transformMesh(src, { scale: [-1, 1, 1] });
+    expect(out.polys[0]).toEqual([3, 2, 1, 0]);
+    for (let v = 0; v < 4; v++) expect(uvAt(out, 0, v)).toEqual(uvAt(src, 0, v));
+  });
+
+  it("mirror and array carry one UV set per copy", () => {
+    expect(mirrorMesh(quad(), "x").uvs).toHaveLength(2);
+    const arr = arrayMesh(quad(), 3, [2, 0, 0]);
+    expect(arr.uvs).toEqual([0, 1, 2].map(() => [[0, 0], [1, 0], [1, 1], [0, 1]]));
+  });
+
+  it("weld drops the UV of a corner that collapses onto its neighbour", () => {
+    // Vertex 4 sits on vertex 1: the pentagon becomes the quad again.
+    const five: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+      polys: [[0, 1, 2, 3, 4]],
+      uvs: [[[0, 0], [1, 0], [9, 9], [1, 1], [0, 1]]],
+    };
+    const out = weldMesh(five, 1e-6);
+    expect(out.polys).toEqual([[0, 1, 2, 3]]);
+    expect(out.uvs).toEqual([[[0, 0], [1, 0], [1, 1], [0, 1]]]);
+  });
+});

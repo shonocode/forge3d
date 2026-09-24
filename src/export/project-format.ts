@@ -82,7 +82,16 @@ export interface ProjectMeshEntry {
    */
   modifiers?: {
     /** `uvs` absent in files written before UV-through-modifiers support. */
-    original: { positions: string; normals: string | null; uvs?: string | null; indices: number[] };
+    original: {
+      positions: string;
+      normals: string | null;
+      uvs?: string | null;
+      indices: number[];
+      /** Real faces over the render vertices. Absent before 2026-09-25. */
+      polys?: number[][];
+      /** Auto Smooth angle set by the Shade buttons. Absent = read off the normals. */
+      smoothAngle?: number;
+    };
     stack: Array<Record<string, unknown>>;
   };
 }
@@ -101,8 +110,10 @@ export function validateModifierEntry(raw: unknown): import("../state").Modifier
   switch (m.type) {
     case "subdivision": {
       if (typeof m.level !== "number" || !Number.isFinite(m.level)) return null;
-      const level = Math.min(2, Math.max(1, Math.round(m.level)));
-      return { id, type: "subdivision", enabled: m.enabled, level };
+      const level = Math.min(3, Math.max(1, Math.round(m.level)));
+      // No mode = a file from before Catmull-Clark: keep its shape-preserving split.
+      const mode = m.mode === "catmull-clark" ? "catmull-clark" : "simple";
+      return { id, type: "subdivision", enabled: m.enabled, level, mode };
     }
     case "mirror": {
       if (m.axis !== "x" && m.axis !== "y" && m.axis !== "z") return null;
@@ -115,10 +126,32 @@ export function validateModifierEntry(raw: unknown): import("../state").Modifier
       const count = Math.min(10, Math.max(2, Math.round(m.count)));
       return { id, type: "array", enabled: m.enabled, count, offsetX: m.offsetX, offsetY: m.offsetY, offsetZ: m.offsetZ };
     }
+    case "solidify":
+      if (!num(m.thickness)) return null;
+      return { id, type: "solidify", enabled: m.enabled, thickness: clamp(m.thickness, -0.5, 0.5) };
+    case "decimate":
+      if (!num(m.ratio)) return null;
+      return { id, type: "decimate", enabled: m.enabled, ratio: clamp(m.ratio, 0.05, 1) };
+    case "smooth":
+      if (!num(m.factor) || !num(m.repeat)) return null;
+      return { id, type: "smooth", enabled: m.enabled, factor: clamp(m.factor, 0, 1), repeat: Math.round(clamp(m.repeat, 1, 20)) };
+    case "triangulate": {
+      const quads = ["beauty", "fixed", "alternate", "shortEdge", "longEdge"] as const;
+      const ngons = ["beauty", "earClip"] as const;
+      const quadMethod = quads.find((q) => q === m.quadMethod) ?? "beauty";
+      const ngonMethod = ngons.find((q) => q === m.ngonMethod) ?? "beauty";
+      return { id, type: "triangulate", enabled: m.enabled, quadMethod, ngonMethod };
+    }
+    case "weld":
+      if (!num(m.distance)) return null;
+      return { id, type: "weld", enabled: m.enabled, distance: clamp(m.distance, 0, 0.1) };
     default:
       return null;
   }
 }
+
+const num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 export interface ProjectSidecar {
   format: "forge3d-project";

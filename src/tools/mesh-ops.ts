@@ -46,6 +46,9 @@ function remapKeys<T>(
  * Nothing is welded: parts that touch stay separate surfaces, which is what
  * you want for a scene assembled from distinct objects. Run {@link weldMesh}
  * afterwards if you meant them to fuse.
+ *
+ * UVs are carried when any part has them; a part without UVs gets (0, 0) at
+ * every corner so the layer stays shaped like `polys`.
  */
 export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   let total = 0;
@@ -55,6 +58,7 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const polys: number[][] = [];
   const creases = new Map<string, number>();
   const seams = new Set<string>();
+  const uvs: number[][][] | undefined = parts.some((p) => p.uvs) ? [] : undefined;
   let cursor = 0;
 
   for (const part of parts) {
@@ -62,11 +66,15 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
     positions.set(part.positions, cursor);
     cursor += part.positions.length;
     for (const poly of part.polys) polys.push(poly.map((v) => v + base));
+    if (uvs)
+      part.polys.forEach((poly, f) =>
+        uvs.push(part.uvs ? part.uvs[f]!.map((c) => [...c]) : poly.map(() => [0, 0])),
+      );
     remapKeys(part.creases, base, (k, v) => creases.set(k, v));
     remapKeys(part.seams, base, (k) => seams.add(k));
   }
 
-  return { positions, polys, creases, seams };
+  return uvs ? { positions, polys, creases, seams, uvs } : { positions, polys, creases, seams };
 }
 
 export interface TransformOptions {
@@ -85,6 +93,7 @@ export interface TransformOptions {
  *
  * A scale with an odd number of negative axes turns the mesh inside out, so
  * the winding is reversed to compensate — a mirrored chair still faces out.
+ * UVs follow their corners through that reversal.
  */
 export function transformMesh(data: MeshData, opts: TransformOptions): MeshData {
   const s = typeof opts.scale === "number" ? ([opts.scale, opts.scale, opts.scale] as Vec3) : (opts.scale ?? [1, 1, 1]);
@@ -127,6 +136,9 @@ export function transformMesh(data: MeshData, opts: TransformOptions): MeshData 
     polys: flipped ? data.polys.map((p) => [...p].reverse()) : data.polys.map((p) => [...p]),
     creases: data.creases ? new Map(data.creases) : undefined,
     seams: data.seams ? new Set(data.seams) : undefined,
+    ...(data.uvs
+      ? { uvs: data.uvs.map((f) => (flipped ? [...f].reverse() : f).map((c) => [...c])) }
+      : {}),
   };
 }
 
@@ -509,16 +521,29 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
     remap[v] = id;
   }
 
+  // A corner that welds onto its neighbour is dropped with its UV, so the
+  // layer stays shaped like the surviving polygons.
   const polys: number[][] = [];
-  for (const poly of data.polys) {
+  const uvs: number[][][] | undefined = data.uvs ? [] : undefined;
+  data.polys.forEach((poly, f) => {
     const ring: number[] = [];
-    for (const v of poly) {
+    const corners: number[] = [];
+    poly.forEach((v, i) => {
       const m = remap[v]!;
-      if (ring[ring.length - 1] !== m) ring.push(m);
+      if (ring[ring.length - 1] !== m) {
+        ring.push(m);
+        corners.push(i);
+      }
+    });
+    while (ring.length > 1 && ring[0] === ring[ring.length - 1]) {
+      ring.pop();
+      corners.pop();
     }
-    while (ring.length > 1 && ring[0] === ring[ring.length - 1]) ring.pop();
-    if (ring.length >= 3) polys.push(ring);
-  }
+    if (ring.length >= 3) {
+      polys.push(ring);
+      if (uvs) uvs.push(corners.map((i) => [...data.uvs![f]![i]!]));
+    }
+  });
 
   const creases = new Map<string, number>();
   if (data.creases)
@@ -537,7 +562,9 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
       if (ma !== mb) seams.add(seamKey(ma, mb));
     }
 
-  return { positions: new Float32Array(positions), polys, creases, seams };
+  return uvs
+    ? { positions: new Float32Array(positions), polys, creases, seams, uvs }
+    : { positions: new Float32Array(positions), polys, creases, seams };
 }
 
 /** Axis-aligned bounds, or null for an empty mesh. */
@@ -767,6 +794,13 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   for (const poly of data.polys) polys.push([...poly]);
   // The offset copy faces the other way, so its winding is reversed.
   for (const poly of data.polys) polys.push([...poly].reverse().map((v) => v + count));
+  // UVs: both shells keep the face's own; a rim quad takes the UVs of the
+  // edge it grows from, so it is a zero-width strip in UV space — as Blender's
+  // rim loops, which copy from the face across the edge.
+  const src = data.uvs;
+  const uvs: number[][][] | undefined = src
+    ? [...src.map((f) => f.map((c) => [...c])), ...src.map((f) => [...f].reverse().map((c) => [...c]))]
+    : undefined;
 
   // Rim: one quad per boundary edge, wound to agree with the face holding it.
   // `[b, a, a', b']` for a directed edge a->b — read off Blender's output.
@@ -776,13 +810,19 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
       const key = seamKey(poly[i]!, poly[(i + 1) % poly.length]!);
       uses.set(key, (uses.get(key) ?? 0) + 1);
     }
-  for (const poly of data.polys)
+  data.polys.forEach((poly, f) => {
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i]!;
       const b = poly[(i + 1) % poly.length]!;
       if (uses.get(seamKey(a, b)) !== 1) continue;
       polys.push([b, a, a + count, b + count]);
+      if (uvs) {
+        const ua = src![f]![i]!;
+        const ub = src![f]![(i + 1) % poly.length]!;
+        uvs.push([[...ub], [...ua], [...ua], [...ub]]);
+      }
     }
+  });
 
   const creases = new Map<string, number>();
   const seams = new Set<string>();
@@ -797,7 +837,7 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
     seams.add(seamKey(Number(a) + count, Number(b) + count));
   }
 
-  return { positions, polys, creases, seams };
+  return uvs ? { positions, polys, creases, seams, uvs } : { positions, polys, creases, seams };
 }
 
 // ── Bisect ─────────────────────────────────────────────────────────────────

@@ -252,59 +252,118 @@ export function updateModifierUI(): void {
 
 function modLabel(mod: Modifier): string {
   switch (mod.type) {
-    case "subdivision": return "Subdivision (L" + mod.level + ")";
+    case "subdivision": return "Subdivision (L" + mod.level + (mod.mode === "catmull-clark" ? "" : " Simple") + ")";
     case "mirror": return "Mirror (" + mod.axis.toUpperCase() + ")";
-    case "array": return "Array (\u00d7" + mod.count + ")";
+    case "array": return "Array (×" + mod.count + ")";
+    case "solidify": return "Solidify (" + mod.thickness.toFixed(2) + ")";
+    case "decimate": return "Decimate (" + Math.round(mod.ratio * 100) + "%)";
+    case "smooth": return "Smooth (×" + mod.repeat + ")";
+    case "triangulate": return "Triangulate";
+    case "weld": return "Weld";
   }
+}
+
+/** One line under each modifier's header: what it does, in plain words. */
+const MOD_HINT: Record<Modifier["type"], string> = {
+  subdivision: "面を細かく割る。「丸く」は角を丸め、「割るだけ」は形を変えない",
+  mirror: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点はくっつく",
+  array: "同じ形を Offset ずつずらして Count 個並べる",
+  solidify: "面を法線の内側へ押し出して厚みをつける。マイナスで外側",
+  decimate: "形をなるべく保ったまま面を減らす。Ratio は残す割合",
+  smooth: "頂点を隣の平均へ寄せて、でこぼこをならす",
+  triangulate: "四角形以上の面を三角形に割る（書き出し先が三角形しか読めないとき）",
+  weld: "Distance より近い頂点をひとつにまとめる",
+};
+
+/** A slider bound to one numeric parameter; the stack re-runs when the slider is let go. */
+function bindSlider(
+  el: HTMLElement,
+  mesh: import("@babylonjs/core").AbstractMesh,
+  mod: Modifier,
+  key: string,
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+): void {
+  const val = (mod as unknown as Record<string, number>)[key]!;
+  const digits = step >= 1 ? 0 : Math.max(1, Math.ceil(-Math.log10(step)));
+  const wrap = document.createElement("div");
+  wrap.className = "sr";
+  wrap.style.margin = "0";
+  wrap.innerHTML = `<label style="font-size:9px;">${label} <span class="mv">${val.toFixed(digits)}</span></label>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${val}">`;
+  const input = wrap.querySelector("input")!;
+  const out = wrap.querySelector("span.mv")!;
+  input.addEventListener("input", () => { out.textContent = (+input.value).toFixed(digits); });
+  input.addEventListener("change", () => {
+    updateModifierParam(mesh, mod.id, { [key]: +input.value });
+    updateModifierUI();
+  });
+  el.appendChild(wrap);
+}
+
+/** A row of mutually exclusive buttons bound to one parameter. */
+function bindChoice(
+  el: HTMLElement,
+  mesh: import("@babylonjs/core").AbstractMesh,
+  mod: Modifier,
+  key: string,
+  choices: ReadonlyArray<readonly [string, string]>,
+): void {
+  const cur = (mod as unknown as Record<string, unknown>)[key];
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:3px;";
+  for (const [value, text] of choices) {
+    const btn = document.createElement("button");
+    btn.className = "abtn" + (cur === value ? " on" : "");
+    btn.style.cssText = "flex:1;padding:1px;font-size:9px;min-width:0;";
+    btn.textContent = text;
+    btn.addEventListener("click", () => {
+      updateModifierParam(mesh, mod.id, { [key]: value });
+      updateModifierUI();
+    });
+    row.appendChild(btn);
+  }
+  el.appendChild(row);
 }
 
 function buildModParams(el: HTMLElement, mesh: import("@babylonjs/core").AbstractMesh, mod: Modifier): void {
+  const hint = document.createElement("div");
+  hint.style.cssText = "font-size:9px;color:var(--t3);line-height:1.4;";
+  hint.textContent = MOD_HINT[mod.type];
+  el.appendChild(hint);
   switch (mod.type) {
     case "subdivision":
-      el.innerHTML = modSlider("Level", mod.level, 1, 2, 1);
-      el.querySelector("input")?.addEventListener("input", function () {
-        updateModifierParam(mesh, mod.id, { level: +this.value });
-        el.querySelector("span.mv")!.textContent = this.value;
-        updateModifierUI();
-      });
+      bindChoice(el, mesh, mod, "mode", [["catmull-clark", "丸く"], ["simple", "割るだけ"]]);
+      bindSlider(el, mesh, mod, "level", "Level", 1, 3, 1);
       break;
-    case "mirror": {
-      const axes = ["x", "y", "z"] as const;
-      el.innerHTML = `<div style="display:flex;gap:3px;">${axes.map((a) =>
-        `<button class="abtn${mod.axis === a ? " on" : ""}" data-a="${a}" style="flex:1;padding:1px;font-size:9px;min-width:0;">${a.toUpperCase()}</button>`
-      ).join("")}</div>`;
-      el.querySelectorAll<HTMLElement>("button").forEach((btn) =>
-        btn.addEventListener("click", () => {
-          updateModifierParam(mesh, mod.id, { axis: btn.dataset.a });
-          updateModifierUI();
-        })
-      );
+    case "mirror":
+      bindChoice(el, mesh, mod, "axis", [["x", "X"], ["y", "Y"], ["z", "Z"]]);
       break;
-    }
     case "array":
-      el.innerHTML = modSlider("Count", mod.count, 2, 10, 1) +
-        modSlider("Offset X", mod.offsetX, -5, 5, 0.1) +
-        modSlider("Offset Y", mod.offsetY, -5, 5, 0.1) +
-        modSlider("Offset Z", mod.offsetZ, -5, 5, 0.1);
-      {
-        const inputs = el.querySelectorAll<HTMLInputElement>("input");
-        const keys = ["count", "offsetX", "offsetY", "offsetZ"] as const;
-        inputs.forEach((inp, i) => {
-          inp.addEventListener("input", function () {
-            updateModifierParam(mesh, mod.id, { [keys[i]!]: +this.value });
-            inp.previousElementSibling!.querySelector("span.mv")!.textContent =
-              keys[i] === "count" ? this.value : (+this.value).toFixed(1);
-          });
-        });
-      }
+      bindSlider(el, mesh, mod, "count", "Count", 2, 10, 1);
+      bindSlider(el, mesh, mod, "offsetX", "Offset X", -5, 5, 0.1);
+      bindSlider(el, mesh, mod, "offsetY", "Offset Y", -5, 5, 0.1);
+      bindSlider(el, mesh, mod, "offsetZ", "Offset Z", -5, 5, 0.1);
+      break;
+    case "solidify":
+      bindSlider(el, mesh, mod, "thickness", "Thickness", -0.5, 0.5, 0.01);
+      break;
+    case "decimate":
+      bindSlider(el, mesh, mod, "ratio", "Ratio", 0.05, 1, 0.05);
+      break;
+    case "smooth":
+      bindSlider(el, mesh, mod, "factor", "Factor", 0, 1, 0.05);
+      bindSlider(el, mesh, mod, "repeat", "Repeat", 1, 20, 1);
+      break;
+    case "triangulate":
+      bindChoice(el, mesh, mod, "quadMethod", [["beauty", "Beauty"], ["fixed", "Fixed"], ["shortEdge", "短い対角"]]);
+      break;
+    case "weld":
+      bindSlider(el, mesh, mod, "distance", "Distance", 0, 0.1, 0.001);
       break;
   }
-}
-
-function modSlider(label: string, val: number, min: number, max: number, step: number): string {
-  const display = step >= 1 ? String(val) : val.toFixed(1);
-  return `<div class="sr" style="margin:0;"><label style="font-size:9px;">${label} <span class="mv">${display}</span></label>
-    <input type="range" min="${min}" max="${max}" step="${step}" value="${val}"></div>`;
 }
 
 function v3h(pf: string, v: { x: number; y: number; z: number }): string {

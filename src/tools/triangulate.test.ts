@@ -74,3 +74,17 @@ describe("triangulate", () => {
     expect([...out.positions]).toEqual([...tri.positions]);
   });
 });
+
+describe("triangulate carries UVs", () => {
+  it("each triangle corner takes the UV of the source corner on the same vertex", () => {
+    const src: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 2, 0, 0, 2, 0, 1, 0, 0, 1, 1, 0, 1.5]),
+      polys: [[0, 1, 2, 3], [3, 2, 4]],
+      uvs: [[[0, 0], [1, 0], [1, 0.5], [0, 0.5]], [[0, 0.5], [1, 0.5], [0.5, 0.75]]],
+    };
+    const uvOfVertex = [[0, 0], [1, 0], [1, 0.5], [0, 0.5], [0.5, 0.75]];
+    const out = triangulate(src);
+    expect(out.uvs).toHaveLength(out.polys.length);
+    out.polys.forEach((p, f) => p.forEach((v, i) => expect(out.uvs![f]![i]).toEqual(uvOfVertex[v])));
+  });
+});
