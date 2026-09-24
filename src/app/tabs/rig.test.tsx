@@ -171,6 +171,16 @@ describe("Anim tab", () => {
     expect(document.getElementById("dopeCanvas")).toBeTruthy();
   });
 
+  it("Timeline: the graph editor is wired again after the Anim tab is left and reopened", () => {
+    // Leaving the tab unmounts the canvases; the editor used to keep the
+    // detached canvas and never wire the new one (blank, unresponsive).
+    const first = render(<>{animControls.tl!()}</>);
+    expect(within(document.getElementById("graphChannels")!).getByText("Pos X")).toBeTruthy();
+    first.unmount();
+    render(<>{animControls.tl!()}</>);
+    expect(within(document.getElementById("graphChannels")!).getByText("Pos X")).toBeTruthy();
+  });
+
   it("Record: Auto-Key on by default, record/delete buttons, easing select, keyframes empty", () => {
     render(<>{animControls.rec!()}</>);
     expect((screen.getByLabelText("🔑 Auto-Key（ポーズ変更を自動キー）") as HTMLInputElement).checked).toBe(true);

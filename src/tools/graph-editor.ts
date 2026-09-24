@@ -219,8 +219,13 @@ function morphColor(i: number): string {
 const HIT_RADIUS = 6;
 const HANDLE_DOT_RADIUS = 3;
 
+/**
+ * Caches DOM refs and installs the pointer handlers. Safe to call on every
+ * mount: the Anim tab unmounts its canvas when another tab is shown, so a
+ * cached canvas that has left the document is dropped and the new one wired.
+ */
 export function initGraphEditor(): void {
-  if (_canvas) return;
+  if (_canvas?.isConnected) return;
 
   _canvas = E("graphCanvas") as HTMLCanvasElement;
   _ctx = _canvas.getContext("2d");
@@ -250,7 +255,7 @@ export function initGraphEditor(): void {
 
     // Morph curve mode toggle — teal to match the dopesheet's morph lanes.
     const morphBtn = document.createElement("button");
-    morphBtn.className = "abtn";
+    morphBtn.className = "abtn" + (_morphMode ? " on" : "");
     morphBtn.style.cssText = "font-size:9px;padding:1px 6px;border-left:3px solid hsl(172,65%,50%)";
     morphBtn.textContent = "Morphs";
     morphBtn.title = "モーフ (表情) の influence カーブを表示・編集";

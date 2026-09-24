@@ -737,7 +737,8 @@ function TexturesSection() {
           ))}
           <AOBakeRow mesh={mesh} />
           <NormalBakeRow mesh={mesh} />
-          <ProceduralSection mesh={mesh} />
+          {/* key: the section's state is seeded from the mesh, so a new selection must remount it */}
+          <ProceduralSection key={mesh.uniqueId} mesh={mesh} />
           <DisplaySection mesh={mesh} mat={mat} />
         </>
       )}

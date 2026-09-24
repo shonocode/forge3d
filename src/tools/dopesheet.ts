@@ -116,11 +116,12 @@ export function setKeysRetimedHandler(fn: () => void): void {
 }
 
 /**
- * One-time setup: caches DOM refs and installs the pointer handlers.
- * Idempotent.
+ * Caches DOM refs and installs the pointer handlers. Safe to call on every
+ * mount: the Anim tab unmounts its canvas when another tab is shown, so a
+ * cached canvas that has left the document is dropped and the new one wired.
  */
 export function initDopesheet(): void {
-  if (_canvas) return;
+  if (_canvas?.isConnected) return;
   _canvas = E("dopeCanvas") as HTMLCanvasElement;
   _ctx = _canvas.getContext("2d");
   _info = E("dopeInfo");
