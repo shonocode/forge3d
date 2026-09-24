@@ -122,4 +122,25 @@ describe("booleanMesh", () => {
     // Hole Tolerant (per triangle) agrees here.
     expect(counts(booleanMesh(joined, { operation: "difference", set: new Set([6]), holeTolerant: true }))).toEqual([8, 6]);
   });
+
+  it("takes more than two parts, as the Collection operand does", () => {
+    // Parity case `threeBoxes`: two cutters that overlap A and each other.
+    // A∩B = 0.3·0.6·0.6 = 0.108, A∩C = 0.75·0.55·0.4 = 0.165,
+    // A∩B∩C = 0.3·0.5·0.15 = 0.0225.
+    const Bb = box([0.55, 0, -0.05], [0.7, 0.6, 0.6]);
+    const C = box([0.175, 0.075, 0.45], [0.85, 0.55, 0.7]);
+    const joined: MeshData = {
+      positions: Float32Array.from([...A.positions, ...Bb.positions, ...C.positions]),
+      polys: [...A.polys, ...Bb.polys.map((p) => p.map((v) => v + 8)), ...C.polys.map((p) => p.map((v) => v + 16))],
+    };
+    const parts = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2];
+    const union = booleanMesh(joined, { operation: "union", parts });
+    const diff = booleanMesh(joined, { operation: "difference", parts });
+    const inter = booleanMesh(joined, { operation: "intersect", parts });
+    expect(counts(union)).toEqual([30, 17]);
+    expect(counts(diff)).toEqual([26, 15]);
+    expect(volume(diff)).toBeCloseTo(1 - 0.108 - 0.165 + 0.0225, 5);
+    expect(counts(inter)).toEqual([8, 6]);
+    expect(volume(inter)).toBeCloseTo(0.0225, 5);
+  });
 });

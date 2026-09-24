@@ -57,9 +57,16 @@ export interface BooleanOptions {
   operation: BooleanOperation;
   /**
    * The faces of part **B** — Blender's selected faces. Every other face is
-   * part A. `"difference"` is A − B.
+   * part A. `"difference"` is A − B. Give this or {@link parts}.
    */
-  set: ReadonlySet<number>;
+  set?: ReadonlySet<number>;
+  /**
+   * A part number per face, for **more than two** parts — the BOOLEAN
+   * modifier with a Collection operand, where the modified object is part 0
+   * and each object in the collection its own part. `"difference"` is part 0
+   * minus all the others; `"union"` and `"intersect"` are over all of them.
+   */
+  parts?: readonly number[];
   /**
    * For parts that are not closed: decide each triangle by ray casting on
    * its own rather than each patch at once (Blender's "Hole Tolerant",
@@ -67,6 +74,19 @@ export interface BooleanOptions {
    * No effect when both parts are closed.
    */
   holeTolerant?: boolean;
+  /**
+   * Let a part intersect **itself** — Blender's `use_self` ("Self
+   * Intersection"). Every pair of triangles is cut against each other, the
+   * same part's included (`trimesh_self_intersect` instead of the two-part
+   * `trimesh_nary_intersect`), so a part made of overlapping pieces is
+   * resolved before the boolean. Default false, as Blender's.
+   *
+   * **Except the two triangles of one face.** Edit-mode `intersect` cuts a
+   * bent quad's halves against each other; the modifier path does not —
+   * measured, `boolean-mod-union-self` on the UV sphere and the bent cage
+   * came out 10 and more faces apart until those pairs were skipped.
+   */
+  useSelf?: boolean;
 }
 
 /**
@@ -77,11 +97,16 @@ export interface BooleanOptions {
  * ```
  */
 export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
-  const { verts, pieces } = subdivide(data, options.set);
+  const partOfFace: (face: number) => number = options.parts
+    ? (face) => options.parts![face] ?? 0
+    : (face) => (options.set?.has(face) ? 1 : 0);
+  if (!options.parts && !options.set) throw new Error("booleanMesh: give `set` (two parts) or `parts`");
+  const nshapes = options.parts ? Math.max(1, ...options.parts) + 1 : 2;
+  const { verts, pieces } = subdivide(data, options.useSelf ? null : partOfFace, !options.useSelf);
   const coOf = (v: number): Q3 => verts[v]!.exact;
-  const shapeOf = (t: number): number => (options.set.has(pieces[t]!.face) ? 1 : 0);
+  const shapeOf = (t: number): number => partOfFace(pieces[t]!.face);
   const coD = (v: number): readonly number[] => verts[v]!.co;
-  const kept = booleanTrimesh(pieces, coOf, coD, options.operation, 2, shapeOf, options.holeTolerant ?? false);
+  const kept = booleanTrimesh(pieces, coOf, coD, options.operation, nshapes, shapeOf, options.holeTolerant ?? false);
   const merged = mergePieces(kept, data, verts);
   // `apply_mesh_output_to_bmesh`: a face whose vertices another face already
   // has is that face (`BM_face_exists`), so it appears once.

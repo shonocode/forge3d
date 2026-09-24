@@ -23,6 +23,7 @@
  */
 import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh } from "./half-edge";
 import { extrudeFaces, insetFaces } from "./operators";
+import { weldByMap } from "../remove-doubles";
 
 /** Every distinct vertex used by the given faces. */
 function vertsOf(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
@@ -346,5 +347,249 @@ export function extrudeRepeat(
 function usedVertices(em: EditMesh): Set<number> {
   const out = new Set<number>();
   for (const p of toPolygons(em)) for (const v of p) out.add(v);
+  return out;
+}
+
+/**
+ * Extrude a face region and move it, keeping the mesh manifold — Blender's
+ * **Extrude Manifold** (`MESH_OT_extrude_manifold`), which is
+ * `extrude_region(use_dissolve_ortho_edges=True)` then a translate.
+ *
+ * The difference from a plain extrude is at the region's rim: where the face
+ * outside a rim edge stands **perpendicular** to the region (the region's
+ * averaged normal against that face's, `|dot| ≤ 0.0001`), no side wall is
+ * built — the outside face is stretched to take the wall in, and an original
+ * rim vertex left between just two edges is folded into its copy. Pushing a
+ * corner face of a box in or out therefore changes the box's sides instead of
+ * adding walls against them (`bmo_extrude.cc`, `probe-extrude-manifold.py`).
+ *
+ * Then the translate's **auto-merge and split**: moved vertices that land on
+ * unmoved ones weld to them, and edges with a vertex lying on them are split
+ * there and welded — so a face pushed in until it meets the far side cuts the
+ * column out, as Blender's does (`extrude-manifold-through`). Edges crossing
+ * other edges mid-span are not split (see {@link automergeAndSplit}).
+ *
+ * Returns the moved faces.
+ */
+export function extrudeManifold(
+  em: EditMesh,
+  faces: ReadonlySet<number>,
+  offset: readonly [number, number, number],
+): Set<number> {
+  const polys = toPolygons(em);
+  const P = Array.from(em.positions);
+  const count = P.length / 3;
+  const k = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const normalOf = (p: readonly number[]): [number, number, number] => {
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i]! * 3;
+      const b = p[(i + 1) % p.length]! * 3;
+      x += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+      y += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+      z += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+    }
+    const l = Math.hypot(x, y, z);
+    return l > 0 ? [x / l, y / l, z / l] : [0, 0, 0];
+  };
+
+  // The region's averaged normal (`average_normal`), and who owns each edge.
+  let avg: [number, number, number] = [0, 0, 0];
+  for (const f of faces) {
+    const n = normalOf(polys[f]!);
+    avg = [avg[0] + n[0], avg[1] + n[1], avg[2] + n[2]];
+  }
+  const al = Math.hypot(...avg);
+  avg = al > 0 ? [avg[0] / al, avg[1] / al, avg[2] / al] : [0, 0, 1];
+  const outsideOwner = new Map<string, number>();
+  polys.forEach((p, f) => {
+    if (faces.has(f)) return;
+    for (let i = 0; i < p.length; i++) outsideOwner.set(k(p[i]!, p[(i + 1) % p.length]!), f);
+  });
+
+  // Duplicate the region's vertices; the region moves onto the copies.
+  const copy = new Map<number, number>();
+  for (const f of faces)
+    for (const v of polys[f]!)
+      if (!copy.has(v)) {
+        copy.set(v, P.length / 3);
+        P.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
+      }
+
+  const out = polys.map((p) => [...p]);
+  const sides: number[][] = [];
+  const tagged: number[] = [];
+  for (const f of faces) {
+    const p = polys[f]!;
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i]!;
+      const b = p[(i + 1) % p.length]!;
+      const owner = outsideOwner.get(k(a, b));
+      if (owner === undefined && [...faces].some((g) => g !== f && polys[g]!.includes(a) && polys[g]!.includes(b)))
+        continue; // interior to the region
+      const na = copy.get(a)!;
+      const nb = copy.get(b)!;
+      const perpendicular =
+        owner !== undefined && Math.abs(avg[0] * normalOf(polys[owner]!)[0] + avg[1] * normalOf(polys[owner]!)[1] + avg[2] * normalOf(polys[owner]!)[2]) <= 0.0001;
+      if (perpendicular) {
+        // Join the wall into the outside face: its b→a becomes b→nb→na→a.
+        const F = out[owner!]!;
+        const j = F.findIndex((v, x) => v === b && F[(x + 1) % F.length] === a);
+        F.splice(j + 1, 0, nb, na);
+        tagged.push(a, b);
+      } else {
+        sides.push([a, b, nb, na]);
+      }
+    }
+  }
+  for (const f of faces) out[f] = polys[f]!.map((v) => copy.get(v)!);
+
+  // A rim vertex left between two edges folds into its copy.
+  const regionFaces = new Set([...faces].map((f) => out[f]!));
+  let all = [...out, ...sides];
+  for (const v of new Set(tagged)) {
+    const nbrs = new Set<number>();
+    for (const p of all)
+      for (let i = 0; i < p.length; i++) {
+        if (p[i] !== v) continue;
+        nbrs.add(p[(i + 1) % p.length]!);
+        nbrs.add(p[(i + p.length - 1) % p.length]!);
+      }
+    if (nbrs.size !== 2) continue;
+    for (const p of all) {
+      const i = p.indexOf(v);
+      if (i >= 0) p.splice(i, 1);
+    }
+    all = all.filter((p) => p.length >= 3);
+  }
+
+  // Vertices the old region used and nothing uses now go.
+  const used = new Set(all.flat());
+  const remap = new Int32Array(P.length / 3).fill(-1);
+  const positions: number[] = [];
+  for (let v = 0; v < P.length / 3; v++) {
+    if (!used.has(v) && (v >= count || [...faces].some((f) => polys[f]!.includes(v)))) continue;
+    remap[v] = positions.length / 3;
+    positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
+  }
+  const moved = new Set<number>();
+  all.forEach((p, i) => {
+    if (regionFaces.has(p)) moved.add(i);
+  });
+  rebuildPolygons(em, Float32Array.from(positions), all.map((p) => p.map((v) => remap[v]!)));
+  moveFaces(em, moved, offset[0], offset[1], offset[2]);
+  return automergeAndSplit(em, moved);
+}
+
+/**
+ * The translate's `use_automerge_and_split` (`EDBM_automerge_and_split`),
+ * for the moved faces' vertices, at Blender's default merge distance 0.001:
+ *
+ * 1. a moved vertex within reach of an unmoved one merges into it;
+ * 2. a vertex lying on an edge it is not part of splits that edge there, and
+ *    the split point is welded to it — a moved vertex on any edge, any vertex
+ *    on an edge with a moved end. That removes the spike a pushed-in region
+ *    leaves in the face beside it (`extrude-manifold-in`: the copy of a rim
+ *    vertex lands on the side face's own edge), and after a push through,
+ *    the wall edges that now pass through old vertices
+ *    (`extrude-manifold-through`).
+ *
+ * Edges **crossing** edges (Blender's `BM_mesh_intersect_edges` also splits
+ * those) are not ported; nothing a single push produces on these inputs
+ * reaches that case, and it is left rather than guessed.
+ */
+function automergeAndSplit(em: EditMesh, moved: ReadonlySet<number>): Set<number> {
+  const DIST = 0.001;
+  const polys = toPolygons(em);
+  const P = Array.from(em.positions);
+  const movedVerts = new Set<number>();
+  for (const f of moved) for (const v of polys[f]!) movedVerts.add(v);
+  const count = P.length / 3;
+  const co = (v: number): [number, number, number] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const target = new Int32Array(count + 1024).map((_, i) => i);
+
+  // 1. Onto the nearest unmoved vertex in reach (lowest index on a tie).
+  for (const q of movedVerts) {
+    const [x, y, z] = co(q);
+    let best = -1;
+    let bestD = DIST * DIST;
+    for (let v = 0; v < count; v++) {
+      if (movedVerts.has(v)) continue;
+      const d = (P[v * 3]! - x) ** 2 + (P[v * 3 + 1]! - y) ** 2 + (P[v * 3 + 2]! - z) ** 2;
+      if (d <= bestD && (best < 0 || d < bestD || v < best)) {
+        best = v;
+        bestD = d;
+      }
+    }
+    if (best >= 0) target[q] = best;
+  }
+
+  // 2. Split edges a moved vertex lies on.
+  const edges = new Map<string, [number, number]>();
+  for (const p of polys)
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i]!;
+      const b = p[(i + 1) % p.length]!;
+      edges.set(a < b ? `${a}_${b}` : `${b}_${a}`, [a, b]);
+    }
+  // Which vertices are tested against which edges: a moved vertex against
+  // every edge, and any vertex against an edge that has a moved end — after
+  // the merge, a wall edge running down to where the region landed can pass
+  // through a vertex nobody moved (`extrude-manifold-through`).
+  const endOf = (v: number): number => target[v]!;
+  const touchesMoved = (a: number, b: number): boolean => movedVerts.has(a) || movedVerts.has(b);
+  const splits = new Map<string, { t: number; s: number }[]>();
+  for (let q = 0; q < count; q++) {
+    if (target[q] !== q) continue;
+    const pq = co(q);
+    for (const [key, [a, b]] of edges) {
+      if (a === q || b === q || endOf(a) === q || endOf(b) === q) continue;
+      if (!movedVerts.has(q) && !touchesMoved(a, b)) continue;
+      const pa = co(a);
+      const pb = co(b);
+      const d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+      const len2 = d[0]! ** 2 + d[1]! ** 2 + d[2]! ** 2;
+      if (len2 === 0) continue;
+      const t = ((pq[0] - pa[0]) * d[0]! + (pq[1] - pa[1]) * d[1]! + (pq[2] - pa[2]) * d[2]!) / len2;
+      if (t <= 0 || t >= 1) continue;
+      const foot = [pa[0] + d[0]! * t, pa[1] + d[1]! * t, pa[2] + d[2]! * t];
+      if ((foot[0]! - pq[0]) ** 2 + (foot[1]! - pq[1]) ** 2 + (foot[2]! - pq[2]) ** 2 > DIST * DIST) continue;
+      const s = P.length / 3;
+      P.push(foot[0]!, foot[1]!, foot[2]!);
+      target[s] = q;
+      const list = splits.get(key) ?? [];
+      // t is measured from the lower-numbered end.
+      list.push({ t: a < b ? t : 1 - t, s });
+      splits.set(key, list);
+    }
+  }
+  const withSplits = polys.map((p) => {
+    const out: number[] = [];
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i]!;
+      const b = p[(i + 1) % p.length]!;
+      out.push(a);
+      const list = splits.get(a < b ? `${a}_${b}` : `${b}_${a}`);
+      if (!list) continue;
+      const sorted = [...list].sort((m, n) => m.t - n.t);
+      for (const { s } of a < b ? sorted : sorted.reverse()) out.push(s);
+    }
+    return out;
+  });
+
+  const welded = weldByMap(
+    { positions: Float32Array.from(P), polys: withSplits },
+    (v) => target[v]!,
+  );
+  rebuildPolygons(em, welded.positions, welded.polys);
+  // The moved faces, found again: every corner a (surviving) moved vertex.
+  const survivorOf = new Map<number, number>();
+  let next = 0;
+  for (let v = 0; v < P.length / 3; v++) if (target[v] === v) survivorOf.set(v, next++);
+  const movedNow = new Set([...movedVerts].filter((v) => target[v] === v).map((v) => survivorOf.get(v)!));
+  const out = new Set<number>();
+  welded.polys.forEach((p, f) => {
+    if (p.every((v) => movedNow.has(v))) out.add(f);
+  });
   return out;
 }

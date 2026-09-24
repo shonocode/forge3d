@@ -101,6 +101,8 @@ export {
 // survivors, the same faces; `weldMesh` (below) stays the generators' quick
 // seam-closer. `build` is the Build modifier at one frame.
 export { removeDoubles } from "../tools/remove-doubles";
+export { reorderSpatial } from "../tools/reorder-spatial";
+export { createMonkey, type MonkeyOptions } from "../tools/monkey";
 export { build, type BuildOptions } from "../tools/build";
 
 // ── Assembly ───────────────────────────────────────────────────────────────
@@ -280,6 +282,7 @@ export {
   facesFacing,
   extrudeFacesBy,
   extrudeRepeat,
+  extrudeManifold,
   insetFacesByWidth,
 } from "../tools/edit-mode/face-transform";
 

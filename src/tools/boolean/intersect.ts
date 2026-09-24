@@ -358,7 +358,16 @@ export interface Subdivided {
  * arrangement. This is Blender's `trimesh_nary_intersect`; the boolean
  * (`boolean.ts`) classifies these same triangles.
  */
-export function subdivide(data: MeshData, set: ReadonlySet<number> | null): Subdivided {
+export function subdivide(
+  data: MeshData,
+  set: ReadonlySet<number> | ((face: number) => number) | null,
+  sameFacePairs = true,
+): Subdivided {
+  // Which part a face belongs to; pairs within one part are not intersected.
+  // A set is the two-part case (in it or not); a function, the n-part one
+  // (Blender's `trimesh_nary_intersect` with `nshapes` > 2).
+  const partOf: ((face: number) => number) | null =
+    set === null ? null : typeof set === "function" ? set : (face) => (set.has(face) ? 1 : 0);
   const P = data.positions;
 
   // Vertices: the input's, then every new exact point, deduplicated exactly.
@@ -413,12 +422,13 @@ export function subdivide(data: MeshData, set: ReadonlySet<number> | null): Subd
     for (let j = i + 1; j < tris.length; j++) {
       const A = tris[i]!;
       const B = tris[j]!;
-      if (set && set.has(A.face) === set.has(B.face)) continue;
+      if (partOf && partOf(A.face) === partOf(B.face)) continue;
       const a = boxes[i]!;
       const b = boxes[j]!;
       if (a.lo.some((c, k) => c > b.hi[k]!) || b.lo.some((c, k) => c > a.hi[k]!)) continue;
       const r = intersectTriTri(A.t, B.t);
       if (A.face === B.face) {
+        if (!sameFacePairs) continue;
         // Blender's self mode (`nshapes == 1`) tests every pair, **the two
         // halves of one face included**. Where the face is not exactly planar
         // they meet in their shared diagonal, which then enters the CDT as a

@@ -64,6 +64,13 @@
  *
  * For a chain the vertex is simply removed from the faces (or the two wire
  * edges are joined), and no face is added.
+ *
+ * **Second and later passes** were unmeasured until 2026-09-25 and wrong on
+ * the cages: a dissolve looked up the faces round its vertex as the pass
+ * began, and missed the face an earlier dissolve in the same pass had made
+ * (a vertex diagonal to it in a quad), leaving that face pointing at a removed
+ * vertex. The faces are now read as they are, and each vertex is re-tested
+ * when dissolved, as Blender does (`decimate-unsubdiv-2`, 3/3).
  */
 import type { MeshData } from "../../lib/mesh";
 
@@ -109,17 +116,13 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   const removed = new Uint8Array(total);
 
   for (let pass = 0; pass < iterations; pass++) {
-    // ── how each edge is used, and which faces touch each vertex ──────────
+    // ── how each edge is used ─────────────────────────────────────────────
     const faceCount = new Map<string, number>();
-    const facesAt = new Map<number, number[]>();
-    for (const [f, poly] of polys.entries()) {
+    for (const poly of polys) {
       for (let i = 0; i < poly.length; i++) {
         const a = poly[i]!;
         const b = poly[(i + 1) % poly.length]!;
         faceCount.set(key(a, b), (faceCount.get(key(a, b)) ?? 0) + 1);
-        const list = facesAt.get(a);
-        if (list) list.push(f);
-        else facesAt.set(a, [f]);
       }
     }
     const wireAt = new Map<number, number[]>();
@@ -204,10 +207,120 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
     // Blender stops when a pass marks nothing: later passes cannot find more.
     if (!marked) break;
 
+    /**
+     * Blender re-tests each vertex **as it dissolves it**
+     * (`bm_vert_dissolve_fan_or_chain_test(v, true)`): the mesh has changed
+     * since the marking, and a fan whose dissolve would make a face twice is
+     * left alone. On a first pass over a clean cage nothing trips it; on the
+     * second pass, over the n-gons the first pass made, it decides
+     * (`decimate-unsubdiv-2`, 2026-09-25).
+     */
+    const retest = (v: number): Method | null => {
+      const around = polys.filter((p) => p.length >= 3 && p.includes(v));
+      const edgeUse = new Map<string, number>();
+      for (const p of polys)
+        if (p.length >= 3)
+          for (let i = 0; i < p.length; i++) {
+            const k = key(p[i]!, p[(i + 1) % p.length]!);
+            edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+          }
+      const edgeExists = (a: number, b: number): boolean =>
+        edgeUse.has(key(a, b)) || wires.some((e) => key(e[0]!, e[1]!) === key(a, b));
+      const nbrs = new Set<number>();
+      for (const p of around) {
+        const i = p.indexOf(v);
+        nbrs.add(p[(i + 1) % p.length]!);
+        nbrs.add(p[(i + p.length - 1) % p.length]!);
+      }
+      for (const e of wires) if (e[0] === v) nbrs.add(e[1]!);
+      for (const e of wires) if (e[1] === v) nbrs.add(e[0]!);
+      let boundary = 0;
+      let manifold = 0;
+      let wire = 0;
+      const boundaryNbrs: number[] = [];
+      for (const n of nbrs) {
+        const used = edgeUse.get(key(v, n)) ?? 0;
+        if (used === 1) {
+          boundary++;
+          boundaryNbrs.push(n);
+        } else if (used === 2) manifold++;
+        else if (used === 0) wire++;
+        else return null;
+      }
+      const edges = nbrs.size;
+      const cycleKey = (c: readonly number[]): string => {
+        const n = c.length;
+        let best = "";
+        for (let s = 0; s < n; s++)
+          for (const dir of [1, -1]) {
+            const seq: number[] = [];
+            for (let i = 0; i < n; i++) seq.push(c[(s + dir * i + n * n) % n]!);
+            const k = seq.join(",");
+            if (best === "" || k < best) best = k;
+          }
+        return best;
+      };
+      const faceKeys = new Set(polys.filter((p) => p.length >= 3).map(cycleKey));
+      const without = (p: readonly number[]): number[] => {
+        const i = p.indexOf(v);
+        return [...p.slice(i + 1), ...p.slice(0, i)];
+      };
+      // `bm_vert_dissolve_fan_makes_double_with_existing`
+      const doubleWithExisting = (): boolean =>
+        around.some((p) => {
+          if (p.length <= 3) return false;
+          const i = p.indexOf(v);
+          const ear = [p[(i + p.length - 1) % p.length]!, v, p[(i + 1) % p.length]!];
+          return faceKeys.has(cycleKey(ear)) || faceKeys.has(cycleKey(without(p)));
+        });
+      // `bm_vert_dissolve_fan_makes_double_with_self`
+      const doubleWithSelf = (): boolean => {
+        const big = around.filter((p) => p.length > 3).map((p) => cycleKey(without(p)));
+        return new Set(big).size !== big.length;
+      };
+      if ((edges === 4 && boundary === 0 && manifold === 4) || (edges === 3 && boundary === 0 && manifold === 3)) {
+        // `bm_vert_dissolve_fan_makes_double_whole_face`: the ring of far
+        // edges is already one face.
+        const ring: string[] = [];
+        let whole = true;
+        for (const p of around) {
+          const i = p.indexOf(v);
+          const prev = p[(i + p.length - 1) % p.length]!;
+          const next = p[(i + 1) % p.length]!;
+          if (p.length > 3 && !edgeExists(prev, next)) {
+            whole = false;
+            break;
+          }
+          ring.push(key(prev, next));
+        }
+        if (whole && ring.length >= 3) {
+          const want = new Set(ring);
+          const hit = polys.some((q) => {
+            if (q.length !== want.size) return false;
+            for (let i = 0; i < q.length; i++) if (!want.has(key(q[i]!, q[(i + 1) % q.length]!))) return false;
+            return true;
+          });
+          if (hit) return null;
+        }
+        if (doubleWithExisting() || doubleWithSelf()) return null;
+        return "fan";
+      }
+      if (edges === 3 && boundary === 2 && manifold === 1) {
+        const [a, b] = boundaryNbrs;
+        if ((edgeUse.get(key(a!, b!)) ?? 0) > 0) return null; // `e_span` with a face
+        if (doubleWithExisting() || doubleWithSelf()) return null;
+        return "fan";
+      }
+      if (edges === 2 && wire === 2) return "wire";
+      if (edges === 2 && manifold === 2) return "chain";
+      return null;
+    };
+
     // ── dissolve, in index order ─────────────────────────────────────────
     for (let v = 0; v < total; v++) {
       if (state[v] !== COLLAPSE || removed[v]) continue;
-      const method = eligible[v]!;
+      const method = retest(v);
+      if (!method) continue;
       if (method === "wire") {
         const ends = wireAt.get(v) ?? [];
         if (ends.length !== 2) continue;
@@ -217,7 +330,13 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
         continue;
       }
 
-      const incident = [...new Set(facesAt.get(v) ?? [])].filter((f) => polys[f]!.includes(v));
+      // The faces round `v` **now** — not as the pass began: a vertex diagonal
+      // to one dissolved earlier in the pass sits in the face that dissolve
+      // made, which the pass-start map does not know.
+      const incident: number[] = [];
+      polys.forEach((p, f) => {
+        if (p.length >= 3 && p.includes(v)) incident.push(f);
+      });
       if (incident.length === 0) continue;
 
       if (method === "chain") {

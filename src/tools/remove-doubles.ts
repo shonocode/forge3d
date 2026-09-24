@@ -172,9 +172,20 @@ const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_$
  * left its edges behind, as Blender's mesh has them.
  */
 export function removeDoubles(data: MeshData, dist: number): MeshData {
-  const n = data.positions.length / 3;
   const dup = doublesByDistance(data.positions, dist);
-  const map = (v: number): number => (dup[v] === -1 || dup[v] === v ? v : dup[v]!);
+  return weldByMap(data, (v) => (dup[v] === -1 || dup[v] === v ? v : dup[v]!));
+}
+
+/**
+ * Blender's `weld_verts`: every vertex `map` sends elsewhere merges into its
+ * target, which stays where it is. A face holding a vertex and its target
+ * apart is split between them first; faces are rebuilt on the survivors —
+ * consecutive repeats collapse, a face visiting a corner twice or matching an
+ * existing face is dropped — and a dropped face's edges stay as loose edges.
+ * Survivors keep their order.
+ */
+export function weldByMap(data: MeshData, map: (v: number) => number): MeshData {
+  const n = data.positions.length / 3;
   const merged = (v: number): boolean => map(v) !== v;
 
   // `remdoubles_splitface`: a face holding a vertex and its target apart is
