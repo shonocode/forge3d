@@ -383,7 +383,8 @@ export {
 
 // ── Skeleton to surface ────────────────────────────────────────────────────
 // Blender's Skin modifier: loose edges in, a quad mesh around them out.
-// Chains only for now — a vertex with three or more edges throws.
+// A vertex with three or more edges is wrapped in a hull of its neighbours'
+// frames, merged into quads the way Blender does.
 export { skin, type SkinOptions } from "../tools/edit-mode/skin";
 
 // ── Boolean ────────────────────────────────────────────────────────────────

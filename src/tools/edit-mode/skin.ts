@@ -43,15 +43,35 @@
  * lowest-numbered vertex of **each** piece. For a skeleton in one piece the
  * two agree.
  *
- * ## Not yet: branch nodes
+ * ## Branch nodes: a hull, then triangles merged into quads
  *
- * A vertex with three or more edges gets no frame of its own. Blender builds a
- * **convex hull** of the neighbouring frames, merges its triangles into quads
- * with a symmetry heuristic, then repairs the topology where a frame ended up
- * inside the hull — about 800 lines of `MOD_skin.cc`. This file stops before
- * that and throws on degree ≥ 3, rather than returning something plausible.
+ * A vertex with three or more edges gets no frame of its own. Its
+ * neighbours' frames are wrapped in a **convex hull** (Bullet's, ported in
+ * `../hull/bullet-hull.ts`, because which of several equal hulls comes out is
+ * decided by its integer grid), the two triangles filling each frame are cut
+ * away, and afterwards every pair of triangles that makes a flat, convex,
+ * X-symmetric quad is merged — greedily, best score first, from a heap.
+ *
+ * Which pair wins a tie depends on **the order BMesh keeps things in**: slots
+ * reused last-freed-first, the newest face first around an edge, faces
+ * deleted before edges. So this runs on a small BMesh (`skin-bmesh.ts`) that
+ * keeps those orders, rather than on arrays.
+ *
+ * **Frames the hull swallows.** When a frame's corner ends up inside the
+ * hull, or one of its sides is not a hull edge, Blender takes the frame off
+ * the hull, picks the face its normal ray hits, and extrudes that face and
+ * welds it onto the frame (`skin_fix_hull_topology`). That runs here as the
+ * operators themselves — extrude, subdivide, weld — because with frames that
+ * overlap, the weld collapses faces and a leftover edge tag later deletes
+ * three more (see `bridgeFaceToFrame`); only the operators say which. Not
+ * ported: a target face of five or more corners, which Blender first
+ * collapses to four (`collapse_face_corners`); this caps the frame instead.
+ *
+ * **In float32.** Blender builds the frames in `float`, and at a branch that
+ * decides the answer — see the note above the math helpers.
  */
 import type { MeshData } from "../../lib/mesh";
+import { type BEdge, type BFace, type BVert, HeapSimple, MiniBMesh, dotF, isQuadConvex } from "./skin-bmesh";
 
 type Vec3 = [number, number, number];
 type Mat3 = [Vec3, Vec3, Vec3];
@@ -69,45 +89,69 @@ export interface SkinOptions {
    * is not quite Blender's default.
    */
   roots?: Iterable<number>;
+  /**
+   * Blender's `symmetry_axes` — `[x, y, z]`. A quad merged at a branch hull
+   * that crosses one of these planes is kept only if it is mirror-symmetric
+   * across it, and then preferred. Default X only, Blender's.
+   */
+  symmetry?: readonly [boolean, boolean, boolean];
 }
 
+// ── float32, in Blender's order ─────────────────────────────────────────────
+//
+// Blender builds the frames in `float`, and at a branch node that is not
+// noise: the hull's four-sided faces are fanned from Bullet's first corner,
+// and whether four corners are coplanar at all is decided on Bullet's integer
+// grid. Computed in double, the tripod's hull split one quad along the other
+// diagonal (measured on the `skin-branch` row). So every step below rounds
+// to float32 where the C does, in the C's evaluation order.
+
+const f32 = Math.fround;
 const FLT_EPSILON = 1.1920929e-7;
 
-const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const scale = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
-const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const sub = (a: Vec3, b: Vec3): Vec3 => [f32(a[0] - b[0]), f32(a[1] - b[1]), f32(a[2] - b[2])];
+const add = (a: Vec3, b: Vec3): Vec3 => [f32(a[0] + b[0]), f32(a[1] + b[1]), f32(a[2] + b[2])];
+const scale = (a: Vec3, k: number): Vec3 => [f32(a[0] * k), f32(a[1] * k), f32(a[2] * k)];
+const dot = (a: Vec3, b: Vec3): number => f32(f32(f32(a[0] * b[0]) + f32(a[1] * b[1])) + f32(a[2] * b[2]));
 const cross = (a: Vec3, b: Vec3): Vec3 => [
-  a[1] * b[2] - a[2] * b[1],
-  a[2] * b[0] - a[0] * b[2],
-  a[0] * b[1] - a[1] * b[0],
+  f32(f32(a[1] * b[2]) - f32(a[2] * b[1])),
+  f32(f32(a[2] * b[0]) - f32(a[0] * b[2])),
+  f32(f32(a[0] * b[1]) - f32(a[1] * b[0])),
 ];
-const len = (a: Vec3): number => Math.hypot(a[0], a[1], a[2]);
+const len = (a: Vec3): number => f32(Math.sqrt(dot(a, a)));
 
-/** Blender's `normalize_v3`: a zero vector stays zero. */
+/** Blender's `normalize_v3`: times `1 / length`; a zero vector stays zero. */
 function normalize(a: Vec3): Vec3 {
-  const l = len(a);
-  return l > 1e-35 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0];
+  const d = dot(a, a);
+  return d > 1e-35 ? scale(a, f32(1 / f32(Math.sqrt(d)))) : [0, 0, 0];
 }
+
+/** `saasin`: `asinf`, clamped. */
+const saasin = (x: number): number => (x <= -1 ? f32(-Math.PI / 2) : x >= 1 ? f32(Math.PI / 2) : f32(Math.asin(x)));
 
 /**
  * Blender's `angle_normalized_v3v3` — the `asin` form, which is what keeps
  * nearly parallel vectors from losing precision the way `acos(dot)` does.
  */
 function angleNormalized(a: Vec3, b: Vec3): number {
-  if (dot(a, b) >= 0) return 2 * Math.asin(Math.min(1, len(sub(a, b)) / 2));
-  return Math.PI - 2 * Math.asin(Math.min(1, len(add(a, b)) / 2));
+  if (dot(a, b) >= 0) return f32(2 * saasin(f32(len(sub(a, b)) / 2)));
+  const nb: Vec3 = [-b[0], -b[1], -b[2]];
+  return f32(f32(Math.PI) - f32(2 * saasin(f32(len(sub(a, nb)) / 2))));
 }
 
 /** Blender's `rotate_normalized_v3_v3v3fl` — Rodrigues about a unit axis. */
 function rotate(p: Vec3, axis: Vec3, angle: number): Vec3 {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
+  const c = f32(Math.cos(angle));
+  const s = f32(Math.sin(angle));
   const [x, y, z] = axis;
+  const k = f32(1 - c);
+  const m = (u: number, v: number): number => f32(f32(k * u) * v);
+  const row = (a: number, b: number, cc: number): number =>
+    f32(f32(f32(a * p[0]) + f32(b * p[1])) + f32(cc * p[2]));
   return [
-    (c + (1 - c) * x * x) * p[0] + ((1 - c) * x * y - z * s) * p[1] + ((1 - c) * x * z + y * s) * p[2],
-    ((1 - c) * x * y + z * s) * p[0] + (c + (1 - c) * y * y) * p[1] + ((1 - c) * y * z - x * s) * p[2],
-    ((1 - c) * x * z - y * s) * p[0] + ((1 - c) * y * z + x * s) * p[1] + (c + (1 - c) * z * z) * p[2],
+    row(f32(c + m(x, x)), f32(m(x, y) - f32(z * s)), f32(m(x, z) + f32(y * s))),
+    row(f32(m(x, y) + f32(z * s)), f32(c + m(y, y)), f32(m(y, z) - f32(x * s))),
+    row(f32(m(x, z) - f32(y * s)), f32(m(y, z) + f32(x * s)), f32(c + m(z, z))),
   ];
 }
 
@@ -119,8 +163,8 @@ function normalQuad(a: Vec3, b: Vec3, c: Vec3, d: Vec3): Vec3 {
 /** `calc_edge_mat`: x along the edge, y = z_up × x, z = x × y. */
 function edgeMat(a: Vec3, b: Vec3): Mat3 {
   const x = normalize(sub(b, a));
-  const d = x[2];
-  if (d > -1 + FLT_EPSILON && d < 1 - FLT_EPSILON) {
+  const d = dot(x, [0, 0, 1]);
+  if (d > f32(-1 + FLT_EPSILON) && d < f32(1 - FLT_EPSILON)) {
     const y = normalize(cross([0, 0, 1], x));
     const z = normalize(cross(x, y));
     return [x, y, z];
@@ -129,7 +173,7 @@ function edgeMat(a: Vec3, b: Vec3): Mat3 {
   return [x, [1, 0, 0], [0, 1, 0]];
 }
 
-const half = (r: readonly [number, number]): number => (r[0] + r[1]) * 0.5;
+const half = (r: readonly [number, number]): number => f32(f32(r[0] + r[1]) * 0.5);
 
 /** The four corners of a frame, in Blender's `create_frame` order. */
 function frame(co: Vec3, r: readonly [number, number], m: Mat3, offset: number): Vec3[] {
@@ -143,6 +187,12 @@ function frame(co: Vec3, r: readonly [number, number], m: Mat3, offset: number):
     add(add(add(co, ry), rz), rx),
   ];
 }
+
+/** `interp_v3_v3v3`: `(1 − t)·a + t·b`. */
+const lerp = (a: readonly number[], b: readonly number[], t: number): number[] => {
+  const s = f32(1 - t);
+  return a.map((x, i) => f32(f32(s * x) + f32(t * b[i]!)));
+};
 
 interface Skeleton {
   positions: Vec3[];
@@ -162,32 +212,28 @@ function subdivide(sk: Skeleton): Skeleton {
     degree[a]!++;
     degree[b]!++;
   }
-  const positions = sk.positions.map((p) => [...p] as Vec3);
-  const radius = sk.radius.map((r) => [...r] as [number, number]);
+  const positions = sk.positions.map((p) => p.map(f32) as Vec3);
+  const radius = sk.radius.map((r) => r.map(f32) as [number, number]);
   const root = [...sk.root];
   const edges: [number, number][] = [];
   for (const [a, b] of sk.edges) {
     const branchA = degree[a]! > 2;
     const branchB = degree[b]! > 2;
-    const avg = half(sk.radius[a]!) + half(sk.radius[b]!);
+    const avg = f32(half(radius[a]!) + half(radius[b]!));
     let count = 0;
-    if (avg !== 0) count = Math.min(128, Math.trunc(len(sub(sk.positions[b]!, sk.positions[a]!)) / avg));
+    if (avg !== 0) count = Math.min(128, Math.trunc(f32(len(sub(positions[a]!, positions[b]!)) / avg)));
     // Two branch nodes need two frames between them (Blender's comment:
     // "avoids any special cases for sharing a frame between two hulls").
     if (count < 2 && branchA && branchB) count = 2;
 
-    let k = half(sk.radius[b]!) / half(sk.radius[a]!);
-    k = Number.isFinite(k) ? (k + 1) / 2 : 1;
+    let k = f32(half(radius[b]!) / half(radius[a]!));
+    k = Number.isFinite(k) ? f32(f32(k + 1) / 2) : 1;
 
     let u = a;
     for (let j = 0; j < count; j++) {
-      const t = Math.pow((j + 1) / (count + 1), k);
-      const pa = sk.positions[a]!;
-      const pb = sk.positions[b]!;
-      positions.push([pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, pa[2] + (pb[2] - pa[2]) * t]);
-      const ra = sk.radius[a]!;
-      const rb = sk.radius[b]!;
-      radius.push([ra[0] + (rb[0] - ra[0]) * t, ra[1] + (rb[1] - ra[1]) * t]);
+      const t = f32(Math.pow(f32((j + 1) / (count + 1)), k));
+      positions.push(lerp(positions[a]!, positions[b]!, t) as Vec3);
+      radius.push(lerp(radius[a]!, radius[b]!, t) as [number, number]);
       root.push(false);
       const v = positions.length - 1;
       edges.push([u, v]);
@@ -245,8 +291,27 @@ function edgeMats(sk: Skeleton, emap: number[][]): EMat[] {
   return emat;
 }
 
+/** Blender's `Frame`: four corners, and what the branch hulls did to them. */
+interface Frame {
+  co: Vec3[];
+  verts: BVert[];
+  /** A corner merged into another frame's corner shares its vertex. */
+  merge: { frame: Frame | null; corner: number; isTarget: boolean }[];
+  insideHull: boolean[];
+  /** Some corner or side ended up inside a hull. */
+  detached: boolean;
+}
+
+const newFrame = (co: Vec3[]): Frame => ({
+  co,
+  verts: [],
+  merge: co.map(() => ({ frame: null, corner: 0, isTarget: false })),
+  insideHull: [false, false, false, false],
+  detached: false,
+});
+
 interface Node {
-  frames: Vec3[][];
+  frames: Frame[];
   capStart: boolean;
   capEnd: boolean;
   flipNormal: boolean;
@@ -277,7 +342,7 @@ function buildNodes(sk: Skeleton, emap: number[][], emat: EMat[]): Node[] {
         [1, 0, 0],
         [0, 1, 0],
       ];
-      node.frames = [frame(co, rad, m, avg), frame(co, rad, m, -avg)];
+      node.frames = [newFrame(frame(co, rad, m, avg)), newFrame(frame(co, rad, m, -avg))];
       node.capStart = node.capEnd = true;
     } else if (edges.length === 1) {
       const e = emat[edges[0]!]!;
@@ -287,7 +352,7 @@ function buildNodes(sk: Skeleton, emap: number[][], emat: EMat[]): Node[] {
         e.mat[2],
       ];
       const f = frame(co, rad, m, 0);
-      node.frames = [f];
+      node.frames = [newFrame(f)];
       node.capStart = true;
       // The cap's winding is chosen against the edge direction.
       if (dot(m[0], normalQuad(f[0]!, f[1]!, f[2]!, f[3]!)) < 0) node.flipNormal = true;
@@ -305,33 +370,29 @@ function buildNodes(sk: Skeleton, emap: number[][], emat: EMat[]): Node[] {
       }
       if (ine && oute) {
         // Turn the incoming frame half-way toward the outgoing edge.
-        const angle = angleNormalized(ine[0], oute[0]) / 2;
+        const angle = f32(angleNormalized(ine[0], oute[0]) / 2);
         const axis = normalize(cross(ine[0], oute[0]));
         const m: Mat3 = [ine[0], rotate(ine[1], axis, angle), rotate(ine[2], axis, angle)];
-        node.frames = [frame(co, rad, m, 0)];
+        node.frames = [newFrame(frame(co, rad, m, 0))];
       } else {
         // Both edges leave (or both arrive) — the root in the middle of a
         // chain. Two frames, bridged to each other; Blender's `SEAM_FRAME`.
         const avg = half(rad);
         const m1: Mat3 = [e1.origin !== v ? scale(e1.mat[0], -1) : e1.mat[0], e1.mat[1], e1.mat[2]];
         const m2: Mat3 = [e2.origin !== v ? scale(e2.mat[0], -1) : e2.mat[0], e2.mat[1], e2.mat[2]];
-        node.frames = [frame(co, rad, m1, avg), frame(co, rad, m2, avg)];
+        node.frames = [newFrame(frame(co, rad, m1, avg)), newFrame(frame(co, rad, m2, avg))];
         node.seam = true;
         node.seamEdges = [edges[0]!, edges[1]!];
       }
-    } else {
-      throw new Error(
-        `skin: vertex ${v} has ${edges.length} edges — branch nodes (degree 3 and up) are not ` +
-          "implemented yet; Blender builds a convex hull there (see the note on this file)",
-      );
     }
+    // Degree 3 and up: a branch node, no frame — its neighbours' are hulled.
     nodes.push(node);
   }
   return nodes;
 }
 
 /** Blender's `skin_choose_quad_bridge_order`: the rotation or reflection with the shortest total. */
-function bridgeOrder(a: Vec3[], b: Vec3[]): number[] {
+function bridgeOrder(a: readonly Vec3[], b: readonly Vec3[]): number[] {
   let best: number[] = [0, 1, 2, 3];
   let shortest = Infinity;
   for (let i = 0; i < 8; i++) {
@@ -339,7 +400,7 @@ function bridgeOrder(a: Vec3[], b: Vec3[]): number[] {
     let total = 0;
     for (let j = 0; j < 4; j++) {
       const d = sub(a[j]!, b[order[j]!]!);
-      total += dot(d, d);
+      total = f32(total + dot(d, d));
     }
     if (total < shortest) {
       shortest = total;
@@ -347,6 +408,320 @@ function bridgeOrder(a: Vec3[], b: Vec3[]): number[] {
     }
   }
   return best;
+}
+
+// ── branch hulls ────────────────────────────────────────────────────────────
+
+/** `collect_hull_frames`: the first frame of each neighbour that has one. */
+function hullFrames(v: number, nodes: readonly Node[], emap: readonly number[][], edges: readonly [number, number][]): Frame[] {
+  const out: Frame[] = [];
+  for (const e of emap[v]!) {
+    const [a, b] = edges[e]!;
+    const n = nodes[a === v ? b : a]!;
+    if (n.frames.length > 0) out.push(n.frames[0]!);
+  }
+  return out;
+}
+
+/**
+ * `merge_frame_corners`: corners of two frames closer than half the smaller
+ * frame's side become one vertex, at their midpoint. A corner merged into
+ * is never merged away, so there are no chains.
+ */
+function mergeFrameCorners(frames: readonly Frame[]): void {
+  const sideOf = (fr: Frame): number => f32(f32(len(sub(fr.co[0]!, fr.co[1]!)) + len(sub(fr.co[1]!, fr.co[2]!))) * 0.5);
+  for (let i = 0; i < frames.length; i++) {
+    const a = frames[i]!;
+    const sideA = sideOf(a);
+    for (let j = 0; j < 4; j++) {
+      if (a.merge[j]!.frame) continue;
+      for (let k = i + 1; k < frames.length; k++) {
+        const b = frames[k]!;
+        const thresh = f32(Math.min(sideA, sideOf(b)) / 2);
+        for (let l = 0; l < 4; l++) {
+          if (b.merge[l]!.frame || b.merge[l]!.isTarget) continue;
+          if (len(sub(a.co[j]!, b.co[l]!)) < thresh) {
+            const mid = scale(add(a.co[j]!, b.co[l]!), 0.5);
+            a.co[j] = mid;
+            b.co[l] = [...mid];
+            b.merge[l] = { frame: a, corner: j, isTarget: false };
+            a.merge[j]!.isTarget = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * `build_hull`: hull the frames' corners, find the frames that ended up
+ * inside, and cut away the two triangles that fill each frame that did not.
+ */
+function buildHull(bm: MiniBMesh, frames: readonly Frame[]): boolean {
+  for (const v of bm.verts) v.tag = false;
+  for (const fr of frames) for (const v of fr.verts) v.tag = true;
+  // `input=%hv` reads the tagged vertices in slot order.
+  const hull = bm.convexHull([...bm.verts].filter((v) => v.tag));
+  if (!hull) return false;
+
+  for (const v of hull.interior)
+    for (const fr of frames) {
+      if (fr.detached) continue;
+      const j = fr.verts.indexOf(v);
+      if (j >= 0) {
+        fr.insideHull[j] = true;
+        fr.detached = true;
+      }
+    }
+  for (const fr of frames) {
+    if (fr.detached) continue;
+    for (let j = 0; j < 4; j++) if (!bm.edgeExists(fr.verts[j]!, fr.verts[(j + 1) % 4]!)) fr.detached = true;
+  }
+
+  bm.clearTags();
+  for (const fr of frames) {
+    if (fr.detached) continue;
+    const diag = bm.edgeExists(fr.verts[0]!, fr.verts[2]!) ?? bm.edgeExists(fr.verts[1]!, fr.verts[3]!);
+    const pair = diag ? bm.edgeFacePair(diag) : null;
+    if (pair) {
+      pair[0].tag = true;
+      pair[1].tag = true;
+    } else fr.detached = true;
+  }
+  // An edge left with no face once the fill is gone goes too.
+  for (const e of hull.geomEdges) if (bm.edgeFaces(e).every((face) => face.tag)) e.tag = true;
+  bm.deleteTaggedEdgesFaces();
+  return true;
+}
+
+// ── merging hull triangles into quads ──────────────────────────────────────
+
+/** `quad_from_tris`: the first triangle's corners, the second's far corner slotted in across `e`. */
+function quadFromTris(bm: MiniBMesh, e: BEdge, adj: [BFace, BFace]): BVert[] {
+  const t0 = bm.faceVerts(adj[0]);
+  const t1 = bm.faceVerts(adj[1]);
+  const opp = t1.find((v) => !t0.includes(v))!;
+  const out: BVert[] = [];
+  for (let i = 0; i < 3; i++) {
+    out.push(t0[i]!);
+    const a = t0[i]!;
+    const b = t0[(i + 1) % 3]!;
+    if ((a === e.v1 || a === e.v2) && (b === e.v1 || b === e.v2)) out.push(opp);
+  }
+  return out;
+}
+
+
+/** `quad_crosses_symmetry_plane`. */
+function crossesSymmetry(quad: readonly BVert[], axes: readonly boolean[]): boolean {
+  for (let axis = 0; axis < 3; axis++) {
+    if (!axes[axis]) continue;
+    let left = false;
+    let right = false;
+    for (const v of quad) {
+      if (v.co[axis]! < 0) left = true;
+      else if (v.co[axis]! > 0) right = true;
+      if (left && right) return true;
+    }
+  }
+  return false;
+}
+
+/** `is_quad_symmetric`: corner 0 mirrors onto 1 and 2 onto 3, or 0 onto 3 and 2 onto 1. */
+function isSymmetric(quad: readonly BVert[], axes: readonly boolean[]): boolean {
+  const t2 = f32(f32(0.0001) * f32(0.0001));
+  const mirrorClose = (p: BVert, q: BVert, axis: number): boolean => {
+    const a = [...p.co];
+    a[axis] = -a[axis]!;
+    let d = 0;
+    for (let i = 0; i < 3; i++) {
+      const x = f32(a[i]! - q.co[i]!);
+      d = f32(d + f32(x * x));
+    }
+    return d < t2;
+  };
+  for (let axis = 0; axis < 3; axis++) {
+    if (!axes[axis]) continue;
+    if (mirrorClose(quad[0]!, quad[1]!, axis)) {
+      if (mirrorClose(quad[2]!, quad[3]!, axis)) return true;
+    } else if (mirrorClose(quad[0]!, quad[3]!, axis)) {
+      if (mirrorClose(quad[2]!, quad[1]!, axis)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * `hull_merge_triangles`: every edge between two triangles is a candidate
+ * quad, scored by area times how coplanar the two are (×10 if it is a
+ * symmetric quad across a symmetry plane; dropped if it crosses one without
+ * being symmetric, or is concave). Best first; a triangle is used once.
+ */
+function mergeTriangles(bm: MiniBMesh, axes: readonly boolean[]): void {
+  const heap = new HeapSimple<BEdge>();
+  for (const face of bm.faces) face.tag = false;
+  for (const e of bm.edges) {
+    const adj = bm.edgeFacePair(e);
+    if (!adj || adj[0].len !== 3 || adj[1].len !== 3) continue;
+    const quad = quadFromTris(bm, e, adj);
+    let score = f32(f32(bm.faceArea(adj[0]) + bm.faceArea(adj[1])) * dotF(adj[0].no, adj[1].no));
+    if (crossesSymmetry(quad, axes)) {
+      if (isSymmetric(quad, axes)) score = f32(score * 10);
+      else continue;
+    }
+    if (!isQuadConvex(quad[0]!.co, quad[1]!.co, quad[2]!.co, quad[3]!.co)) continue;
+    heap.insert(-score, e);
+  }
+  while (!heap.isEmpty()) {
+    const e = heap.popMin();
+    const adj = bm.edgeFacePair(e);
+    if (!adj || adj[0].tag || adj[1].tag || bm.faceShareFaceCheck(adj[0], adj[1])) continue;
+    bm.faceCreateVerts(quadFromTris(bm, e, adj));
+    adj[0].tag = true;
+    adj[1].tag = true;
+    e.tag = true;
+  }
+  bm.deleteTaggedEdgesFaces();
+}
+
+// ── frames the hull swallowed ──────────────────────────────────────────────
+
+/** `len_squared_v3v3`. */
+const lenSq = (a: Vec3, b: Vec3): number => {
+  const d = sub(a, b);
+  return dot(d, d);
+};
+
+/** `isect_ray_tri_v3`, in float: the distance along the ray, or null. */
+function isectRayTri(o: Vec3, d: Vec3, v0: Vec3, v1: Vec3, v2: Vec3): number | null {
+  const eps = f32(0.00000001);
+  const e1 = sub(v1, v0);
+  const e2 = sub(v2, v0);
+  const p = cross(d, e2);
+  const a = dotF(e1, p);
+  if (a > -eps && a < eps) return null;
+  const fa = f32(1 / a);
+  const s = sub(o, v0);
+  const u = f32(fa * dotF(s, p));
+  if (u < 0 || u > 1) return null;
+  const q = cross(s, e1);
+  const v = f32(fa * dotF(d, q));
+  if (v < 0 || f32(u + v) > 1) return null;
+  const lambda = f32(fa * dotF(e2, q));
+  return lambda < 0 ? null : lambda;
+}
+
+/**
+ * `skin_hole_target_face`: the face the frame's normal ray hits first — or
+ * the face whose centre is nearest, if that is much nearer than the hit.
+ */
+function holeTargetFace(bm: MiniBMesh, fr: Frame): BFace | null {
+  const c = fr.verts.map((v) => v.co);
+  let center: Vec3 = [f32(c[0]![0] + c[1]![0]), f32(c[0]![1] + c[1]![1]), f32(c[0]![2] + c[1]![2])];
+  for (const k of [2, 3]) center = [f32(center[0] + c[k]![0]), f32(center[1] + c[k]![1]), f32(center[2] + c[k]![2])];
+  center = [f32(center[0] * 0.25), f32(center[1] * 0.25), f32(center[2] * 0.25)];
+  const normal = normalQuad(c[3]!, c[2]!, c[1]!, c[0]!);
+
+  let isectFace: BFace | null = null;
+  let centerFace: BFace | null = null;
+  let bestIsect = 3.4028234663852886e38;
+  let bestCenter = 3.4028234663852886e38;
+  for (const face of bm.faces) {
+    const vs = bm.faceVerts(face);
+    // `isect_ray_poly`: a fan from the first corner, the nearest hit.
+    let hit = 3.4028234663852886e38;
+    let any = false;
+    for (let k = 2; k < vs.length; k++) {
+      const t = isectRayTri(center, normal, vs[0]!.co, vs[k - 1]!.co, vs[k]!.co);
+      if (t !== null && t < hit) {
+        hit = t;
+        any = true;
+      }
+    }
+    if (any && hit < bestIsect) {
+      isectFace = face;
+      bestIsect = hit;
+    }
+    // `BM_face_calc_center_median`
+    let m: Vec3 = [0, 0, 0];
+    for (const v of vs) m = [f32(m[0] + v.co[0]), f32(m[1] + v.co[1]), f32(m[2] + v.co[2])];
+    const inv = f32(1 / vs.length);
+    m = [f32(m[0] * inv), f32(m[1] * inv), f32(m[2] * inv)];
+    const dist = f32(Math.sqrt(lenSq(center, m)));
+    if (dist < bestCenter) {
+      centerFace = face;
+      bestCenter = dist;
+    }
+  }
+  return !isectFace || bestCenter < f32(bestIsect / 2) ? centerFace : isectFace;
+}
+
+/**
+ * `skin_fix_hole_no_good_verts`: extrude the target face, and weld the
+ * extruded copy's corners onto the frame's — which leaves one side face per
+ * rim edge, from the hull to the frame.
+ *
+ * Run as the operators themselves (`extrude_discrete_faces`,
+ * `subdivide_edges`, `weld_verts` on the small BMesh), not as their usual
+ * result: when frames overlap, a weld can collapse a side face or refuse to
+ * make one and leave its edge loose, and only the operators say which.
+ *
+ * A triangle is given a fourth corner first: Blender splits the longest edge
+ * of the **copy** (the last of the longest), so the midpoint is welded away
+ * with the rest and one side face becomes a pentagon. False for a face of
+ * five or more — Blender collapses its shortest edges first, not ported.
+ */
+function bridgeFaceToFrame(bm: MiniBMesh, fr: Frame, target: BFace): boolean {
+  if (target.len > 4) return false;
+  const face = bm.extrudeDiscreteFace(target);
+  if (face.len === 3) {
+    // `BM_face_find_longest_loop`
+    let longest = bm.faceLoops(face)[0]!;
+    let best = 0;
+    for (const l of bm.faceLoops(face)) {
+      const d = lenSq(l.v.co, l.next.v.co);
+      if (d >= best) {
+        best = d;
+        longest = l;
+      }
+    }
+    // Blender picks the edge for `subdivide_edges` by tagging it — and never
+    // clears the tag. Both halves keep it, the weld hands it to the frame's
+    // edges, and the last `hull_merge_triangles` deletes every tagged edge
+    // with the faces on it. Kept, because that is Blender's mesh (measured
+    // on `skelStar8`: three faces gone and one loose edge left).
+    for (const e of bm.edges) e.tag = false;
+    longest.e.tag = true;
+    const a = longest.e.v1.co;
+    const b = longest.e.v2.co;
+    bm.edgeSplit(longest.e, [0, 1, 2].map((k) => f32(f32(0.5 * a[k]!) + f32(0.5 * b[k]!))));
+  }
+  const quad = bm.faceVerts(face);
+  const order = bridgeOrder(quad.map((v) => v.co), fr.verts.map((v) => v.co));
+  bm.faceKill(face);
+  bm.weldVerts(new Map(quad.map((v, i) => [v, fr.verts[order[i]!]!])));
+  return true;
+}
+
+/**
+ * `skin_fix_hull_topology`: a frame with a corner or side inside its hull is
+ * taken off the hull (its hull corners duplicated) and joined to the face it
+ * looks at — or, failing that, just capped.
+ */
+function fixHullTopology(bm: MiniBMesh, nodes: readonly Node[]): void {
+  for (const node of nodes)
+    for (const fr of node.frames) {
+      if (!fr.detached) continue;
+      const target = holeTargetFace(bm, fr);
+      // A hull corner the frame already shares would give a zero-length edge.
+      const coincident =
+        target !== null && !fr.insideHull.some(Boolean) && bm.faceVerts(target).some((v) => fr.verts.includes(v));
+      // `skin_hole_detach_partially_attached_frame`
+      for (let j = 0; j < 4; j++) if (!fr.insideHull[j]) fr.verts[j] = bm.vertCreate(fr.verts[j]!.co);
+      if (target && !coincident && bridgeFaceToFrame(bm, fr, target)) continue;
+      bm.faceCreateVerts(fr.verts);
+    }
 }
 
 /**
@@ -358,7 +733,8 @@ function bridgeOrder(a: Vec3[], b: Vec3[]): number[] {
  * skin(skeleton, { roots: [1] });
  * ```
  *
- * Throws on a vertex with three or more edges — see the note at the top.
+ * Vertices with three or more edges are hulled. The result can carry loose
+ * `edges` where Blender's does — only when frames at a branch overlap.
  */
 export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
   if (data.polys.length > 0)
@@ -380,6 +756,7 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
       radius.push([each[0], each[1]]);
     }
   }
+  const axes = options.symmetry ?? [true, false, false];
 
   const root = new Array<boolean>(count).fill(false);
   if (options.roots) for (const v of options.roots) root[v] = true;
@@ -403,61 +780,69 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
   });
   const emat = edgeMats(sk, emap);
   const nodes = buildNodes(sk, emap, emat);
+  const isBranch = (v: number): boolean => nodes[v]!.frames.length === 0;
 
-  // Vertices in node order, four per frame — Blender's `output_frames`.
-  const outPositions: number[] = [];
-  const frameVerts: number[][][] = nodes.map((node) =>
-    node.frames.map((f) =>
-      f.map((co) => {
-        outPositions.push(co[0], co[1], co[2]);
-        return outPositions.length / 3 - 1;
-      }),
-    ),
-  );
-  const at = (i: number): Vec3 => [outPositions[i * 3]!, outPositions[i * 3 + 1]!, outPositions[i * 3 + 2]!];
-  const polys: number[][] = [];
+  // `build_skin`, step by step.
+  const bm = new MiniBMesh();
+  for (let v = 0; v < nodes.length; v++) if (isBranch(v)) mergeFrameCorners(hullFrames(v, nodes, emap, sk.edges));
+  // `output_frames`: one vertex per corner, in node order, merged corners skipped.
+  for (const node of nodes)
+    for (const fr of node.frames)
+      for (let j = 0; j < 4; j++) if (!fr.merge[j]!.frame) fr.verts[j] = bm.vertCreate(fr.co[j]!);
+  // `skin_update_merged_vertices`
+  for (const node of nodes)
+    for (const fr of node.frames)
+      for (let j = 0; j < 4; j++) {
+        const m = fr.merge[j]!;
+        if (m.frame) fr.verts[j] = m.frame.verts[m.corner]!;
+      }
+
+  for (let v = 0; v < nodes.length; v++) if (isBranch(v)) buildHull(bm, hullFrames(v, nodes, emap, sk.edges));
+  // Merged first, so a swallowed frame has quads to join onto.
+  mergeTriangles(bm, axes);
+  fixHullTopology(bm, nodes);
 
   /** Blender's `connect_frames`: four quads, wound by the summed orientation. */
-  const connect = (f1: number[], f2: number[]): void => {
+  const connect = (f1: readonly BVert[], f2: readonly BVert[]): void => {
     const q = [
       [f2[0]!, f2[1]!, f1[1]!, f1[0]!],
       [f2[1]!, f2[2]!, f1[2]!, f1[1]!],
       [f2[2]!, f2[3]!, f1[3]!, f1[2]!],
       [f2[3]!, f2[0]!, f1[0]!, f1[3]!],
     ];
-    const mid4 = (quad: number[]): Vec3 => {
+    const mid4 = (quad: BVert[]): Vec3 => {
       let c: Vec3 = [0, 0, 0];
-      for (const i of quad) c = add(c, at(i));
+      for (const x of quad) c = add(c, x.co);
       return scale(c, 0.25);
     };
     const sides = q.map(mid4);
-    const cent = scale(add(add(sides[0]!, sides[1]!), add(sides[2]!, sides[3]!)), 0.25);
+    const cent = scale(add(add(add(sides[0]!, sides[1]!), sides[2]!), sides[3]!), 0.25);
     let d = 0;
     for (let i = 0; i < 4; i++) {
-      const n = normalQuad(at(q[i]![0]!), at(q[i]![1]!), at(q[i]![2]!), at(q[i]![3]!));
-      d += dot(n, sub(cent, sides[i]!));
+      const n = normalQuad(q[i]![0]!.co, q[i]![1]!.co, q[i]![2]!.co, q[i]![3]!.co);
+      d = f32(d + dot(n, sub(cent, sides[i]!)));
     }
-    for (const quad of q) polys.push(d > 0 ? [quad[3]!, quad[2]!, quad[1]!, quad[0]!] : quad);
+    for (const quad of q) bm.faceCreateVerts(d > 0 ? [quad[3]!, quad[2]!, quad[1]!, quad[0]!] : quad);
   };
 
-  // End nodes and seams first — `skin_output_end_nodes`.
-  nodes.forEach((node, v) => {
-    const fv = frameVerts[v]!;
+  // End nodes and seams — `skin_output_end_nodes`.
+  for (const node of nodes) {
+    const fv = node.frames.map((fr) => fr.verts);
     if (node.seam) {
-      const order = bridgeOrder(node.frames[0]!, node.frames[1]!);
+      const order = bridgeOrder(fv[0]!.map((v) => v.co), fv[1]!.map((v) => v.co));
       connect(fv[0]!, order.map((i) => fv[1]![i]!));
-    } else if (node.frames.length === 2) connect(fv[0]!, fv[1]!);
+    } else if (fv.length === 2) connect(fv[0]!, fv[1]!);
     if (node.capStart) {
-      const f = fv[0]!;
-      polys.push(node.flipNormal ? [f[0]!, f[1]!, f[2]!, f[3]!] : [f[3]!, f[2]!, f[1]!, f[0]!]);
+      const x = fv[0]!;
+      bm.faceCreateVerts(node.flipNormal ? [x[0]!, x[1]!, x[2]!, x[3]!] : [x[3]!, x[2]!, x[1]!, x[0]!]);
     }
     if (node.capEnd) {
-      const f = fv[1]!;
-      polys.push([f[0]!, f[1]!, f[2]!, f[3]!]);
+      const x = fv[1]!;
+      bm.faceCreateVerts([x[0]!, x[1]!, x[2]!, x[3]!]);
     }
-  });
+  }
 
-  // Then one tube segment per edge — `skin_output_connections`.
+  // One tube segment per edge — `skin_output_connections`.
   sk.edges.forEach(([a, b], e) => {
     const na = nodes[a]!;
     const nb = nodes[b]!;
@@ -465,10 +850,13 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
     if (na.seam || nb.seam) {
       const ia = na.seam && e !== na.seamEdges[0] ? 1 : 0;
       const ib = nb.seam && e !== nb.seamEdges[0] ? 1 : 0;
-      const order = bridgeOrder(na.frames[ia]!, nb.frames[ib]!);
-      connect(frameVerts[a]![ia]!, order.map((i) => frameVerts[b]![ib]![i]!));
-    } else connect(frameVerts[a]![0]!, frameVerts[b]![0]!);
+      const fa = na.frames[ia]!.verts;
+      const fb = nb.frames[ib]!.verts;
+      const order = bridgeOrder(fa.map((v) => v.co), fb.map((v) => v.co));
+      connect(fa, order.map((i) => fb[i]!));
+    } else connect(na.frames[0]!.verts, nb.frames[0]!.verts);
   });
+  mergeTriangles(bm, axes);
 
-  return { positions: Float32Array.from(outPositions), polys };
+  return bm.toMeshData();
 }
