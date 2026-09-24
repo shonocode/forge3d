@@ -418,7 +418,9 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
       for (let i = 0; i < mod.repeat; i++)
         smoothVert(em, all, { factor: mod.factor, useAxisX: true, useAxisY: true, useAxisZ: true });
       const out: MeshData = { positions: Float32Array.from(em.positions), polys: s.polys.map((p) => [...p]) };
-      if (s.uvs) out.uvs = s.uvs;
+      // A copy, as every other case returns fresh arrays — a later step that
+      // edited the corners in place would otherwise reach back into `s`.
+      if (s.uvs) out.uvs = s.uvs.map((f) => f.map((c) => [...c]));
       return out;
     }
     case "triangulate":

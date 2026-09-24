@@ -24,9 +24,10 @@ export const BRUSHES = [
 
 export function setBrush(b: BrushId): void {
   state.sculptConfig.brush = b;
-  document.querySelectorAll<HTMLElement>(".bon").forEach((e) =>
-    e.classList.toggle("on", e.id === "sb_" + b)
-  );
+  // The buttons' highlight is React's (`brush.tsx`). This used to toggle `on`
+  // across every `.bon` by an `sb_` id the new screen does not give them —
+  // which stripped the highlight off the chosen brush when it was clicked
+  // again, since React then saw no change to put back.
   status("Brush: " + b);
 }
 

@@ -74,16 +74,12 @@ export function clearMeasurements(): void {
   state.measurements = [];
   state.measureStartPoint = null;
   state.measuringActive = false;
-  const btn = document.getElementById("btnMeasure");
-  if (btn) btn.classList.remove("on");
   status("Measurements cleared");
 }
 
 export function toggleMeasureMode(): void {
   state.measuringActive = !state.measuringActive;
   state.measureStartPoint = null;
-  const btn = document.getElementById("btnMeasure");
-  if (btn) btn.classList.toggle("on", state.measuringActive);
   status(state.measuringActive ? "Measure mode ON" : "Measure mode OFF");
 }
 

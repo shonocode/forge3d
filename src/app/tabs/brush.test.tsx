@@ -53,6 +53,15 @@ describe("sculptControls", () => {
     expect(pull.getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("bm: clicking the brush already chosen keeps its highlight", async () => {
+    // `setBrush` used to toggle `on` off every `.bon` button by an old id; on
+    // a repeat click React saw no change and never put it back.
+    render(<>{sculptControls.bm?.()}</>);
+    const push = screen.getByRole("button", { name: "↑ Push（盛り上げ）" });
+    await act(async () => fireEvent.click(push));
+    expect(push.classList.contains("on")).toBe(true);
+  });
+
   it("sym: X/Y/Z start unchecked; toggling X writes sculptConfig.symX", async () => {
     render(<>{sculptControls.sym?.()}</>);
     const x = screen.getByRole("checkbox", { name: "X" }) as HTMLInputElement;

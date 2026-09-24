@@ -82,10 +82,6 @@ export function toggleOrthographic(): void {
     cam.mode = Camera.PERSPECTIVE_CAMERA;
     status("Perspective");
   }
-
-  // Update button visual
-  const btn = document.getElementById("btnOrtho");
-  if (btn) btn.classList.toggle("on", state.isOrthographic);
 }
 
 export function updateOrthoFrustum(): void {

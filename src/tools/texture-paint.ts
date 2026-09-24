@@ -12,12 +12,10 @@ import {
   makeBaseMeta,
   makeLayerMeta,
   nextActiveAfterRemove,
-  LAYER_BLENDS,
-  type LayerBlend,
   type PaintLayerMeta,
 } from "./paint-layers";
 import { channelTintRgb, hexToRgb, luminance01, type PaintChannel } from "./paint-channels";
-import { escapeHtml } from "../ui/escape";
+import { store } from "../store";
 
 /** One paint layer: metadata + its own transparent canvas. */
 export interface PaintLayer extends PaintLayerMeta {
@@ -271,8 +269,6 @@ export function loadBrushImage(): void {
       _brushImageName = file.name;
       _stencilTile = null;
       setTimeout(() => URL.revokeObjectURL(url), 500);
-      const nameEl = document.getElementById("brushImgName");
-      if (nameEl) nameEl.textContent = file.name;
       status("Brush image: " + file.name);
     };
     img.onerror = () => status("⚠ 画像の読み込みに失敗");
@@ -617,75 +613,15 @@ export function removePaintLayer(mesh: AbstractMesh, index: number): void {
 }
 
 /**
- * Rebuild the Paint tab's layer list. Shows a hint until the mesh has a
- * stack (created lazily on first stroke / Add Layer). Topmost layer first,
- * Photoshop-style.
+ * Tell the screen the layer stack changed. The Paint tab's list
+ * (`LayersSection` in `app/tabs/brush.tsx`) reads `state.paintLayersMap`
+ * directly, and the per-frame fingerprint does not include it — so the stack
+ * being created on the first stroke, a layer added or removed, or a project
+ * loaded would otherwise leave the list stale until something else redrew.
+ *
+ * Until 2026-09-25 this built the old screen's list into `#paintLayersC`, an
+ * element the React screen does not have, and so did nothing at all.
  */
 export function updatePaintLayersUI(): void {
-  const el = document.getElementById("paintLayersC");
-  if (!el) return;
-  const mesh = state.selectedMeshes[state.selectedMeshes.length - 1];
-  const stack = mesh ? state.paintLayersMap.get(mesh.uniqueId) : undefined;
-  if (!mesh || !stack) {
-    el.innerHTML = '<div class="empty" style="font-size:9px;">ペイント開始で Base レイヤーが作られる</div>';
-    return;
-  }
-
-  const rows: string[] = [];
-  for (let i = stack.layers.length - 1; i >= 0; i--) {
-    const l = stack.layers[i]!;
-    const active = i === stack.active;
-    const blendOpts = LAYER_BLENDS
-      .map((b) => `<option value="${b}"${l.blend === b ? " selected" : ""}>${b}</option>`)
-      .join("");
-    rows.push(`
-      <div class="sr pl-row" data-idx="${i}" style="display:flex;align-items:center;gap:3px;font-size:9px;padding:2px 3px;border-radius:3px;${active ? "background:var(--acg,rgba(255,200,0,0.12));" : ""}cursor:pointer;">
-        <input type="checkbox" class="pl-vis" data-idx="${i}"${l.visible ? " checked" : ""} title="表示 / 非表示">
-        <span style="flex:1;${active ? "color:var(--ac2);font-weight:600;" : ""}">${escapeHtml(l.name)}</span>
-        <select class="pl-blend" data-idx="${i}" style="font-size:9px;width:64px;"${l.isBase ? " disabled" : ""}>${blendOpts}</select>
-        <input type="range" class="pl-op" data-idx="${i}" min="0" max="1" step="0.05" value="${l.opacity}" style="width:44px;" title="Opacity">
-        ${l.isBase ? "" : `<button class="abtn dan pl-del" data-idx="${i}" style="padding:0 4px;font-size:9px;min-width:0;">✕</button>`}
-      </div>`);
-  }
-  el.innerHTML = rows.join("");
-
-  const m = mesh;
-  el.querySelectorAll<HTMLElement>(".pl-row").forEach((row) => {
-    row.addEventListener("click", (ev) => {
-      // Ignore clicks that landed on the row's own controls.
-      const t = ev.target as HTMLElement;
-      if (t.closest(".pl-vis, .pl-blend, .pl-op, .pl-del")) return;
-      const s = state.paintLayersMap.get(m.uniqueId);
-      if (!s) return;
-      s.active = Number(row.dataset.idx);
-      updatePaintLayersUI();
-    });
-  });
-  el.querySelectorAll<HTMLInputElement>(".pl-vis").forEach((inp) => {
-    inp.addEventListener("change", () => {
-      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(inp.dataset.idx)];
-      if (!l) return;
-      l.visible = inp.checked;
-      compositePaintLayers(m.uniqueId);
-    });
-  });
-  el.querySelectorAll<HTMLSelectElement>(".pl-blend").forEach((sel) => {
-    sel.addEventListener("change", () => {
-      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(sel.dataset.idx)];
-      if (!l) return;
-      l.blend = sel.value as LayerBlend;
-      compositePaintLayers(m.uniqueId);
-    });
-  });
-  el.querySelectorAll<HTMLInputElement>(".pl-op").forEach((inp) => {
-    inp.addEventListener("input", () => {
-      const l = state.paintLayersMap.get(m.uniqueId)?.layers[Number(inp.dataset.idx)];
-      if (!l) return;
-      l.opacity = Number(inp.value);
-      compositePaintLayers(m.uniqueId);
-    });
-  });
-  el.querySelectorAll<HTMLButtonElement>(".pl-del").forEach((btn) => {
-    btn.addEventListener("click", () => removePaintLayer(m, Number(btn.dataset.idx)));
-  });
+  store.notify();
 }

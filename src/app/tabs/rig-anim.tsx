@@ -84,7 +84,10 @@ export function AnimClipSection() {
   useForge(() => null);
   useAnimPlaybackBridge();
   const clip = getActiveClip();
-  const [importedIdx, setImportedIdx] = useState(0);
+  const [chosenImported, setImportedIdx] = useState(0);
+  // A new import replaces the list; an index past its end would show the
+  // first option in the select but play nothing. What is shown is what plays.
+  const importedIdx = chosenImported < state.importedAnimGroups.length ? chosenImported : 0;
 
   return (
     <>
