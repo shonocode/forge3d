@@ -143,7 +143,7 @@ export interface SmoothLaplacianOptions {
 }
 
 /** One row of the system: the diagonal, and the off-diagonal entries. */
-interface Row {
+export interface Row {
   diag: number;
   cols: number[];
   vals: number[];
@@ -391,7 +391,7 @@ function apply(rows: Row[], x: Float64Array, y: Float64Array): void {
  * every cotangent weight is positive, and an obtuse triangle makes one
  * negative — common in a cage and in anything a boolean has touched.
  */
-function bicgstab(
+export function bicgstab(
   rows: Row[],
   b: Float64Array,
   tolerance: number,

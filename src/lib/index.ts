@@ -228,6 +228,7 @@ export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
 export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
+export { laplacianSmooth, type LaplacianSmoothOptions } from "../tools/edit-mode/laplacian-smooth";
 export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
 export { unsubdivide, type UnsubdivideOptions } from "../tools/edit-mode/unsubdivide";
 export { edgenetPrepare, type EdgenetPrepareOptions } from "../tools/edit-mode/edgenet-prepare";

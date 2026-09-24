@@ -3,106 +3,80 @@ import { decimateCollapse } from "./decimate";
 import { sphere, box } from "./generate";
 import type { MeshData } from "../lib/mesh";
 
-/** An n×n quad grid in the XY plane spanning ±size/2, with a bump pattern. */
-function grid(n: number, size: number, height = 0): MeshData {
+/**
+ * `decimateCollapse` — Blender's Decimate ▸ Collapse, ported. The agreement
+ * with Blender is the parity row `decimate-collapse` (and
+ * `probe-decimate-collapse.py`, 18 cases over four ratios, every vertex
+ * 0.0000 mm); the counts below are Blender's, copied from those runs.
+ */
+
+/**
+ * The parity input `grid`: 5×5 vertices 0.1 apart on y = 0. The coordinates
+ * are written out rather than computed — `3 * 0.1 - 0.2` is not the `0.1` the
+ * OBJ carries, and a flat grid's answer is decided by ties.
+ */
+function flatGrid(): MeshData {
+  const at = [-0.2, -0.1, 0, 0.1, 0.2];
   const positions: number[] = [];
-  const step = size / n;
-  for (let r = 0; r <= n; r++)
-    for (let c = 0; c <= n; c++)
-      positions.push(c * step - size / 2, r * step - size / 2, height * (((r * 7 + c * 13) % 11) / 11));
+  for (let j = 0; j < 5; j++) for (let i = 0; i < 5; i++) positions.push(at[i]!, 0, at[j]!);
   const polys: number[][] = [];
-  for (let r = 0; r < n; r++)
-    for (let c = 0; c < n; c++)
-      polys.push([r * (n + 1) + c, r * (n + 1) + c + 1, (r + 1) * (n + 1) + c + 1, (r + 1) * (n + 1) + c]);
-  return { positions: new Float32Array(positions), polys };
+  for (let j = 0; j < 4; j++)
+    for (let i = 0; i < 4; i++) {
+      const a = j * 5 + i;
+      polys.push([a, a + 5, a + 6, a + 1]);
+    }
+  return { positions: Float32Array.from(positions), polys };
 }
 
-const triCount = (m: MeshData): number =>
-  m.polys.reduce((sum, p) => sum + p.length - 2, 0);
+/** The parity input `cube`. */
+function cube(): MeshData {
+  return {
+    positions: Float32Array.from([
+      -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+      -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+    ]),
+    polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+  };
+}
 
-/** The largest distance from any vertex of `b` to the nearest vertex of `a`. */
-function maxDrift(a: MeshData, b: MeshData): number {
-  let worst = 0;
-  for (let j = 0; j < b.positions.length / 3; j++) {
-    let best = Infinity;
-    for (let i = 0; i < a.positions.length / 3; i++) {
-      const d = Math.hypot(
-        a.positions[i * 3]! - b.positions[j * 3]!,
-        a.positions[i * 3 + 1]! - b.positions[j * 3 + 1]!,
-        a.positions[i * 3 + 2]! - b.positions[j * 3 + 2]!,
-      );
-      if (d < best) best = d;
-    }
-    if (best > worst) worst = best;
-  }
-  return worst;
+const triCount = (m: MeshData): number => m.polys.reduce((sum, p) => sum + p.length - 2, 0);
+/** "4x3 2x4": how many faces of each size. */
+function sizes(m: MeshData): string {
+  const c = new Map<number, number>();
+  for (const p of m.polys) c.set(p.length, (c.get(p.length) ?? 0) + 1);
+  return [...c].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${v}x${k}`).join(" ");
 }
 
 describe("decimateCollapse", () => {
-  it("counts triangles, not faces", () => {
-    // Blender's `ratio` is measured against the triangle count: a 32-triangle
-    // grid at 0.5 comes back with 16 whether it went in as quads or triangles.
-    const quads = grid(4, 1, 0.05);
-    expect(triCount(quads)).toBe(32);
-    expect(triCount(decimateCollapse(quads, { ratio: 0.5 }))).toBeLessThanOrEqual(16);
-    expect(triCount(decimateCollapse(quads, { ratio: 0.25 }))).toBeLessThanOrEqual(8);
+  it("gives Blender's counts on a flat grid, where only topology decides", () => {
+    // Every quadric cost on a flat sheet is zero, so the order comes from the
+    // topology fallback and the heap's ties — the hardest case to match.
+    const out3 = decimateCollapse(flatGrid(), { ratio: 0.3 });
+    expect([out3.positions.length / 3, sizes(out3)]).toEqual([9, "7x3 1x4"]);
+    const out8 = decimateCollapse(flatGrid(), { ratio: 0.8 });
+    expect([out8.positions.length / 3, sizes(out8)]).toEqual([20, "4x3 10x4"]);
+    for (let i = 1; i < out8.positions.length; i += 3) expect(Math.abs(out8.positions[i]!)).toBe(0);
   });
 
-  it("rounds the target down", () => {
-    // 32 × 0.1 is 3.2, and Blender comes back with 3.
-    const out = decimateCollapse(grid(4, 1, 0.05), { ratio: 0.1 });
-    expect(triCount(out)).toBeLessThanOrEqual(3);
+  it("joins the surviving triangles of a quad back into it", () => {
+    const out = decimateCollapse(cube(), { ratio: 0.8 });
+    expect([out.positions.length / 3, sizes(out)]).toEqual([6, "4x3 2x4"]);
+    // …and leaves them as triangles when asked.
+    const tris = decimateCollapse(cube(), { ratio: 0.8, triangulate: true });
+    expect(tris.polys.every((p) => p.length === 3)).toBe(true);
+    expect(tris.positions.length / 3).toBe(6);
   });
 
-  it("returns the triangulated input at ratio 1", () => {
-    const before = grid(3, 1, 0.05);
-    const out = decimateCollapse(before, { ratio: 1 });
-    expect(triCount(out)).toBe(triCount(before));
-    expect(out.polys.every((p) => p.length === 3)).toBe(true);
-  });
-
-  it("leaves every output vertex on or near the original surface", () => {
-    // The point of a quadric: the cheap collapses are the ones that do not
-    // move the surface. On a sphere of radius 1 halved, nothing should have
-    // wandered far from where the original vertices were.
-    const s = sphere({ segments: 24, rings: 12, radius: 1 });
-    const out = decimateCollapse(s, { ratio: 0.5 });
-    expect(maxDrift(s, out)).toBeLessThan(0.15);
-  });
-
-  it("keeps a sheet's outline until the inside is gone", () => {
-    // Boundary vertices carry an extra plane, so they are expensive. A flat
-    // grid taken down hard should still have its four corners.
-    const g = grid(6, 2);
-    const out = decimateCollapse(g, { ratio: 0.2 });
-    const corners: Array<[number, number]> = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
-    for (const [x, y] of corners) {
-      let found = false;
-      for (let v = 0; v < out.positions.length / 3; v++)
-        if (
-          Math.abs(out.positions[v * 3]! - x) < 1e-5 &&
-          Math.abs(out.positions[v * 3 + 1]! - y) < 1e-5
-        )
-          found = true;
-      expect(found, `corner (${x}, ${y})`).toBe(true);
-    }
-  });
-
-  it("emits only triangles, and only vertices it uses", () => {
-    const out = decimateCollapse(sphere({ segments: 16, rings: 8, radius: 1 }), { ratio: 0.4 });
-    expect(out.polys.every((p) => p.length === 3)).toBe(true);
-    const used = new Set(out.polys.flat());
-    expect(used.size).toBe(out.positions.length / 3);
-    // …and no triangle refers to a vertex that is not there.
-    for (const v of used) expect(v).toBeLessThan(out.positions.length / 3);
+  it("returns the input at ratio 1, as the modifier does", () => {
+    const g = flatGrid();
+    const out = decimateCollapse(g, { ratio: 1 });
+    expect(out.polys).toEqual(g.polys);
+    expect([...out.positions]).toEqual([...g.positions]);
   });
 
   it("bottoms a closed shell out at two triangles, like Blender", () => {
-    // Measured, not guessed — the first version of this test asserted "at
-    // least four" from intuition and the implementation returned zero.
     // Blender takes a 12-triangle cube to 2 triangles over 3 vertices for
-    // every ratio from 0.25 down to 0, and refuses to go further:
-    // probe-decimate3.py.
+    // every ratio from 0.25 down to 0 (probe-decimate3.py).
     for (const ratio of [0.25, 0.1, 0.05, 0]) {
       const out = decimateCollapse(box({ width: 1, height: 1, depth: 1 }), { ratio });
       expect(triCount(out), `ratio ${ratio}`).toBe(2);
@@ -111,15 +85,16 @@ describe("decimateCollapse", () => {
   });
 
   it("lets an open sheet go all the way, like Blender", () => {
-    // The other half of the same measurement: a flat grid has no closed-shell
-    // floor and Blender takes it to nothing at ratio 0.
-    const out = decimateCollapse(grid(6, 2), { ratio: 0 });
-    expect(triCount(out)).toBe(0);
+    expect(triCount(decimateCollapse(flatGrid(), { ratio: 0 }))).toBe(0);
+  });
+
+  it("uses every vertex it returns", () => {
+    const out = decimateCollapse(sphere({ segments: 16, rings: 8, radius: 1 }), { ratio: 0.4 });
+    const used = new Set(out.polys.flat());
+    expect(used.size).toBe(out.positions.length / 3);
   });
 
   it("is deterministic", () => {
-    // Blender's is — five runs of the same input agree exactly — so a
-    // different answer run to run would be this side's bug, not a fact of life.
     const s = sphere({ segments: 16, rings: 8, radius: 1 });
     const a = decimateCollapse(s, { ratio: 0.45 });
     const b = decimateCollapse(s, { ratio: 0.45 });
