@@ -570,95 +570,146 @@ export interface SolidifyOptions {
 
 /**
  * The offset each vertex takes for one unit of thickness: a unit normal times
- * a shell factor.
+ * a shell factor — `calc_solidify_normals` and `solidify_add_thickness` in
+ * Blender's `bmo_extrude.cc`.
  *
- * Both halves are Blender's, and both were measured off `bmesh.ops.solidify`
- * rather than assumed — an offset of plain `normal * thickness` came out 12-15%
- * short on curved surfaces.
- *
- * - The normal is **angle-weighted**: each face contributes in proportion to
- *   the corner angle it turns through at that vertex, not its area and not
- *   equally. Area weighting is 5x worse here, measured.
- * - The shell factor is Blender's `BM_vert_calc_shell_factor` — the
- *   angle-weighted mean of `1 / |n · n_face|`. It is what makes the thickness
- *   *even*: without it a cube corner moves `thickness` along its diagonal and
- *   each of the three faces ends up only `thickness/sqrt(3)` thick. With it,
- *   every adjacent face is displaced by exactly `thickness`.
+ * - The normal is built **per edge**, not per corner: each edge between two
+ *   faces adds `n₁ + n₂` scaled to the angle between them, a boundary edge
+ *   adds its face's normal times π/2, and an edge between two coplanar faces
+ *   adds nothing. On flat and right-angled input that is the same direction as
+ *   a corner-angle-weighted normal, which is why it passed there for months;
+ *   on a curved cage it is up to 0.84° off (`arm`, 0.79 mm mean). Vertices on
+ *   an edge with no face or more than two fall back to the usual
+ *   corner-angle-weighted normal, as Blender's do.
+ * - Face normals are `BM_face_normal_update`'s: a quad's is the cross of its
+ *   **diagonals**, not Newell's — the two differ on a bent quad.
+ * - The shell factor is the corner-angle-weighted mean of `1 / |n · n_face|`.
+ *   It is what makes the thickness *even*: without it a cube corner moves
+ *   `thickness` along its diagonal and each of the three faces ends up only
+ *   `thickness/sqrt(3)` thick.
  */
 function offsetBasis(data: MeshData): { normals: Float32Array; shell: Float64Array } {
   const P = data.positions;
   const count = P.length / 3;
-  const normals = new Float32Array(P.length);
-  const faceNormals: Array<[number, number, number]> = [];
+  const at = (v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const unit = (x: Vec3): Vec3 => {
+    const len = Math.hypot(x[0], x[1], x[2]);
+    return len > 1e-35 ? [x[0] / len, x[1] / len, x[2] / len] : [0, 0, 0];
+  };
+  const cross3 = (a: Vec3, b: Vec3): Vec3 => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  const minus = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
-  for (const poly of data.polys) {
-    let nx = 0;
-    let ny = 0;
-    let nz = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]! * 3;
-      const b = poly[(i + 1) % poly.length]! * 3;
-      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
-      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
-      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
-    }
-    const len = Math.hypot(nx, ny, nz) || 1;
-    faceNormals.push([nx / len, ny / len, nz / len]);
-  }
+  const faceNormals: Vec3[] = data.polys.map((poly) => {
+    if (poly.length === 3) return unit(cross3(minus(at(poly[0]!), at(poly[1]!)), minus(at(poly[1]!), at(poly[2]!))));
+    if (poly.length === 4)
+      return unit(cross3(minus(at(poly[0]!), at(poly[2]!)), minus(at(poly[1]!), at(poly[3]!))));
+    return unit(newellNormal(P, poly));
+  });
 
   /** The angle the polygon turns through at its `i`th vertex. */
   const cornerAngle = (poly: readonly number[], i: number): number => {
-    const v = poly[i]! * 3;
-    const prev = poly[(i + poly.length - 1) % poly.length]! * 3;
-    const next = poly[(i + 1) % poly.length]! * 3;
-    const ax = P[prev]! - P[v]!;
-    const ay = P[prev + 1]! - P[v + 1]!;
-    const az = P[prev + 2]! - P[v + 2]!;
-    const bx = P[next]! - P[v]!;
-    const by = P[next + 1]! - P[v + 1]!;
-    const bz = P[next + 2]! - P[v + 2]!;
-    const la = Math.hypot(ax, ay, az);
-    const lb = Math.hypot(bx, by, bz);
-    if (la < 1e-20 || lb < 1e-20) return 0;
-    const cos = (ax * bx + ay * by + az * bz) / (la * lb);
-    return Math.acos(Math.max(-1, Math.min(1, cos)));
+    const n = poly.length;
+    const a = unit(minus(at(poly[(i + n - 1) % n]!), at(poly[i]!)));
+    const b = unit(minus(at(poly[(i + 1) % n]!), at(poly[i]!)));
+    return Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])));
   };
 
-  for (let f = 0; f < data.polys.length; f++) {
-    const poly = data.polys[f]!;
+  // Faces around each edge, and which vertices touch an edge that is not
+  // between one or two faces.
+  const edgeFaces = new Map<string, { a: number; b: number; faces: number[] }>();
+  data.polys.forEach((poly, f) => {
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const key = seamKey(a, b);
+      const e = edgeFaces.get(key) ?? { a, b, faces: [] };
+      e.faces.push(f);
+      edgeFaces.set(key, e);
+    }
+  });
+  const nonManifold = new Uint8Array(count);
+  for (const e of edgeFaces.values())
+    if (e.faces.length > 2) nonManifold[e.a] = nonManifold[e.b] = 1;
+
+  const acc = new Float64Array(count * 3);
+  const flatOnly = new Uint8Array(count); // Blender clears the vertex tag here
+  for (const e of edgeFaces.values()) {
+    if (e.faces.length > 2) continue;
+    let add: Vec3;
+    if (e.faces.length === 2) {
+      const n1 = faceNormals[e.faces[0]!]!;
+      const n2 = faceNormals[e.faces[1]!]!;
+      // `angle_normalized_v3v3`
+      const d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
+      const angle =
+        d >= 0
+          ? 2 * Math.asin(Math.min(1, Math.hypot(n1[0] - n2[0], n1[1] - n2[1], n1[2] - n2[2]) / 2))
+          : Math.PI - 2 * Math.asin(Math.min(1, Math.hypot(n1[0] + n2[0], n1[1] + n2[1], n1[2] + n2[2]) / 2));
+      if (!(angle > 0)) {
+        flatOnly[e.a] = flatOnly[e.b] = 1;
+        continue;
+      }
+      const s = unit([n1[0] + n2[0], n1[1] + n2[1], n1[2] + n2[2]]);
+      add = [s[0] * angle, s[1] * angle, s[2] * angle];
+    } else {
+      const n1 = faceNormals[e.faces[0]!]!;
+      add = [n1[0] * (Math.PI / 2), n1[1] * (Math.PI / 2), n1[2] * (Math.PI / 2)];
+    }
+    for (const v of [e.a, e.b]) {
+      acc[v * 3] = acc[v * 3]! + add[0];
+      acc[v * 3 + 1] = acc[v * 3 + 1]! + add[1];
+      acc[v * 3 + 2] = acc[v * 3 + 2]! + add[2];
+    }
+  }
+
+  // The usual corner-angle-weighted normal, for non-manifold vertices.
+  const cornerWeighted = new Float64Array(count * 3);
+  const firstFace = new Int32Array(count).fill(-1);
+  data.polys.forEach((poly, f) => {
     const [nx, ny, nz] = faceNormals[f]!;
     for (let i = 0; i < poly.length; i++) {
       const v = poly[i]!;
+      if (firstFace[v] === -1) firstFace[v] = f;
       const w = cornerAngle(poly, i);
-      normals[v * 3] = normals[v * 3]! + nx * w;
-      normals[v * 3 + 1] = normals[v * 3 + 1]! + ny * w;
-      normals[v * 3 + 2] = normals[v * 3 + 2]! + nz * w;
+      cornerWeighted[v * 3] = cornerWeighted[v * 3]! + nx * w;
+      cornerWeighted[v * 3 + 1] = cornerWeighted[v * 3 + 1]! + ny * w;
+      cornerWeighted[v * 3 + 2] = cornerWeighted[v * 3 + 2]! + nz * w;
     }
-  }
-  for (let i = 0; i < normals.length; i += 3) {
-    const len = Math.hypot(normals[i]!, normals[i + 1]!, normals[i + 2]!);
-    if (len > 1e-20) {
-      normals[i] = normals[i]! / len;
-      normals[i + 1] = normals[i + 1]! / len;
-      normals[i + 2] = normals[i + 2]! / len;
+  });
+
+  const normals = new Float32Array(P.length);
+  for (let v = 0; v < count; v++) {
+    let n: Vec3;
+    if (nonManifold[v]) n = unit([cornerWeighted[v * 3]!, cornerWeighted[v * 3 + 1]!, cornerWeighted[v * 3 + 2]!]);
+    else {
+      n = unit([acc[v * 3]!, acc[v * 3 + 1]!, acc[v * 3 + 2]!]);
+      // Totally flat: every edge was between coplanar faces. Take a face's.
+      if (n[0] === 0 && n[1] === 0 && n[2] === 0 && flatOnly[v] && firstFace[v]! >= 0) n = faceNormals[firstFace[v]!]!;
     }
+    normals[v * 3] = n[0];
+    normals[v * 3 + 1] = n[1];
+    normals[v * 3 + 2] = n[2];
   }
 
   const num = new Float64Array(count);
   const den = new Float64Array(count);
-  for (let f = 0; f < data.polys.length; f++) {
-    const poly = data.polys[f]!;
+  data.polys.forEach((poly, f) => {
     const [nx, ny, nz] = faceNormals[f]!;
     for (let i = 0; i < poly.length; i++) {
       const v = poly[i]!;
       const w = cornerAngle(poly, i);
       const dot = Math.abs(normals[v * 3]! * nx + normals[v * 3 + 1]! * ny + normals[v * 3 + 2]! * nz);
-      num[v] = num[v]! + (dot > 1e-6 ? 1 / dot : 1) * w;
+      // `shell_v3v3_normalized_to_dist`: SMALL_NUMBER is 1e-8.
+      num[v] = num[v]! + (dot < 1e-8 ? 1 : 1 / dot) * w;
       den[v] = den[v]! + w;
     }
-  }
+  });
   const shell = new Float64Array(count);
-  for (let v = 0; v < count; v++) shell[v] = den[v]! > 1e-12 ? num[v]! / den[v]! : 1;
+  for (let v = 0; v < count; v++) shell[v] = den[v]! > 0 ? num[v]! / den[v]! : 0;
 
   return { normals, shell };
 }
@@ -686,13 +737,11 @@ function offsetBasis(data: MeshData): { normals: Float32Array; shell: Float64Arr
  * onto the offset copy; the rim edges are left uncreased.
  *
  * **How far the agreement has been measured** (`parity --op solidify`):
- * identical to Blender at 0.0000 mm on flat and right-angled input, closed or
- * open — vertex count, face count, area and volume all match to six digits. On
- * a *curved* closed surface the two drift: 0.79 mm mean on the 36-vertex arm
- * cage, 0.2% of its volume. The size is right (the shell factor agrees to
- * 0.09%); the direction differs by up to 0.84°, and Blender's own pre-operation
- * vertex normal does not explain where it moved either, so the remaining
- * difference is not simply a choice of normal weighting. Unresolved.
+ * identical to Blender at 0.0000 mm, flat, right-angled and curved, closed or
+ * open. The curved case (the arm cage) drifted 0.79 mm until 2026-09-25: the
+ * normal was corner-weighted, and Blender's solidify builds its own per edge
+ * (see {@link offsetBasis}) — read from `bmo_extrude.cc` after measuring had
+ * ruled out every vertex normal Blender exposes.
  */
 export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   const P = data.positions;

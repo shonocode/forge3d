@@ -118,6 +118,18 @@ describe("insetRegion", () => {
     expect(ys).toContain(1.3);
   });
 
+  it("depth still moves a border that was not inset", () => {
+    // `use_boundary` off on an open sheet: nothing is inset, but every vertex
+    // of the region travels by `depth` along its vertex normal (-y here) —
+    // parity row `inset-depth-no-boundary`, which forge3d failed 0/2 by
+    // leaving border vertices behind.
+    const em = meshFromData(twoQuads());
+    insetRegion(em, new Set([0, 1]), { thickness: 0.2, depth: 0.3 });
+    const out = meshToData(em);
+    expect(out.positions).toHaveLength(18);
+    expect(axis(out, 1)).toEqual([-0.3]);
+  });
+
   it("returns the re-pointed region faces so insets chain", () => {
     const em = meshFromData(cube());
     const first = insetRegion(em, new Set([3]), { thickness: 0.2 });

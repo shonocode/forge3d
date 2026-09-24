@@ -114,15 +114,71 @@ describe("connectVertsNonplanar follows the planarity-error search", () => {
     expect(faces(flat, [[0, 1, 2, 3, 4, 5]])).toEqual([[0, 1, 2, 3, 4, 5]]);
   });
 
-  it("takes v0-v2 on a bent quad, because the rule cannot decide", () => {
-    // Both cuts leave exactly planar triangles: the errors are zero and equal,
-    // and a tie keeps the first candidate. Blender agrees here and disagrees
-    // on 6 of the 16 quads of a bent sheet, by float32 rounding of those
-    // zeros — see the operator's own note.
+  it("takes v0-v2 on a bent quad when the two zeros round the same", () => {
+    // Both cuts leave exactly planar triangles: the errors are zero, and a
+    // float32 tie keeps the first candidate.
     const quad = Float32Array.from([0, 0, 0, 0.1, 0, 0, 0.1, 0.05, 0.1, 0, 0, 0.1]);
     expect(faces(quad, [[0, 1, 2, 3]])).toEqual([
       [0, 1, 2],
       [0, 2, 3],
+    ]);
+  });
+
+  /**
+   * The parity inputs `saddleGrid` / `saddleBump`, built as their OBJ is
+   * (float32, six decimals): on a quad the float32 rounding of two zeros is
+   * the whole answer, so the input has to be the same to the last digit.
+   */
+  function saddle(twist: number, bump: number): { positions: Float32Array; polys: number[][] } {
+    const n = 4;
+    const step = 0.4 / n;
+    const r6 = (x: number): number => Number(Math.fround(x).toFixed(6));
+    const p: number[] = [];
+    for (let r = 0; r <= n; r++)
+      for (let c = 0; c <= n; c++) {
+        const x = c * step - 0.2;
+        const z = r * step - 0.2;
+        p.push(r6(x), r6(twist * x * z + ((r + c) % 2 ? bump : -bump)), r6(z));
+      }
+    const polys: number[][] = [];
+    for (let r = 0; r < n; r++)
+      for (let c = 0; c < n; c++)
+        polys.push([r * (n + 1) + c, (r + 1) * (n + 1) + c, (r + 1) * (n + 1) + c + 1, r * (n + 1) + c + 1]);
+    return { positions: Float32Array.from(p), polys };
+  }
+
+  /** Per input quad: "02", "13", or "--" for left whole. */
+  function diagonals(sheet: { positions: Float32Array; polys: number[][] }): string[] {
+    const em = meshFromData(sheet);
+    connectVertsNonplanar(em, new Set(sheet.polys.map((_, i) => i)), 0.05);
+    const out = meshToData(em);
+    const edges = new Set<string>();
+    for (const p of out.polys)
+      p.forEach((a, i) => {
+        const b = p[(i + 1) % p.length]!;
+        edges.add(a < b ? `${a},${b}` : `${b},${a}`);
+      });
+    const has = (a: number, b: number): boolean => edges.has(a < b ? `${a},${b}` : `${b},${a}`);
+    return sheet.polys.map((q) => (has(q[0]!, q[2]!) ? "02" : has(q[1]!, q[3]!) ? "13" : "--"));
+  }
+
+  it("picks Blender's diagonal on every quad of a bent sheet — float32 rounding and all", () => {
+    // Read off Blender's output for the parity row (2026-09-25): 6 of 16 go
+    // v1-v3, with no geometric reason — the rounding of two zeros.
+    expect(diagonals(saddle(3, 0.06))).toEqual([
+      "02", "02", "02", "13", "13", "13", "02", "02",
+      "02", "02", "13", "13", "13", "02", "02", "02",
+    ]);
+  });
+
+  it("leaves a quad whole when no cut through it is legal", () => {
+    // `saddleBump`: the bump folds four quads so far that they are not
+    // convex in their own projection, and Blender keeps them whole — an
+    // illegal cut is passed over, never taken as a fallback, which forge3d
+    // used to do (it split all 16; Blender's output has 28 faces, not 32).
+    expect(diagonals(saddle(3, 0.2))).toEqual([
+      "02", "--", "13", "13", "--", "02", "13", "13",
+      "13", "13", "02", "--", "13", "13", "--", "02",
     ]);
   });
 

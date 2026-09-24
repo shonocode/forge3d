@@ -2700,7 +2700,13 @@ export interface InsetRegionOptions {
    * its edges. Measured against Blender 5.1.1, whose default this is.
    */
   thickness: number;
-  /** Push the inset region along its normal afterwards. Moves the whole region. */
+  /**
+   * Push the inset region along its normal afterwards. Moves every vertex of
+   * the region, border included even when nothing was inset there. The new
+   * ring goes along the sum of its inset edges' faces; every other vertex
+   * along its ordinary vertex normal from before the inset — Blender's
+   * `bmo_inset.cc`, and 0.0000 mm on curved cages since 2026-09-25.
+   */
   depth?: number;
   /**
    * Inset the part of the border that is also the **mesh's** boundary.
@@ -2770,8 +2776,24 @@ export function insetRegion(
   const polys = toPolygons(em);
   const P = em.positions;
 
-  /** Unit Newell normal for a polygon. */
+  /**
+   * A face's normal as `BM_face_normal_update` makes it: a triangle's cross
+   * product, a quad's **diagonals** crossed, Newell's for the rest. On a bent
+   * quad the diagonals and Newell disagree, which is where `depth` drifted.
+   */
   const normalOf = (poly: readonly number[]): [number, number, number] => {
+    if (poly.length === 3 || poly.length === 4) {
+      const c = (i: number): [number, number, number] => [P[poly[i]! * 3]!, P[poly[i]! * 3 + 1]!, P[poly[i]! * 3 + 2]!];
+      const d = (a: [number, number, number], b: [number, number, number]): [number, number, number] => [
+        a[0] - b[0],
+        a[1] - b[1],
+        a[2] - b[2],
+      ];
+      const n =
+        poly.length === 3 ? cross3(d(c(0), c(1)), d(c(1), c(2))) : cross3(d(c(0), c(2)), d(c(1), c(3)));
+      const len = Math.hypot(n[0], n[1], n[2]);
+      return len < 1e-20 ? [0, 0, 0] : [n[0] / len, n[1] / len, n[2] / len];
+    }
     let nx = 0;
     let ny = 0;
     let nz = 0;
@@ -2821,7 +2843,12 @@ export function insetRegion(
   // normal there. `cross(faceNormal, edgeDirection)` points into the face
   // because the winding runs counter-clockwise about the normal.
   const perps = new Map<number, [number, number, number][]>();
-  const normals = new Map<number, [number, number, number]>();
+  // Which way `depth` pushes, as Blender's inset does it: a vertex on the new
+  // ring goes along the sum of the faces **of its inset edges** (one per edge,
+  // unweighted), and every other vertex of the region along its ordinary
+  // vertex normal from before the inset — all faces round it, weighted by
+  // corner angle.
+  const ringNormals = new Map<number, [number, number, number]>();
   const regionVerts = new Set<number>();
 
   for (const f of selectedFaces) {
@@ -2832,9 +2859,6 @@ export function insetRegion(
       const b = poly[(i + 1) % poly.length]!;
       regionVerts.add(a);
 
-      const prev = normals.get(a) ?? [0, 0, 0];
-      normals.set(a, [prev[0] + n[0], prev[1] + n[1], prev[2] + n[2]]);
-
       if (!insetKeys.has(seamKey(a, b))) continue;
       const e = unit3([P[b * 3]! - P[a * 3]!, P[b * 3 + 1]! - P[a * 3 + 1]!, P[b * 3 + 2]! - P[a * 3 + 2]!]);
       const m = unit3(cross3(n, e));
@@ -2842,9 +2866,33 @@ export function insetRegion(
         const list = perps.get(v);
         if (list) list.push(m);
         else perps.set(v, [m]);
+        const prev = ringNormals.get(v) ?? [0, 0, 0];
+        ringNormals.set(v, [prev[0] + n[0], prev[1] + n[1], prev[2] + n[2]]);
       }
     }
   }
+
+  /** `BM_vert_normal_update`: corner-angle-weighted, over every face at `v`. */
+  const vertNormal = (v: number): [number, number, number] => {
+    let sx = 0;
+    let sy = 0;
+    let sz = 0;
+    for (const poly of polys) {
+      const i = poly.indexOf(v);
+      if (i < 0) continue;
+      const k = poly.length;
+      const q = poly[(i + k - 1) % k]!;
+      const r = poly[(i + 1) % k]!;
+      const e1 = unit3([P[q * 3]! - P[v * 3]!, P[q * 3 + 1]! - P[v * 3 + 1]!, P[q * 3 + 2]! - P[v * 3 + 2]!]);
+      const e2 = unit3([P[r * 3]! - P[v * 3]!, P[r * 3 + 1]! - P[v * 3 + 1]!, P[r * 3 + 2]! - P[v * 3 + 2]!]);
+      const w = Math.acos(Math.max(-1, Math.min(1, e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2])));
+      const n = normalOf(poly);
+      sx += n[0] * w;
+      sy += n[1] * w;
+      sz += n[2] * w;
+    }
+    return unit3([sx, sy, sz]);
+  };
 
   const newPositions: number[] = Array.from(P);
   let nextV = em.vertices.length;
@@ -2852,7 +2900,7 @@ export function insetRegion(
 
   for (const v of [...dupVerts].sort((x, y) => x - y)) {
     const ms = perps.get(v) ?? [];
-    const n = unit3(normals.get(v) ?? [0, 0, 0]);
+    const n = unit3(ringNormals.get(v) ?? [0, 0, 0]);
     let bx = 0;
     let by = 0;
     let bz = 0;
@@ -2875,11 +2923,12 @@ export function insetRegion(
   }
 
   // `depth` moves the whole region, so the vertices inside it travel too —
-  // measured on a 2x2 grid, whose middle vertex moves with the rest.
+  // measured on a 2x2 grid, whose middle vertex moves with the rest. So does
+  // a border vertex that was not duplicated (a mesh-boundary edge left alone
+  // by `useBoundary: false`): it is still a corner of the region's faces.
   if (depth !== 0) {
-    for (const v of regionVerts) {
-      if (borderVerts.has(v)) continue;
-      const n = unit3(normals.get(v) ?? [0, 0, 0]);
+    const moves = [...regionVerts].filter((v) => !dup.has(v)).map((v) => [v, vertNormal(v)] as const);
+    for (const [v, n] of moves) {
       newPositions[v * 3] = newPositions[v * 3]! + n[0] * depth;
       newPositions[v * 3 + 1] = newPositions[v * 3 + 1]! + n[1] * depth;
       newPositions[v * 3 + 2] = newPositions[v * 3 + 2]! + n[2] * depth;
@@ -3523,78 +3572,133 @@ export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<nu
 
 // ── Non-planar faces, edge rings ───────────────────────────────────────────
 
-/**
- * How close two planarity errors have to be before they count as the same,
- * relative to **the face's own size**.
- *
- * The window exists because the minimum is tied far more often than not: on
- * any face with a symmetry the two best cuts score identically, and Blender's
- * float32 arithmetic then ranks them by rounding — 1e-17 apart on numbers of
- * order 1e-2. Ties are resolved here the way its search resolves an exact one,
- * by keeping the candidate it reached first, which is the only part of that
- * decision that is a rule.
- *
- * **The scale has to be the face, not the error.** Scaling the window by the
- * errors being compared makes it vanish exactly where it is needed: a quad's
- * two errors are both about 1e-17, so a window of `1e-9 × 1e-17` is far below
- * the gap between them and the tie turns back into a float64 coin flip. That
- * was measured, not reasoned about — it moved `saddleGrid`'s parity distance
- * from 7.7 mm to 9.8 mm by flipping quads at random.
- */
-const NONPLANAR_TIE_REL = 1e-9;
+// The search below runs in **float32, in the C's order**, because on a quad
+// that is what decides it. Both candidates leave two triangles, each exactly
+// planar, so both errors are zero in exact arithmetic and Blender compares
+// two float32 roundings of zero with `<` — `v1`-`v3` wins where its noise
+// comes out smaller. Until 2026-09-25 forge3d kept `v0`-`v2` on every tie
+// (a decision recorded then as "not worth imitating"); the owner reversed it,
+// and `probe-nonplanar6.py` had already shown the float32 arithmetic
+// reproduces Blender's picks.
+const f32np = Math.fround;
+
+/** `dot_v3v3` in float: `(a0·b0 + a1·b1) + a2·b2`. */
+function dotNp(a: readonly number[], b: readonly number[]): number {
+  return f32np(f32np(f32np(a[0]! * b[0]!) + f32np(a[1]! * b[1]!)) + f32np(a[2]! * b[2]!));
+}
+
+/** `normalize_v3`: times `1 / length`; returns the length, 0 when degenerate. */
+function normalizeNp(n: number[]): number {
+  const d = dotNp(n, n);
+  if (!(d > 1.0e-35)) {
+    n[0] = n[1] = n[2] = 0;
+    return 0;
+  }
+  const len = f32np(Math.sqrt(d));
+  const s = f32np(1 / len);
+  n[0] = f32np(n[0]! * s);
+  n[1] = f32np(n[1]! * s);
+  n[2] = f32np(n[2]! * s);
+  return len;
+}
+
+const coNp = (P: Float32Array, v: number): number[] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
 
 /**
- * Newell's normal of one stretch of a face's corners, normalized.
- *
- * Blender's `BM_face_calc_normal_subset`, including the detail that decides
- * the quad case: the sum starts from the **last** corner of the stretch, so
- * the sub-polygon is closed. A three-corner stretch therefore gets its
- * triangle's exact plane normal rather than an open chain's approximation.
+ * Newell's normal of one stretch of a face's corners — Blender's
+ * `BM_face_calc_normal_subset`, including the detail that decides the quad
+ * case: the sum starts from the **last** corner of the stretch, so the
+ * sub-polygon is closed and a three-corner stretch gets its triangle's exact
+ * plane normal.
  *
  * @returns the unit normal, or `null` if the stretch is degenerate — which
  *   disqualifies the pair, as `!= 0.0f` does there
  */
-function subsetNormal(P: Float32Array, cycle: readonly number[]): [number, number, number] | null {
-  let nx = 0;
-  let ny = 0;
-  let nz = 0;
-  let prev = cycle[cycle.length - 1]! * 3;
+function subsetNormal(P: Float32Array, cycle: readonly number[]): number[] | null {
+  const n = [0, 0, 0];
+  let prev = coNp(P, cycle[cycle.length - 1]!);
   for (const v of cycle) {
-    const cur = v * 3;
-    nx += (P[prev + 1]! - P[cur + 1]!) * (P[prev + 2]! + P[cur + 2]!);
-    ny += (P[prev + 2]! - P[cur + 2]!) * (P[prev]! + P[cur]!);
-    nz += (P[prev]! - P[cur]!) * (P[prev + 1]! + P[cur + 1]!);
+    const cur = coNp(P, v);
+    // `add_newell_cross_v3_v3v3`
+    n[0] = f32np(n[0]! + f32np(f32np(prev[1]! - cur[1]!) * f32np(prev[2]! + cur[2]!)));
+    n[1] = f32np(n[1]! + f32np(f32np(prev[2]! - cur[2]!) * f32np(prev[0]! + cur[0]!)));
+    n[2] = f32np(n[2]! + f32np(f32np(prev[0]! - cur[0]!) * f32np(prev[1]! + cur[1]!)));
     prev = cur;
   }
-  const len = Math.hypot(nx, ny, nz);
-  if (!(len > 1e-30)) return null;
-  return [nx / len, ny / len, nz / len];
+  return normalizeNp(n) !== 0 ? n : null;
 }
 
 /**
  * How far one stretch of corners departs from its own plane: the total
- * absolute change in height around it, the height being the distance along the
- * stretch's normal.
- *
- * Blender's `bm_face_subset_calc_planar`. It projects with
- * `axis_dominant_v3_to_m3` and reads `dot_m3_v3_row_z`, which that function
- * asserts is the normal itself, so the height is `dot(no, v)`.
+ * absolute change in height around it, the height being `dot(no, v)` —
+ * Blender's `bm_face_subset_calc_planar` (its `dot_m3_v3_row_z` of the
+ * `axis_dominant_v3_to_m3` matrix is the normal's own dot product).
  */
-function subsetPlanarError(
-  P: Float32Array,
-  cycle: readonly number[],
-  no: readonly [number, number, number],
-): number {
-  const height = (v: number): number =>
-    P[v * 3]! * no[0] + P[v * 3 + 1]! * no[1] + P[v * 3 + 2]! * no[2];
+function subsetPlanarError(P: Float32Array, cycle: readonly number[], no: readonly number[]): number {
   let delta = 0;
-  let prev = height(cycle[cycle.length - 1]!);
+  let prev = dotNp(no, coNp(P, cycle[cycle.length - 1]!));
   for (const v of cycle) {
-    const cur = height(v);
-    delta += Math.abs(cur - prev);
+    const cur = dotNp(no, coNp(P, v));
+    delta = f32np(delta + Math.abs(f32np(cur - prev)));
     prev = cur;
   }
   return delta;
+}
+
+/** `BM_face_normal_update`: a triangle's cross, a quad's diagonals, Newell beyond. */
+function faceNormalNp(P: Float32Array, face: readonly number[]): number[] {
+  const sub = (a: number[], b: number[]): number[] => [f32np(a[0]! - b[0]!), f32np(a[1]! - b[1]!), f32np(a[2]! - b[2]!)];
+  const cross = (a: number[], b: number[]): number[] => [
+    f32np(f32np(a[1]! * b[2]!) - f32np(a[2]! * b[1]!)),
+    f32np(f32np(a[2]! * b[0]!) - f32np(a[0]! * b[2]!)),
+    f32np(f32np(a[0]! * b[1]!) - f32np(a[1]! * b[0]!)),
+  ];
+  const c = face.map((v) => coNp(P, v));
+  let n: number[];
+  if (face.length === 3) n = cross(sub(c[0]!, c[1]!), sub(c[1]!, c[2]!));
+  else if (face.length === 4) n = cross(sub(c[0]!, c[2]!), sub(c[1]!, c[3]!));
+  else return subsetNormal(P, face) ?? [0, 0, 0];
+  normalizeNp(n);
+  return n;
+}
+
+/**
+ * Is the face convex in its own projection? `axis_dominant_v3_to_m3` then
+ * `is_poly_convex_v2`, in float — the first thing `BM_face_splits_check_legal`
+ * asks, and on a convex face every cut is legal.
+ */
+function isConvexNp(P: Float32Array, face: readonly number[], no: readonly number[]): boolean {
+  // `ortho_basis_v3v3_v3`
+  let n1: number[];
+  let n2: number[];
+  const f = f32np(f32np(no[0]! * no[0]!) + f32np(no[1]! * no[1]!));
+  if (f > 1.1920929e-7) {
+    const d = f32np(1 / f32np(Math.sqrt(f)));
+    n1 = [f32np(no[1]! * d), f32np(-no[0]! * d), 0];
+    n2 = [f32np(-no[2]! * n1[1]!), f32np(no[2]! * n1[0]!), f32np(f32np(no[0]! * n1[1]!) - f32np(no[1]! * n1[0]!))];
+  } else {
+    n1 = [no[2]! < 0 ? -1 : 1, 0, 0];
+    n2 = [0, 1, 0];
+  }
+  const pv = face.map((v) => {
+    const c = coNp(P, v);
+    return [dotNp(n1, c), dotNp(n2, c)];
+  });
+  const n = pv.length;
+  let flag = 0;
+  let prevCo = pv[n - 1]!;
+  let dirPrev = [f32np(pv[n - 2]![0]! - prevCo[0]!), f32np(pv[n - 2]![1]! - prevCo[1]!)];
+  for (let a = 0; a < n; a++) {
+    const cur = pv[a]!;
+    const dirCur = [f32np(prevCo[0]! - cur[0]!), f32np(prevCo[1]! - cur[1]!)];
+    const cr = f32np(f32np(dirPrev[0]! * dirCur[1]!) - f32np(dirPrev[1]! * dirCur[0]!));
+    if (cr < 0) flag |= 1;
+    else if (cr > 0) flag |= 2;
+    if (flag === 3) return false;
+    dirPrev = dirCur;
+    prevCo = cur;
+  }
+  return true;
 }
 
 /**
@@ -3665,29 +3769,25 @@ function nonplanarCutLeavesFace(
  * The cut Blender's search would take through one face, or `null` for none.
  *
  * `bm_face_split_find`: every pair of non-adjacent corners, scored by how
- * non-planar the two halves it would leave are, smallest total wins. `cos` is
- * the angle between those halves' normals, which is what the caller compares
- * against the limit.
+ * non-planar the two halves it would leave are, the smallest total winning
+ * by a strict float32 `<` — so an exact tie keeps the pair reached first.
+ * `cos` is the angle between those halves' normals, which the caller
+ * compares against the limit.
  *
- * Legality is applied as a filter with a fallback: if it rejects every
- * candidate the best one is taken anyway, so a face is never left whole for
- * want of a legal cut.
+ * Legality (`BM_face_splits_check_legal`) is asked only of a pair that would
+ * win, and an illegal one is simply passed over. On a convex face every cut
+ * is legal, decided exactly as Blender does; a concave face falls back to
+ * forge3d's own inside-the-outline test, which is where this is not a port.
  */
 function nonplanarBestCut(
   P: Float32Array,
   face: readonly number[],
 ): { ia: number; ib: number; cos: number } | null {
   const n = face.length;
-  const whole = subsetNormal(P, face);
-  // The tie window's scale: how big this face is, so that two errors of 1e-17
-  // on a face 0.1 across still read as the same number.
-  let extent = 0;
-  const o = face[0]! * 3;
-  for (const v of face) {
-    extent = Math.max(extent, Math.hypot(P[v * 3]! - P[o]!, P[v * 3 + 1]! - P[o + 1]!, P[v * 3 + 2]! - P[o + 2]!));
-  }
-  let best: { ia: number; ib: number; err: number; cos: number } | null = null;
-  let bestIllegal: { ia: number; ib: number; err: number; cos: number } | null = null;
+  const whole = faceNormalNp(P, face);
+  let convex: boolean | null = null;
+  let errBest = 3.4028234663852886e38;
+  let best: { ia: number; ib: number; cos: number } | null = null;
   for (let ia = 0; ia < n; ia++) {
     for (let ib = ia + 2; ib < n; ib++) {
       if (ia === 0 && ib === n - 1) continue; // adjacent around the wrap
@@ -3699,25 +3799,15 @@ function nonplanarBestCut(
       if (!noA) continue;
       const noB = subsetNormal(P, b);
       if (!noB) continue;
-      const err = subsetPlanarError(P, a, noA) + subsetPlanarError(P, b, noB);
-      const cos = noA[0] * noB[0] + noA[1] * noB[1] + noA[2] * noB[2];
-      const candidate = { ia, ib, err, cos };
-      const legal = !whole || !nonplanarCutLeavesFace(P, face, ia, ib, whole);
-      const slot = legal ? best : bestIllegal;
-      if (slot === null) {
-        if (legal) best = candidate;
-        else bestIllegal = candidate;
-        continue;
-      }
-      const tol = NONPLANAR_TIE_REL * Math.max(extent, Math.abs(err), Math.abs(slot.err));
-      if (err < slot.err - tol) {
-        if (legal) best = candidate;
-        else bestIllegal = candidate;
-      }
+      const err = f32np(subsetPlanarError(P, a, noA) + subsetPlanarError(P, b, noB));
+      if (!(err < errBest)) continue;
+      convex ??= isConvexNp(P, face, whole);
+      if (!convex && nonplanarCutLeavesFace(P, face, ia, ib, whole as [number, number, number])) continue;
+      errBest = err;
+      best = { ia, ib, cos: dotNp(noA, noB) };
     }
   }
-  const won = best ?? bestIllegal;
-  return won ? { ia: won.ia, ib: won.ib, cos: won.cos } : null;
+  return best;
 }
 
 /**
@@ -3770,16 +3860,14 @@ function splitNonplanarFace(
  * cut would reveal, not about how far a corner sits off the face's average
  * plane. Then repeat on both halves.
  *
- * **On a quad the rule cannot decide.** Both candidates leave two triangles,
- * each exactly planar, so both errors are zero in exact arithmetic; Blender's
- * float32 rounding of those zeros picks the winner, and on a bent 4×4 sheet it
- * comes out `v1`-`v3` on 6 of 16 quads with no geometric reason to be found —
- * the answer even alternates as a corner is pushed smoothly through a sweep.
- * That is noise, not a rule, so it is not imitated: a tie keeps the first
- * candidate, `v0`-`v2`, which is the same diagonal `quadsToTris` fans along
- * and what Blender itself returns wherever the noise does not overrule it.
- * `tools/modeling/parity/probe-nonplanar6.py` reproduces its 16 answers in
- * float32 and is the record of why this is the end of that road.
+ * **On a quad the geometry cannot decide — float32 does.** Both candidates
+ * leave two triangles, each exactly planar, so both errors are zero in exact
+ * arithmetic; Blender's float32 rounding of those zeros picks the winner, and
+ * on a bent 4×4 sheet that is `v1`-`v3` on 6 of 16 quads with no geometric
+ * reason. It is imitated (since 2026-09-25, the owner's call): the search
+ * runs in float32 in the C's order and matches Blender quad for quad on five
+ * bent sheets (`connect-nonplanar` parity row). A quad whose projection is
+ * not convex is left whole when no cut is legal, as Blender leaves it.
  *
  * Returns the faces it produced — both halves of every face that was cut.
  */
@@ -3792,7 +3880,7 @@ export function connectVertsNonplanar(
 
   const polys = toPolygons(em);
   const P = em.positions;
-  const limitCos = Math.cos(angleLimit);
+  const limitCos = Math.fround(Math.cos(Math.fround(angleLimit))); // `cosf(angle_limit)`
   const out: number[][] = [];
   const made = new Set<number>();
 
