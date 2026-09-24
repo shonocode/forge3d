@@ -18,6 +18,7 @@ import type { MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
 import { compactMesh } from "./mesh-repair";
 import type { Vec3 } from "./generate";
+import { bulletConvexHull } from "./hull/bullet-hull";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
 function remapKeys<T>(
@@ -1206,8 +1207,10 @@ export interface ConvexHullReport {
  * carry them, so the result holds only the hull's own vertices and the count
  * goes in `report.interior`.
  *
- * Incremental construction: start from a tetrahedron, then for each remaining
- * point delete the faces it can see and stitch it to the horizon that leaves.
+ * The hull is Bullet's `btConvexHullComputer` (ported in `hull/bullet-hull.ts`),
+ * which is what Blender calls, and each of its faces is fanned from its first
+ * corner as Blender does. The four-points-with-volume search below only
+ * decides the degenerate case.
  */
 export function convexHull(
   data: MeshData,
@@ -1279,72 +1282,38 @@ export function convexHull(
     return { positions: new Float32Array(), polys: [] };
   }
 
-  // Seed tetrahedron, every face wound outward.
-  let faces: Array<[number, number, number]> =
-    dot(base, sub(at(i3), at(i0))) < 0
-      ? [
-          [i0, i1, i2],
-          [i0, i2, i3],
-          [i0, i3, i1],
-          [i1, i3, i2],
-        ]
-      : [
-          [i0, i2, i1],
-          [i0, i1, i3],
-          [i0, i3, i2],
-          [i1, i2, i3],
-        ];
-
-  const faceNormal = (f: readonly [number, number, number]): Vec3 =>
-    cross(sub(at(f[1]), at(f[0])), sub(at(f[2]), at(f[0])));
-
-  for (let p = 0; p < n; p++) {
-    if (p === i0 || p === i1 || p === i2 || p === i3) continue;
-    const point = at(p);
-
-    const visible: Array<[number, number, number]> = [];
-    const hidden: Array<[number, number, number]> = [];
-    for (const f of faces) {
-      const nrm = faceNormal(f);
-      const len = Math.hypot(...nrm);
-      const d = len > 0 ? dot(nrm, sub(point, at(f[0]))) / len : 0;
-      (d > eps ? visible : hidden).push(f);
+  // The hull itself is Bullet's (`btConvexHullComputer`, ported), as
+  // Blender's `bmesh.ops.convex_hull` calls it: points on the hull's surface
+  // but not at a corner — nearly coplanar ones — are kept or dropped by
+  // Bullet's integer grid, and an incremental hull with a tolerance of its
+  // own disagreed there (`character`: 420 vertices against 418, measured).
+  const hull = bulletConvexHull(Array.from({ length: n }, (_, i) => at(i).map(Math.fround)));
+  const used = new Set<number>();
+  const tris: [number, number, number][] = [];
+  const seen = new Set<string>();
+  for (const face of hull.faces) {
+    if (face.length < 3) continue;
+    // Blender fans each of Bullet's faces from its first corner.
+    const fv = face.map((k) => hull.originalIndex[k]!);
+    for (let j = 2; j < fv.length; j++) {
+      const t: [number, number, number] = [fv[0]!, fv[j - 1]!, fv[j]!];
+      const key = [...t].sort((a, b) => a - b).join(",");
+      if (seen.has(key)) continue; // `BM_face_exists`
+      seen.add(key);
+      tris.push(t);
+      for (const v of t) used.add(v);
     }
-    if (visible.length === 0) continue; // inside the hull so far
-
-    // The horizon is the edges of the visible set that the hidden set shares.
-    const count = new Map<string, [number, number]>();
-    for (const f of visible)
-      for (let k = 0; k < 3; k++) {
-        const a = f[k]!;
-        const b = f[(k + 1) % 3]!;
-        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-        if (count.has(key)) count.delete(key);
-        else count.set(key, [a, b]);
-      }
-
-    faces = hidden;
-    for (const [a, b] of count.values()) faces.push([a, b, p]);
   }
 
-  // Keep only the vertices the hull actually uses.
+  // Keep only the vertices the hull uses, in input order.
   const remap = new Map<number, number>();
   const positions: number[] = [];
-  const polys: number[][] = [];
-  for (const f of faces) {
-    const poly: number[] = [];
-    for (const v of f) {
-      let m = remap.get(v);
-      if (m === undefined) {
-        m = positions.length / 3;
-        remap.set(v, m);
-        positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
-      }
-      poly.push(m);
+  for (let v = 0; v < n; v++)
+    if (used.has(v)) {
+      remap.set(v, remap.size);
+      positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
     }
-    polys.push(poly);
-  }
-
+  const polys = tris.map((t) => t.map((v) => remap.get(v)!));
   report.interior = n - remap.size;
   report.degenerate = polys.length === 0;
   return { positions: new Float32Array(positions), polys };
