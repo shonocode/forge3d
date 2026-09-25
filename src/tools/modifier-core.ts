@@ -27,7 +27,8 @@ import type { Modifier, OriginalGeometry } from "../state";
 import { catmullClark } from "./edit-mode/subdivide";
 import { smoothVert } from "./edit-mode/refine";
 import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
-import { arrayMesh, mirrorModifier, solidify, weldMesh } from "./mesh-ops";
+import { arrayMesh, mirrorModifier, weldMesh } from "./mesh-ops";
+import { solidifyModifier } from "./solidify-modifier";
 import { decimateCollapse } from "./decimate";
 import { triangulate } from "./triangulate";
 
@@ -407,7 +408,8 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
     case "array":
       return arrayMesh(s, mod.count, [mod.offsetX, mod.offsetY, mod.offsetZ]);
     case "solidify":
-      return solidify(s, { thickness: mod.thickness });
+      // Blender's Solidify modifier (Simple mode, its defaults: offset -1, even off, rim on).
+      return solidifyModifier(s, { thickness: mod.thickness });
     case "decimate": {
       const out = decimateCollapse({ positions: s.positions, polys: s.polys }, { ratio: mod.ratio });
       const uvs = transferUVs(s, out);

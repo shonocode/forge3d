@@ -140,6 +140,8 @@ export {
   type BisectPlaneOptions,
   type MaskOptions,
 } from "../tools/mesh-ops";
+/** Blender's Solidify **modifier** (Simple mode) — `solidify` above is `bmesh.ops.solidify`. */
+export { solidifyModifier, type SolidifyModifierOptions } from "../tools/solidify-modifier";
 
 // ── Topology operators ─────────────────────────────────────────────────────
 // Each mutates the mesh and returns the faces it created or touched.
