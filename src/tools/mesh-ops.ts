@@ -51,7 +51,8 @@ function remapKeys<T>(
  * afterwards if you meant them to fuse.
  *
  * UVs are carried when any part has them; a part without UVs gets (0, 0) at
- * every corner so the layer stays shaped like `polys`.
+ * every corner so the layer stays shaped like `polys`. Custom normals are
+ * carried only when every part has them.
  */
 export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   let total = 0;
@@ -76,8 +77,13 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const uvs: number[][][] | undefined = has("uvs") ? [] : undefined;
   const colors: number[][][] | undefined = has("colors") ? [] : undefined;
   // Blender's join fills a part without custom normals with "automatic"
-  // (`short2(0)` in `join_normals`). This layer has no value for
-  // "automatic", so it goes unless every part carries one. Not matched.
+  // (`short2(0)` in `join_normals`): the corner's own normal, which Blender
+  // reads off the face's smooth / flat flag and the sharp edges. A mesh here
+  // without normals means "work them out from the geometry" and carries no
+  // smooth / flat flag, so there is no value to write that would not bake a
+  // shading in — the layer goes unless every part has one. Measured on flat
+  // inputs, where "automatic" is the face normal (`join-custom-normals`,
+  // `kind: "different"`, compat-backlog A9); found by review.
   const normals: number[][][] | undefined =
     parts.length > 0 && parts.every((p) => shaped(p, "normals")) ? [] : undefined;
   const sharp: Set<string> | undefined = has("sharp") ? new Set() : undefined;

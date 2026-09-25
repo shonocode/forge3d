@@ -379,13 +379,19 @@ export interface VertexOrigin {
  *      keeps), else `prev → v`. With `joins`, this comes first
  *   Anything left over drops the layer, as above.
  *
- * Not matched to Blender, and not measured by any row: an edge used by
- * three or more faces (rule 2 reads the last face registered for the
- * direction; Blender looks only among the faces being joined); a face that
- * visits a vertex twice (the first corner is read); a colour layer (Blender
- * stores byte colours in sRGB and rounds each interpolation — this stays
- * float); and custom normals, which are copied as vectors where Blender
- * copies two angles and reads them back in the new corner's normal space.
+ * On an edge used by three or more faces two old faces can hold the same
+ * directed edge; rule 2 then prefers one that does not come back unchanged
+ * (a face `BM_faces_join` swallowed) — `dissolve-faces-fin-layers`. A face
+ * that visits a vertex twice reads its first corner: Blender cannot hold
+ * such a face (`faces.new` refuses it, `validate` deletes it —
+ * `probe-face-repeat-vertex.py`), so there is no rule to match.
+ *
+ * Custom normals are copied as vectors; Blender copies two angles and reads
+ * them in the new corner's normal space, which gives the same direction
+ * through a copy, a split, a delete, a move (`*-custom-normals` rows) but
+ * not through a reverse (`reverse-faces-custom-normals`, `kind: "different"`).
+ * A colour mix stays float and is clamped to 0..1 where Blender rounds to a
+ * byte.
  */
 /** One new face's corners and material, as an operator states them (`LayerCarry.faces`). */
 export interface ExplicitFace {
@@ -543,10 +549,36 @@ function carryLayers(
         else facesOfV.set(v, [g]);
       }
     });
-    const directed = new Map<string, number>();
+    const directed = new Map<string, number[]>();
     oldPolys.forEach((p, g) => {
-      for (let i = 0; i < p.length; i++) directed.set(`${p[i]}>${p[(i + 1) % p.length]}`, g);
+      for (let i = 0; i < p.length; i++) {
+        const k = `${p[i]}>${p[(i + 1) % p.length]}`;
+        const l = directed.get(k);
+        if (l) l.push(g);
+        else directed.set(k, [g]);
+      }
     });
+    // The old faces that come back as they were. On an edge held by three
+    // faces two can run the same way; `BM_faces_join` reads only the faces
+    // it joins, so one that survives untouched is not a candidate while a
+    // swallowed one is (`dissolve-faces-fin-layers`, `fin2`). "Comes back"
+    // is the same cycle of vertex numbers, rotation allowed: a face that
+    // returns re-wound counts as changed, and two old faces with the same
+    // cycle both count as surviving — on such inputs this falls back to the
+    // last one registered, as before (found by review).
+    const canon = (p: readonly number[]): string => {
+      let m = 0;
+      for (let i = 1; i < p.length; i++) if (p[i]! < p[m]!) m = i;
+      return [...p.slice(m), ...p.slice(0, m)].join(",");
+    };
+    const newKeys = new Set(newPolys.map(canon));
+    const survives = oldPolys.map((p) => newKeys.has(canon(p)));
+    const pick = (k: string): number | undefined => {
+      const l = directed.get(k);
+      if (!l) return undefined;
+      for (let i = l.length - 1; i >= 0; i--) if (!survives[l[i]!]) return l[i];
+      return l[l.length - 1];
+    };
 
     for (let pi = 0; pi < newPolys.length; pi++) {
       const poly = newPolys[pi]!;
@@ -569,7 +601,7 @@ function carryLayers(
         for (let i = 0; i < n; i++) {
           const v = poly[i]!;
           if (v >= oldNumV || origins.has(v)) return null;
-          const g = directed.get(`${v}>${poly[(i + 1) % n]}`) ?? directed.get(`${poly[(i + n - 1) % n]}>${v}`);
+          const g = pick(`${v}>${poly[(i + 1) % n]}`) ?? pick(`${poly[(i + n - 1) % n]}>${v}`);
           if (g === undefined) return null;
           per.push([[g, cornerOf(g, v), 1]]);
         }

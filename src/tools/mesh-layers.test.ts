@@ -181,6 +181,9 @@ describe("the values follow their vertex or face", () => {
     const out = L.mergeMeshes([plain, cube()]);
     expect(out.uvs).toHaveLength(12);
     expect(out.uvs![0]).toEqual([[0, 0], [0, 0], [0, 0], [0, 0]]);
+    // Blender fills the part without normals with "automatic", which depends
+    // on a smooth / flat flag MeshData does not carry — so the layer goes
+    // (`join-custom-normals`, compat-backlog A9).
     expect(out.normals).toBeUndefined();
     expect(() => L.mirrorMesh(plain, "x")).not.toThrow();
   });
