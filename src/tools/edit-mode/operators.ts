@@ -2479,10 +2479,14 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
 export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
   // Directed boundary edges a→b straight from the half-edges.
   const dirEdges: Array<[number, number]> = [];
+  const faceOfEdge = new Map<string, number>(); // "a,b" → the face on a→b
   for (const heRaw of selectedEdges) {
     const he = canonicalEdge(em, heRaw);
     if (em.halfEdges[he]!.twin >= 0) return new Set(); // interior edge — unsupported
-    dirEdges.push([edgeOrigin(em, he), edgeEnd(em, he)]);
+    const a = edgeOrigin(em, he);
+    const b = edgeEnd(em, he);
+    dirEdges.push([a, b]);
+    faceOfEdge.set(`${a},${b}`, em.halfEdges[he]!.face);
   }
   if (dirEdges.length < 2) return new Set();
 
@@ -2570,6 +2574,12 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
   // copies), which renders, measures and subdivides like a tube right up
   // until something z-fights or a weld halves it.
   const existing = new Set(newPolys.map((p) => [...p].sort((x, y) => x - y).join(",")));
+  // Each corner copies the corner of the rim face on its side of the band —
+  // `bm_vert_loop_pair` on the loop's edge — and the face takes the A side's
+  // material (`f_example`). Which loop is Blender's "a" follows its loop
+  // order (`BM_mesh_edgeloops_calc_order`); not matched, here it is A.
+  const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
+  const cornerOf = (face: number, v: number): [number, number, number][] => [[face, newPolys[face]!.indexOf(v), 1]];
   const quads = A.cycle ? n : n - 1;
   for (let i = 0; i < quads; i++) {
     const a0 = A.verts[i]!;
@@ -2581,9 +2591,12 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
     const quad = [a1, a0, b0, b1];
     if (existing.has([...quad].sort((x, y) => x - y).join(","))) continue;
     newPolys.push(quad);
+    const fA = faceOfEdge.get(`${a0},${a1}`)!;
+    const fB = faceOfEdge.get(`${b1},${b0}`)!;
+    stated.push({ corners: [cornerOf(fA, a1), cornerOf(fA, a0), cornerOf(fB, b0), cornerOf(fB, b1)], material: fA });
   }
 
-  rebuildPolygons(em, em.positions, newPolys);
+  rebuildPolygons(em, em.positions, newPolys, { faces: stated });
   const out = new Set<number>();
   for (let f = faceStart; f < newPolys.length; f++) out.add(f);
   return out;
