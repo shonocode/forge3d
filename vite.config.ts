@@ -6,6 +6,10 @@ import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
+  // GitHub Pages serves the site under /forge3d/; GitHub Actions sets
+  // GITHUB_ACTIONS=true, and the Pages workflow is the only build that runs
+  // there. Local builds and the Cloudflare deploy keep the root.
+  base: process.env.GITHUB_ACTIONS === "true" ? "/forge3d/" : "/",
   server: { host: true },
   build: {
     rollupOptions: {

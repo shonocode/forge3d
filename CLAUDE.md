@@ -11,11 +11,18 @@ npm run dev          # 開発サーバー (localhost:5173)
 npm run build        # tsc && vite build ― tsc は型エラーでも exit 0。出力を読むこと
 npm run test         # Vitest
 npm run test:watch   # Vitest ウォッチ
-npm run manual       # MANUAL.html を解説データから作り直す
+npm run manual       # MANUAL.html を解説データから作る（コミットしない）
 npm run deploy       # ビルドして wrangler でデプロイ
 ```
 
 型検査だけなら `npx tsc --noEmit -p .` の出力が 0 行で通過。
+
+**GitHub Pages**（`.github/workflows/deploy.yml`、push のたび）は forge3d **単体**で `npm ci` する。
+ふだんは chiikawa-soul の workspaces（root のロックファイル）経由で入れるので、この
+`package-lock.json` は勝手には更新されない ― 依存を変えたら単体の clone で
+`rm package-lock.json && npm install --package-lock-only` して作り直すこと（2026-09 に vite 7 のまま
+残っていて、Pages のビルドが毎回落ちていた）。`/forge3d/` 配下への配信は `vite.config.ts` が
+`GITHUB_ACTIONS` を見て切り替える。
 
 ## 構成
 
@@ -61,12 +68,12 @@ made from **one place** (ADR-014):
 - `src/app/guide/guide.ts` — the text. Keys are never written into it: a
   `{key:<action>}` marker is filled from `src/keymap.ts`.
 - `src/keymap.ts` — the keys (Blender's).
-- `MANUAL.html` is **generated**: `npm run manual`. Don't edit it by hand;
-  `manual.test.ts` fails when it differs from what the guide produces.
+- `MANUAL.html` is **generated** with `npm run manual` and **not committed**
+  (gitignored since 2026-09-25) — generate it when you want to read or share it.
 
 When the code changes what a user sees or does — a new operator, a changed
 default, a rebound key, a new tab or section — change `guide.ts` in the same
-commit and run `npm run manual`. `guide.test.ts` holds the guide to the code
+commit. `guide.test.ts` holds the guide to the code
 (every marker names a bound key, the modifier list is the real one, …).
 
 A tutorial for the new screen does not exist yet (the old
