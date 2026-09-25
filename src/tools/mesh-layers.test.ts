@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import * as L from "../lib/index";
+import { rebuildPolygons } from "./edit-mode/half-edge";
 import type { MeshData } from "../lib/mesh";
 
 
@@ -222,11 +223,25 @@ describe("the values follow their vertex or face", () => {
     expect(out.materials).toHaveLength(out.polys.length);
   });
 
-  it("an operator with no known origin for a new vertex drops the groups whole", () => {
+  it("a rebuild with no known origin for a new vertex drops the groups whole", () => {
     const em = L.meshFromData(cube());
-    L.subdivideCatmullClark(em, 1);
+    const polys = L.toPolygons(em);
+    // Fan face 0 round a new centre that nothing says where it came from.
+    const P = Float32Array.from([...em.positions, 0, -0.5, 0]);
+    const c = P.length / 3 - 1;
+    const f0 = polys[0]!;
+    const fan = f0.map((v, i) => [v, f0[(i + 1) % f0.length]!, c]);
+    rebuildPolygons(em, P, [...polys.slice(1), ...fan]);
     const out = L.meshToData(em);
     expect(out.groups.size).toBe(0);
     expect(out.materials).toEqual([]);
+  });
+
+  it("subdivideCatmullClark carries them: linear groups, the parent's slot", () => {
+    const em = L.meshFromData(cube());
+    L.subdivideCatmullClark(em, 1);
+    const out = L.meshToData(em);
+    expect(out.materials).toHaveLength(out.polys.length);
+    expect(out.groups.size).toBeGreaterThan(0);
   });
 });

@@ -2813,15 +2813,117 @@ function isConvexQuad(P: Float32Array, quad: readonly number[]): boolean {
  * {@link catmullClark}; here we just rebuild `em` and return an empty
  * selection (component ids are all fresh — the caller clears the selection).
  *
- * Original vertices keep their indices (0…V-1) so their UVs / skin weights are
- * carried verbatim by commitTopology; the new face/edge points sample the old
- * surface via barycentric transfer. Morph targets can't survive the vertex-
- * count change — the caller must guard.
+ * The layers are carried as Blender's Subdivision Surface carries them
+ * (`subdiv-edit-layers`): UVs smoothed face-varying under its default UV
+ * Smooth, "Keep Boundaries" (see `catmullClark`); vertex groups and colours
+ * interpolated linearly — a face point is the mean of its face, an edge
+ * point the mean of its two ends, an old vertex keeps its own — and each
+ * child face takes its parent's material. Custom normals are dropped.
+ * Morph targets can't survive the vertex-count change — the caller must
+ * guard.
  */
 export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> {
   if (level < 1) return new Set();
-  const result = catmullClark(em.positions, toPolygons(em), level, em.creases);
+  const polys0 = toPolygons(em);
+  const uvs = em.loopUVs?.length === polys0.length ? em.loopUVs : undefined;
+  const result = catmullClark(em.positions, polys0, level, em.creases, uvs);
+
+  // Replay the levels' bookkeeping — `subdivideOnce` numbers the new
+  // vertices [old | face points | edge points in first-met order], and gives
+  // face f its corners' quads in a row — to carry the linear layers.
+  let polys = polys0;
+  let parent = polys0.map((_, f) => f);
+  let colors = em.loopColors?.length === polys0.length ? em.loopColors.map((f) => f.map((c) => [...c])) : undefined;
+  let groups = em.vertexGroups ? new Map([...em.vertexGroups].map(([k, g]) => [k, new Map(g)])) : undefined;
+  let V = em.positions.length / 3;
+  for (let l = 0; l < level; l++) {
+    const F = polys.length;
+    const facePoint = (f: number): number => V + f;
+    const edgePoint = new Map<string, number>();
+    const edgeEnds: [number, number][] = [];
+    const edgeFace: number[] = []; // the first face with the edge
+    polys.forEach((p, f) => {
+      for (let i = 0; i < p.length; i++) {
+        const k = seamKey(p[i]!, p[(i + 1) % p.length]!);
+        if (!edgePoint.has(k)) {
+          edgePoint.set(k, V + F + edgeEnds.length);
+          edgeEnds.push([p[i]!, p[(i + 1) % p.length]!]);
+          edgeFace.push(f);
+        }
+      }
+    });
+    if (groups) {
+      // Equal weights, and a member where any source is a member — a weight
+      // of 0 included (measured, `subdiv-edit-layers`: Blender's subdivision
+      // keeps a 0 membership that the bmesh interpolation would skip).
+      const mix = (from: readonly number[], g: Map<number, number>): number | undefined => {
+        let member = false;
+        let sum = 0;
+        for (const u of from) {
+          const x = g.get(u);
+          if (x !== undefined) {
+            member = true;
+            sum += x / from.length;
+          }
+        }
+        return member ? Math.min(sum, 1) : undefined;
+      };
+      for (const g of groups.values()) {
+        const add: [number, number][] = [];
+        polys.forEach((p, f) => {
+          const w = mix(p, g);
+          if (w !== undefined) add.push([facePoint(f), w]);
+        });
+        // An edge point is interpolated over the first face with the edge,
+        // the face's other corners at weight 0 — which still makes it a
+        // member wherever one of them is (measured, as above).
+        edgeEnds.forEach((e, i) => {
+          if (!polys[edgeFace[i]!]!.some((u) => g.has(u))) return;
+          add.push([V + F + i, Math.min(e.reduce((s, u) => s + (g.get(u) ?? 0) / 2, 0), 1)]);
+        });
+        for (const [v, w] of add) g.set(v, w);
+      }
+    }
+    const nextPolys: number[][] = [];
+    const nextParent: number[] = [];
+    const nextColors: number[][][] = [];
+    polys.forEach((p, f) => {
+      const n = p.length;
+      const mean = (idx: readonly number[]): number[] => {
+        const c = colors![f]!;
+        return c[0]!.map((_, j) => idx.reduce((s, i) => s + c[i]![j]!, 0) / idx.length);
+      };
+      for (let i = 0; i < n; i++) {
+        const next = (i + 1) % n;
+        const prev = (i - 1 + n) % n;
+        nextPolys.push([
+          p[i]!,
+          edgePoint.get(seamKey(p[i]!, p[next]!))!,
+          facePoint(f),
+          edgePoint.get(seamKey(p[prev]!, p[i]!))!,
+        ]);
+        nextParent.push(parent[f]!);
+        if (colors) nextColors.push([[...colors[f]![i]!], mean([i, next]), mean(p.map((_, k) => k)), mean([prev, i])]);
+      }
+    });
+    V += F + edgeEnds.length;
+    polys = nextPolys;
+    parent = nextParent;
+    if (colors) colors = nextColors;
+  }
+
+  const materials = em.faceMaterials?.length === polys0.length ? parent.map((f) => em.faceMaterials![f]!) : undefined;
+  // Laid down after the rebuild: every face is new, so it would drop them all.
+  em.loopUVs = undefined;
+  em.loopColors = undefined;
+  em.loopNormals = undefined;
+  em.faceMaterials = undefined;
+  em.vertexGroups = undefined;
   rebuildPolygons(em, result.positions, result.polys);
+  if (result.uvs) em.loopUVs = result.uvs;
+  if (colors) em.loopColors = colors;
+  if (materials) em.faceMaterials = materials;
+  if (groups) em.vertexGroups = groups;
   // Carry the propagated (σ−1) creases onto the subdivided edges. Seams are
   // dropped — their vertex-pair keys no longer name real edges after the split.
   em.creases = result.creases;

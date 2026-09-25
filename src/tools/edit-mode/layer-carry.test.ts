@@ -72,7 +72,7 @@ const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["quadsToTris", (em) => ops.quadsToTris(em, null), true],
   ["trisToQuads", (em) => { ops.quadsToTris(em, null); ops.trisToQuads(em, null, 40, 40); }, true],
   ["flipQuadTessellation", (em) => ops.flipQuadTessellation(em, new Set([4])), true],
-  ["subdivideCatmullClark", (em) => ops.subdivideCatmullClark(em, 1), false],
+  ["subdivideCatmullClark", (em) => ops.subdivideCatmullClark(em, 1), true],
   ["dissolveFaces", (em) => dissolve.dissolveFaces(em, new Set([0, 1, 3, 4])), true],
   ["dissolveEdges", (em) => dissolve.dissolveEdges(em, edgesOf(em, (a, b) => a + b === 11 && Math.abs(a - b) === 1)), true],
   ["dissolveVerts", (em) => dissolve.dissolveVerts(em, new Set([5])), true],
