@@ -121,7 +121,7 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
 // New geometry whose layers need interpolation that is not ported: these
 // may drop a layer, whole. (Which ones they keep is listed so a change shows.)
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
-  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), []],
+  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials"]],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [
     "booleanMesh",

@@ -135,14 +135,19 @@ function quadricOptimize(q: Quadric, eps: number): number[] | null {
  * const lod = decimateCollapse(meshToData(em), { ratio: 0.3 });
  * ```
  *
- * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): UVs, colours, vertex groups and materials,
+ * as the modifier carries them (`decimate-collapse-layers`, `-uv`). Each
+ * collapse mixes the edge's two corners by the collapse factor into every
+ * corner of the fans round its ends that still equals the corner it starts
+ * from (`bm_edge_collapse_loop_customdata` — a UV seam stops it); a colour is
+ * a byte and is rounded each time. The kept vertex takes the two ends' groups
+ * mixed by the same factor. Custom normals, creases and sharp edges are
+ * dropped (compat-backlog C21).
  */
 export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshData {
   const ratio = f(opts.ratio);
-  const copy = (): MeshData => ({ positions: Float32Array.from(data.positions), polys: data.polys.map((p) => [...p]) });
+  // Nothing to collapse: the mesh as it is, layers and all.
+  const copy = (): MeshData => ({ ...data, positions: Float32Array.from(data.positions), polys: data.polys.map((p) => [...p]) });
   if (ratio === 1 || data.polys.length <= 3) return copy();
 
   const nv = data.positions.length / 3;
@@ -152,7 +157,97 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   const vno = meshVertNormals(P, polys);
 
   // ── BM_mesh_bm_from_me ────────────────────────────────────────────────
-  const bm = bmFromMesh({ positions: data.positions, polys }, { edgeTables: opts.edgeTables, vertNormals: vno });
+  // All the faces are handed over — `bmFromMesh` skips the degenerate ones
+  // itself — so a face's and a corner's `src` number the input's.
+  const bm = bmFromMesh({ positions: data.positions, polys: data.polys }, { edgeTables: opts.edgeTables, vertNormals: vno });
+
+  // ── the layers ────────────────────────────────────────────────────────
+  // Corner data as values a loop's `src` points at: the input's corners
+  // first, then one new entry per interpolation — copies (triangulation,
+  // joins) hand the number on, and an entry never changes. UVs and colours
+  // interpolate; a colour is a byte in Blender and is rounded each time.
+  const cornerLayers = [data.uvs, data.colors].map((l) => (l && l.length === data.polys.length ? l : undefined));
+  const hasLoopData = cornerLayers.some((l) => l);
+  const vals: (number[] | undefined)[][] = [];
+  data.polys.forEach((p, fi) => p.forEach((_, k) => vals.push(cornerLayers.map((l) => (l ? [...l[fi]![k]!] : undefined)))));
+  const groups = data.groups ? new Map([...data.groups].map(([n, g]) => [n, new Map(g)])) : undefined;
+  /** `layerEqual_propfloat2` / `layerEqual_mloopcol`. */
+  const equal = (layer: number, a: number[], b: number[]): boolean => {
+    let d = 0;
+    for (let j = 0; j < a.length; j++) d += layer === 1 ? ((a[j]! - b[j]!) * 255) ** 2 : (a[j]! - b[j]!) ** 2;
+    return layer === 1 ? d < 0.001 : d < 0.00001;
+  };
+  /** `BM_edge_other_loop`. */
+  const edgeOtherLoop = (e: BE, l: BL): BL => {
+    let o = (l.e === e ? l : l.prev).rn!;
+    if (o.v !== l.v) o = o.next;
+    return o;
+  };
+  /** `bm_edge_collapse_loop_customdata`: the fans round both ends take the collapsed corners' mix. */
+  const collapseLoopData = (l: BL, vClear: BV, fac: number): void => {
+    const manifold = isManifold(l.e!);
+    const [lClear, lOther] = l.v === vClear ? [l, l.next] : [l.next, l];
+    for (let side = 0; side < 2; side++) {
+      const fExit = manifold ? l.rn!.f : null;
+      let ePrev = l.e!;
+      const lFirst = side === 0 ? lClear : lOther;
+      const src = side === 0 ? [vals[lClear.src]!, vals[lOther.src]!] : [vals[lOther.src]!, vals[lClear.src]!];
+      const w = side === 0 ? [fac, 1 - fac] : [1 - fac, fac];
+      let lIter: BL | null = lFirst;
+      for (;;) {
+        // `BM_vert_step_fan_loop`
+        const eNext: BE | null = lIter!.e === ePrev ? lIter!.prev.e! : lIter!.prev.e === ePrev ? lIter!.e! : null;
+        if (!eNext || !isManifold(eNext)) break;
+        ePrev = eNext;
+        lIter = edgeOtherLoop(eNext, lIter!);
+        if (lIter === lFirst || (fExit && lIter.f === fExit)) break;
+        const cur = vals[lIter.src]!;
+        let changed = false;
+        const next = cur.map((x, k) => {
+          const a = src[0]![k];
+          const b = src[1]![k];
+          if (!x || !a || !b || !equal(k, a, x)) return x;
+          changed = true;
+          const mixed = a.map((v, j) => v * w[0]! + b[j]! * w[1]!);
+          return k === 1 ? mixed.map((v) => Math.min(255, Math.max(0, Math.round(v * 255))) / 255) : mixed;
+        });
+        if (changed) {
+          lIter.src = vals.length;
+          vals.push(next);
+        }
+      }
+    }
+  };
+  /**
+   * `BM_data_interp_from_verts(v_other, v_clear, v_other, fac)` for the
+   * groups. `bm_data_interp_from_elem` does not blend at the ends: at
+   * `fac <= 0` the vertex keeps its own data, at `fac >= 1` it takes
+   * `v_clear`'s whole — and the collapse factor does leave [0, 1].
+   */
+  const collapseVertData = (vOther: BV, vClear: BV, fac: number): void => {
+    if (fac <= 0) return;
+    if (fac >= 1) {
+      for (const g of groups?.values() ?? []) {
+        const x = g.get(vClear.index);
+        if (x === undefined) g.delete(vOther.index);
+        else g.set(vOther.index, x);
+      }
+      return;
+    }
+    for (const g of groups?.values() ?? []) {
+      let member = false;
+      let sum = 0;
+      for (const [v, w] of [[vOther, 1 - fac], [vClear, fac]] as const) {
+        const x = g.get(v.index);
+        if (x !== undefined && x * w !== 0) {
+          member = true;
+          sum += x * w;
+        }
+      }
+      if (member) g.set(vOther.index, Math.min(sum, 1));
+      else g.delete(vOther.index);
+    }
+  };
 
   // ── bm_decim_triangulate_begin ──────────────────────────────────────────
   let hasCut = false;
@@ -309,7 +404,7 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   };
 
   /** `bm_edge_collapse`: kills `vClear` into the other end. */
-  const edgeCollapse = (eClear: BE, vClear: BV, rOther: number[]): boolean => {
+  const edgeCollapse = (eClear: BE, vClear: BV, rOther: number[], fac: number): boolean => {
     const vOther = otherVert(eClear, vClear);
     const sides = (l: BL): [BE, BE] => (vertInEdge(l.prev.e!, vClear) ? [l.prev.e!, l.next.e!] : [l.next.e!, l.prev.e!]);
     if (isManifold(eClear)) {
@@ -319,6 +414,12 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
       if (a[0] === b[0] || a[0] === b[1] || a[1] === b[0] || a[1] === b[1]) return false;
       rOther[0] = a[0].index;
       rOther[1] = b[0].index;
+      // before killing, do customdata
+      collapseVertData(vOther, vClear, fac);
+      if (hasLoopData) {
+        collapseLoopData(eClear.l!, vClear, fac);
+        collapseLoopData(eClear.l!.rn!, vClear, fac);
+      }
       edgeKill(bm, eClear);
       vertSplice(bm, vOther, vClear);
       edgeSplice(bm, a[1], a[0]);
@@ -329,6 +430,8 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
       const a = sides(eClear.l!);
       rOther[0] = a[0].index;
       rOther[1] = -1;
+      collapseVertData(vOther, vClear, fac);
+      if (hasLoopData) collapseLoopData(eClear.l!, vClear, fac);
       edgeKill(bm, eClear);
       vertSplice(bm, vOther, vClear);
       edgeSplice(bm, a[1], a[0]);
@@ -360,7 +463,7 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
       fac = d > 0 ? f(dot(u, h) / d) : 0;
     } else fac = 0.5;
     const rOther = [-1, -1];
-    if (edgeCollapse(e, e.v2, rOther)) {
+    if (edgeCollapse(e, e.v2, rOther, fac)) {
       vOther.co = co;
       for (const i of rOther)
         if (i !== -1 && table[i]) {
@@ -432,8 +535,26 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     remap[i] = positions.length / 3;
     positions.push(v.co[0]!, v.co[1]!, v.co[2]!);
   });
-  return {
+  const faces = liveFaces(bm);
+  const out: MeshData = {
     positions: Float32Array.from(positions),
-    polys: liveFaces(bm).map((x) => faceLoops(x).map((l) => remap[l.v.index]!)),
+    polys: faces.map((x) => faceLoops(x).map((l) => remap[l.v.index]!)),
   };
+  const read = (k: number): number[][][] | undefined =>
+    cornerLayers[k] ? faces.map((x) => faceLoops(x).map((l) => [...(vals[l.src]?.[k] ?? [])])) : undefined;
+  const uvs = read(0);
+  if (uvs) out.uvs = uvs;
+  const colors = read(1);
+  if (colors) out.colors = colors;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = faces.map((x) => (x.src >= 0 ? data.materials![x.src]! : 0));
+  if (groups) {
+    out.groups = new Map(
+      [...groups].map(([n, g]) => [
+        n,
+        new Map([...g].filter(([v]) => remap[v]! >= 0).map(([v, w]) => [remap[v]!, w] as [number, number])),
+      ]),
+    );
+  }
+  return out;
 }
