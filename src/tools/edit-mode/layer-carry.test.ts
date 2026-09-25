@@ -66,7 +66,7 @@ const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["reverseFaces", (em) => ops.reverseFaces(em, new Set([0, 4])), true],
   ["extrudeDiscreteFaces", (em) => ops.extrudeDiscreteFaces(em, new Set([4])), true],
   ["connectVertPair", (em) => ops.connectVertPair(em, 5, 10), true],
-  ["splitEdges", (em) => ops.splitEdges(em, edgesOf(em, (a, b) => a + b === 11 && Math.abs(a - b) === 1)), false],
+  ["splitEdges", (em) => ops.splitEdges(em, edgesOf(em, (a, b) => a + b === 11 && Math.abs(a - b) === 1)), true],
   ["duplicateFaces", (em) => ops.duplicateFaces(em, new Set([4])), true],
   ["splitFaces", (em) => ops.splitFaces(em, new Set([4])), true],
   ["quadsToTris", (em) => ops.quadsToTris(em, null), true],

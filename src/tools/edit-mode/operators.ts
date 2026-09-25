@@ -3394,7 +3394,14 @@ export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Se
     const map = rename.get(f);
     return map ? poly.map((v) => map.get(v) ?? v) : poly;
   });
-  rebuildPolygons(em, new Float32Array(newPositions), out);
+  // Faces keep their corners on the torn copies; a copy keeps its vertex's
+  // data (`bmesh_kernel_unglue_region_make_vert` copies the vertex).
+  const stated = polys.map((poly, f) =>
+    rename.has(f) ? { corners: poly.map((_, i) => [[f, i, 1] as const]), material: f } : undefined,
+  );
+  const origins = new Map<number, VertexOrigin>();
+  for (const [, map] of rename) for (const [v, c] of map) origins.set(c, { from: [v], w: [1] });
+  rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
   return added;
 }
 
@@ -3497,6 +3504,14 @@ export function offsetEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
   const added = new Set<number>();
   const out = polys.map((p) => [...p]);
   const strips: number[][] = [];
+  // The per-corner layers: Blender splits each side edge at factor 1 — the
+  // new vertex sits on the loop vertex and interpolates to its corner — and
+  // splits the strip off the face on that side, which copies. So a strip's
+  // corners are that face's corners at `a` and `b`, a moved face keeps its
+  // own, and a copy keeps its vertex's data.
+  const stated: Array<ExplicitFace | undefined> = polys.map(() => undefined);
+  const stripStated: ExplicitFace[] = [];
+  const origins = new Map<number, VertexOrigin>();
 
   for (const [, faces] of sides) {
     const copy = new Map<number, number>();
@@ -3505,19 +3520,28 @@ export function offsetEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
       newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
       copy.set(v, c);
       added.add(c);
+      origins.set(c, { from: [v], w: [1] });
     }
-    for (const f of faces) out[f] = out[f]!.map((v) => copy.get(v) ?? v);
+    for (const f of faces) {
+      out[f] = out[f]!.map((v) => copy.get(v) ?? v);
+      stated[f] = { corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f };
+    }
 
     // A strip per loop edge, flat against it. Wound from the copied side so
     // it pairs cleanly with the face that moved.
     for (const key of loopEdges) {
       const [a, b] = key.split("_").map(Number) as [number, number];
       strips.push([a, b, copy.get(b)!, copy.get(a)!]);
+      const g = faces.find((x) => polys[x]!.includes(a) && polys[x]!.includes(b))!;
+      const ca: [number, number, number][] = [[g, polys[g]!.indexOf(a), 1]];
+      const cb: [number, number, number][] = [[g, polys[g]!.indexOf(b), 1]];
+      stripStated.push({ corners: [ca, cb, cb, ca], material: g });
     }
   }
 
   out.push(...strips);
-  rebuildPolygons(em, new Float32Array(newPositions), out);
+  stated.push(...stripStated);
+  rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
   return added;
 }
 
