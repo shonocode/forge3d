@@ -1,17 +1,19 @@
 # forge3d
 
-A **modelling library you call from code**, and a browser GUI to look at what
-it makes. Built on Babylon.js and TypeScript.
+> A modelling library for code, and a browser GUI to look at what it makes — ported from Blender 5.1.1 and measured against it. GPL-3.0-or-later. Documentation is in Japanese.
 
-**Status: maintenance (since 2026-09-25).** The library matches Blender 5.1.1
-wherever it claims to — measured, not assumed — and the GUI was rebuilt in
-React. New work is fixes and small additions driven by use.
+**コードから呼べるモデリングライブラリ**と、作ったものを目で確かめるためのブラウザ GUI。
+Babylon.js と TypeScript で作っている。
 
-## The library
+**状態：保守フェーズ（2026-09-25〜）。** ライブラリは、Blender 5.1.1 と同じだと言っている所は
+すべて実測で一致させてある（推測ではなく、同じ入力を両方に通して比べている）。GUI は React で
+作り直した。これからの仕事は、使って出てきた不具合の修正と小さな追加。
 
-The public API is [`src/lib/index.ts`](src/lib/index.ts). Everything exported
-there is headless: no DOM, no editor state, no scene. Callers are build
-scripts, asset pipelines, and agents writing modelling code.
+## ライブラリ
+
+公開 API は [`src/lib/index.ts`](src/lib/index.ts)。ここから出ているものはすべてヘッドレスで、
+DOM・エディタの状態・シーンを持たない。想定している使い手は、ビルドスクリプト、アセットの
+パイプライン、モデリングのコードを書くエージェント。
 
 ```ts
 import { meshFromData, meshToData, extrudeFaces, catmullClark } from "forge3d";
@@ -22,64 +24,63 @@ const { positions: p, polys: f, creases } = meshToData(em);
 const smooth = catmullClark(p, f, 2, creases);
 ```
 
-What it covers, compared with Blender 5.1.1 (details in the chiikawa-soul docs):
+Blender 5.1.1 と比べた範囲（詳細は chiikawa-soul 側の文書）：
 
-| Blender surface | Status |
+| Blender の面 | 状態 |
 |---|---|
-| `bmesh.ops` (80 operators) | 76 match Blender, 1 implemented but unmeasurable (`create_vert`), 3 are type conversions with no counterpart |
-| `bpy.ops.mesh`-only operators | 15 / 15 |
-| Modifiers (36 mesh modifiers) | 31 present, all matching Blender. The rest need OpenVDB (Remesh Voxel, volume ↔ mesh) or a rest shape (Corrective Smooth, Laplacian Deform) |
-| Procedural textures | Clouds, Wood, Marble, Magic, Blend, Stucci, Musgrave, Voronoi, Distorted Noise (not Noise: Blender seeds it from the clock) |
+| `bmesh.ops`（80 個） | 76 個が Blender と一致。1 個は実装済みだが比べようがない（`create_vert`）、3 個は型変換で対応物が無い |
+| `bpy.ops.mesh` 専用の操作 | 15 / 15 |
+| モディファイア（メッシュ用 36 個） | 31 個あり、すべて一致。残りは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
+| 手続きテクスチャ | Clouds・Wood・Marble・Magic・Blend・Stucci・Musgrave・Voronoi・Distorted Noise（Noise は Blender が時計で種を取るので不可） |
 
-"Match" means a parity row: the same input through Blender and through
-forge3d, compared vertex by vertex and face by face. The harness and every
-row's notes live in the chiikawa-soul repository under
-`tools/modeling/parity/`.
+「一致」は**パリティの行**があるという意味 ― 同じ入力を Blender と forge3d の両方に通し、
+頂点ごと・面ごとに比べている。比較の仕組みと各行の記録は chiikawa-soul の
+`tools/modeling/parity/` にある。
 
-## The GUI
+## GUI
 
-A React app (`src/app/`) over a Babylon viewport: edit mode, sculpt, texture
-and weight paint, bones and animation, modifiers, import / export (GLB, glTF,
-OBJ). Keyboard shortcuts follow Blender's (`src/keymap.ts`). Every tool, tab
-and panel section carries a plain-language explanation, written once in
-`src/app/guide/guide.ts`; [`MANUAL.html`](MANUAL.html) is generated from the
-same text (`npm run manual`).
+Babylon のビューポートの上に React の画面（`src/app/`）。編集モード、スカルプト、テクスチャと
+ウェイトのペイント、ボーンとアニメーション、モディファイア、読み込み・書き出し（GLB・glTF・OBJ）。
 
-## Commands
+- **ショートカットは Blender と同じ**（`src/keymap.ts`）
+- **道具・タブ・パネルの各セクションに、平易な解説が付いている。** 文面は
+  `src/app/guide/guide.ts` の1か所に書き、画面のヘルプと単体のマニュアル `MANUAL.html` の
+  両方をそこから作る（`npm run manual`、コミットはしない）
+
+## コマンド
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm run test       # Vitest (node; React components under jsdom)
-npm run build      # tsc && vite build — read tsc's output, its exit code is 0 even with errors
-npm run manual     # regenerate MANUAL.html from the guide
-npm run deploy     # build and deploy with wrangler
+npm run test       # Vitest（node 環境。React の部品は jsdom）
+npm run build      # tsc && vite build ― tsc は型エラーでも exit 0 なので、出力を読むこと
+npm run manual     # MANUAL.html を解説データから作る
+npm run deploy     # ビルドして wrangler でデプロイ
 ```
 
-## License
+GitHub Pages には push のたびに `.github/workflows/deploy.yml` が出す
+（`/forge3d/` の下に配信）。
 
-**GPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+## ライセンス
 
-Much of `src/tools/` is ported from Blender's source (GPL-2.0-or-later), so
-forge3d is a derivative work of it and carries the GPL too. Smaller parts come
-from Bullet's convex hull (zlib) and Eigen's Jacobi SVD (MPL-2.0).
-[`NOTICE.md`](NOTICE.md) lists every origin, its licence, and where the
-ported code lives.
+**GPL-3.0-or-later** ― [`LICENSE`](LICENSE) を参照。
 
-What that means in practice: you may use, change and share forge3d, and a
-program that includes forge3d's code must be shared under the GPL as well.
-Meshes and files you **make** with forge3d are yours — the licence covers the
-code, not its output.
+`src/tools/` の多くは Blender のソース（GPL-2.0-or-later）からの移植なので、forge3d はその
+派生物として GPL になる。ほかに Bullet の凸包（zlib）と Eigen の Jacobi SVD（MPL-2.0）から
+移植した部分がある。移植元・ライセンス・移植先の一覧は [`NOTICE.md`](NOTICE.md)。
 
-## Where things are written down
+実際の意味：forge3d は自由に使い・変え・配ってよい。forge3d のコードを取り込んだプログラムを
+配るなら、それも GPL で配ることになる。forge3d で**作った**メッシュやファイルはあなたのもの
+― ライセンスがかかるのはコードで、その出力ではない。
 
-In the chiikawa-soul repository (this one is checked out inside it):
+## 文書の置き場
 
-- `docs/architecture/forge3d.md` — the entry point: state, how to change
-  things safely, what is still open
-- `docs/architecture/forge3d-blender-api-matrix.md`,
-  `forge3d-blender-surface-map.md` — the Blender comparison tables
-- `docs/architecture/adr-012` / `013` / `014` — boolean, remesh, and the React GUI
-- `docs/architecture/archive/forge3d/` — the development-era roadmap and logs
+chiikawa-soul リポジトリ側（このリポジトリはその中にチェックアウトされている）：
 
-In this repository, [`CLAUDE.md`](CLAUDE.md) holds the working rules.
+- `docs/architecture/forge3d.md` ― 入口。状態、安全に変える手順、未解決のこと
+- `docs/architecture/forge3d-blender-api-matrix.md`、`forge3d-blender-surface-map.md` ―
+  Blender との対応表
+- `docs/architecture/adr-012` / `013` / `014` ― boolean、remesh、React の GUI
+- `docs/architecture/archive/forge3d/` ― 開発中のロードマップと記録
+
+このリポジトリの作業規約は [`CLAUDE.md`](CLAUDE.md)。
