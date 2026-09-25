@@ -1462,6 +1462,13 @@ function lerpPos(em: EditMesh, from: number, to: number, t: number): [number, nu
  *   - If two consecutive loop edges happen to live in the same triangle (a
  *     degenerate quad), that tri is split into 3 instead of re-triangulated
  *     as a real quad.
+ *
+ * Layers: across a ring of quads this is Blender's Loop Cut
+ * (`BM_mesh_esubdivide` with grid fill and `SUBD_CORNER_PATH`) and the UVs,
+ * colours, normals and vertex groups are carried the same way — a midpoint
+ * halfway along its edge, each half a copy of the quad it was cut from
+ * (`loop-cut-layers`). A triangle pair re-cut into four has no Blender
+ * counterpart; its faces span two old faces and drop the layers.
  */
 export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
   const twin = em.halfEdges[seedEdge]?.twin ?? -1;
@@ -1479,10 +1486,13 @@ export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
   let nextV = em.vertices.length;
   const midpointOf = new Map<number, number>(); // canonical edge → midpoint vert id
   const midOfPair = new Map<string, number>();  // "vMin_vMax" → midpoint vert id
+  // Each midpoint is `BM_edge_split`: its data halfway along the edge.
+  const origins = new Map<number, VertexOrigin>();
   for (const e of loop) {
     const a = edgeOrigin(em, e);
     const b = edgeEnd(em, e);
     const mid = nextV++;
+    origins.set(mid, { from: [a, b], w: [0.5, 0.5] });
     const [mx, my, mz] = lerpPos(em, a, b, 0.5);
     newPositions.push(mx, my, mz);
     midpointOf.set(e, mid);
@@ -1568,7 +1578,7 @@ export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
     }
   }
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins });
   return new Set(midpointOf.values());
 }
 
