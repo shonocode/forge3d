@@ -143,6 +143,7 @@ export {
   extrudeFaces,
   extrudeEdges,
   insetFaces,
+  type InsetFacesOptions,
   insetRegion,
   type InsetRegionOptions,
   bevelEdges,

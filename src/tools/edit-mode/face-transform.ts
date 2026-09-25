@@ -184,15 +184,18 @@ export function insetFacesByWidth(
   em: EditMesh,
   faces: ReadonlySet<number>,
   width: number,
+  opts: { interpolate?: boolean } = {},
 ): Set<number> {
   if (faces.size === 0 || width <= 0) return new Set(faces);
 
-  // Work out every vertex's target before touching the mesh: insetFaces
-  // rebuilds the polygon list, so face ids taken afterwards would be stale.
-  const caps = insetFaces(em, faces, 1e-6);
-
-  for (const f of caps) {
-    const verts = faceVerts(em, f);
+  // Work out every vertex's target from the old face before touching the
+  // mesh, and hand the ring to insetFaces — which needs the final positions
+  // to interpolate the corner data at (`interpolate`, Blender's
+  // `use_interpolate`; see `InsetFacesOptions`).
+  const polys = toPolygons(em);
+  const inner = new Map<number, number[]>();
+  for (const f of faces) {
+    const verts = polys[f]!;
     const n = facePolyNormal(em, f);
     const moved: [number, number, number][] = [];
 
@@ -226,15 +229,10 @@ export function insetFacesByWidth(
       ]);
     }
 
-    verts.forEach((v, i) => {
-      const p = moved[i]!;
-      em.positions[v * 3] = p[0];
-      em.positions[v * 3 + 1] = p[1];
-      em.positions[v * 3 + 2] = p[2];
-    });
+    inner.set(f, moved.flat());
   }
 
-  return caps;
+  return insetFaces(em, faces, 1e-6, { inner, interpolate: opts.interpolate });
 }
 
 const unit = (v: [number, number, number]): [number, number, number] => {

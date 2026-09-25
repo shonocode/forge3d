@@ -1,4 +1,5 @@
 import { orphanedEdges } from "./wire";
+import { interpWeightsPoly } from "./interp";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { walkEdgeRing } from "./edge-walk";
@@ -223,7 +224,31 @@ export function deleteFacesByEdges(em: EditMesh, selectedEdges: ReadonlySet<numb
  * the inset cap and the next press of E extrudes those — the canonical
  * "boss / button" workflow.
  */
-export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amount: number): Set<number> {
+/** Options for {@link insetFaces} beyond the fraction. */
+export interface InsetFacesOptions {
+  /**
+   * The inner ring's positions per face (flat xyz, in the face's corner
+   * order), instead of the fraction toward the centroid —
+   * `insetFacesByWidth` works them out.
+   */
+  inner?: ReadonlyMap<number, readonly number[]>;
+  /**
+   * Blender's `use_interpolate` (off in `bmesh.ops.inset_individual`, on in
+   * the UI's Inset): the inner face's corner data and its vertices' data are
+   * re-interpolated over the old face's shape at the new positions — mean
+   * value weights in the face's plane (`BM_face_interp_from_face_ex`), vertex
+   * groups mixed by the same weights — and each rim quad's inner corners take
+   * the interpolated values.
+   */
+  interpolate?: boolean;
+}
+
+export function insetFaces(
+  em: EditMesh,
+  selectedFaces: ReadonlySet<number>,
+  amount: number,
+  opts: InsetFacesOptions = {},
+): Set<number> {
   if (selectedFaces.size === 0 || amount <= 0) return new Set(selectedFaces);
 
   const polys = toPolygons(em);
@@ -237,8 +262,9 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
   }
 
   // Per-face: compute centroid, allocate duplicates, remember cap rings.
-  type CapInfo = { orig: number[]; dups: number[] };
+  type CapInfo = { orig: number[]; dups: number[]; face: number; weights: number[][] };
   const caps: CapInfo[] = [];
+  const origins = new Map<number, VertexOrigin>();
 
   for (const f of selectedFaces) {
     const verts = polys[f]!;
@@ -251,30 +277,70 @@ export function insetFaces(em: EditMesh, selectedFaces: ReadonlySet<number>, amo
     gx /= verts.length; gy /= verts.length; gz /= verts.length;
 
     const t = amount;
-    const dups = verts.map((v) => {
+    const given = opts.inner?.get(f);
+    // The old face's plane, for interpolating over it.
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i]! * 3;
+      const b = verts[(i + 1) % verts.length]! * 3;
+      const P = em.positions;
+      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+    }
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    const normal: [number, number, number] = [nx / nl, ny / nl, nz / nl];
+    const weights: number[][] = [];
+    const dups = verts.map((v, i) => {
       const x = em.positions[v * 3]!, y = em.positions[v * 3 + 1]!, z = em.positions[v * 3 + 2]!;
       const d = nextV++;
-      newPositions.push(x + (gx - x) * t, y + (gy - y) * t, z + (gz - z) * t);
+      const p: [number, number, number] = given
+        ? [given[i * 3]!, given[i * 3 + 1]!, given[i * 3 + 2]!]
+        : [x + (gx - x) * t, y + (gy - y) * t, z + (gz - z) * t];
+      newPositions.push(p[0], p[1], p[2]);
+      if (opts.interpolate) {
+        const w = interpWeightsPoly(em.positions, verts, normal, p);
+        weights.push(w);
+        origins.set(d, { from: verts, w });
+      } else origins.set(d, { from: [v], w: [1] });
       return d;
     });
-    caps.push({ orig: verts, dups });
+    caps.push({ orig: verts, dups, face: f, weights });
   }
+
+  // The per-corner layers as `bmo_face_inset_individual` sets them with
+  // `use_interpolate` off (the op's default): the inner face is the old face,
+  // corners and all, and each rim quad — made with the face as its example —
+  // copies the face's corner at each end to both the outer vertex and the
+  // inner one. (`use_interpolate`, the UI's default, re-interpolates the inner
+  // face over the old one's shape — not ported, compat-backlog C12.)
+  const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
 
   // Skirts: each original edge vᵢ→vᵢ₊₁ becomes a (vᵢ, vᵢ₊₁, dupᵢ₊₁, dupᵢ) quad.
   // The face's original normal direction is preserved (CCW from outside).
-  for (const { orig, dups } of caps) {
+  // An inner corner: the old corner, or with `interpolate` its mix.
+  const innerCorner = (c: CapInfo, i: number): [number, number, number][] =>
+    opts.interpolate ? c.weights[i]!.map((w, k) => [c.face, k, w] as [number, number, number]) : [[c.face, i, 1]];
+  for (const c of caps) {
+    const { orig, dups, face } = c;
     for (let i = 0; i < orig.length; i++) {
       const j = (i + 1) % orig.length;
       newPolys.push([orig[i]!, orig[j]!, dups[j]!, dups[i]!]);
+      const ci: [number, number, number][] = [[face, i, 1]];
+      const cj: [number, number, number][] = [[face, j, 1]];
+      stated.push({ corners: [ci, cj, innerCorner(c, j), innerCorner(c, i)], material: face });
     }
   }
 
   // Caps (inner shrunk faces) — become the new selection.
   const capStart = newPolys.length;
-  for (const { dups } of caps) newPolys.push(dups);
+  for (const c of caps) {
+    newPolys.push(c.dups);
+    stated.push({ corners: c.dups.map((_, i) => innerCorner(c, i)), material: c.face });
+  }
   const capEnd = newPolys.length;
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
 
   const newSel = new Set<number>();
   for (let i = capStart; i < capEnd; i++) newSel.add(i);
@@ -2983,24 +3049,45 @@ export function insetRegion(
 
   // Emit unselected, then skirts, then the caps — so the caps are contiguous
   // at the end and the returned set is a range.
+  //
+  // The per-corner layers as `bmo_inset_region_exec` sets them with
+  // `use_interpolate` off (the op's default): each region face keeps its
+  // corners on the moved vertices, and each rim quad — made with the region
+  // face on its edge as example — copies that face's corner at each end to
+  // both the inner vertex and the outer one. A duplicate copies its vertex
+  // data. (`use_interpolate` is not ported, compat-backlog C12.)
   const newPolys: number[][] = [];
-  for (let f = 0; f < polys.length; f++) if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
+  const stated: Array<ExplicitFace | undefined> = [];
+  for (let f = 0; f < polys.length; f++)
+    if (!selectedFaces.has(f)) {
+      newPolys.push(polys[f]!);
+      stated.push(undefined);
+    }
 
   for (const f of selectedFaces) {
     const poly = polys[f]!;
     for (let i = 0; i < poly.length; i++) {
+      const j = (i + 1) % poly.length;
       const a = poly[i]!;
-      const b = poly[(i + 1) % poly.length]!;
+      const b = poly[j]!;
       if (!insetKeys.has(seamKey(a, b))) continue;
       newPolys.push([a, b, dup.get(b)!, dup.get(a)!]);
+      const ci: [number, number, number][] = [[f, i, 1]];
+      const cj: [number, number, number][] = [[f, j, 1]];
+      stated.push({ corners: [ci, cj, cj, ci], material: f });
     }
   }
 
   const capStart = newPolys.length;
-  for (const f of selectedFaces) newPolys.push(polys[f]!.map((v) => dup.get(v) ?? v));
+  for (const f of selectedFaces) {
+    newPolys.push(polys[f]!.map((v) => dup.get(v) ?? v));
+    stated.push({ corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f });
+  }
   const capEnd = newPolys.length;
+  const origins = new Map<number, VertexOrigin>();
+  for (const [v, d] of dup) origins.set(d, { from: [v], w: [1] });
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
 
   const newSel = new Set<number>();
   for (let i = capStart; i < capEnd; i++) newSel.add(i);
