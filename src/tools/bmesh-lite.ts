@@ -164,6 +164,18 @@ export function radialLoops(e: BE): BL[] {
   return out;
 }
 
+/**
+ * `BM_vert_create`: appended, so a new vertex comes after every one that was
+ * there. The vertex array is not a mempool here — `vertKill` leaves a hole
+ * that `bmToMesh` compacts — which is Blender's order as long as vertices are
+ * created before any are killed, as every operator using this does.
+ */
+export function vertCreate(bm: BM, co: V3): BV {
+  const v: BV = { co: [f(co[0]!), f(co[1]!), f(co[2]!)], no: [0, 0, 0], e: null, index: bm.verts.length, tag: false };
+  bm.verts.push(v);
+  return v;
+}
+
 export function edgeExists(a: BV, b: BV): BE | null {
   if (!a.e) return null;
   let e = a.e;

@@ -441,6 +441,19 @@ export { skin, type SkinOptions } from "../tools/edit-mode/skin";
 export { intersect, type IntersectOptions, type IntersectResult } from "../tools/boolean/intersect";
 export { booleanMesh, type BooleanOptions, type BooleanOperation } from "../tools/boolean/boolean";
 
+// ── Bevel ──────────────────────────────────────────────────────────────────
+// Blender's bevel (`bmesh_bevel.cc`, ported whole on 2026-09-25): the Bevel
+// modifier by angle or on every edge, or `bmesh.ops.bevel` on a list of
+// edges. Unlike `bevelEdges` above, any number of beveled edges may meet at a
+// vertex — a box's corner, a pipe, what a boolean leaves.
+export {
+  bevelMesh,
+  type BevelMeshOptions,
+  type BevelOffsetType,
+  type BevelFaceKind,
+  type BevelResult,
+} from "../tools/bevel/bevel";
+
 // ── Remesh ─────────────────────────────────────────────────────────────────
 // Blender's Remesh modifier in its dual-contouring modes (Blocks / Smooth /
 // Sharp): a quad mesh on an octree grid, holes closed, small pieces dropped.
