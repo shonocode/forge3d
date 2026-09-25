@@ -45,7 +45,9 @@ import {
   rebuildPolygons,
   toPolygons,
   type EditMesh,
+  type ExplicitFace,
 } from "./half-edge";
+import { addFaces } from "./refine";
 
 // ── float32, in C's evaluation order ───────────────────────────────────────
 // Blender does this in `float` with no fused multiply-add, and on a grid the
@@ -303,7 +305,51 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
       ? [ring[0]!, ...ring.slice(1).reverse()]
       : [ring[ring.length - 1]!, ...ring.slice(0, -1)];
 
+  // The layers follow the path F takes in `contextual_create`. When the
+  // ring's edges are all there it is `edgenet_fill`, whose face copies from
+  // the faces around it (`face_attribute_fill`, material included). Otherwise
+  // it is the vertex-cloud fill: slot 0, and each ring edge that already has
+  // a face copies that face's two corners, the first write winning, starting
+  // at the face's first corner (`BM_face_copy_shared` — the other face on the
+  // edge is `radial_next`, which is the oldest). Not matched: a ring with
+  // only some of its edges, where Blender's `edgenet_prepare` may close it;
+  // and on the edge-net path, which corner the copy starts from — Blender's
+  // face starts where `BM_mesh_edgenet`'s walk put it, so 1 or 2 corners take
+  // the other neighbour's value (`edge-face-add-layers`, "different").
+  const edges = new Set<string>();
+  const oldest = new Map<string, number>();
+  polys.forEach((poly, f) => {
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const k = a < b ? `${a}_${b}` : `${b}_${a}`;
+      edges.add(k);
+      if (!oldest.has(k)) oldest.set(k, f);
+    }
+  });
+  for (const e of em.wireEdges ?? []) edges.add(e[0]! < e[1]! ? `${e[0]}_${e[1]}` : `${e[1]}_${e[0]}`);
+  const n = face.length;
+  const keyOf = (i: number): string => {
+    const a = face[i]!;
+    const b = face[(i + 1) % n]!;
+    return a < b ? `${a}_${b}` : `${b}_${a}`;
+  };
+  const closed = face.every((_, i) => edges.has(keyOf(i)));
+
   polys.push(face);
-  rebuildPolygons(em, em.positions, polys);
+  if (closed) {
+    addFaces(em, em.positions, polys, polys.length - 1, true);
+    return polys.length - 1;
+  }
+  const corners: [number, number, number][][] = face.map(() => []);
+  for (let i = 0; i < n; i++) {
+    const f = oldest.get(keyOf(i));
+    if (f === undefined) continue;
+    for (const j of [i, (i + 1) % n])
+      if (corners[j]!.length === 0) corners[j] = [[f, polys[f]!.indexOf(face[j]!), 1]];
+  }
+  const stated: Array<ExplicitFace | undefined> = polys.map(() => undefined);
+  stated[polys.length - 1] = { corners, material: -1 };
+  rebuildPolygons(em, em.positions, polys, { faces: stated });
   return polys.length - 1;
 }

@@ -1005,7 +1005,7 @@ export function edgenetFill(em: EditMesh, selectedEdges: ReadonlySet<number>): S
  * face take the other neighbour's value (`holes-fill-layers`,
  * `edgenet-fill-layers`, kept as "different").
  */
-function addFaces(em: EditMesh, positions: Float32Array, out: number[][], start: number, fill: boolean): void {
+export function addFaces(em: EditMesh, positions: Float32Array, out: number[][], start: number, fill: boolean): void {
   const stated: Array<ExplicitFace | undefined> = out.map((poly, i) =>
     i < start ? undefined : { corners: poly.map(() => []), material: -1 },
   );
