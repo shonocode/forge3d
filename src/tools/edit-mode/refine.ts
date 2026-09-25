@@ -20,7 +20,8 @@
  */
 import { scanfillTriangles } from "./triangle-fill";
 import { interpWeightsPoly } from "./interp";
-import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type VertexOrigin } from "./half-edge";
+import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
+import { faceAttributeFillAll } from "./loop-data";
 
 // ── poke ───────────────────────────────────────────────────────────────────
 
@@ -849,7 +850,8 @@ export function holesFill(em: EditMesh, opts: HolesFillOptions = {}): Set<number
   }
 
   if (out.length === start) return new Set();
-  rebuildPolygons(em, em.positions, out);
+  // `holes_fill` runs `face_attribute_fill(use_data)` on the new faces.
+  addFaces(em, em.positions, out, start, true);
   const sel = new Set<number>();
   for (let i = start; i < out.length; i++) sel.add(i);
   return sel;
@@ -923,7 +925,8 @@ export function edgeloopFill(em: EditMesh, selectedEdges: ReadonlySet<number>): 
   const out = toPolygons(em);
   const start = out.length;
   for (const loop of loops) out.push(loop);
-  rebuildPolygons(em, em.positions, out);
+  // `edgeloop_fill` makes the face with no example: its corners are 0.
+  addFaces(em, em.positions, out, start, false);
 
   const made = new Set<number>();
   for (let i = start; i < out.length; i++) made.add(i);
@@ -955,7 +958,8 @@ export function triangleFill(em: EditMesh, selectedEdges: ReadonlySet<number>): 
     have.add(k);
     out.push(t);
   }
-  rebuildPolygons(em, em.positions, out);
+  // `triangle_fill` makes the triangles with no example: corners 0.
+  addFaces(em, em.positions, out, start, false);
   const made = new Set<number>();
   for (let i = start; i < out.length; i++) made.add(i);
   return made;
@@ -976,5 +980,54 @@ export function triangleFill(em: EditMesh, selectedEdges: ReadonlySet<number>): 
  * a caller looking for this one should find it, with the scope written down.
  */
 export function edgenetFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
-  return edgeloopFill(em, selectedEdges);
+  // The faces are `edgeloopFill`'s; the layers are not: `edgenet_fill` runs
+  // `face_attribute_fill(use_data)` on them, `edgeloop_fill` does not.
+  const loops = loopsFromEdges(em, selectedEdges);
+  if (loops.length === 0) return new Set();
+  const out = toPolygons(em);
+  const start = out.length;
+  for (const loop of loops) out.push(loop);
+  addFaces(em, em.positions, out, start, true);
+  const made = new Set<number>();
+  for (let i = start; i < out.length; i++) made.add(i);
+  return made;
+}
+
+/**
+ * Rebuild with the faces from `start` on new, and their per-corner layers
+ * and materials as Blender leaves them: 0 and slot 0 for a face made with no
+ * example, or — with `fill` — copied from the faces around them by
+ * `face_attribute_fill` (`faceAttributeFillAll`).
+ *
+ * Not matched with `fill`: the fill's corner walk starts at each new face's
+ * first corner, and Blender's faces start where its edge-net walk
+ * (`BM_mesh_edgenet`) put them, which is not ported — 1 or 2 corners per
+ * face take the other neighbour's value (`holes-fill-layers`,
+ * `edgenet-fill-layers`, kept as "different").
+ */
+function addFaces(em: EditMesh, positions: Float32Array, out: number[][], start: number, fill: boolean): void {
+  const stated: Array<ExplicitFace | undefined> = out.map((poly, i) =>
+    i < start ? undefined : { corners: poly.map(() => []), material: -1 },
+  );
+  rebuildPolygons(em, positions, out, { faces: stated });
+  if (!fill) return;
+  const has = em.loopUVs || em.loopColors || em.loopNormals || em.faceMaterials;
+  if (!has) return;
+  const made: number[] = [];
+  for (let i = start; i < out.length; i++) made.push(i);
+  const filled = faceAttributeFillAll(
+    {
+      positions,
+      polys: out,
+      ...(em.loopUVs ? { uvs: em.loopUVs } : {}),
+      ...(em.loopColors ? { colors: em.loopColors } : {}),
+      ...(em.loopNormals ? { normals: em.loopNormals } : {}),
+      ...(em.faceMaterials ? { materials: em.faceMaterials } : {}),
+    },
+    made,
+  );
+  if (em.loopUVs) em.loopUVs = filled.uvs;
+  if (em.loopColors) em.loopColors = filled.colors;
+  if (em.loopNormals) em.loopNormals = filled.normals;
+  if (em.faceMaterials) em.faceMaterials = filled.materials;
 }

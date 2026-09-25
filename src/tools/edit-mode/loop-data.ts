@@ -308,25 +308,75 @@ export function averageVertLoopData(
  * order decides which chosen face fills first, and so what the next one can
  * take from.
  *
- * Not ported: `use_normals` (copying the neighbour's winding) and the face
- * attributes (`BM_elem_attrs_copy` — material index and the like). This copies
- * the corner layer only.
+ * Not ported: `use_normals` (copying the neighbour's winding). This copies
+ * the one corner layer; {@link faceAttributeFillAll} does every layer and the
+ * material.
  */
 export function faceAttributeFill(
   data: MeshData,
   faces: ReadonlySet<number> | readonly number[],
   layer: LoopLayer = "uv",
 ): MeshData {
-  const polys = data.polys;
+  const current = requireLayer(data, layer, "faceAttributeFill");
+  const plan = faceAttributeFillPlan(data.polys, faces);
+  return withLayer(data, layer, applyFillPlan(current, plan));
+}
+
+/**
+ * {@link faceAttributeFill} over **every** corner layer at once — UVs,
+ * colours, custom normals — and the face's material from the face it filled
+ * from, which is what Blender's `face_attribute_fill(use_data=True)` does
+ * (`BM_elem_attrs_copy` of the face, `BM_face_copy_shared` of the loops).
+ * `holes_fill` and `edgenet_fill` call it on the faces they make.
+ */
+export function faceAttributeFillAll(
+  data: MeshData,
+  faces: ReadonlySet<number> | readonly number[],
+): MeshData {
+  const plan = faceAttributeFillPlan(data.polys, faces);
+  const out: MeshData = { ...data };
+  const shaped = (l?: number[][][]) => l && l.length === data.polys.length;
+  if (shaped(data.uvs)) out.uvs = applyFillPlan(data.uvs!, plan);
+  if (shaped(data.colors)) out.colors = applyFillPlan(data.colors!, plan);
+  if (shaped(data.normals)) out.normals = applyFillPlan(data.normals!, plan);
+  if (data.materials && data.materials.length === data.polys.length) {
+    const m = [...data.materials];
+    // In fill order, so a face filled from a face filled a moment before
+    // takes that face's new slot.
+    for (const [g, from] of plan.faceFrom) m[g] = m[from]!;
+    out.materials = m;
+  }
+  return out;
+}
+
+/**
+ * The fill as a plan: for each filled corner, the corner it copied (in fill
+ * order, so a later copy can read an earlier one), and for each filled face
+ * the face it took its attributes from.
+ */
+interface FillPlan {
+  corners: Array<[face: number, corner: number, fromFace: number, fromCorner: number]>;
+  faceFrom: Array<[face: number, from: number]>;
+}
+
+function applyFillPlan(layer: number[][][], plan: FillPlan): number[][][] {
+  const next = layer.map((corners) => corners.map((c) => [...c]));
+  for (const [f, i, g, j] of plan.corners) next[f]![i] = [...next[g]![j]!];
+  return next;
+}
+
+/** `bmesh_face_attribute_fill`, recording what it copies rather than copying. */
+function faceAttributeFillPlan(
+  polys: readonly (readonly number[])[],
+  faces: ReadonlySet<number> | readonly number[],
+): FillPlan {
   // Blender's BM_ELEM_TAG: still waiting to be filled.
   const tagged = new Set<number>();
   for (const f of faces) {
     if (polys[f] === undefined) throw new Error(`faceAttributeFill: no face ${f}`);
     tagged.add(f);
   }
-  const current = requireLayer(data, layer, "faceAttributeFill");
-  // One live layer: a face filled earlier is read as a source later.
-  const next = current.map((corners) => corners.map((c) => [...c]));
+  const plan: FillPlan = { corners: [], faceFrom: [] };
 
   type Loop = readonly [face: number, corner: number];
   const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
@@ -372,7 +422,7 @@ export function faceAttributeFill(
       const dst = [i, (i + 1) % n];
       for (let k = 0; k < 2; k++) {
         if (written[dst[k]!]) continue;
-        next[f]![dst[k]!] = [...next[g]![src[k]!]!];
+        plan.corners.push([f, dst[k]!, g, src[k]!]);
         written[dst[k]!] = true;
       }
     }
@@ -398,9 +448,13 @@ export function faceAttributeFill(
       for (let s = 1; s < n; s++)
         for (const [g, j] of othersAround(f, (i + s) % n))
           if (tagged.has(g)) nextWave.push([g, j]);
+      // `bm_face_copy_shared_all`: the face's attributes from the first face
+      // round this loop's edge that is not waiting (`BM_elem_attrs_copy`).
+      const from = othersAround(f, i).find(([g]) => !tagged.has(g) && g !== f);
+      if (from) plan.faceFrom.push([f, from[0]]);
       copyShared(f);
     }
     prev = nextWave;
   }
-  return withLayer(data, layer, next);
+  return plan;
 }

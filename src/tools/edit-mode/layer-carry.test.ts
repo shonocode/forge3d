@@ -80,7 +80,7 @@ const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["poke", (em) => refine.poke(em, new Set([4])), true],
   ["subdivideEdges", (em) => refine.subdivideEdges(em, edgesOf(em, (a, b) => a < 4 && b < 4), { cuts: 2 }), true],
   ["bisectEdges", (em) => refine.bisectEdges(em, edgesOf(em, (a, b) => a < 4 && b < 4), 2), true],
-  ["holesFill", (em) => { ops.deleteFaces(em, new Set([4])); refine.holesFill(em); }, false],
+  ["holesFill", (em) => { ops.deleteFaces(em, new Set([4])); refine.holesFill(em); }, true],
 ];
 
 describe("per-corner layers through the operators", () => {
