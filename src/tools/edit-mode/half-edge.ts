@@ -632,6 +632,10 @@ function carryLayers(
           const val = old[g]![c]!;
           for (let j = 0; j < width; j++) out[j] = out[j]! + w * val[j]!;
         }
+        // A colour is a byte in Blender, and its mix is clamped to 0..255
+        // (`layerInterp_mloopcol`) — mean-value weights go negative outside
+        // a face and would otherwise push it below 0 (`inset-individual-layers`).
+        if (k === "loopColors") for (let j = 0; j < width; j++) out[j] = Math.min(1, Math.max(0, out[j]!));
         return out;
       }),
     );
