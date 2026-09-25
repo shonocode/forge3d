@@ -1464,13 +1464,10 @@ export interface WireframeOptions {
  * outward on a sheet's rim and *into* the gap at the corner of a hole, both
  * measured, with no special case between them.
  *
- * Not implemented — there is no option to pass, so nothing approximates
- * them (compat-backlog B4): Blender's `use_even_offset` (the modifier's
- * default is on; measured to move every point — at a right angle it is the
- * difference between `t/2` along the bisector and `t/2` perpendicular),
- * `offset` (sliding the bar off the edge) and `use_crease`. Concave corners
- * are untested: the bisector points out of the face there, as it does for
- * `inset`.
+ * Only `thickness` and `boundary`, and neither of Blender's defaults for
+ * the modifier (even thickness on, boundary off): {@link wireframeModifier}
+ * is the port of `BM_mesh_wireframe` itself, with every option
+ * (compat-backlog B4).
  *
  * **Layers** (compat-backlog A7): each bar quad copies its source face's
  * corner at each vertex's source vertex, and its slot; every new vertex

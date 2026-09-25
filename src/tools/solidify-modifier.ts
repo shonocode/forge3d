@@ -43,7 +43,11 @@ export interface SolidifyModifierOptions {
   thicknessClamp?: number;
   /** `use_thickness_angle_clamp`. */
   angleClamp?: boolean;
-  /** `material_offset` / `material_offset_rim`, clamped to the materials there are. */
+  /**
+   * `material_offset` / `material_offset_rim`. Blender clamps to the object's
+   * material slots; a `MeshData` has no slot count, so these clamp to the
+   * highest index a face uses (found by review).
+   */
   materialOffset?: number;
   materialOffsetRim?: number;
   /** `edge_crease_inner` / `_outer` / `_rim`. */

@@ -137,6 +137,7 @@ const DROPS: Array<[string, () => MeshData, Layer[]]> = [
   ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges"]],
   // Custom normals are compat-backlog C29.
   ["solidifyModifier", () => L.solidifyModifier(cube(), { thickness: 0.1 }), ["uvs", "colors", "groups", "materials", "creases", "seams", "sharp", "edges"]],
+  ["wireframeModifier", () => L.wireframeModifier(cube(), { thickness: 0.05 }), ["uvs", "colors", "groups", "materials"]],
 ];
 
 describe("MeshData layers through the operators", () => {
