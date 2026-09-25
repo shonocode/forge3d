@@ -1,180 +1,78 @@
-# FORGE 3D
+# forge3d
 
-Browser-based 3D modeling, rigging, and animation tool built with Babylon.js.
-Runs entirely in the browser as a Progressive Web App (PWA) — no server required.
+A **modelling library you call from code**, and a browser GUI to look at what
+it makes. Built on Babylon.js and TypeScript.
 
-## Features
+**Status: maintenance (since 2026-09-25).** The library matches Blender 5.1.1
+wherever it claims to — measured, not assumed — and the GUI was rebuilt in
+React. New work is fixes and small additions driven by use.
 
-- **Primitive Modeling** — Box, Sphere, Cylinder, Torus, Plane, Cone, Tube, Disc, Icosphere, Capsule
-- **CSG Boolean Operations** — Union, Subtract, Intersect
-- **Sculpt Mode** — 6 brush types: Push, Pull, Smooth, Flatten, Pinch, Inflate
-- **Texture Paint** — Paint directly on mesh surfaces (DynamicTexture)
-- **Morph Targets** — Capture mesh deformations as blend shapes
-- **Skeleton & Rigging** — Create bone hierarchies, assign to meshes
-- **Weight Painting** — Paint vertex weights with heatmap overlay
-- **Keyframe Animation** — Record bone poses, easing curves, loop modes, preview playback
-- **Modifier Stack** — Subdivision, Mirror, Array
-- **Material Editor** — PBR material properties, color palettes
-- **Lighting System** — Point and spot lights
-- **Map Editor** — Place saved models in a scene, export/import layouts
-- **Measurement Tool** — Distance between points
-- **Layer System** — Organize meshes into layers
-- **Post-Processing** — FXAA, Bloom, SSAO, Chromatic Aberration, Vignette
-- **Import/Export** — GLB, glTF, OBJ (drag & drop supported)
-- **Save to Library** — Persistent browser storage (OPFS/IndexedDB)
-- **Auto-Save** — Automatic checkpoint every 30 seconds with crash recovery
-- **Undo/Redo** — Full undo support for all operations
-- **Accessibility** — ARIA labels, keyboard navigation, focus management
-- **PWA** — Installable, works offline
+## The library
 
-## Quick Start
+The public API is [`src/lib/index.ts`](src/lib/index.ts). Everything exported
+there is headless: no DOM, no editor state, no scene. Callers are build
+scripts, asset pipelines, and agents writing modelling code.
+
+```ts
+import { meshFromData, meshToData, extrudeFaces, catmullClark } from "forge3d";
+
+const em = meshFromData({ positions, polys });
+extrudeFaces(em, new Set([topFace]));
+const { positions: p, polys: f, creases } = meshToData(em);
+const smooth = catmullClark(p, f, 2, creases);
+```
+
+What it covers, compared with Blender 5.1.1 (details in the chiikawa-soul docs):
+
+| Blender surface | Status |
+|---|---|
+| `bmesh.ops` (80 operators) | 76 match Blender, 1 implemented but unmeasurable (`create_vert`), 3 are type conversions with no counterpart |
+| `bpy.ops.mesh`-only operators | 15 / 15 |
+| Modifiers (36 mesh modifiers) | 31 present, all matching Blender. The rest need OpenVDB (Remesh Voxel, volume ↔ mesh) or a rest shape (Corrective Smooth, Laplacian Deform) |
+| Procedural textures | Clouds, Wood, Marble, Magic, Blend, Stucci, Musgrave, Voronoi, Distorted Noise (not Noise: Blender seeds it from the clock) |
+
+"Match" means a parity row: the same input through Blender and through
+forge3d, compared vertex by vertex and face by face. The harness and every
+row's notes live in the chiikawa-soul repository under
+`tools/modeling/parity/`.
+
+## The GUI
+
+A React app (`src/app/`) over a Babylon viewport: edit mode, sculpt, texture
+and weight paint, bones and animation, modifiers, import / export (GLB, glTF,
+OBJ). Keyboard shortcuts follow Blender's (`src/keymap.ts`). Every tool, tab
+and panel section carries a plain-language explanation, written once in
+`src/app/guide/guide.ts`; [`MANUAL.html`](MANUAL.html) is generated from the
+same text (`npm run manual`).
+
+## Commands
 
 ```bash
 npm install
-npm run dev
+npm run dev        # http://localhost:5173
+npm run test       # Vitest (node; React components under jsdom)
+npm run build      # tsc && vite build — read tsc's output, its exit code is 0 even with errors
+npm run manual     # regenerate MANUAL.html from the guide
+npm run deploy     # build and deploy with wrangler
 ```
 
-Open `http://localhost:5173`.
+## License
 
-### Build
+**Not settled.** Much of `src/tools/` is ported from Blender's source
+(GPL-2.0-or-later) and one part from OpenSubdiv (Apache-2.0), so forge3d is a
+derivative work of GPL code and must be distributed under a compatible
+licence — GPL-3.0-or-later is the one that also admits Apache-2.0. Until that
+is decided, treat the repository as private.
 
-```bash
-npm run build
-```
+## Where things are written down
 
-### Test
+In the chiikawa-soul repository (this one is checked out inside it):
 
-```bash
-npm run test
-```
+- `docs/architecture/forge3d.md` — the entry point: state, how to change
+  things safely, what is still open
+- `docs/architecture/forge3d-blender-api-matrix.md`,
+  `forge3d-blender-surface-map.md` — the Blender comparison tables
+- `docs/architecture/adr-012` / `013` / `014` — boolean, remesh, and the React GUI
+- `docs/architecture/archive/forge3d/` — the development-era roadmap and logs
 
-### Deploy (Cloudflare Pages)
-
-```bash
-npm run deploy
-```
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| 3D Engine | Babylon.js 8.x |
-| Language | TypeScript 5.9 (strict mode) |
-| Build Tool | Vite 7.x |
-| Testing | Vitest + fake-indexeddb |
-| PWA | vite-plugin-pwa |
-| Hosting | Cloudflare Pages |
-| Storage | OPFS / IndexedDB |
-
-## Architecture
-
-```
-src/
-  main.ts              — Entry point, render loop
-  state.ts             — Global state (single source of truth)
-  input.ts             — Pointer/keyboard/touch event handling
-  undo.ts              — Undo/redo history
-  shaders.ts           — Centralized shader registration
-  styles.css           — All styles (desktop + mobile responsive)
-
-  viewport/
-    viewport.ts        — Engine, scene, camera, gizmo setup
-    camera-presets.ts   — Camera angle presets, orthographic toggle
-    environment.ts     — HDRI environment
-    shadows.ts         — Shadow generator
-    shading.ts         — Viewport render modes (solid/wire/matcap/textured)
-    postprocess.ts     — Post-processing pipeline
-
-  tools/
-    primitives.ts      — Primitive mesh creation
-    selection.ts       — Mesh selection, gizmo management
-    sculpt.ts          — Sculpt brushes (spatial hash grid optimization)
-    texture-paint.ts   — Texture painting
-    skeleton-tool.ts   — Bone creation and management
-    weight-paint.ts    — Weight painting
-    animation-tool.ts  — Keyframe animation system
-    morph.ts           — Morph targets
-    modifiers.ts       — Modifier stack (subdivision, mirror, array)
-    csg.ts             — CSG boolean operations
-    mesh-utils.ts      — Normals, weld, center origin
-    actions.ts         — Duplicate, delete
-    snap.ts            — Transform snapping
-    parenting.ts       — Parent/child relationships
-    lighting.ts        — Dynamic lights
-    measure.ts         — Distance measurement
-    layers.ts          — Layer system
-    map-editor.ts      — Scene instance placement
-    easing.ts          — Animation easing curves
-
-  ui/
-    builders.ts        — UI construction (pills, grids, mobile bar)
-    bindings.ts        — Event binding for all controls
-    panels.ts          — Panel content updates
-    escape.ts          — HTML escaping utility
-    file-input.ts      — File dialog utility
-
-  materials/
-    pbr-helpers.ts     — PBR material utilities
-
-  storage/
-    metadata-store.ts  — Model metadata persistence
-    model-store.ts     — Model binary storage (OPFS/IndexedDB)
-    autosave.ts        — Automatic checkpoint save/restore
-
-  export/
-    gltf-exporter.ts   — GLB/OBJ export, file import
-```
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| V | Select |
-| G | Move |
-| R | Rotate |
-| S | Scale |
-| D | Sculpt |
-| P | Paint |
-| B | Bone |
-| W | Weight |
-| A | Animation |
-| F | Focus / frame selected |
-| H | Toggle mesh visibility |
-| Shift+H | Toggle bone visibility (override tool auto) |
-| Ctrl+D | Duplicate |
-| Delete | Delete selected |
-| Esc | Deselect |
-| Ctrl+Z | Undo |
-| Ctrl+Shift+Z | Redo |
-| Numpad 1/3/7 | Front / Right / Top |
-| Ctrl+Numpad | Back / Left / Bottom |
-| Numpad 5 | Toggle orthographic |
-
-## Camera Controls
-
-| Input | Action |
-|-------|--------|
-| Left drag | Orbit |
-| Right drag / 2-finger | Pan |
-| Scroll / Pinch | Zoom |
-
-## Mobile
-
-- Tool pills scroll horizontally in the header
-- Side panels open via hamburger/gear buttons, swipe to close
-- Bottom action bar: Prim, Undo, Dup, Del, Export, Save, Load
-- Camera lock button — freeze camera for gizmo-only interaction
-- Multi-select toggle (replaces Ctrl+click)
-- Invert/Smooth toggle buttons in sculpt mode (replaces Ctrl/Shift+drag)
-- Gizmo handles are 50% larger on mobile for easier touch targeting
-- Camera auto-detaches during gizmo drags to prevent orbit conflicts
-
-## Workflow
-
-1. Add primitives, combine with CSG booleans
-2. Sculpt mesh details
-3. Paint textures on the surface
-4. Create skeleton, assign to mesh
-5. Paint vertex weights per bone
-6. Record keyframe animations
-7. Export as GLB
+In this repository, [`CLAUDE.md`](CLAUDE.md) holds the working rules.

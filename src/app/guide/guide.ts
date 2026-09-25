@@ -1,7 +1,8 @@
 /**
  * What every tool, tab and panel section is for, in plain words — the one
  * place the new screen's help (tool card, section notes, glossary) and the
- * manual are made from (ADR-014, forge3d-roadmap "GUI の役割").
+ * manual are made from (ADR-014; the decision is "GUI の役割" in the
+ * chiikawa-soul docs, `docs/architecture/archive/forge3d/forge3d-roadmap.md`).
  *
  * Started from the Claude Design proposal's `FORGE_GUIDE`
  * (https://claude.ai/artifact/GBczkoJreBcoevLnGYd9DT) and checked against the

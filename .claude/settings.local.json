@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(npx tsc:*)",
-      "Bash(npx vite build)",
-      "Bash(grep -r \"pickingDistance\\\\|picking.*threshold\\\\|pick.*radius\" /home/shaw/ドキュメント/codes/forge3d/node_modules/@babylonjs/core/Gizmos/*.d.ts)"
-    ]
-  }
-}

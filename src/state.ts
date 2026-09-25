@@ -523,7 +523,7 @@ export const state = {
     xray: true,
   },
 
-  // Edit Mode (component-level editing — see forge3d/EDIT-MODE-DESIGN.md)
+  // Edit Mode (component-level editing — `tools/edit-mode/`)
   editMesh: null as EditMesh | null,
   editSelection: { mode: "vertex", indices: new Set<number>() } as EditSelection,
   editConfig: {

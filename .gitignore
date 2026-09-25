@@ -9,3 +9,6 @@ dist
 !.dev.vars.example
 .env*
 !.env.example
+
+# Claude Code per-machine settings
+.claude/settings.local.json

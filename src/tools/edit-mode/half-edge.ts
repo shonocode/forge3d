@@ -12,9 +12,9 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
  * (written on every topology commit, validated against the index buffer on
  * the next Edit Mode entry — see build.ts).
  *
- * The design doc (`EDIT-MODE-DESIGN.md` §3.1) describes object-ref
- * half-edges; we use indices instead because TypeScript array-of-objects is
- * faster to mutate and easier to serialize for undo snapshots.
+ * Half-edges are indices rather than object references (the original design
+ * had objects): an array of indices is faster to mutate and easier to
+ * serialize for undo snapshots.
  */
 export interface HalfEdge {
   /** Origin vertex index. */
