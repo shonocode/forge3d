@@ -237,3 +237,59 @@ describe("gridFill reproduces Blender's interior vertices", () => {
     );
   });
 });
+
+describe("gridFill on the rim of a hole", () => {
+  /** A 4 × 4 sheet of quads facing +y with the middle 2 × 2 cut out — a rim of 8. */
+  function holedSheet(): { mesh: MeshData; rim: number[] } {
+    const positions: number[] = [];
+    const id = new Map<string, number>();
+    for (let r = 0; r <= 4; r++)
+      for (let c = 0; c <= 4; c++) {
+        if (r === 2 && c === 2) continue; // the vertex only the hole used
+        id.set(`${r},${c}`, positions.length / 3);
+        positions.push(c, 0, r);
+      }
+    const v = (r: number, c: number): number => id.get(`${r},${c}`)!;
+    const polys: number[][] = [];
+    for (let r = 0; r < 4; r++)
+      for (let c = 0; c < 4; c++) {
+        if (r >= 1 && r <= 2 && c >= 1 && c <= 2) continue;
+        polys.push([v(r, c), v(r + 1, c), v(r + 1, c + 1), v(r, c + 1)]);
+      }
+    const rim = [v(1, 1), v(1, 2), v(1, 3), v(2, 3), v(3, 3), v(3, 2), v(3, 1), v(2, 1)];
+    return { mesh: { positions: Float32Array.from(positions), polys }, rim };
+  }
+
+  it("winds the grid to agree with the faces round it, whichever way the ring is given", () => {
+    for (const reversed of [false, true]) {
+      const { mesh, rim } = holedSheet();
+      const out = gridFill(mesh, reversed ? [...rim].reverse() : rim);
+      // Consistently wound: no directed edge is walked by two faces.
+      const directed = new Set<string>();
+      for (const p of out.polys)
+        for (let i = 0; i < p.length; i++) {
+          const key = `${p[i]},${p[(i + 1) % p.length]}`;
+          expect(directed.has(key)).toBe(false);
+          directed.add(key);
+        }
+    }
+  });
+
+  it("carries the layers: old faces keep theirs, new corners blend the rim's, slot 0", () => {
+    const { mesh, rim } = holedSheet();
+    mesh.uvs = mesh.polys.map((p, f) => p.map(() => [f, 1]));
+    mesh.materials = mesh.polys.map(() => 2);
+    mesh.groups = new Map([["g", new Map(rim.map((v) => [v, 0.5] as [number, number]))]]);
+    const out = gridFill(mesh, rim);
+    expect(out.uvs).toHaveLength(out.polys.length);
+    for (let f = 0; f < mesh.polys.length; f++) expect(out.uvs![f]).toEqual(mesh.uvs[f]);
+    // Every rim edge has a face, so each new corner is a blend of rim corners
+    // whose v is 1 — and the blend's weights sum to 1.
+    for (let f = mesh.polys.length; f < out.polys.length; f++)
+      for (const uv of out.uvs![f]!) expect(uv[1]).toBeCloseTo(1, 6);
+    expect(out.materials!.slice(mesh.polys.length)).toEqual([0, 0, 0, 0]);
+    // The one interior vertex mixes four rim vertices at 0.5.
+    const centre = mesh.positions.length / 3;
+    expect(out.groups!.get("g")!.get(centre)).toBeCloseTo(0.5, 6);
+  });
+});

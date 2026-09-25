@@ -50,6 +50,25 @@
  * gives 24 / 15); `span` walks the split (2 → 8 quads, 3 → 9, 4 → 8); a ring
  * of 7 is refused; the two interpolations agree on an evenly spaced rectangle
  * and separate on an uneven one, on a circle, and on a saddle.
+ *
+ * ## Winding and layers
+ *
+ * A ring that is the rim of a hole has faces beside it. The grid is wound to
+ * agree with them by a vote over the rim's edges (`USE_FLIP_DETECT`), and its
+ * corners take their UVs, colours and normals from the rim faces' corners:
+ * `bm_grid_fill_array` blends the corners on the two sides (or the four, when
+ * both a side and a rail have faces) with the same mean-value weights as the
+ * interior points, and each interior vertex mixes the vertex groups of its
+ * four boundary points. A new face takes material slot 0 — Blender's operator
+ * passes the object's active slot, which a mesh does not have. A wire ring has
+ * no rim faces: its faces' corners are zero, as Blender leaves them.
+ *
+ * Not matched: a grid corner lies on two rim faces and copies the one along
+ * the grid's first side, so which face it is follows the layout. Here the
+ * layout follows the ring order; on a hole's rim Blender takes it from its
+ * edge-loop walk over the edges in index order (`BM_mesh_edgeloops_find`),
+ * which a ring order cannot reproduce — 2 of the 4 corners differ
+ * (`grid-fill-layers`, kept as "different").
  */
 import type { MeshData } from "../../lib/mesh";
 
@@ -386,19 +405,52 @@ export function gridFill(mesh: MeshData, loop: readonly number[], options: GridF
     }
   }
 
+  // The faces on the ring's edges: directed edge "a,b" → the first face that
+  // walks it, and how many faces use each edge.
+  const faceOn = new Map<string, number>();
+  const uses = new Map<string, number>();
+  mesh.polys.forEach((p, f) => {
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i]!;
+      const b = p[(i + 1) % p.length]!;
+      if (!faceOn.has(`${a},${b}`)) faceOn.set(`${a},${b}`, f);
+      const k = a < b ? `${a},${b}` : `${b},${a}`;
+      uses.set(k, (uses.get(k) ?? 0) + 1);
+    }
+  });
+  const g = (x: number, y: number): number => grid[gridAt(x, y)]!;
+
+  // `USE_FLIP_DETECT`: each rim edge with one face votes by whether that face
+  // runs along the side the way the grid's own edge would.
+  let votes = 0;
+  const vote = (a: number, b: number, dir: number): void => {
+    if (uses.get(a < b ? `${a},${b}` : `${b},${a}`) !== 1) return;
+    votes += faceOn.has(`${a},${b}`) ? dir : -dir;
+  };
+  for (let x = 0; x < xtot - 1; x++) {
+    vote(g(x, 0), g(x + 1, 0), -1);
+    vote(g(x, ytot - 1), g(x + 1, ytot - 1), 1);
+  }
+  for (let y = 0; y < ytot - 1; y++) {
+    vote(g(0, y), g(0, y + 1), 1);
+    vote(g(xtot - 1, y), g(xtot - 1, y + 1), -1);
+  }
+  const flip = votes < 0;
+
   const polys = mesh.polys.map((p) => [...p]);
+  const faceStart = polys.length;
   for (let x = 0; x < xtot - 1; x++) {
     for (let y = 0; y < ytot - 1; y++) {
-      polys.push([
-        grid[gridAt(x, y)]!,
-        grid[gridAt(x + 1, y)]!,
-        grid[gridAt(x + 1, y + 1)]!,
-        grid[gridAt(x, y + 1)]!,
-      ]);
+      polys.push(
+        flip
+          ? [g(x, y), g(x, y + 1), g(x + 1, y + 1), g(x + 1, y)]
+          : [g(x, y), g(x + 1, y), g(x + 1, y + 1), g(x, y + 1)],
+      );
     }
   }
 
   const out: MeshData = { positions: Float32Array.from(positions), polys };
+  Object.assign(out, gridLayers(mesh, polys.length - faceStart, grid as number[], xtot, ytot, count, flip, faceOn, uses));
   if (mesh.creases) out.creases = new Map(mesh.creases);
   if (mesh.seams) out.seams = new Set(mesh.seams);
   if (mesh.edges) {
@@ -413,4 +465,150 @@ export function gridFill(mesh: MeshData, loop: readonly number[], options: GridF
     if (kept.length > 0) out.edges = kept.map((e) => [...e]);
   }
   return out;
+}
+
+/** A corner of an old face: [face, corner]. */
+type CornerRef = readonly [number, number];
+type CornerPair = readonly [CornerRef, CornerRef] | null;
+
+/**
+ * The layers of the filled mesh — `bm_grid_fill_array`'s interpolation. The
+ * old faces and vertices keep theirs; the `added` new faces follow them, in
+ * the order `gridFill` made them.
+ */
+function gridLayers(
+  mesh: MeshData,
+  added: number,
+  grid: readonly number[],
+  xtot: number,
+  ytot: number,
+  oldCount: number,
+  flip: boolean,
+  faceOn: ReadonlyMap<string, number>,
+  uses: ReadonlyMap<string, number>,
+): Partial<MeshData> {
+  const XY = (x: number, y: number): number => x + y * xtot;
+  const weights: [number, number, number, number][] = [];
+  for (let y = 0; y < ytot; y++)
+    for (let x = 0; x < xtot; x++) {
+      const u = x / (xtot - 1);
+      const v = y / (ytot - 1);
+      weights.push(quadWeights([[u, 0], [0, v], [u, 1], [1, v]], [u, v]));
+    }
+
+  // `bm_loop_pair_from_verts`: the corners at a and b of the edge's first
+  // face (`e->l`), or none. Of two faces, the lower-numbered one.
+  const pair = (a: number, b: number): CornerPair => {
+    if (!uses.get(a < b ? `${a},${b}` : `${b},${a}`)) return null;
+    const f = Math.min(faceOn.get(`${a},${b}`) ?? Infinity, faceOn.get(`${b},${a}`) ?? Infinity);
+    const p = mesh.polys[f]!;
+    return [[f, p.indexOf(a)], [f, p.indexOf(b)]];
+  };
+  // `bm_loop_pair_test_copy`: a side with no faces borrows the opposite
+  // side's pair, swapped end for end — as Blender does.
+  const both = (pa: CornerPair, pb: CornerPair): [CornerPair, CornerPair] => {
+    if (pa && !pb) return [pa, [pa[1], pa[0]]];
+    if (pb && !pa) return [[pb[1], pb[0]], pb];
+    return [pa, pb];
+  };
+  const xa: CornerPair[] = [];
+  const xb: CornerPair[] = [];
+  for (let x = 0; x < xtot - 1; x++)
+    [xa[x], xb[x]] = both(
+      pair(grid[XY(x, 0)]!, grid[XY(x + 1, 0)]!),
+      pair(grid[XY(x, ytot - 1)]!, grid[XY(x + 1, ytot - 1)]!),
+    );
+  const ya: CornerPair[] = [];
+  const yb: CornerPair[] = [];
+  for (let y = 0; y < ytot - 1; y++)
+    [ya[y], yb[y]] = both(
+      pair(grid[XY(0, y)]!, grid[XY(0, y + 1)]!),
+      pair(grid[XY(xtot - 1, y)]!, grid[XY(xtot - 1, y + 1)]!),
+    );
+
+  // Per new face, per corner in the face's own order: the weighted old
+  // corners, or none for a zero value.
+  const corners: [CornerRef, number][][][] = [];
+  // The polygon's slot for BL, TL, BR, TR — the order Blender fills them in.
+  const slot = flip ? [0, 1, 3, 2] : [0, 3, 1, 2];
+  for (let x = 0; x < xtot - 1; x++)
+    for (let y = 0; y < ytot - 1; y++) {
+      const face: [CornerRef, number][][] = [[], [], [], []];
+      const bx = xa[x];
+      const by = ya[y];
+      if (bx || by) {
+        let i = 0;
+        for (let xs = 0; xs < 2; xs++)
+          for (let ys = 0; ys < 2; ys++) {
+            let mix: [CornerRef, number][];
+            if (bx && by) {
+              const w = weights[XY(x + xs, y + ys)]!;
+              mix = [[bx[xs]!, w[0]], [by[ys]!, w[1]], [xb[x]![xs]!, w[2]], [yb[y]![ys]!, w[3]]];
+            } else if (bx) {
+              const t = (y + ys) / (ytot - 1);
+              mix = [[bx[xs]!, 1 - t], [xb[x]![xs]!, t]];
+            } else {
+              const t = (x + xs) / (xtot - 1);
+              mix = [[by![ys]!, 1 - t], [yb[y]![ys]!, t]];
+            }
+            face[slot[i++]!] = mix;
+          }
+      }
+      corners.push(face);
+    }
+
+  const layer = (src: number[][][] | undefined): number[][][] | undefined => {
+    if (!src || src.length !== mesh.polys.length) return undefined;
+    const width = src.find((f) => f.length > 0)?.[0]?.length ?? 2;
+    const out = src.map((f) => f.map((cn) => [...cn]));
+    for (let k = 0; k < added; k++)
+      out.push(
+        corners[k]!.map((mix) => {
+          const v = new Array<number>(width).fill(0);
+          for (const [[f, i], w] of mix) src[f]![i]!.forEach((x, j) => (v[j] = v[j]! + w * x));
+          return v;
+        }),
+      );
+    return out;
+  };
+
+  const layers: Partial<MeshData> = {};
+  const uvs = layer(mesh.uvs);
+  if (uvs) layers.uvs = uvs;
+  const colors = layer(mesh.colors);
+  if (colors) layers.colors = colors;
+  const normals = layer(mesh.normals);
+  if (normals) layers.normals = normals;
+  if (mesh.materials && mesh.materials.length === mesh.polys.length)
+    layers.materials = [...mesh.materials, ...new Array<number>(added).fill(0)];
+  if (mesh.sharp) layers.sharp = new Set(mesh.sharp);
+  if (mesh.groups) {
+    // Each interior vertex mixes its four boundary points' groups —
+    // `layerInterp_mdeformvert`: a source counts where its weight times the
+    // factor is not zero, and the sum is capped at 1.
+    const groups = new Map<string, Map<number, number>>();
+    for (const [name, gr] of mesh.groups) {
+      const ng = new Map(gr);
+      for (let y = 1; y < ytot - 1; y++)
+        for (let x = 1; x < xtot - 1; x++) {
+          const v = grid[XY(x, y)]!;
+          if (v < oldCount) continue;
+          const w = weights[XY(x, y)]!;
+          const from = [grid[XY(x, 0)]!, grid[XY(0, y)]!, grid[XY(x, ytot - 1)]!, grid[XY(xtot - 1, y)]!];
+          let member = false;
+          let sum = 0;
+          from.forEach((u, i) => {
+            const val = gr.get(u);
+            if (val !== undefined && val * w[i]! !== 0) {
+              member = true;
+              sum += val * w[i]!;
+            }
+          });
+          if (member) ng.set(v, Math.min(sum, 1));
+        }
+      groups.set(name, ng);
+    }
+    layers.groups = groups;
+  }
+  return layers;
 }
