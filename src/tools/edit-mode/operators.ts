@@ -2203,19 +2203,29 @@ function mergeClusters(
 
   // Rewrite faces: collapse consecutive duplicate corners, drop faces that
   // degenerate (<3 unique verts) or fold onto themselves (repeated corner).
+  //
+  // Each kept corner is the loop `remdoubles_createface` keeps: of a run of
+  // corners that merge into one vertex, the **last** — the one whose edge
+  // to the next corner does not collapse — with its corner data. A face
+  // keeps its material; the survivor keeps its own vertex data.
   const keptPolys: number[][] = [];
+  const stated: ExplicitFace[] = [];
   const polys = toPolygons(em);
-  for (const poly of polys) {
-    const mappedPoly = poly.map(mapped);
+  polys.forEach((poly, g) => {
+    const n = poly.length;
     const dedup: number[] = [];
-    for (const v of mappedPoly) {
-      if (dedup.length === 0 || dedup[dedup.length - 1] !== v) dedup.push(v);
+    const corners: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const v = mapped(poly[i]!);
+      if (v === mapped(poly[(i + 1) % n]!)) continue; // the edge onward collapses
+      dedup.push(v);
+      corners.push(i);
     }
-    while (dedup.length > 1 && dedup[0] === dedup[dedup.length - 1]) dedup.pop();
-    if (dedup.length < 3) continue;
-    if (new Set(dedup).size !== dedup.length) continue; // bowtie — drop
+    if (dedup.length < 3) return;
+    if (new Set(dedup).size !== dedup.length) return; // bowtie — drop
     keptPolys.push(dedup);
-  }
+    stated.push({ corners: corners.map((i) => [[g, i, 1] as const]), material: g });
+  });
 
   // Compact the vertex buffer to referenced verts only.
   const oldToNew = new Map<number, number>();
@@ -2231,17 +2241,39 @@ function mergeClusters(
   };
   const newPolys = keptPolys.map((poly) => poly.map(idxOf));
 
-  // Seams follow the merge + compaction; edges collapsed to a point vanish.
-  const newSeams = new Set<string>();
-  for (const key of em.seams) {
+  // Seams, creases and sharp edges follow the merge + compaction; edges
+  // collapsed to a point vanish.
+  const moveKey = (key: string): string | null => {
     const [a, b] = key.split("_").map(Number);
     const na = oldToNew.get(mapped(a!));
     const nb = oldToNew.get(mapped(b!));
-    if (na !== undefined && nb !== undefined && na !== nb) newSeams.add(seamKey(na, nb));
+    return na !== undefined && nb !== undefined && na !== nb ? seamKey(na, nb) : null;
+  };
+  const newSeams = new Set<string>();
+  for (const key of em.seams) {
+    const k = moveKey(key);
+    if (k) newSeams.add(k);
+  }
+  const newCreases = new Map<string, number>();
+  for (const [key, w] of em.creases) {
+    const k = moveKey(key);
+    if (k && !newCreases.has(k)) newCreases.set(k, w);
+  }
+  const newSharp = em.sharpEdges ? new Set<string>() : undefined;
+  for (const key of em.sharpEdges ?? []) {
+    const k = moveKey(key);
+    if (k) newSharp!.add(k);
   }
 
-  rebuildPolygons(em, Float32Array.from(newPositions), newPolys);
+  // The layers in two steps: the faces on the old numbering (corners as
+  // chosen above), then the renumbering, which moves nothing but indices.
+  rebuildPolygons(em, P, keptPolys, { faces: stated });
+  const vertexMap = new Int32Array(em.vertices.length).fill(-1);
+  for (const [o, nv] of oldToNew) vertexMap[o] = nv;
+  rebuildPolygons(em, Float32Array.from(newPositions), newPolys, { sameCorners: true, vertexMap });
   em.seams = newSeams;
+  em.creases = newCreases;
+  if (newSharp) em.sharpEdges = newSharp;
 
   const out = new Set<number>();
   for (const tgt of targets) {
@@ -2345,6 +2377,12 @@ export function weldVerts(em: EditMesh, targetmap: ReadonlyMap<number, number>):
  * symmetric and every rule gives the centre — and was 1.7 mm out on a curved
  * cage. {@link mergeAtCenter} keeps the plain centroid, because Blender's
  * "Merge At Center" really is that.
+ *
+ * Layers (compat-backlog A6): a rebuilt face keeps, of each run of corners
+ * that merge, the last one's corner data (remdoubles_createface), and its
+ * material. The survivor — whose vertex data (groups) is kept — is the
+ * lowest-numbered vertex of the run; Blender's is e->v1 of the run's first
+ * edge in its own edge order, which this does not have. Not matched.
  */
 export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
   if (selectedEdges.size === 0) return new Set();

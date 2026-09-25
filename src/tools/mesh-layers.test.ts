@@ -224,7 +224,8 @@ describe("the values follow their vertex or face", () => {
 
   it("an operator with no known origin for a new vertex drops the groups whole", () => {
     const em = L.meshFromData(cube());
-    L.mergeAtCenter(em, new Set([4, 5]));
+    L.deleteFaces(em, new Set([1]));
+    L.holesFill(em);
     const out = L.meshToData(em);
     expect(out.groups.size).toBe(0);
     expect(out.materials).toEqual([]);
