@@ -107,14 +107,33 @@ const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`
  * weight map) has to be remapped by the caller, the same as with
  * `remove_doubles`.
  *
- * **Layers** (compat-backlog A3): keeps wire edges. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A6): wire edges, sharp edges, vertex groups
+ * (nothing is interpolated — the survivors keep theirs), and the per-corner
+ * layers and materials. A face that loses a vertex keeps its corners; the
+ * face a fan makes takes each corner from the face it follows the dissolved
+ * vertex in (the triangle split off that face owns the ring edge leaving it,
+ * and `BM_faces_join` keeps that face's corner) and the material of the
+ * newest face round the vertex. Measured the same on a valence-4 fan.
+ *
+ * Not matched: a **valence-3** fan. `BM_disk_dissolve` joins one pair of its
+ * faces first and collapses the vertex along `v->e`, so one ring corner comes
+ * from the face on its other side, and the material from the pair — which
+ * pair follows BMesh's disk order, not the mesh (`unsubdivide-layers`,
+ * "different": a cube's corners, a pole's triangles).
  */
 export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): MeshData {
   const iterations = Math.max(1, Math.trunc(options.iterations ?? 1));
   let polys = data.polys.map((p) => [...p]);
+  // Where each corner came from, [input face, input corner], kept in step
+  // with `polys` — the per-corner layers are read through it at the end.
+  let src: [number, number][][] = data.polys.map((p, f) => p.map((_, i) => [f, i] as [number, number]));
+  const hasMats = data.materials !== undefined && data.materials.length === data.polys.length;
+  let mat: number[] = data.polys.map((_, f) => (hasMats ? data.materials![f]! : 0));
+  const without = (f: number, v: number): void => {
+    const keep = polys[f]!.map((x) => x !== v);
+    polys[f] = polys[f]!.filter((_, i) => keep[i]);
+    src[f] = src[f]!.filter((_, i) => keep[i]);
+  };
   let wires = (data.edges ?? []).map((e) => [...e]);
   const positions = Array.from(data.positions);
   const total = positions.length / 3;
@@ -345,7 +364,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       if (incident.length === 0) continue;
 
       if (method === "chain") {
-        for (const f of incident) polys[f] = polys[f]!.filter((x) => x !== v);
+        for (const f of incident) without(f, v);
         removed[v] = 1;
         continue;
       }
@@ -376,14 +395,36 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       }
       if (ring.length < 3) continue;
 
+      // A ring corner is the corner of the face it follows `v` in — the
+      // face whose split-off triangle holds the ring edge leaving it — or,
+      // for the open end of a boundary fan, of the face it precedes `v` in.
+      const cornerIn = (n: number, after: boolean): [number, number] | undefined => {
+        for (const f of incident) {
+          const poly = polys[f]!;
+          const i = poly.indexOf(v);
+          const m = after ? (i + 1) % poly.length : (i - 1 + poly.length) % poly.length;
+          if (poly[m] === n) return src[f]![m]!;
+        }
+        return undefined;
+      };
+      const ringSrc = ring.map((n) => cornerIn(n, true) ?? cornerIn(n, false)!);
+      // The joined face keeps the material of the newest face round `v`
+      // (measured, `unsubdivide-layers` on `bodyMats`).
+      mat.push(mat[Math.max(...incident)]!);
+
       for (const f of incident) {
-        const poly = polys[f]!;
-        if (poly.length > 3) polys[f] = poly.filter((x) => x !== v);
-        else polys[f] = [];
+        if (polys[f]!.length > 3) without(f, v);
+        else {
+          polys[f] = [];
+          src[f] = [];
+        }
       }
       polys.push(ring);
+      src.push(ringSrc);
       removed[v] = 1;
     }
+    src = src.filter((_, f) => polys[f]!.length >= 3);
+    mat = mat.filter((_, f) => polys[f]!.length >= 3);
     polys = polys.filter((p) => p.length >= 3);
   }
 
@@ -403,5 +444,41 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
     .filter((e) => remap[e[0]!]! >= 0 && remap[e[1]!]! >= 0)
     .map((e) => [remap[e[0]!]!, remap[e[1]!]!]);
   if (keptWires.length > 0) result.edges = keptWires;
+
+  // The layers. Corners are read through `src`, materials were kept in step
+  // with the faces. Vertex data stays with the
+  // surviving vertices — nothing is interpolated, nothing new is made.
+  const corners = (layer: number[][][] | undefined): number[][][] | undefined =>
+    layer && layer.length === data.polys.length ? src.map((f) => f.map(([g, i]) => [...layer[g]![i]!])) : undefined;
+  const uvs = corners(data.uvs);
+  if (uvs) result.uvs = uvs;
+  const colors = corners(data.colors);
+  if (colors) result.colors = colors;
+  const normals = corners(data.normals);
+  if (normals) result.normals = normals;
+  if (hasMats) result.materials = mat;
+  if (data.groups) {
+    result.groups = new Map(
+      [...data.groups].map(([name, g]) => [
+        name,
+        new Map([...g].filter(([v]) => remap[v]! >= 0).map(([v, w]) => [remap[v]!, w] as [number, number])),
+      ]),
+    );
+  }
+  const edges = new Set<string>();
+  for (const p of result.polys) for (let i = 0; i < p.length; i++) edges.add(key(p[i]!, p[(i + 1) % p.length]!));
+  const remapEdges = (s: ReadonlySet<string> | undefined): Set<string> | undefined => {
+    if (!s) return undefined;
+    const out = new Set<string>();
+    for (const k of s) {
+      const [a, b] = k.split("_").map(Number) as [number, number];
+      const na = remap[a]!;
+      const nb = remap[b]!;
+      if (na >= 0 && nb >= 0 && edges.has(key(na, nb))) out.add(key(na, nb));
+    }
+    return out;
+  };
+  const sharp = remapEdges(data.sharp);
+  if (sharp) result.sharp = sharp;
   return result;
 }
