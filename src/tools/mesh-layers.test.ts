@@ -244,4 +244,30 @@ describe("the values follow their vertex or face", () => {
     expect(out.materials).toHaveLength(out.polys.length);
     expect(out.groups.size).toBeGreaterThan(0);
   });
+
+  it("subdivideCatmullClark keeps each child's layers on the child of the right parent", () => {
+    // `subdivideCatmullClark` replays `subdivideOnce`'s numbering to carry the
+    // layers the subdivider does not; if the two ever drift apart, the colours
+    // and slots land on other faces. Each parent gets its own slot and a flat
+    // colour naming it, so every child must agree with itself, at both levels,
+    // and every child's centre must lie inside its parent's face.
+    for (const level of [1, 2]) {
+      const src = cube();
+      src.materials = src.polys.map((_, f) => f);
+      src.colors = src.polys.map((p, f) => p.map(() => [f / 10, 0, 0, 1]));
+      const em = L.meshFromData(src);
+      L.subdivideCatmullClark(em, level);
+      const out = L.meshToData(em);
+      expect(out.polys).toHaveLength(6 * 4 ** level);
+      out.polys.forEach((p, f) => {
+        const m = out.materials[f]!;
+        for (const c of out.colors[f]!) expect(c[0]).toBeCloseTo(m / 10, 9);
+        // The cube's faces are axis-aligned: a child of face m sits on m's side.
+        const centre = [0, 1, 2].map((k) => p.reduce((s, v) => s + out.positions[v * 3 + k]!, 0) / p.length);
+        const parent = src.polys[m]!;
+        const axis = [0, 1, 2].find((k) => parent.every((v) => src.positions[v * 3 + k] === src.positions[parent[0]! * 3 + k]))!;
+        expect(Math.sign(centre[axis]!)).toBe(Math.sign(src.positions[parent[0]! * 3 + axis]!));
+      });
+    }
+  });
 });
