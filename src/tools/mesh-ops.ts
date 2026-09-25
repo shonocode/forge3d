@@ -16,7 +16,7 @@
  */
 import { withPositions, type MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
-import { carryFaceLayers, carryVertexLayers, onlyEdgesOf, type FaceSource } from "./mesh-layers";
+import { carryFaceLayers, carryVertexLayers, defined, onlyEdgesOf, type FaceSource } from "./mesh-layers";
 import { compactMesh } from "./mesh-repair";
 import { weldByMap } from "./remove-doubles";
 import { crtQsort } from "./edit-mode/triangle-fill";
@@ -1148,10 +1148,10 @@ function offsetBasis(data: MeshData): { normals: Float32Array; shell: Float64Arr
  * (see {@link offsetBasis}) — read from `bmo_extrude.cc` after measuring had
  * ruled out every vertex normal Blender exposes.
  *
- * **Layers** (compat-backlog A3): keeps UVs, creases and seams. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): all of them. Both shells keep each face's
+ * corners and slot (the inner one's corners reversed with it), a rim quad
+ * copies its edge's two corners and its face's slot, every vertex's groups
+ * go to its copy, edge flags to both shells (`solidify-layers`).
  */
 export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   const P = data.positions;
@@ -1170,16 +1170,19 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   }
 
   const polys: number[][] = [];
-  for (const poly of data.polys) polys.push([...poly]);
+  const sources: FaceSource[] = [];
+  data.polys.forEach((poly, f) => {
+    polys.push([...poly]);
+    sources.push({ face: f, corners: poly.map((_, i) => i) });
+  });
   // The offset copy faces the other way, so its winding is reversed.
-  for (const poly of data.polys) polys.push([...poly].reverse().map((v) => v + count));
-  // UVs: both shells keep the face's own; a rim quad takes the UVs of the
-  // edge it grows from, so it is a zero-width strip in UV space — as Blender's
-  // rim loops, which copy from the face across the edge.
-  const src = data.uvs;
-  const uvs: number[][][] | undefined = src
-    ? [...src.map((f) => f.map((c) => [...c])), ...src.map((f) => [...f].reverse().map((c) => [...c]))]
-    : undefined;
+  data.polys.forEach((poly, f) => {
+    polys.push([...poly].reverse().map((v) => v + count));
+    sources.push({ face: f, corners: poly.map((_, i) => poly.length - 1 - i) });
+  });
+  // The corner layers: both shells keep the face's own; a rim quad takes the
+  // corners of the edge it grows from, so it is a zero-width strip in UV
+  // space — as Blender's rim loops, which copy from the face across the edge.
 
   // Rim: one quad per boundary edge, wound to agree with the face holding it.
   // `[b, a, a', b']` for a directed edge a->b — read off Blender's output.
@@ -1195,28 +1198,27 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
       const b = poly[(i + 1) % poly.length]!;
       if (uses.get(seamKey(a, b)) !== 1) continue;
       polys.push([b, a, a + count, b + count]);
-      if (uvs) {
-        const ua = src![f]![i]!;
-        const ub = src![f]![(i + 1) % poly.length]!;
-        uvs.push([[...ub], [...ua], [...ua], [...ub]]);
-      }
+      const j = (i + 1) % poly.length;
+      sources.push({ face: f, corners: [j, i, i, j] });
     }
   });
 
-  const creases = new Map<string, number>();
-  const seams = new Set<string>();
-  for (const [key, value] of data.creases ?? []) {
-    const [a, b] = key.split("_");
-    creases.set(key, value);
-    creases.set(seamKey(Number(a) + count, Number(b) + count), value);
-  }
-  for (const key of data.seams ?? []) {
-    const [a, b] = key.split("_");
-    seams.add(key);
-    seams.add(seamKey(Number(a) + count, Number(b) + count));
-  }
-
-  return uvs ? { positions, polys, creases, seams, uvs } : { positions, polys, creases, seams };
+  // Every vertex is there twice; the edges' flags go to both shells, the
+  // rim edges get none. Wire edges are not solidified and stay once.
+  const source = [...Array.from({ length: count }, (_, v) => v), ...Array.from({ length: count }, (_, v) => v)];
+  const vertexLayers = carryVertexLayers({ ...data, edges: undefined }, source);
+  onlyEdgesOf(vertexLayers, polys);
+  const out: MeshData = {
+    positions,
+    polys,
+    creases: vertexLayers.creases ?? new Map(),
+    seams: vertexLayers.seams ?? new Set(),
+    ...defined(carryFaceLayers(data, sources)),
+  };
+  if (vertexLayers.sharp) out.sharp = vertexLayers.sharp;
+  if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  if (data.edges && data.edges.length > 0) out.edges = data.edges.map((e) => [...e]);
+  return out;
 }
 
 // ── Bisect ─────────────────────────────────────────────────────────────────
