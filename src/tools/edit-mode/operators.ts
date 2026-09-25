@@ -1731,7 +1731,14 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
     return d;
   };
 
+  // The per-corner layers as `bmo_extrude_edge_only_exec` sets them: the
+  // fin copies both corners at each end, and its material, from one face on
+  // the edge (`bm_extrude_copy_face_loop_attributes` reads the loop after the
+  // new one in the radial cycle, which is the face built first on the edge —
+  // the lower-numbered); a wire edge has none and the corners are 0.
   const newPolys = toPolygons(em);
+  const oldPolys = newPolys.map((p) => [...p]);
+  const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
   const finStart = newPolys.length;
   for (const he of canonical) {
     const a = edgeOrigin(em, he);
@@ -1741,10 +1748,17 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
     // Fin quad — CCW from the fin's outside, with the b→a edge pairing as
     // twin to F1's existing a→b.
     newPolys.push([a, aDup, bDup, b]);
+    const h = em.halfEdges[he]!;
+    const o = h.twin < 0 ? h.face : Math.min(h.face, em.halfEdges[h.twin]!.face);
+    const ca: [number, number, number][] = [[o, oldPolys[o]!.indexOf(a), 1]];
+    const cb: [number, number, number][] = [[o, oldPolys[o]!.indexOf(b), 1]];
+    stated.push({ corners: [ca, ca, cb, cb], material: o });
   }
   const finEnd = newPolys.length;
+  const origins = new Map<number, VertexOrigin>();
+  for (const [v, d] of vertDup) origins.set(d, { from: [v], w: [1] });
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
 
   const newSel = new Set<number>();
   for (let i = finStart; i < finEnd; i++) newSel.add(i);
@@ -3055,13 +3069,23 @@ export function extrudeDiscreteFaces(
   const newPositions: number[] = Array.from(em.positions);
   let nextV = em.vertices.length;
 
+  // The per-corner layers as `bmo_extrude_discrete_faces_exec` sets them:
+  // the cap is a copy of its face (`BM_face_copy`), and each wall made with
+  // the face as its example copies the face's corner at each end to both the
+  // original vertex and its duplicate. A duplicate copies its vertex data.
   const newPolys: number[][] = [];
+  const stated: Array<ExplicitFace | undefined> = [];
+  const origins = new Map<number, VertexOrigin>();
   for (let f = 0; f < polys.length; f++) {
-    if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
+    if (!selectedFaces.has(f)) {
+      newPolys.push(polys[f]!);
+      stated.push(undefined);
+    }
   }
 
   // Skirts first, caps after, so the cap ids are the tail of the list.
   const caps: number[][] = [];
+  const capFaces: number[] = [];
   for (const f of selectedFaces) {
     const poly = polys[f]!;
     // Fresh duplicates per face — this is the whole difference from the
@@ -3069,20 +3093,29 @@ export function extrudeDiscreteFaces(
     const dup = poly.map((v) => {
       const d = nextV++;
       newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+      origins.set(d, { from: [v], w: [1] });
       return d;
     });
     // Every edge is a boundary when the face is its own region.
     for (let i = 0; i < poly.length; i++) {
       const j = (i + 1) % poly.length;
       newPolys.push([poly[i]!, poly[j]!, dup[j]!, dup[i]!]);
+      const ci: [number, number, number][] = [[f, i, 1]];
+      const cj: [number, number, number][] = [[f, j, 1]];
+      stated.push({ corners: [ci, cj, cj, ci], material: f });
     }
     caps.push(dup);
+    capFaces.push(f);
   }
 
   const capStart = newPolys.length;
-  for (const cap of caps) newPolys.push(cap);
+  caps.forEach((cap, k) => {
+    newPolys.push(cap);
+    const f = capFaces[k]!;
+    stated.push({ corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f });
+  });
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
 
   const out = new Set<number>();
   for (let i = capStart; i < newPolys.length; i++) out.add(i);

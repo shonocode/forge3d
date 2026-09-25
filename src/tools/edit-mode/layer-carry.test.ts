@@ -54,7 +54,7 @@ function consistent(out: Required<MeshData>): boolean {
 // `-uv` parity row, which must keep the layer rather than drop it.
 const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["extrudeFaces", (em) => ops.extrudeFaces(em, new Set([4])), true],
-  ["extrudeEdges", (em) => ops.extrudeEdges(em, edgesOf(em, (a, b) => a < 4 && b < 4)), false],
+  ["extrudeEdges", (em) => ops.extrudeEdges(em, edgesOf(em, (a, b) => a < 4 && b < 4)), true],
   ["insetFaces", (em) => ops.insetFaces(em, new Set([4]), 0.1), false],
   ["insetRegion", (em) => ops.insetRegion(em, new Set([4]), { thickness: 0.1 }), false],
   ["loopCut", (em) => ops.loopCut(em, [...edgesOf(em, (a, b) => (a === 1 && b === 5) || (a === 5 && b === 1))][0]!), false],
@@ -64,7 +64,7 @@ const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["collapseEdges", (em) => ops.collapseEdges(em, edgesOf(em, (a, b) => a + b === 11 && Math.abs(a - b) === 1)), false],
   ["weldVerts", (em) => ops.weldVerts(em, new Map([[6, 5]])), false],
   ["reverseFaces", (em) => ops.reverseFaces(em, new Set([0, 4])), true],
-  ["extrudeDiscreteFaces", (em) => ops.extrudeDiscreteFaces(em, new Set([4])), false],
+  ["extrudeDiscreteFaces", (em) => ops.extrudeDiscreteFaces(em, new Set([4])), true],
   ["connectVertPair", (em) => ops.connectVertPair(em, 5, 10), true],
   ["splitEdges", (em) => ops.splitEdges(em, edgesOf(em, (a, b) => a + b === 11 && Math.abs(a - b) === 1)), false],
   ["duplicateFaces", (em) => ops.duplicateFaces(em, new Set([4])), false],
