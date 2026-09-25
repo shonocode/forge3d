@@ -448,6 +448,7 @@ export function dissolveVerts(
 
   const groups = new Map<number, number>();
   for (const f of parent.keys()) groups.set(f, find(f));
+  const slots = em.faceMaterials?.length === polys.length ? joinedSlots(polys, selectedVerts, em.faceMaterials) : null;
   mergeGroups(em, groups, false, report);
 
   // Merging alone is not the operation. Two things are left, and both were
@@ -479,6 +480,27 @@ export function dissolveVerts(
     kept.push(trimmed);
   }
   rebuildPolygons(em, em.positions, kept, {});
+  // The joined faces' slots, as Blender's pairwise joins leave them.
+  if (slots && em.faceMaterials?.length === kept.length) {
+    const byEdge = new Map<string, number>();
+    polys.forEach((p, f) => {
+      for (let i = 0; i < p.length; i++) {
+        const a = p[i]!;
+        const b = p[(i + 1) % p.length]!;
+        byEdge.set(`${a}_${b}`, f);
+      }
+    });
+    kept.forEach((p, k) => {
+      for (let i = 0; i < p.length; i++) {
+        const f = byEdge.get(`${p[i]}_${p[(i + 1) % p.length]}`);
+        const s = f !== undefined ? slots.get(f) : undefined;
+        if (s !== undefined) {
+          em.faceMaterials![k] = s;
+          break;
+        }
+      }
+    });
+  }
 
   // Orphaned vertices stay, like every other dissolve here — Blender drops
   // them, and matching that would shift every index above the hole and reach
@@ -548,4 +570,64 @@ export function connectVerts(em: EditMesh, selectedVerts: ReadonlySet<number>): 
   if (made.size === 0) return new Set();
   rebuildPolygons(em, em.positions, out, {});
   return made;
+}
+
+/**
+ * The slot each dissolved vertex's merged face ends with, keyed by every
+ * input face in it — what `bmo_dissolve_verts` leaves: for each vertex in
+ * index order, each of its edges in disk order (the order `mesh_calc_edges`
+ * made them) with two faces is joined (`BM_faces_join_pair`), and the join
+ * keeps `faces[0]`'s slot — `e->l`'s face, the newest on the edge; the joined
+ * face is newer than all. A vertex with just two edges is not joined.
+ * Measured on a pole's fan (`dissolve-verts-uv`, `bodyMats`), where the
+ * first corner's face was the wrong answer.
+ */
+function joinedSlots(
+  polys: readonly (readonly number[])[],
+  selected: ReadonlySet<number>,
+  materials: readonly number[],
+): Map<number, number> {
+  // Edges in creation order: per face, (last, first) then on.
+  const order = new Map<string, number>();
+  const edgeFaces = new Map<string, number[]>();
+  polys.forEach((p, f) => {
+    for (let i = 0; i < p.length; i++) {
+      const a = p[(i - 1 + p.length) % p.length]!;
+      const b = p[i]!;
+      const k = a < b ? `${a}_${b}` : `${b}_${a}`;
+      if (!order.has(k)) order.set(k, order.size);
+      (edgeFaces.get(k) ?? edgeFaces.set(k, []).get(k)!).push(f);
+    }
+  });
+  // Current face of each input face (a union-find), its age and slot.
+  const cur = polys.map((_, f) => f);
+  const top = (f: number): number => {
+    while (cur[f] !== f) f = cur[f]!;
+    return f;
+  };
+  const age = polys.map((_, f) => f);
+  const slot = [...materials];
+  let clock = polys.length;
+  for (const v of [...selected].sort((a, b) => a - b)) {
+    const edges = [...order.keys()].filter((k) => k.split("_").map(Number).includes(v));
+    if (edges.length === 2) continue; // `VERT_MARK_PAIR`
+    edges.sort((x, y) => order.get(x)! - order.get(y)!);
+    for (const k of edges) {
+      const fs = edgeFaces.get(k)!;
+      if (fs.length !== 2) continue;
+      const a = top(fs[0]!);
+      const b = top(fs[1]!);
+      if (a === b) continue;
+      const newest = age[a]! > age[b]! ? a : b;
+      const other = newest === a ? b : a;
+      cur[other] = newest;
+      age[newest] = clock++;
+    }
+  }
+  const out = new Map<number, number>();
+  polys.forEach((_, f) => {
+    const t = top(f);
+    if (t !== f || age[t]! >= polys.length) out.set(f, slot[t]!);
+  });
+  return out;
 }
