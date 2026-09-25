@@ -115,12 +115,12 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   // The wire edge 0-6 crosses to the side that goes.
   ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ALL.filter((k) => k !== "edges")],
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 })],
+  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials"]],
 ];
 
 // New geometry whose layers need interpolation that is not ported: these
 // may drop a layer, whole. (Which ones they keep is listed so a change shows.)
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
-  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), []],
   ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), []],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [

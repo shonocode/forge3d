@@ -1269,10 +1269,10 @@ export interface WireframeOptions {
  * are untested: the bisector points out of the face there, as it does for
  * `inset`.
  *
- * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): each bar quad copies its source face's
+ * corner at each vertex's source vertex, and its slot; every new vertex
+ * copies its source vertex's groups (`wireframe-layers`). Edge flags do not
+ * carry — every edge is new, as in Blender.
  */
 export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   const half = opts.thickness / 2;
@@ -1323,8 +1323,13 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   });
 
   const positions: number[] = [];
+  // Every new vertex is a copy of one input vertex (`BM_vert_create` with it
+  // as the example), for the vertex groups.
+  const vertexSource: number[] = [];
+  let from = -1;
   const push = (p: Vec3): number => {
     positions.push(p[0], p[1], p[2]);
+    vertexSource.push(from);
     return positions.length / 3 - 1;
   };
 
@@ -1333,6 +1338,7 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   for (let v = 0; v < P.length / 3; v++) {
     const p = at(v);
     const n = normalize(vertexNormal[v]!);
+    from = v;
     inner.push(push([p[0] - n[0] * half, p[1] - n[1] * half, p[2] - n[2] * half]));
     outer.push(push([p[0] + n[0] * half, p[1] + n[1] * half, p[2] + n[2] * half]));
   }
@@ -1342,12 +1348,13 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
     poly.map((v, i) => {
       const p = at(v);
       const b = bisectors[f]![i]!;
+      from = v;
       return push([p[0] + b[0] * half, p[1] + b[1] * half, p[2] + b[2] * half]);
     }),
   );
 
   // Which faces run along each edge, and in which direction.
-  interface Side { a: number; b: number; point: (v: number) => number }
+  interface Side { a: number; b: number; point: (v: number) => number; f: number; ia: number; ib: number }
   const sides = new Map<string, Side[]>();
   data.polys.forEach((poly, f) => {
     for (let i = 0; i < poly.length; i++) {
@@ -1357,7 +1364,7 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
       const list = sides.get(key) ?? [];
       const ca = corner[f]![i]!;
       const cb = corner[f]![(i + 1) % poly.length]!;
-      list.push({ a, b, point: (v) => (v === a ? ca : cb) });
+      list.push({ a, b, point: (v) => (v === a ? ca : cb), f, ia: i, ib: (i + 1) % poly.length });
       sides.set(key, list);
     }
   });
@@ -1397,6 +1404,7 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
     for (const [v, sum] of openDirection) {
       const away = normalize(sum);
       const p = at(v);
+      from = v;
       openPoint.set(
         v,
         push([p[0] + away[0] * half, p[1] + away[1] * half, p[2] + away[2] * half]),
@@ -1405,22 +1413,30 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   }
 
   const polys: number[][] = [];
+  // Each quad's corners copy the source face's corner at each vertex's source
+  // vertex, and its slot (`BM_elem_attrs_copy` from `l` / `l_next`).
+  const sources: FaceSource[] = [];
   for (const [, list] of sides) {
     const all: Side[] = [...list];
     if (withBoundary && list.length === 1) {
       // The virtual face on the other side runs the opposite way round.
-      const { a, b } = list[0]!;
-      all.push({ a: b, b: a, point: (v) => openPoint.get(v)! });
+      const { a, b, f, ia, ib } = list[0]!;
+      all.push({ a: b, b: a, point: (v) => openPoint.get(v)!, f, ia: ib, ib: ia });
     }
     for (const side of all) {
       const pa = side.point(side.a);
       const pb = side.point(side.b);
       polys.push([pa, pb, inner[side.b]!, inner[side.a]!]);
+      sources.push({ face: side.f, corners: [side.ia, side.ib, side.ib, side.ia] });
       polys.push([pb, pa, outer[side.a]!, outer[side.b]!]);
+      sources.push({ face: side.f, corners: [side.ib, side.ia, side.ia, side.ib] });
     }
   }
 
-  return { positions: Float32Array.from(positions), polys };
+  const out: MeshData = { positions: Float32Array.from(positions), polys, ...defined(carryFaceLayers(data, sources)) };
+  const groups = carryVertexLayers({ groups: data.groups } as MeshData, vertexSource).groups;
+  if (groups) out.groups = groups;
+  return out;
 }
 
 /** Newell's normal, un-normalised — its length is twice the polygon's area. */
