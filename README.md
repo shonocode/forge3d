@@ -58,11 +58,18 @@ npm run deploy     # build and deploy with wrangler
 
 ## License
 
-**Not settled.** Much of `src/tools/` is ported from Blender's source
-(GPL-2.0-or-later) and one part from OpenSubdiv (Apache-2.0), so forge3d is a
-derivative work of GPL code and must be distributed under a compatible
-licence — GPL-3.0-or-later is the one that also admits Apache-2.0. Until that
-is decided, treat the repository as private.
+**GPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+Much of `src/tools/` is ported from Blender's source (GPL-2.0-or-later), so
+forge3d is a derivative work of it and carries the GPL too. Smaller parts come
+from Bullet's convex hull (zlib) and Eigen's Jacobi SVD (MPL-2.0).
+[`NOTICE.md`](NOTICE.md) lists every origin, its licence, and where the
+ported code lives.
+
+What that means in practice: you may use, change and share forge3d, and a
+program that includes forge3d's code must be shared under the GPL as well.
+Meshes and files you **make** with forge3d are yours — the licence covers the
+code, not its output.
 
 ## Where things are written down
 

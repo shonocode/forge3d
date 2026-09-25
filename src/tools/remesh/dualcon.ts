@@ -1615,6 +1615,12 @@ function pseudoInverse(a: number[][], tolerance: number): number[][] {
  * Eigen's `JacobiSVD` for a real 3×3 (no preconditioner is used for square
  * matrices): sweep the off-diagonal pairs with 2×2 SVDs until they vanish,
  * then make the singular values positive and sort them descending.
+ *
+ * This function and its helpers below (`real2x2Jacobi`, `makeJacobi`,
+ * `applyLeft`, `applyRight`, `applyRightT`) are ported from Eigen
+ * (`Eigen/src/SVD/JacobiSVD.h`, `Eigen/src/Jacobi/Jacobi.h`; Copyright (C)
+ * 2009-2010 Benoit Jacob, 2013-2014 Gael Guennebaud), under the Mozilla Public
+ * License 2.0 (https://mozilla.org/MPL/2.0/) — see NOTICE.md.
  */
 function jacobiSvd3(m: number[][]): { U: number[][]; S: number[]; V: number[][] } {
   const n = 3;

@@ -1,6 +1,7 @@
 {
   "name": "forge3d",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "version": "1.0.0",
   "type": "module",
   "description": "Browser DCC, and a headless modelling library. See src/lib/index.ts.",

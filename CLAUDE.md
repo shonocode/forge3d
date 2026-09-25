@@ -39,8 +39,10 @@ npm run deploy       # ビルドして wrangler でデプロイ
 2. **ライブラリに足すかどうか**は「コードから呼べるか」。ロジックと editor 配管を分け、純粋な側だけを
    `src/lib/index.ts` から出す（`computeAutoWeights` が純、`applyAutoWeights` が scene 依存、が手本）
 3. **画面に見えるものを変えたら**、同じコミットで解説を直す（下の Documentation Sync Rule）
-4. **ライセンス**：`src/tools/` の多くは GPL の Blender からの移植。enki / chiikawa-reign から
-   forge3d を import させない（ゲームが GPL 側に入る）。LICENSE は未決
+4. **ライセンスは GPL-3.0-or-later**（`LICENSE`、移植元の一覧は `NOTICE.md`）。`src/tools/` の多くは
+   GPL の Blender からの移植。enki / chiikawa-reign から forge3d を import させない（ゲームが GPL 側に
+   入る）。**新しく他所のコードを移植したら `NOTICE.md` に足す**（ライセンスが GPL-3 と両立するか先に確かめる。
+   zlib のように「表示を残せ」という条件があるものは、移植したファイルの先頭にも原文を残す）
 
 ## Conventions
 
