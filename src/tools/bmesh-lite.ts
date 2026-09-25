@@ -57,6 +57,12 @@ export interface BL {
   rn: BL | null;
   rp: BL | null;
   index: number;
+  /**
+   * Which input corner this loop's data is (`bmFromMesh` numbers them face
+   * by face), or -1 for none — the stand-in for loop customdata, carried the
+   * way BMesh copies it.
+   */
+  src: number;
 }
 export interface BF {
   first: BL | null;
@@ -65,6 +71,8 @@ export interface BF {
   index: number;
   tag: boolean;
   slot: number;
+  /** Which input face this face's data (its material) is, or -1. */
+  src: number;
 }
 
 /** A `BLI_mempool`: freed slots are reused last-freed first. */
@@ -191,18 +199,24 @@ export function edgeCreate(bm: BM, v1: BV, v2: BV): BE {
   diskAppend(e, v2);
   return e;
 }
-function newLoop(v: BV, face: BF): BL {
-  return { v, e: null, f: face, next: null!, prev: null!, rn: null, rp: null, index: -1 };
+function newLoop(v: BV, face: BF, src = -1): BL {
+  return { v, e: null, f: face, next: null!, prev: null!, rn: null, rp: null, index: -1, src };
 }
 function newFace(bm: BM, len: number, no: V3, tag: boolean): BF {
-  const face: BF = { first: null, len, no: [...no], index: -1, tag, slot: -1 };
+  const face: BF = { first: null, len, no: [...no], index: -1, tag, slot: -1, src: -1 };
   poolAlloc(bm.faces, face);
   bm.totface++;
   return face;
 }
-/** `BM_face_create`; `example` gives the normal and the tag (`BM_elem_attrs_copy`). */
-export function faceCreate(bm: BM, verts: BV[], edges: BE[], example: { no: V3; tag: boolean } | null): BF {
+/** `BM_face_create`; `example` gives the normal, the tag and the data (`BM_elem_attrs_copy`). */
+export function faceCreate(
+  bm: BM,
+  verts: BV[],
+  edges: BE[],
+  example: { no: V3; tag: boolean; src?: number } | null,
+): BF {
   const face = newFace(bm, verts.length, example ? example.no : [0, 0, 0], example ? example.tag : false);
+  face.src = example?.src ?? -1;
   const loops = verts.map((v) => newLoop(v, face));
   loops.forEach((l, i) => {
     radialAppend(edges[i]!, l);
@@ -213,7 +227,7 @@ export function faceCreate(bm: BM, verts: BV[], edges: BE[], example: { no: V3; 
   return face;
 }
 /** `BM_face_create_verts` with `create_edges`: edges from (last, first) on. */
-export function faceCreateVerts(bm: BM, verts: BV[], example: { no: V3; tag: boolean } | null): BF {
+export function faceCreateVerts(bm: BM, verts: BV[], example: { no: V3; tag: boolean; src?: number } | null): BF {
   const n = verts.length;
   const edges: BE[] = new Array(n);
   for (let i = 0, iPrev = n - 1; i < n; iPrev = i++)
@@ -251,6 +265,7 @@ export function faceSwapData(a: BF, b: BF): void {
   [a.len, b.len] = [b.len, a.len];
   [a.no, b.no] = [b.no, a.no];
   [a.tag, b.tag] = [b.tag, a.tag];
+  [a.src, b.src] = [b.src, a.src];
 }
 function edgeVertSwap(e: BE, dst: BV, src: BV): void {
   if (e.l) {
@@ -504,6 +519,13 @@ export function facesJoin(bm: BM, faces: BF[], doDel: boolean): BF | null {
     }
   const fNew = edges.length ? faceCreateNgon(bm, v1!, v2!, edges, faces[0]!) : null;
   if (!fNew) return null;
+  // Each new loop takes the data of the joined face's loop on its edge, at
+  // its vertex (`BM_faces_join`, "copy over loop data").
+  for (const l of faceLoops(fNew)) {
+    let l2 = l.rn!;
+    while (l2 !== l && !jf.has(l2.f)) l2 = l2.rn!;
+    if (l2 !== l) l.src = (l2.v !== l.v ? l2.next : l2).src;
+  }
   if (doDel) {
     for (const e of delEdges) edgeKill(bm, e);
     for (const v of delVerts) vertKill(bm, v);
@@ -520,8 +542,9 @@ export function faceSplit(bm: BM, face: BF, lV1: BL, lV2: BL, noDouble: boolean)
   const v2 = lV2.v;
   const e = (noDouble ? edgeExists(v1, v2) : null) ?? edgeCreate(bm, v1, v2);
   const f2 = newFace(bm, 0, face.no, face.tag);
-  const lF1 = newLoop(v2, face);
-  const lF2 = newLoop(v1, f2);
+  f2.src = face.src;
+  const lF1 = newLoop(v2, face, lV2.src);
+  const lF2 = newLoop(v1, f2, lV1.src);
   lF1.prev = lV2.prev;
   lF2.prev = lV1.prev;
   lV2.prev.next = lF1;
@@ -629,6 +652,13 @@ export function faceTriangulate(
   let fNew: BF | null = null;
   tris.forEach((t, i) => {
     fNew = faceCreateVerts(bm, t.map((k) => loops[k]!.v), face);
+    {
+      let li = fNew.first!;
+      for (const k of t) {
+        li.src = loops[k]!.src;
+        li = li.next;
+      }
+    }
     const lNew = fNew.first!;
     if (lNew.rn !== lNew) {
       let li = lNew.rn!;
@@ -702,17 +732,64 @@ export function bmFromMesh(data: MeshData, opts: { edgeTables?: number; vertNorm
     edgeOf.set(a * stride + b, e);
   }
   const find = (a: number, b: number): BE => edgeOf.get(Math.min(a, b) * stride + Math.max(a, b))!;
-  polys.forEach((p, i) => {
+  // Corners are numbered through the input's faces, the degenerate ones
+  // (skipped here) included, so a number names an input face and corner.
+  const cornerStart: number[] = [];
+  let corners = 0;
+  for (const p of data.polys) {
+    cornerStart.push(corners);
+    corners += p.length;
+  }
+  let i = 0;
+  data.polys.forEach((p, src) => {
+    if (p.length < 3) return;
     const face = faceCreate(
       bm,
       p.map((v) => bm.verts[v]!),
       p.map((v, k) => find(v, p[(k + 1) % p.length]!)),
       null,
     );
-    face.index = i;
+    face.index = i++;
+    face.src = src;
+    faceLoops(face).forEach((l, k) => (l.src = cornerStart[src]! + k));
     face.no = faceCalcNormal(face);
   });
   return bm;
+}
+
+/**
+ * Where each face and corner of `bmToMesh(bm)` came from: an input face and
+ * an input corner number (`bmFromMesh`'s), or -1 — and the per-corner and
+ * per-face layers of `data` read through them. A corner with no source holds
+ * the layer's default: 0, and white for a colour (`layerDefault_mloopcol`).
+ */
+export function bmLayers(
+  bm: BM,
+  data: MeshData,
+): Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> {
+  const flat: [number, number][] = [];
+  data.polys.forEach((p, f) => p.forEach((_, k) => flat.push([f, k])));
+  const faces = liveFaces(bm);
+  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> = {};
+  const layer = (src: number[][][] | undefined, blank: number): number[][][] | undefined => {
+    if (!src || src.length !== data.polys.length) return undefined;
+    const width = src.find((x) => x.length > 0)?.[0]?.length ?? 2;
+    return faces.map((x) =>
+      faceLoops(x).map((l) => {
+        const at = l.src >= 0 ? flat[l.src] : undefined;
+        return at ? [...src[at[0]]![at[1]]!] : new Array<number>(width).fill(blank);
+      }),
+    );
+  };
+  const uvs = layer(data.uvs, 0);
+  if (uvs) out.uvs = uvs;
+  const colors = layer(data.colors, 1);
+  if (colors) out.colors = colors;
+  const normals = layer(data.normals, 0);
+  if (normals) out.normals = normals;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = faces.map((x) => (x.src >= 0 ? data.materials![x.src]! : 0));
+  return out;
 }
 
 /** `BM_mesh_bm_to_me`: live vertices and faces in pool order, compacted. */

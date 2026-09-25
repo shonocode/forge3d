@@ -19,16 +19,21 @@
  *   faces agree with the faces already attached to the loops.
  *
  * What is not ported: `use_merge` (welding the loops together instead of
- * spanning them) and loop custom data (UVs are dropped).
+ * spanning them).
+ *
+ * **Layers** (compat-backlog A7): a new face's corners copy the rim corners
+ * on its side (`bm_vert_loop_pair`) and its slot the example face's; the
+ * triangulation and the beautify's edge rotations hand them on as BMesh
+ * does (`bmesh-lite`'s `src`). Vertex groups and edge flags stand.
  *
  * Pure and headless.
  */
 import type { MeshData } from "../lib/mesh";
 import { f, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, type V3 } from "./blender-math";
 import {
-  bmFromMesh, bmToMesh, liveEdges, liveFaces, diskEdges, otherVert, edgeExists, isBoundary, faceExists,
+  bmFromMesh, bmToMesh, bmLayers, liveEdges, liveFaces, diskEdges, otherVert, edgeExists, isBoundary, faceExists,
   faceCreateVerts, faceCalcNormal, faceTriangulate, faceKill, edgeRotateCheck, loopsOfVert,
-  type BM, type BV, type BE, type BF,
+  type BM, type BV, type BE, type BF, type BL,
 } from "./bmesh-lite";
 import { bmBeautifyFill } from "./beautify-fill";
 
@@ -343,10 +348,10 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
    * any corner at each vertex. Only the faces matter here — the first one
    * found is the example the new face copies its normal from.
    */
-  const vertLoopPair = (v1: BV, v2: BV): [BF | null, BF | null] => {
+  const vertLoopPair = (v1: BV, v2: BV): [BL | null, BL | null] => {
     const e = edgeExists(v1, v2);
-    if (e?.l) return [e.l.f, e.l.f];
-    return [loopsOfVert(v1)[0]?.f ?? null, loopsOfVert(v2)[0]?.f ?? null];
+    if (e?.l) return e.l.v === v1 ? [e.l, e.l.next] : [e.l.next, e.l];
+    return [loopsOfVert(v1)[0] ?? null, loopsOfVert(v2)[0] ?? null];
   };
   let ia = 0;
   let ib = 0;
@@ -367,27 +372,39 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
     const vBNext = b.verts[nb!]!;
     // f_example: l_a's face, else l_b's.
     let [lA, lANext] = vertLoopPair(vA, vANext);
-    let lB: BF | null;
-    let lBNext: BF | null;
+    let lB: BL | null;
+    let lBNext: BL | null;
     if (vB !== vBNext) [lB, lBNext] = vertLoopPair(vB, vBNext);
-    else lB = lBNext = loopsOfVert(vB)[0]?.f ?? null;
+    else lB = lBNext = loopsOfVert(vB)[0] ?? null;
     if (lA && !lANext) lANext = lA;
     if (lANext && !lA) lA = lANext;
     if (lB && !lBNext) lBNext = lB;
     if (lBNext && !lB) lB = lBNext;
-    const example = lA ?? lB;
+    const example = lA?.f ?? lB?.f ?? null;
     let face: BF | null = null;
-    if (vB !== vBNext) {
-      if (!(vB === vANext || vB === vA || vBNext === vANext || vBNext === vA)) {
-        const varr = [vB, vBNext, vANext, vA];
-        face = faceExists(varr) ?? faceCreateVerts(bm, varr, null);
+    // A new face's corners copy the rim corners (`BM_elem_attrs_copy` from
+    // l_b, l_b_next, l_a_next, l_a in turn); one that already exists keeps
+    // its own.
+    const make = (varr: BV[], from: (BL | null)[]): BF => {
+      const found = faceExists(varr);
+      if (found) return found;
+      const made = faceCreateVerts(bm, varr, null);
+      let l = made.first!;
+      for (const s of from) {
+        if (s) l.src = s.src;
+        l = l.next;
       }
-    } else if (!(vB === vANext || vB === vA)) {
-      const varr = [vB, vANext, vA];
-      face = faceExists(varr) ?? faceCreateVerts(bm, varr, null);
-    }
+      return made;
+    };
+    if (vB !== vBNext) {
+      if (!(vB === vANext || vB === vA || vBNext === vANext || vBNext === vA))
+        face = make([vB, vBNext, vANext, vA], [lB, lBNext, lANext, lA]);
+    } else if (!(vB === vANext || vB === vA)) face = make([vB, vANext, vA], [lB, lANext, lA]);
     if (face) {
-      if (example && example !== face) face.no = [...example.no];
+      if (example && example !== face) {
+        face.no = [...example.no];
+        face.src = example.src;
+      }
       face.tag = true;
     }
     if (na === 0) break;
@@ -454,5 +471,12 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
     bridgeLoopPair(bm, loops[i]!, next, opts.twistOffset ?? 0);
     if (opts.usePairs) i++;
   }
-  return bmToMesh(bm);
+  // No vertex is made or removed, so the vertex groups and the old edges'
+  // flags stand as they are; the corners and slots follow `src`.
+  const out: MeshData = { ...bmToMesh(bm), ...bmLayers(bm, data) };
+  if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.creases) out.creases = new Map(data.creases);
+  if (data.seams) out.seams = new Set(data.seams);
+  if (data.sharp) out.sharp = new Set(data.sharp);
+  return out;
 }
