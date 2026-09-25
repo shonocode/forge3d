@@ -76,15 +76,14 @@ export interface EditMesh {
    */
   wireEdges?: number[][];
   /**
-   * Per-face-corner UV and colour, carried through untouched — the same
-   * arrangement, and the same warning, as {@link wireEdges}.
+   * Per-face-corner UV and colour, shaped like the faces.
    *
-   * **An operator that changes a face's arity invalidates these.** Extrude,
-   * bevel, subdivide and the rest rebuild `polys` and do not rebuild the
-   * layers, so a mesh that goes through one comes out with layers describing
-   * the faces it used to have. The four operators that work on loop data take
-   * `MeshData` directly and never come through here; carrying them is so that
-   * a mesh which merely *passes* an operator does not lose them silently.
+   * **They follow the faces through `rebuildPolygons`**, which every
+   * topology change goes through (`layer-carry.test.ts` holds that): an
+   * operator checked against Blender carries them by Blender's rules, any
+   * other keeps the faces that did not change and **drops** the layer if one
+   * did — never stale. Until 2026-09-25 they rode along untouched and came
+   * out describing faces that no longer existed. See {@link LayerCarry}.
    */
   loopUVs?: number[][][];
   loopColors?: number[][][];
@@ -102,9 +101,9 @@ export interface EditMesh {
    */
   sharpEdges?: Set<string>;
   /**
-   * An explicit normal per face corner, carried through untouched with
-   * the same warning as the loop layers above: an operator that changes
-   * a face's arity leaves this describing the face it used to have.
+   * An explicit normal per face corner, following the faces like the loop
+   * layers above — except that a corner which would have to be
+   * interpolated drops the layer (see {@link LayerCarry}).
    */
   loopNormals?: number[][][];
   /**
@@ -278,8 +277,27 @@ export function getVertexPosition(em: EditMesh, v: number, out: [number, number,
  *
  * Each polygon is a CCW cycle of ≥3 vertex indices. `em.source` is left
  * unchanged; callers commit to Babylon separately via `commitTopology`.
+ *
+ * The per-corner layers (`loopUVs`, `loopColors`, `loopNormals`) follow the
+ * faces as `carry` says — see {@link LayerCarry}. They never come out
+ * describing faces that no longer exist: a layer that cannot be carried is
+ * dropped.
  */
-export function rebuildPolygons(em: EditMesh, positions: Float32Array, polys: number[][]): void {
+export function rebuildPolygons(
+  em: EditMesh,
+  positions: Float32Array,
+  polys: number[][],
+  carry?: LayerCarry,
+): void {
+  const hasLayers = LAYER_KEYS.some((k) => em[k] !== undefined);
+  const oldPolys = hasLayers ? toPolygons(em) : [];
+  const oldNumV = em.vertices.length;
+  const oldPositions = em.positions;
+  rebuildTopology(em, positions, polys);
+  if (hasLayers) carryLayers(em, oldPolys, oldNumV, oldPositions, polys, carry);
+}
+
+function rebuildTopology(em: EditMesh, positions: Float32Array, polys: number[][]): void {
   const numV = positions.length / 3;
   let totalHE = 0;
   for (const p of polys) totalHE += p.length;
@@ -306,6 +324,257 @@ export function rebuildPolygons(em: EditMesh, positions: Float32Array, polys: nu
     }
     em.faces[f] = { he: base };
     base += n;
+  }
+}
+
+/**
+ * Where a vertex made by an operator came from, for the per-corner layers:
+ * its corner value in a face is `Σ w[i] · value(from[i])` in that same face.
+ *
+ * A point cut into an edge is `{ from: [a, b], w: [1 - t, t] }` — Blender's
+ * `BM_edge_split`, which interpolates each face's two loops on the edge
+ * (`BM_data_interp_face_vert_edge`). `from` may name other new vertices; they
+ * are expanded in turn.
+ */
+export interface VertexOrigin {
+  from: readonly number[];
+  w: readonly number[];
+}
+
+/**
+ * How {@link rebuildPolygons} treats the per-corner layers (`loopUVs`,
+ * `loopColors`, `loopNormals`).
+ *
+ * - absent — **keep only what did not change**: a face that comes back with
+ *   the same vertices in the same cyclic order, **none of them moved**, keeps
+ *   its corners; any other face means the layer is dropped. Never stale,
+ *   never guessed. This is the default so that an operator nobody has
+ *   checked against Blender loses the layer visibly instead of carrying
+ *   plausible wrong values. (The "not moved" half is there because merge,
+ *   weld and collapse renumber the survivors, and a face can come back with
+ *   the numbers another face had — found by review.)
+ * - `{ origins }` — the operator has been checked (a parity row with UVs)
+ *   and every new face derives from the old ones by Blender's rules:
+ *   1. a face whose corners, expanded through `origins`, all lie in **one**
+ *      old face takes its values from that face (`BM_face_split` copies the
+ *      loop at the same vertex; new vertices interpolate per `origins`)
+ *   2. otherwise, a corner at an old vertex `v` takes the value from the old
+ *      face that had the directed edge `v → next` (the loop `BM_faces_join`
+ *      keeps), else `prev → v`. With `joins`, this comes first
+ *   Anything left over drops the layer, as above.
+ *
+ * Not matched to Blender, and not measured by any row: an edge used by
+ * three or more faces (rule 2 reads the last face registered for the
+ * direction; Blender looks only among the faces being joined); a face that
+ * visits a vertex twice (the first corner is read); a colour layer (Blender
+ * stores byte colours in sRGB and rounds each interpolation — this stays
+ * float); and custom normals, which are copied as vectors where Blender
+ * copies two angles and reads them back in the new corner's normal space.
+ */
+export interface LayerCarry {
+  origins?: ReadonlyMap<number, VertexOrigin>;
+  /**
+   * The operator **joins** faces (dissolve, join triangles, edge rotate):
+   * try rule 2 before rule 1. A joined face can lie wholly inside one of
+   * the faces it swallowed — a concave quad and the triangle filling its
+   * notch — and rule 1 would then read every corner from that one face,
+   * where `BM_faces_join` keeps each corner of the face whose edge leaves it.
+   * Not the default, because on a **reversed** face the edge leaving a
+   * corner belongs to the neighbour.
+   */
+  joins?: boolean;
+  /**
+   * The faces are the old ones in the same order with the same corners, and
+   * only the vertex numbers changed (a compaction). The layers stay as they are.
+   */
+  sameCorners?: boolean;
+}
+
+const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
+
+/**
+ * Carry the per-corner layers from `oldPolys` to `newPolys`. Returns, per
+ * layer, the new layer or undefined (dropped).
+ */
+function carryLayers(
+  em: EditMesh,
+  oldPolys: readonly (readonly number[])[],
+  oldNumV: number,
+  oldPositions: ArrayLike<number>,
+  newPolys: readonly (readonly number[])[],
+  carry: LayerCarry | undefined,
+): void {
+  const layers = LAYER_KEYS.filter((k) => em[k] !== undefined);
+  if (layers.length === 0) return;
+
+  // A layer that already disagrees with the faces is stale from before; drop it.
+  for (const k of layers) {
+    const layer = em[k]!;
+    const ok =
+      layer.length === oldPolys.length && layer.every((f, i) => f.length === oldPolys[i]!.length);
+    if (!ok) em[k] = undefined;
+  }
+  const live = LAYER_KEYS.filter((k) => em[k] !== undefined);
+  if (live.length === 0) return;
+  if (carry?.sameCorners) {
+    const same =
+      newPolys.length === oldPolys.length && newPolys.every((p, i) => p.length === oldPolys[i]!.length);
+    if (!same) for (const k of live) em[k] = undefined;
+    return;
+  }
+
+  // Old faces by their cyclic vertex sequence (rotated to start at the least).
+  const cyclicKey = (p: readonly number[]): string => {
+    let m = 0;
+    for (let i = 1; i < p.length; i++) if (p[i]! < p[m]!) m = i;
+    const out: number[] = [];
+    for (let i = 0; i < p.length; i++) out.push(p[(m + i) % p.length]!);
+    return out.join(",");
+  };
+  const byKey = new Map<string, number>();
+  oldPolys.forEach((p, g) => byKey.set(cyclicKey(p), g));
+  const cornerOf = (g: number, v: number): number => oldPolys[g]!.indexOf(v);
+
+  // One source per new corner: a weighted sum of (old face, old corner).
+  type Source = Array<[g: number, corner: number, w: number]>;
+  const sources: Source[][] = [];
+
+  let failed = false;
+  // The same numbers are only the same vertices if they did not move: an
+  // operator that renumbers (merge, weld, collapse compact the survivors)
+  // can hand a face the numbers another face used to have.
+  const P = em.positions;
+  const unmoved = (v: number): boolean =>
+    v < oldNumV &&
+    oldPositions[v * 3] === P[v * 3] &&
+    oldPositions[v * 3 + 1] === P[v * 3 + 1] &&
+    oldPositions[v * 3 + 2] === P[v * 3 + 2];
+  const exact = (poly: readonly number[]): Source[] | null => {
+    const g = byKey.get(cyclicKey(poly));
+    if (g === undefined || !poly.every(unmoved)) return null;
+    return poly.map((v) => [[g, cornerOf(g, v), 1]]);
+  };
+
+  if (!carry) {
+    for (const poly of newPolys) {
+      const s = exact(poly);
+      if (!s) {
+        failed = true;
+        break;
+      }
+      sources.push(s);
+    }
+  } else {
+    const origins = carry.origins ?? new Map<number, VertexOrigin>();
+    const memo = new Map<number, Map<number, number> | null>();
+    const expand = (v: number, depth = 0): Map<number, number> | null => {
+      const hit = memo.get(v);
+      if (hit !== undefined) return hit;
+      let out: Map<number, number> | null;
+      const o = origins.get(v);
+      if (o) {
+        out = new Map();
+        for (let i = 0; i < o.from.length && out; i++) {
+          const sub = depth > 64 ? null : expand(o.from[i]!, depth + 1);
+          if (!sub) out = null;
+          else for (const [u, w] of sub) out.set(u, (out.get(u) ?? 0) + w * o.w[i]!);
+        }
+      } else out = v < oldNumV ? new Map([[v, 1]]) : null;
+      memo.set(v, out);
+      return out;
+    };
+
+    const facesOfV = new Map<number, number[]>();
+    oldPolys.forEach((p, g) => {
+      for (const v of p) {
+        const l = facesOfV.get(v);
+        if (l) l.push(g);
+        else facesOfV.set(v, [g]);
+      }
+    });
+    const directed = new Map<string, number>();
+    oldPolys.forEach((p, g) => {
+      for (let i = 0; i < p.length; i++) directed.set(`${p[i]}>${p[(i + 1) % p.length]}`, g);
+    });
+
+    for (const poly of newPolys) {
+      const same = exact(poly);
+      if (same) {
+        sources.push(same);
+        continue;
+      }
+      // Rule 2: each old corner from the face that owned its outgoing edge
+      // (else its incoming one) — the loop `BM_faces_join` keeps.
+      const byEdges = (): Source[] | null => {
+        const n = poly.length;
+        const per: Source[] = [];
+        for (let i = 0; i < n; i++) {
+          const v = poly[i]!;
+          if (v >= oldNumV || origins.has(v)) return null;
+          const g = directed.get(`${v}>${poly[(i + 1) % n]}`) ?? directed.get(`${poly[(i + n - 1) % n]}>${v}`);
+          if (g === undefined) return null;
+          per.push([[g, cornerOf(g, v), 1]]);
+        }
+        return per;
+      };
+      const exp = poly.map((v) => expand(v));
+      let s: Source[] | null = carry.joins ? byEdges() : null;
+      // Rule 1: one old face holding every vertex the corners draw on.
+      if (!s && exp.every((e) => e !== null)) {
+        const used = new Set<number>();
+        for (const e of exp) for (const u of e!.keys()) used.add(u);
+        let cands: number[] | null = null;
+        for (const u of used) {
+          const fs = facesOfV.get(u) ?? [];
+          cands = cands === null ? [...fs] : cands.filter((g) => fs.includes(g));
+          if (cands.length === 0) break;
+        }
+        if (cands && cands.length > 0) {
+          // More than one when the new face draws only on vertices two old
+          // faces share; prefer the one that runs the same way round.
+          const g =
+            cands.find((c) => {
+              const old = poly.filter((v) => v < oldNumV && !origins.has(v));
+              for (let i = 0; i + 1 < old.length; i++) {
+                const a = oldPolys[c]!.indexOf(old[i]!);
+                const b = oldPolys[c]!.indexOf(old[i + 1]!);
+                if ((b - a + oldPolys[c]!.length) % oldPolys[c]!.length === oldPolys[c]!.length - 1) return false;
+              }
+              return true;
+            }) ?? cands[0]!;
+          s = exp.map((e) => [...e!].map(([u, w]) => [g, cornerOf(g, u), w] as [number, number, number]));
+        }
+      }
+      if (!s && !carry.joins) s = byEdges();
+      if (!s) {
+        failed = true;
+        break;
+      }
+      sources.push(s);
+    }
+  }
+
+  // A custom normal is not a value to average: Blender keeps it as two
+  // angles in the corner's own normal space. Copied corners keep theirs;
+  // an interpolated one drops the layer rather than invent a direction.
+  const interpolated = !failed && sources.some((f) => f.some((s) => s.length !== 1 || s[0]![2] !== 1));
+  for (const k of live) {
+    if (failed || (k === "loopNormals" && interpolated)) {
+      em[k] = undefined;
+      continue;
+    }
+    const old = em[k]!;
+    em[k] = sources.map((face) =>
+      face.map((src) => {
+        const width = old[src[0]![0]]![src[0]![1]]!.length;
+        const out = new Array<number>(width).fill(0);
+        for (const [g, c, w] of src) {
+          const val = old[g]![c]!;
+          for (let j = 0; j < width; j++) out[j] = out[j]! + w * val[j]!;
+        }
+        return out;
+      }),
+    );
   }
 }
 

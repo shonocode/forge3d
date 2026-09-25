@@ -1,5 +1,5 @@
 import { orphanedEdges } from "./wire";
-import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { walkEdgeRing } from "./edge-walk";
 
@@ -1865,7 +1865,7 @@ function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set
     else newPolys.push(polys[f]!);
   }
 
-  rebuildPolygons(em, em.positions, newPolys);
+  rebuildPolygons(em, em.positions, newPolys, { joins: true });
   return new Set([v1, v2]);
 }
 
@@ -2540,7 +2540,7 @@ export function trisToQuads(
   }
   const quadStart = newPolys.length;
   for (const quad of merged) newPolys.push(quad);
-  rebuildPolygons(em, em.positions, newPolys);
+  rebuildPolygons(em, em.positions, newPolys, { joins: true });
 
   const out = new Set<number>();
   for (let f = quadStart; f < newPolys.length; f++) out.add(f);
@@ -2683,7 +2683,7 @@ export function quadsToTris(em: EditMesh, selectedFaces: ReadonlySet<number> | n
     const p = polys[f]!;
     for (let i = 1; i + 1 < p.length; i++) newPolys.push([p[0]!, p[i]!, p[i + 1]!]);
   }
-  rebuildPolygons(em, em.positions, newPolys);
+  rebuildPolygons(em, em.positions, newPolys, {});
 
   const out = new Set<number>();
   for (let f = triStart; f < newPolys.length; f++) out.add(f);
@@ -2994,7 +2994,7 @@ export function reverseFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
 
   const polys = toPolygons(em);
   const out = polys.map((poly, f) => (selectedFaces.has(f) ? [...poly].reverse() : poly));
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, {});
   return new Set(selectedFaces);
 }
 
@@ -3112,7 +3112,7 @@ export function connectVertPair(em: EditMesh, a: number, b: number): Set<number>
   const start = out.length;
   out.push(first, second);
 
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, {});
   return new Set([start, start + 1]);
 }
 
@@ -3566,7 +3566,7 @@ export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<nu
   const out = polys.map((poly, f) =>
     selectedFaces.has(f) && poly.length > 3 ? [...poly.slice(1), poly[0]!] : [...poly],
   );
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, {});
   return new Set(selectedFaces);
 }
 
@@ -3903,7 +3903,7 @@ export function connectVertsNonplanar(
   }
 
   if (made.size === 0) return new Set();
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, {});
   return made;
 }
 
@@ -3942,6 +3942,8 @@ export function subdivideEdgering(
   const P = em.positions;
   const positions: number[] = Array.from(P);
   let nextV = em.vertices.length;
+  // Where each cut sits, for the UV / colour layers (`BM_edge_split`).
+  const origins = new Map<number, VertexOrigin>();
   // One run of cut vertices per undirected edge, shared by both its faces.
   const cutsOn = new Map<string, number[]>();
   const cutRun = (a: number, b: number): number[] => {
@@ -3953,6 +3955,7 @@ export function subdivideEdgering(
       const t = k / (n + 1);
       const lo = a < b ? a : b;
       const hi = a < b ? b : a;
+      origins.set(nextV, { from: [lo, hi], w: [1 - t, t] });
       made.push(nextV++);
       positions.push(
         P[lo * 3]! + (P[hi * 3]! - P[lo * 3]!) * t,
@@ -3999,6 +4002,6 @@ export function subdivideEdgering(
     }
   }
 
-  rebuildPolygons(em, new Float32Array(positions), out);
+  rebuildPolygons(em, new Float32Array(positions), out, { origins });
   return made;
 }

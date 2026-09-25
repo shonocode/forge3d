@@ -169,10 +169,15 @@ function mergeGroups(
     for (const v of interior) if (edgesAt.get(v)?.size === 2) drop.add(v);
 
     if (drop.size > 0) {
+      // The per-corner layers go through the same three steps: the join
+      // (each corner from the face that owned its outgoing edge, as
+      // `BM_faces_join` keeps it), the dropped corners, then the renumbering.
+      rebuildPolygons(em, em.positions, out.map((p) => [...p]), { joins: true });
       for (let i = 0; i < out.length; i++) {
         const trimmed = out[i]!.filter((v) => !drop.has(v));
         if (trimmed.length >= 3) out[i] = trimmed;
       }
+      rebuildPolygons(em, em.positions, out.map((p) => [...p]), {});
       report.vertsRemoved = drop.size;
 
       // Compact, so a dissolved vertex is gone rather than orphaned. Blender
@@ -191,12 +196,13 @@ function mergeGroups(
         em,
         new Float32Array(kept),
         out.map((poly) => poly.map((v) => remap[v]!)),
+        { sameCorners: true },
       );
       return;
     }
   }
 
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, { joins: true });
 }
 
 /**
@@ -472,7 +478,7 @@ export function dissolveVerts(
     seen.add(key);
     kept.push(trimmed);
   }
-  rebuildPolygons(em, em.positions, kept);
+  rebuildPolygons(em, em.positions, kept, {});
 
   // Orphaned vertices stay, like every other dissolve here — Blender drops
   // them, and matching that would shift every index above the hole and reach
@@ -540,6 +546,6 @@ export function connectVerts(em: EditMesh, selectedVerts: ReadonlySet<number>): 
   }
 
   if (made.size === 0) return new Set();
-  rebuildPolygons(em, em.positions, out);
+  rebuildPolygons(em, em.positions, out, {});
   return made;
 }

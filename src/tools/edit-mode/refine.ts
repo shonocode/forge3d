@@ -19,7 +19,8 @@
  * Pure and headless — Vitest-pinned.
  */
 import { scanfillTriangles } from "./triangle-fill";
-import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { interpWeightsPoly } from "./interp";
+import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type VertexOrigin } from "./half-edge";
 
 // ── poke ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export function poke(
   const P = em.positions;
   const positions: number[] = Array.from(P);
   let nextV = em.vertices.length;
+  const origins = new Map<number, VertexOrigin>();
 
   const out: number[][] = [];
   for (let f = 0; f < polys.length; f++) if (!selectedFaces.has(f)) out.push(polys[f]!);
@@ -104,17 +106,24 @@ export function poke(
       if (total > 1e-20) { cx /= total; cy /= total; cz /= total; }
     }
 
-    if (offset !== 0) {
-      let nx = 0, ny = 0, nz = 0;
-      for (let i = 0; i < n; i++) {
-        const a = poly[i]! * 3;
-        const b = poly[(i + 1) % n]! * 3;
-        nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
-        ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
-        nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
-      }
-      const len = Math.hypot(nx, ny, nz);
-      if (len > 1e-20) { cx += (nx / len) * offset; cy += (ny / len) * offset; cz += (nz / len) * offset; }
+    // The centre's corner data, as `BM_loop_interp_from_face` gives it: mean
+    // value weights at the centre **before** the offset moves it.
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < n; i++) {
+      const a = poly[i]! * 3;
+      const b = poly[(i + 1) % n]! * 3;
+      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+    }
+    const len = Math.hypot(nx, ny, nz);
+    // A face with no area has no normal; Blender builds an axis from the
+    // face tangent there (`BM_face_calc_tangent_auto`). Not matched: +z.
+    const unit: [number, number, number] = len > 1e-20 ? [nx / len, ny / len, nz / len] : [0, 0, 1];
+    origins.set(nextV, { from: poly, w: interpWeightsPoly(P, poly, unit, [cx, cy, cz]) });
+
+    if (offset !== 0 && len > 1e-20) {
+      cx += unit[0] * offset; cy += unit[1] * offset; cz += unit[2] * offset;
     }
 
     const centre = nextV++;
@@ -123,7 +132,7 @@ export function poke(
   }
   const end = out.length;
 
-  rebuildPolygons(em, new Float32Array(positions), out);
+  rebuildPolygons(em, new Float32Array(positions), out, { origins });
   const sel = new Set<number>();
   for (let i = start; i < end; i++) sel.add(i);
   return sel;
@@ -199,8 +208,10 @@ export interface SubdivideEdgesOptions {
  * whose two adjacent edges were selected.
  *
  * A cut edge's crease, seam and sharp flag go to every piece of it
- * (`BM_edge_split` copies the edge's attributes). UV / colour / normal
- * layers and vertex groups are not carried — see `EditMesh.loopUVs`.
+ * (`BM_edge_split` copies the edge's attributes). UV and colour follow
+ * Blender: a cut point interpolates its face's two corners on the edge, a
+ * split face keeps its own corners (`subdivide-edges-uv` parity rows).
+ * Custom normals drop — see `LayerCarry`. Vertex groups are not carried.
  *
  * The #32500 test is made once against the faces as they were; Blender makes
  * it as it goes, after earlier faces have split, and its
@@ -256,11 +267,13 @@ class FaceSplitter {
   readonly frags: number[][];
   private readonly positions: number[];
   private readonly nextV: { n: number };
+  private readonly origins: Map<number, VertexOrigin>;
 
-  constructor(first: number[], positions: number[], nextV: { n: number }) {
+  constructor(first: number[], positions: number[], nextV: { n: number }, origins: Map<number, VertexOrigin>) {
     this.frags = [first];
     this.positions = positions;
     this.nextV = nextV;
+    this.origins = origins;
   }
 
   /**
@@ -311,6 +324,7 @@ class FaceSplitter {
     const made: number[] = [];
     for (let j = 1; j <= k; j++) {
       const t = j / (k + 1);
+      this.origins.set(this.nextV.n, { from: [a, b], w: [1 - t, t] });
       made.push(this.nextV.n++);
       P.push(
         P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
@@ -490,6 +504,8 @@ function subdivide(
   const P = em.positions;
   const positions: number[] = Array.from(P);
   const nextV = { n: em.vertices.length };
+  // Where each new vertex sits, for the UV / colour layers (`BM_edge_split`).
+  const origins = new Map<number, VertexOrigin>();
 
   // One set of new vertices per undirected edge, shared by both its faces.
   const cutsOn = new Map<string, number[]>();
@@ -503,6 +519,7 @@ function subdivide(
     const made: number[] = [];
     for (let k = 1; k <= cuts; k++) {
       const t = k / (cuts + 1);
+      origins.set(nextV.n, { from: [a, b], w: [1 - t, t] });
       made.push(nextV.n++);
       positions.push(
         P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
@@ -570,7 +587,7 @@ function subdivide(
       if (made) grown.push(...(a < b ? made : [...made].reverse()));
     }
 
-    const splitter = new FaceSplitter(grown, positions, nextV);
+    const splitter = new FaceSplitter(grown, positions, nextV, origins);
     if (opts && !(opts.useOnlyQuads && len !== 4)) {
       let pat: SubdPattern | null = null;
       let rot = 0;
@@ -603,7 +620,7 @@ function subdivide(
     }
   }
 
-  rebuildPolygons(em, new Float32Array(positions), out);
+  rebuildPolygons(em, new Float32Array(positions), out, { origins });
   return touched;
 }
 

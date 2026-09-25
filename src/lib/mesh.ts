@@ -151,10 +151,8 @@ export function meshFromData(data: MeshData): EditMesh {
   em.wireEdges = (data.edges ?? []).map((e) => [...e]);
   if (data.sharp) em.sharpEdges = new Set(data.sharp);
   if (data.normals) em.loopNormals = data.normals.map((f) => f.map((c) => [...c]));
-  // The loop layers ride along the same way, with the same warning: an
-  // operator that changes a face's arity leaves them describing the old one.
-  // The four that permute them work on `MeshData` directly and never enter
-  // here; anything else that wants to keep them has to say so.
+  // The loop layers follow the faces through `rebuildPolygons`: carried by
+  // the operators checked against Blender, dropped (never stale) by the rest.
   if (data.uvs) em.loopUVs = data.uvs.map((f) => f.map((c) => [...c]));
   if (data.colors) em.loopColors = data.colors.map((f) => f.map((c) => [...c]));
 
