@@ -617,6 +617,50 @@ export interface TorusOptions {
   axis?: "x" | "y" | "z";
   /** Where to put it. */
   at?: Vec3;
+  /**
+   * Lay down a UV per face corner — Blender's `generate_uvs`, on by default
+   * there and here. `u` runs around the ring, `v` around the tube, each over
+   * `[0, 1]` once. Default true.
+   */
+  uvs?: boolean;
+}
+
+/**
+ * Blender's `add_uvs` (`scripts/startup/bl_operators/add_mesh_torus.py`): a grid
+ * walked face by face, ring then tube, wrapping back by 1 half a step before
+ * the end — so float error never wraps at the wrong step — and starting at
+ * `0.5 + fmod(0.5, step)` so the seam lands on a grid line when the segment
+ * count is not a multiple of 4. The steps are summed as the Python sums them.
+ * Returns, per face, the four corners' UVs in Blender's corner order:
+ * `(i, j)`, `(i+1, j)`, `(i+1, j+1)`, `(i, j+1)`.
+ */
+function torusUVs(majorSegments: number, minorSegments: number): [number, number][][] {
+  const uStep = 1 / majorSegments;
+  const vStep = 1 / minorSegments;
+  const uInit = 0.5 + (0.5 % uStep);
+  const vInit = 0.5 + (0.5 % vStep);
+  const uWrap = 1 - uStep / 2;
+  const vWrap = 1 - vStep / 2;
+  const out: [number, number][][] = [];
+  let uPrev = uInit;
+  let uNext = uPrev + uStep;
+  for (let i = 0; i < majorSegments; i++) {
+    let vPrev = vInit;
+    let vNext = vPrev + vStep;
+    for (let j = 0; j < minorSegments; j++) {
+      out.push([
+        [uPrev, vPrev],
+        [uNext, vPrev],
+        [uNext, vNext],
+        [uPrev, vNext],
+      ]);
+      vPrev = vNext > vWrap ? vNext - 1 : vNext;
+      vNext = vPrev + vStep;
+    }
+    uPrev = uNext > uWrap ? uNext - 1 : uNext;
+    uNext = uPrev + uStep;
+  }
+  return out;
 }
 
 /**
@@ -638,11 +682,17 @@ export function torus(opts: TorusOptions = {}): MeshData {
   const axis = opts.axis ?? "y";
   const [ax, ay, az] = opts.at ?? [0, 0, 0];
 
+  // Blender's `add_torus`: vertex (i, j) at ring angle i and tube angle j, laid
+  // out about +Z, faces (i,j) (i+1,j) (i+1,j+1) (i,j+1). The other axes are
+  // **rotations** of that layout — "y" is the -90° turn about X that the parity
+  // row gives Blender's primitive, "x" a cyclic swap of the axes — never a
+  // mirror. Until 2026-09-25 "y" was a mirror (y and z swapped) with the winding
+  // flipped to make up for it: the surface matched Blender's to 0.0000 mm, but
+  // the vertex numbers ran the other way round the ring, and "x" / "z", which
+  // shared the flipped winding without the mirror, came out inside out.
   const b = new Builder();
-  const loops: number[][] = [];
   for (let i = 0; i < majorSegments; i++) {
     const around = (i / majorSegments) * Math.PI * 2;
-    const loop: number[] = [];
     for (let j = 0; j < minorSegments; j++) {
       const through = (j / minorSegments) * Math.PI * 2;
       // Distance from the axis, and height along it.
@@ -650,24 +700,16 @@ export function torus(opts: TorusOptions = {}): MeshData {
       const h = Math.sin(through) * minor;
       const c = Math.cos(around) * rr;
       const s = Math.sin(around) * rr;
-      const p: Vec3 =
-        axis === "y" ? [c, h, s] : axis === "z" ? [c, s, h] : [h, c, s];
-      loop.push(b.vert(ax + p[0], ay + p[1], az + p[2]));
-    }
-    loops.push(loop);
-  }
-  for (let i = 0; i < majorSegments; i++) {
-    const ni = (i + 1) % majorSegments;
-    for (let j = 0; j < minorSegments; j++) {
-      const nj = (j + 1) % minorSegments;
-      // Wound this way round, not the other: the first version came out with
-      // the same surface as Blender's to 0.0000mm and the **signed volume
-      // negated**, which is a torus turned inside out. No distance measurement
-      // can see that; the volume line in `compare.ts` is what caught it.
-      b.face(loops[i]![j]!, loops[i]![nj]!, loops[ni]![nj]!, loops[ni]![j]!);
+      const p: Vec3 = axis === "z" ? [c, s, h] : axis === "y" ? [c, h, -s] : [h, c, s];
+      b.vert(ax + p[0], ay + p[1], az + p[2]);
     }
   }
-  return b.build();
+  const at = (i: number, j: number): number => (i % majorSegments) * minorSegments + (j % minorSegments);
+  for (let i = 0; i < majorSegments; i++)
+    for (let j = 0; j < minorSegments; j++) b.face(at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+  const data = b.build();
+  if (opts.uvs === false) return data;
+  return { ...data, uvs: torusUVs(majorSegments, minorSegments) };
 }
 
 export interface IcosphereOptions {

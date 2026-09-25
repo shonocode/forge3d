@@ -346,12 +346,31 @@ describe("torus", () => {
     }
   });
 
-  it("test_is_wound_outward", () => {
+  it("test_is_wound_outward_on_every_axis", () => {
     // The first version was inside out and measured 0.0000mm against Blender
     // all the same — a surface distance cannot see winding, only the signed
-    // volume can.
-    const m = torus({ majorRadius: 0.2, minorRadius: 0.05, majorSegments: 12, minorSegments: 8 });
-    expect(signedVolume(m)).toBeGreaterThan(0);
+    // volume can. And this test once checked the default axis alone, which is
+    // how "x" and "z" stayed inside out until 2026-09-25: "y" was a mirror
+    // whose flipped winding the other two copied without the mirror.
+    for (const axis of ["x", "y", "z"] as const) {
+      const m = torus({ majorRadius: 0.2, minorRadius: 0.05, majorSegments: 12, minorSegments: 8, axis });
+      expect(signedVolume(m), axis).toBeGreaterThan(0);
+    }
+  });
+
+  it("test_uvs_are_blenders_grid", () => {
+    // `add_uvs`: u around the ring, v around the tube, each once over [0, 1],
+    // starting at 0.5 + fmod(0.5, step). 8 × 4 segments put both starts on
+    // 0.5 exactly; face 0's corners are (i,j) (i+1,j) (i+1,j+1) (i,j+1).
+    const m = torus({ majorSegments: 8, minorSegments: 4 });
+    expect(m.uvs).toHaveLength(32);
+    expect(m.uvs![0]).toEqual([
+      [0.5, 0.5],
+      [0.625, 0.5],
+      [0.625, 0.75],
+      [0.5, 0.75],
+    ]);
+    expect(torus({ uvs: false }).uvs).toBeUndefined();
   });
 
   it("test_the_axis_turns_it", () => {
