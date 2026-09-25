@@ -156,6 +156,8 @@ export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<strin
   if (data.colors) out.colors = data.colors.map((f) => f.map((c) => [...c]));
   const keep = sharp === undefined ? data.sharp : sharp;
   if (keep && keep.size > 0) out.sharp = new Set(keep);
+  if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.materials) out.materials = [...data.materials];
   return out;
 }
 

@@ -267,6 +267,7 @@ function withGroups(data: MeshData, next: Map<string, Map<number, number>>): Mes
   if (data.uvs) out.uvs = data.uvs.map((f) => f.map((c) => [...c]));
   if (data.colors) out.colors = data.colors.map((f) => f.map((c) => [...c]));
   if (data.normals) out.normals = data.normals.map((f) => f.map((c) => [...c]));
+  if (data.materials) out.materials = [...data.materials];
   return out;
 }
 

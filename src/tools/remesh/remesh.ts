@@ -35,6 +35,11 @@ const f = Math.fround;
  * ```ts
  * remesh(mesh, { mode: "smooth", octreeDepth: 5 });
  * ```
+ *
+ * **Layers** (compat-backlog A3): keeps none (Blender's Remesh keeps none of these either). Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function remesh(data: MeshData, options: RemeshOptions): MeshData {
   const depth = options.octreeDepth ?? 4;

@@ -106,6 +106,11 @@ const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`
  * some — anything holding vertex indices across this call (a selection, a
  * weight map) has to be remapped by the caller, the same as with
  * `remove_doubles`.
+ *
+ * **Layers** (compat-backlog A3): keeps wire edges. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): MeshData {
   const iterations = Math.max(1, Math.trunc(options.iterations ?? 1));

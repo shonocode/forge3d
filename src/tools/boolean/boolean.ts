@@ -95,6 +95,11 @@ export interface BooleanOptions {
  * ```ts
  * booleanMesh(twoCubes, { operation: "difference", set: new Set([6, 7, 8, 9, 10, 11]) });
  * ```
+ *
+ * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
   const partOfFace: (face: number) => number = options.parts

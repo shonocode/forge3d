@@ -14,7 +14,7 @@
  *
  * Pure and headless.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
 
 export interface SmoothMeshOptions {
   /** How far toward the edge-midpoint mean, per pass — Blender's `factor`. Default 0.5. */
@@ -79,10 +79,5 @@ export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): Mes
     }
   }
 
-  const out: MeshData = { positions: Float32Array.from(P), polys: data.polys.map((p) => [...p]) };
-  if (data.edges) out.edges = data.edges.map((e) => [...e]);
-  if (data.creases) out.creases = new Map(data.creases);
-  if (data.seams) out.seams = new Set(data.seams);
-  if (data.uvs) out.uvs = data.uvs.map((f) => f.map((c) => [...c]));
-  return out;
+  return withPositions(data, Float32Array.from(P));
 }

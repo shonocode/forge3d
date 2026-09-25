@@ -25,6 +25,7 @@
  * All distances in float32, as a `BMVert`'s coordinates are.
  */
 import type { MeshData } from "../lib/mesh";
+import { carryFaceLayers, type FaceSource } from "./mesh-layers";
 import { calcEdges } from "./bmesh-lite";
 
 const f = Math.fround;
@@ -242,7 +243,7 @@ export function mergeByDistance(data: MeshData, dist: number, options: MergeByDi
   const moved = Float32Array.from(P);
   for (let v = 0; v < n; v++)
     if (count[v]! > 1) for (let k = 0; k < 3; k++) moved[v * 3 + k] = sum[v * 3 + k]! / count[v]!;
-  return weldByMap({ ...data, positions: moved }, map);
+  return weldByMap({ ...data, positions: moved }, map, "weld");
 }
 
 /** `mesh_merge_by_distance_connected`, then the same mixing and face pass as mode All. */
@@ -300,7 +301,7 @@ function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean): Me
   const moved = Float32Array.from(P);
   for (let v = 0; v < n; v++)
     if (count[v]! > 1) for (let k = 0; k < 3; k++) moved[v * 3 + k] = sum[v * 3 + k]! / count[v]!;
-  return weldByMap({ ...data, positions: moved }, map);
+  return weldByMap({ ...data, positions: moved }, map, "weld");
 }
 
 /**
@@ -311,32 +312,45 @@ function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean): Me
  * existing face is dropped — and a dropped face's edges stay as loose edges.
  * Survivors keep their order.
  */
-export function weldByMap(data: MeshData, map: (v: number) => number): MeshData {
+export function weldByMap(
+  data: MeshData,
+  map: (v: number) => number,
+  mode: "bmesh" | "weld" | "array" = "bmesh",
+): MeshData {
+  const mix = mode !== "bmesh";
   const n = data.positions.length / 3;
   const merged = (v: number): boolean => map(v) !== v;
 
   // `remdoubles_splitface`: a face holding a vertex and its target apart is
-  // split between them first, so each half can collapse on its own.
-  const split = (poly: number[]): number[][] => {
+  // split between them first, so each half can collapse on its own. Each
+  // piece keeps which input face and corners it is, for the layers.
+  interface Piece {
+    face: number;
+    corners: number[];
+  }
+  const split = (piece: Piece): Piece[] => {
+    const src = data.polys[piece.face]!;
+    const poly = piece.corners.map((c) => src[c]!);
     for (let i = 0; i < poly.length; i++) {
       const tar = map(poly[i]!);
       if (tar === poly[i]) continue;
       const j = poly.indexOf(tar);
       const k = poly.length;
       if (j < 0 || j === (i + 1) % k || i === (j + 1) % k) continue;
-      const run = (a: number, b: number): number[] => {
+      const run = (a: number, b: number): Piece => {
         const out: number[] = [];
         for (let x = a; ; x = (x + 1) % k) {
-          out.push(poly[x]!);
+          out.push(piece.corners[x]!);
           if (x === b) break;
         }
-        return out;
+        return { face: piece.face, corners: out };
       };
       return [...split(run(j, i)), ...split(run(i, j))];
     }
-    return [poly];
+    return [piece];
   };
-  const polys = data.polys.flatMap((p) => split([...p]));
+  const pieces = data.polys.flatMap((p, face) => split({ face, corners: p.map((_, i) => i) }));
+  const polys = pieces.map((pc) => pc.corners.map((c) => data.polys[pc.face]![c]!));
 
   // Edges, as `weld_verts` re-points them: the ones whose ends merge together
   // collapse, the rest move onto the survivors.
@@ -369,18 +383,22 @@ export function weldByMap(data: MeshData, map: (v: number) => number): MeshData 
     return best;
   };
   const out: number[][] = [];
+  const sources: FaceSource[] = [];
   const seen = new Set<string>();
   for (const p of polys) if (!p.some(merged)) seen.add(faceKey(p));
-  for (const p of polys) {
+  for (let pi = 0; pi < polys.length; pi++) {
+    const p = polys[pi]!;
     if (!p.some(merged)) {
       out.push(p);
+      sources.push(pieces[pi]!);
       continue;
     }
     let collapse = 0;
     for (let i = 0; i < p.length; i++) if (collapsed.has(edgeKey(p[i]!, p[(i + 1) % p.length]!))) collapse++;
     if (p.length - collapse < 3) continue;
-    // `remdoubles_createface`
+    // `remdoubles_createface`: each corner copies the loop it came from.
     const face: number[] = [];
+    const corners: (number | number[])[] = [];
     let ok = true;
     for (let i = 0; i < p.length; i++) {
       const v = map(p[i]!);
@@ -391,12 +409,18 @@ export function weldByMap(data: MeshData, map: (v: number) => number): MeshData 
         break;
       }
       face.push(v);
+      // Weld and Array: every loop of the piece that lands on `v` (`weld_iter_loop_of_poly_next`'s
+      // group — mixed even when vertex data is not).
+      corners.push(
+        mix ? pieces[pi]!.corners.filter((c) => map(data.polys[pieces[pi]!.face]![c]!) === v) : pieces[pi]!.corners[i]!,
+      );
     }
     if (!ok || face.length < 3) continue;
     const key = faceKey(face);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(face);
+    sources.push({ face: pieces[pi]!.face, corners });
   }
 
   // Renumber the survivors in their own order.
@@ -410,9 +434,108 @@ export function weldByMap(data: MeshData, map: (v: number) => number): MeshData 
   const used = new Set<string>();
   for (const p of out) for (let i = 0; i < p.length; i++) used.add(edgeKey(p[i]!, p[(i + 1) % p.length]!));
   const loose = [...edges.entries()].filter(([k]) => !used.has(k)).map(([, [a, b]]) => [index[a]!, index[b]!]);
-  return {
-    positions: Float32Array.from(positions),
-    polys: out.map((p) => p.map((v) => index[v]!)),
-    ...(loose.length > 0 ? { edges: loose } : {}),
+  const outPolys = out.map((p) => p.map((v) => index[v]!));
+
+  // The layers (compat-backlog A3), by the three callers' rules:
+  //
+  // - `bmesh` (`remove_doubles` / `weld_verts`): a survivor keeps its own
+  //   vertex data (`BM_vert_splice`), each corner is the loop it came from,
+  //   and edges that merge combine their flags (`BM_elem_flag_merge_ex`):
+  //   seam OR, sharp AND (sharp is "no SMOOTH flag"), crease the survivor's.
+  // - `weld` (the Weld modifier, `do_mix_data`): vertex, edge and corner
+  //   data are the plain mean of what merged — a group missing from a vertex
+  //   counts 0, a flag is on at a mean of 0.5.
+  // - `array` (Array / Mirror merging, `mesh_merge_verts` without mixing):
+  //   vertices and edges keep the survivor's, but corners are still the mean
+  //   of the face's loops that collapse onto one vertex.
+  const rename = (key: string): string | null => {
+    const [a, b] = key.split("_").map(Number) as [number, number];
+    const ma = index[map(a)]!;
+    const mb = index[map(b)]!;
+    return ma < 0 || mb < 0 || ma === mb ? null : edgeKey(ma, mb);
   };
+  // Every original edge, by the edge it becomes.
+  const edgeGroups = new Map<string, string[]>();
+  const addOriginal = (a: number, b: number): void => {
+    const k = edgeKey(a, b);
+    const nk = rename(k);
+    if (!nk) return;
+    const l = edgeGroups.get(nk) ?? [];
+    if (!l.includes(k)) l.push(k);
+    edgeGroups.set(nk, l);
+  };
+  for (const p of data.polys) for (let i = 0; i < p.length; i++) addOriginal(p[i]!, p[(i + 1) % p.length]!);
+  for (const e of data.edges ?? []) addOriginal(e[0]!, e[1]!);
+  const survivorOf = (members: string[]): string =>
+    members.find((k) => k.split("_").every((v) => !merged(Number(v)))) ?? members[0]!;
+  const result: MeshData = {
+    positions: Float32Array.from(positions),
+    polys: outPolys,
+    ...(loose.length > 0 ? { edges: loose } : {}),
+    ...carryFaceLayers(data, sources),
+  };
+  if (data.creases) {
+    const src = data.creases;
+    result.creases = new Map();
+    for (const [nk, members] of edgeGroups) {
+      const w =
+        mode === "weld"
+          ? members.reduce((s, k) => s + (src.get(k) ?? 0), 0) / members.length
+          : (src.get(survivorOf(members)) ?? 0);
+      if (w !== 0) result.creases.set(nk, w);
+    }
+  }
+  for (const layer of ["seams", "sharp"] as const) {
+    const src = data[layer];
+    if (!src) continue;
+    const dst = new Set<string>();
+    for (const [nk, members] of edgeGroups) {
+      const on = members.filter((k) => src.has(k)).length;
+      const flag =
+        mode === "weld"
+          ? on / members.length >= 0.5
+          : mode === "array"
+            ? src.has(survivorOf(members))
+            : layer === "seams"
+              ? on > 0
+              : on === members.length;
+      if (flag) dst.add(nk);
+    }
+    result[layer] = dst;
+  }
+  if (data.groups) {
+    result.groups = new Map();
+    for (const [name, g] of data.groups) {
+      const ng = new Map<number, number>();
+      if (mode !== "weld") {
+        for (const [v, w] of g) if (!merged(v) && index[v]! >= 0) ng.set(index[v]!, w);
+      } else {
+        const sources = new Map<number, number[]>();
+        for (let v = 0; v < n; v++) {
+          const t = index[map(v)]!;
+          if (t < 0) continue;
+          const l = sources.get(t) ?? [];
+          l.push(v);
+          sources.set(t, l);
+        }
+        for (const [t, from] of sources) {
+          // The plain mean over the merged vertices, a non-member counting 0;
+          // a member of weight 0 still makes the survivor a member (measured:
+          // the zero-skipping of `layerInterp_mdeformvert` lost 3 of 183).
+          let sum = 0;
+          let member = false;
+          for (const v of from) {
+            const w = g.get(v);
+            if (w !== undefined) {
+              member = true;
+              sum += w / from.length;
+            }
+          }
+          if (member) ng.set(t, sum);
+        }
+      }
+      result.groups.set(name, ng);
+    }
+  }
+  return result;
 }

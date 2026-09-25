@@ -31,7 +31,7 @@
  *
  * Pure and headless.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
 import { f, meshVertNormals, type V3 } from "./blender-math";
 import { textureValue, type ProceduralTexture } from "./texture/texture";
@@ -147,12 +147,7 @@ export function displace(data: MeshData, opts: DisplaceOptions): MeshData {
     }
   }
 
-  return {
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-  };
+  return withPositions(data, out);
 }
 
 /**
@@ -178,12 +173,7 @@ export function offsetAlongNormals(data: MeshData, distance: number): MeshData {
   const out = new Float32Array(data.positions.length);
   for (let v = 0; v < P.length; v++)
     for (let k = 0; k < 3; k++) out[v * 3 + k] = f(P[v]![k]! + f(normals[v]![k]! * d));
-  return {
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-  };
+  return withPositions(data, out);
 }
 
 export interface TextureDisplaceOptions {
@@ -251,11 +241,7 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
       out[v * 3 + k] = f(p[k]! + delta);
     }
   }
-  return {
-    ...data,
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-  };
+  return withPositions(data, out);
 }
 
 /**

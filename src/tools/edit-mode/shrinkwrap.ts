@@ -773,6 +773,8 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   if (data.uvs) result.uvs = data.uvs.map((f) => f.map((c) => [...c]));
   if (data.colors) result.colors = data.colors.map((f) => f.map((c) => [...c]));
   if (data.normals) result.normals = data.normals.map((f) => f.map((c) => [...c]));
+  if (data.groups) result.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.materials) result.materials = [...data.materials];
   return result;
 }
 

@@ -196,7 +196,7 @@ function mergeGroups(
         em,
         new Float32Array(kept),
         out.map((poly) => poly.map((v) => remap[v]!)),
-        { sameCorners: true },
+        { sameCorners: true, vertexMap: remap },
       );
       return;
     }

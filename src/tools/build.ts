@@ -19,6 +19,7 @@
  * backwards Fisher–Yates), so the same seed reveals the same faces.
  */
 import type { MeshData } from "../lib/mesh";
+import { carryFaceLayers, carryVertexLayers, defined, onlyEdgesOf, sameFaces } from "./mesh-layers";
 
 export interface BuildOptions {
   /** The frame to evaluate at (Blender's scene time). */
@@ -128,5 +129,18 @@ export function build(data: MeshData, opts: BuildOptions): MeshData {
   const loose = keptEdges
     .map(([a, b]) => [vertNew.get(a)!, vertNew.get(b)!])
     .filter(([a, b]) => !onFace.has(a! < b! ? `${a}_${b}` : `${b}_${a}`));
-  return { positions, polys, ...(loose.length > 0 ? { edges: loose } : {}) };
+  // The layers of what was kept (compat-backlog A3): Build copies each kept
+  // vertex's, edge's, face's and corner's data as it was.
+  const source = new Int32Array(vertNew.size);
+  for (const [old, nu] of vertNew) source[nu] = old;
+  const { edges: _wire, ...vertexLayers } = carryVertexLayers(data, source);
+  void _wire;
+  onlyEdgesOf(vertexLayers, polys, loose);
+  return defined({
+    positions,
+    polys,
+    ...(loose.length > 0 ? { edges: loose } : {}),
+    ...vertexLayers,
+    ...carryFaceLayers(data, sameFaces(keptFaces, data)),
+  });
 }

@@ -27,8 +27,9 @@
  *
  * Pure and headless — Vitest-pinned.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
+import { carryFaceLayers, carryVertexLayers, defined, sameFaces, type FaceSource } from "./mesh-layers";
 
 // ── Shared geometry ────────────────────────────────────────────────────────
 
@@ -219,12 +220,16 @@ export function recalcFaceNormals(
     report.nonManifoldEdges = nonManifoldEdges;
   }
 
-  return {
-    positions: new Float32Array(P),
+  // Every layer (compat-backlog A3): a reversed face's corners follow their
+  // vertices, as `BM_face_normal_flip` keeps each loop's data.
+  return defined({
+    ...withPositions(data, new Float32Array(P)),
     polys,
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-  };
+    ...carryFaceLayers(
+      data,
+      polys.map((p, f) => ({ face: f, corners: p.map((v) => data.polys[f]!.indexOf(v)) })),
+    ),
+  });
 }
 
 // ── connectVertsConcave ────────────────────────────────────────────────────
@@ -430,9 +435,11 @@ export function connectVertsConcave(
   let pieceCount = 0;
   let failed = 0;
 
-  for (const poly of data.polys) {
+  const sources: FaceSource[] = [];
+  for (let fi = 0; fi < data.polys.length; fi++) {
+    const poly = data.polys[fi]!;
     if (poly.length < 4) {
-      out.push([...poly]);
+      { out.push([...poly]); sources.push({ face: fi, corners: poly.map((_, i) => i) }); }
       continue;
     }
 
@@ -441,7 +448,7 @@ export function connectVertsConcave(
     const [nx, ny, nz] = polyNormal(P, poly);
     const len = Math.hypot(nx, ny, nz);
     if (len < 1e-20) {
-      out.push([...poly]); // zero-area face — nothing to say about its shape
+      { out.push([...poly]); sources.push({ face: fi, corners: poly.map((_, i) => i) }); } // zero-area face — nothing to say about its shape
       continue;
     }
     const n: Vec3 = [nx / len, ny / len, nz / len];
@@ -468,14 +475,14 @@ export function connectVertsConcave(
 
     const eps = straightEpsilon(ring);
     if (isConvexRing(ring, eps)) {
-      out.push([...poly]);
+      { out.push([...poly]); sources.push({ face: fi, corners: poly.map((_, i) => i) }); }
       continue;
     }
 
     const tris = earClip(ring, eps);
     if (!tris) {
       failed++;
-      out.push([...poly]);
+      { out.push([...poly]); sources.push({ face: fi, corners: poly.map((_, i) => i) }); }
       continue;
     }
 
@@ -485,7 +492,10 @@ export function connectVertsConcave(
     const pieces = mergeToConvex(tris, ring, boundary, eps);
     split++;
     pieceCount += pieces.length;
-    for (const piece of pieces) out.push(piece.map((i) => poly[i]!));
+    for (const piece of pieces) {
+      out.push(piece.map((i) => poly[i]!));
+      sources.push({ face: fi, corners: piece });
+    }
   }
 
   if (report) {
@@ -494,12 +504,9 @@ export function connectVertsConcave(
     report.failed = failed;
   }
 
-  return {
-    positions: new Float32Array(P),
-    polys: out,
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-  };
+  // Every layer (compat-backlog A3): each piece keeps its face's corners, as
+  // `BM_face_split` does.
+  return defined({ ...withPositions(data, new Float32Array(P)), polys: out, ...carryFaceLayers(data, sources) });
 }
 
 // ── Loose geometry ─────────────────────────────────────────────────────────
@@ -548,50 +555,28 @@ export function compactMesh(data: MeshData, keep: ReadonlySet<number>): MeshData
   const count = data.positions.length / 3;
 
   const remap = new Map<number, number>();
+  const source: number[] = [];
   const positions: number[] = [];
   for (let v = 0; v < count; v++) {
     if (!keep.has(v)) continue;
-    remap.set(v, positions.length / 3);
+    remap.set(v, source.length);
+    source.push(v);
     positions.push(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
   }
 
-  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
-  const moved = (k: string): string | undefined => {
-    const [a, b] = k.split("_").map(Number);
-    const na = remap.get(a!);
-    const nb = remap.get(b!);
-    return na === undefined || nb === undefined ? undefined : key(na, nb);
-  };
-
-  const creases = data.creases ? new Map<string, number>() : undefined;
-  if (data.creases && creases)
-    for (const [k, value] of data.creases) {
-      const nk = moved(k);
-      if (nk !== undefined) creases.set(nk, value);
-    }
-
-  const seams = data.seams ? new Set<string>() : undefined;
-  if (data.seams && seams)
-    for (const k of data.seams) {
-      const nk = moved(k);
-      if (nk !== undefined) seams.add(nk);
-    }
-
-  const edges = data.edges
-    ? data.edges
-        .map((e) => e.map((v) => remap.get(v)))
-        .filter((e): e is number[] => e.every((v) => v !== undefined))
-    : undefined;
-
-  return {
+  const faces: number[] = [];
+  data.polys.forEach((poly, f) => {
+    if (poly.every((v) => remap.has(v))) faces.push(f);
+  });
+  const polys = faces.map((f) => data.polys[f]!.map((v) => remap.get(v)!));
+  // Every layer follows its vertex or face (compat-backlog A3): groups,
+  // materials and the corner layers as well as the edge keys.
+  return defined({
     positions: new Float32Array(positions),
-    polys: data.polys
-      .filter((poly) => poly.every((v) => remap.has(v)))
-      .map((poly) => poly.map((v) => remap.get(v)!)),
-    ...(creases ? { creases } : {}),
-    ...(seams ? { seams } : {}),
-    ...(edges ? { edges } : {}),
-  };
+    polys,
+    ...carryVertexLayers(data, source),
+    ...carryFaceLayers(data, sameFaces(faces, data)),
+  });
 }
 
 /**

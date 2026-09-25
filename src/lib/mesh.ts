@@ -155,6 +155,8 @@ export function meshFromData(data: MeshData): EditMesh {
   // the operators checked against Blender, dropped (never stale) by the rest.
   if (data.uvs) em.loopUVs = data.uvs.map((f) => f.map((c) => [...c]));
   if (data.colors) em.loopColors = data.colors.map((f) => f.map((c) => [...c]));
+  if (data.materials && data.materials.length === data.polys.length) em.faceMaterials = [...data.materials];
+  if (data.groups) em.vertexGroups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
 
   const tri = triangulateFaces(em);
   em.triToFace = tri.triToFace;
@@ -174,15 +176,39 @@ export function meshToData(em: EditMesh): Required<MeshData> {
     colors: (em.loopColors ?? []).map((f) => f.map((c) => [...c])),
     sharp: new Set(em.sharpEdges ?? []),
     normals: (em.loopNormals ?? []).map((f) => f.map((c) => [...c])),
-    // **Always empty, and that is the contract.** `EditMesh` does not carry
-    // vertex groups, because their keys are vertex indices and an operator
-    // that renumbers vertices would leave them pointing at the wrong ones. A
-    // round trip through the half-edge operators loses the groups visibly
-    // rather than silently mis-indexing them — see `MeshData.groups`.
-    groups: new Map(),
-    // Likewise per-face materials: face indices move under the operators.
-    materials: [],
+    // Carried through `rebuildPolygons` since 2026-09-25 (compat-backlog A3)
+    // — kept, derived, or dropped whole, never pointing at the wrong vertex
+    // or face. Empty when the input had none or an operator dropped them.
+    groups: new Map([...(em.vertexGroups ?? [])].map(([k, g]) => [k, new Map(g)])),
+    materials: [...(em.faceMaterials ?? [])],
   };
+}
+
+/**
+ * `data` with new positions and **everything else carried**: the faces, the
+ * edge flags, wire edges, the per-corner layers, vertex groups, materials.
+ *
+ * For the operators that move vertices and nothing else — the deform
+ * modifiers, smoothing, displacement. The faces and corners are the same
+ * ones, so every layer still describes them; before 2026-09-25 (compat-backlog
+ * A3) most of these kept creases and seams and dropped the rest.
+ *
+ * Custom normals are copied as the vectors they were. Blender keeps them as
+ * angles in each corner's own normal space, so there they turn with the
+ * surface; here they do not. Not matched.
+ */
+export function withPositions(data: MeshData, positions: Float32Array): MeshData {
+  const out: MeshData = { positions, polys: data.polys.map((p) => [...p]) };
+  if (data.creases) out.creases = new Map(data.creases);
+  if (data.seams) out.seams = new Set(data.seams);
+  if (data.sharp) out.sharp = new Set(data.sharp);
+  if (data.edges) out.edges = data.edges.map((e) => [...e]);
+  if (data.uvs) out.uvs = data.uvs.map((f) => f.map((c) => [...c]));
+  if (data.colors) out.colors = data.colors.map((f) => f.map((c) => [...c]));
+  if (data.normals) out.normals = data.normals.map((f) => f.map((c) => [...c]));
+  if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.materials) out.materials = [...data.materials];
+  return out;
 }
 
 /**

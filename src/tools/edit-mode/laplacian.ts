@@ -123,7 +123,7 @@
  * every case measured agrees, and the next person should not assume the
  * condition is understood.
  */
-import type { MeshData } from "../../lib/mesh";
+import { withPositions, type MeshData } from "../../lib/mesh";
 
 export interface SmoothLaplacianOptions {
   /** Blender's `lambda_factor`. Default 1. Larger relaxes further. */
@@ -357,15 +357,7 @@ export function smoothLaplacianVert(
     for (let axis = 0; axis < 3; axis++) if (use[axis]) out[i * 3 + axis] = solved[i * 3 + axis]!;
   }
 
-  return {
-    positions: new Float32Array(out),
-    polys: data.polys.map((p) => [...p]),
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-    ...(data.edges ? { edges: data.edges.map((e) => [...e]) } : {}),
-    ...(data.uvs ? { uvs: data.uvs.map((f) => f.map((c) => [...c])) } : {}),
-    ...(data.colors ? { colors: data.colors.map((f) => f.map((c) => [...c])) } : {}),
-  };
+  return withPositions(data, new Float32Array(out));
 }
 
 /** y = A·x, with A in the row form above. */

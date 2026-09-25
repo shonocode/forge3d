@@ -24,6 +24,7 @@
  * Under 2500 faces with one material, nothing moves.
  */
 import type { MeshData } from "../lib/mesh";
+import { carryFaceLayers, defined, sameFaces } from "./mesh-layers";
 
 const f = Math.fround;
 const TARGET = 2500;
@@ -156,12 +157,18 @@ export function reorderSpatial(data: MeshData): MeshData {
     const y = reverse[b!]!;
     return x < y ? `${x}_${y}` : `${y}_${x}`;
   };
-  return {
+  // Every layer follows its vertex or face (compat-backlog A3).
+  return defined({
     positions,
     polys: newFaceOrder.map((fi) => data.polys[fi]!.map((v) => reverse[v]!)),
     ...(data.edges ? { edges: data.edges.map((e) => e.map((v) => reverse[v]!)) } : {}),
     ...(data.creases ? { creases: new Map([...data.creases].map(([k, s]) => [remapKey(k), s])) } : {}),
     ...(data.seams ? { seams: new Set([...data.seams].map(remapKey)) } : {}),
+    ...(data.sharp ? { sharp: new Set([...data.sharp].map(remapKey)) } : {}),
+    ...(data.groups
+      ? { groups: new Map([...data.groups].map(([k, g]) => [k, new Map([...g].map(([v, w]) => [reverse[v]!, w]))])) }
+      : {}),
+    ...carryFaceLayers(data, sameFaces(newFaceOrder, data)),
     ...(data.materials ? { materials: newFaceOrder.map((fi) => data.materials![fi] ?? 0) } : {}),
-  };
+  });
 }

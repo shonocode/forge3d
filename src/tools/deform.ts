@@ -11,7 +11,7 @@
  *
  * Pure and headless.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
 import { falloffWeight, type ProportionalFalloff } from "./edit-mode/proportional";
 import { meshVertNormals, type V3 } from "./blender-math";
@@ -38,15 +38,8 @@ function perpendicular(axis: DeformAxis): [number, number] {
  * is exactly why it wants to be in one place.
  */
 function deformed(data: MeshData, positions: Float32Array): MeshData {
-  return {
-    positions,
-    polys: data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-    // The corners are the same corners, so their UVs and colours still apply.
-    ...(data.uvs ? { uvs: data.uvs.map((f) => f.map((c) => [...c])) } : {}),
-    ...(data.colors ? { colors: data.colors.map((f) => f.map((c) => [...c])) } : {}),
-  };
+  // The corners are the same corners: every layer still applies.
+  return withPositions(data, positions);
 }
 
 export interface CastOptions {

@@ -107,6 +107,21 @@ export interface EditMesh {
    */
   loopNormals?: number[][][];
   /**
+   * A material slot per face (`MeshData.materials`), following the faces
+   * through `rebuildPolygons` like the corner layers: a face keeps its
+   * source face's slot (a joined face its first corner's face's), and a face
+   * whose source is not known drops the layer.
+   */
+  faceMaterials?: number[];
+  /**
+   * Vertex groups (`MeshData.groups`), keyed by vertex index. A vertex keeps
+   * its weights; a vertex an operator made from others (`VertexOrigin`)
+   * takes the weighted mix Blender's `BM_edge_split` / `BM_loop_interp_from_face`
+   * give it (a group missing from a source counts 0); a new vertex with no
+   * known origin drops the layer.
+   */
+  vertexGroups?: Map<string, Map<number, number>>;
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them
@@ -289,7 +304,8 @@ export function rebuildPolygons(
   polys: number[][],
   carry?: LayerCarry,
 ): void {
-  const hasLayers = LAYER_KEYS.some((k) => em[k] !== undefined);
+  const hasLayers =
+    LAYER_KEYS.some((k) => em[k] !== undefined) || em.faceMaterials !== undefined || em.vertexGroups !== undefined;
   const oldPolys = hasLayers ? toPolygons(em) : [];
   const oldNumV = em.vertices.length;
   const oldPositions = em.positions;
@@ -388,6 +404,8 @@ export interface LayerCarry {
    * only the vertex numbers changed (a compaction). The layers stay as they are.
    */
   sameCorners?: boolean;
+  /** With `sameCorners`: old vertex -> new vertex (-1 gone), for the vertex groups. */
+  vertexMap?: ArrayLike<number>;
 }
 
 const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
@@ -405,7 +423,6 @@ function carryLayers(
   carry: LayerCarry | undefined,
 ): void {
   const layers = LAYER_KEYS.filter((k) => em[k] !== undefined);
-  if (layers.length === 0) return;
 
   // A layer that already disagrees with the faces is stale from before; drop it.
   for (const k of layers) {
@@ -414,12 +431,28 @@ function carryLayers(
       layer.length === oldPolys.length && layer.every((f, i) => f.length === oldPolys[i]!.length);
     if (!ok) em[k] = undefined;
   }
+  if (em.faceMaterials && em.faceMaterials.length !== oldPolys.length) em.faceMaterials = undefined;
   const live = LAYER_KEYS.filter((k) => em[k] !== undefined);
-  if (live.length === 0) return;
+  if (live.length === 0 && !em.faceMaterials && !em.vertexGroups) return;
   if (carry?.sameCorners) {
     const same =
       newPolys.length === oldPolys.length && newPolys.every((p, i) => p.length === oldPolys[i]!.length);
-    if (!same) for (const k of live) em[k] = undefined;
+    if (!same) {
+      for (const k of live) em[k] = undefined;
+      em.faceMaterials = undefined;
+    }
+    if (em.vertexGroups) {
+      const map = carry.vertexMap;
+      if (!map) em.vertexGroups = undefined;
+      else
+        em.vertexGroups = new Map(
+          [...em.vertexGroups].map(([name, g]) => {
+            const ng = new Map<number, number>();
+            for (const [v, w] of g) if (v < map.length && map[v]! >= 0) ng.set(map[v]!, w);
+            return [name, ng];
+          }),
+        );
+    }
     return;
   }
 
@@ -455,6 +488,25 @@ function carryLayers(
     return poly.map((v) => [[g, cornerOf(g, v), 1]]);
   };
 
+  const origins = carry?.origins ?? new Map<number, VertexOrigin>();
+  const memo = new Map<number, Map<number, number> | null>();
+  const expand = (v: number, depth = 0): Map<number, number> | null => {
+    const hit = memo.get(v);
+    if (hit !== undefined) return hit;
+    let out: Map<number, number> | null;
+    const o = origins.get(v);
+    if (o) {
+      out = new Map();
+      for (let i = 0; i < o.from.length && out; i++) {
+        const sub = depth > 64 ? null : expand(o.from[i]!, depth + 1);
+        if (!sub) out = null;
+        else for (const [u, w] of sub) out.set(u, (out.get(u) ?? 0) + w * o.w[i]!);
+      }
+    } else out = v < oldNumV ? new Map([[v, 1]]) : null;
+    memo.set(v, out);
+    return out;
+  };
+
   if (!carry) {
     for (const poly of newPolys) {
       const s = exact(poly);
@@ -465,25 +517,6 @@ function carryLayers(
       sources.push(s);
     }
   } else {
-    const origins = carry.origins ?? new Map<number, VertexOrigin>();
-    const memo = new Map<number, Map<number, number> | null>();
-    const expand = (v: number, depth = 0): Map<number, number> | null => {
-      const hit = memo.get(v);
-      if (hit !== undefined) return hit;
-      let out: Map<number, number> | null;
-      const o = origins.get(v);
-      if (o) {
-        out = new Map();
-        for (let i = 0; i < o.from.length && out; i++) {
-          const sub = depth > 64 ? null : expand(o.from[i]!, depth + 1);
-          if (!sub) out = null;
-          else for (const [u, w] of sub) out.set(u, (out.get(u) ?? 0) + w * o.w[i]!);
-        }
-      } else out = v < oldNumV ? new Map([[v, 1]]) : null;
-      memo.set(v, out);
-      return out;
-    };
-
     const facesOfV = new Map<number, number[]>();
     oldPolys.forEach((p, g) => {
       for (const v of p) {
@@ -575,6 +608,53 @@ function carryLayers(
         return out;
       }),
     );
+  }
+
+  // Materials: a face keeps the slot of the face its corners came from. A
+  // joined face whose sources disagree takes its first corner's face —
+  // `BM_faces_join` keeps its `faces[0]`'s, and which face the caller put
+  // first is not reproduced here. Not measured.
+  if (em.faceMaterials) {
+    const old = em.faceMaterials;
+    em.faceMaterials = failed ? undefined : sources.map((face) => old[face[0]![0]![0]] ?? 0);
+  }
+
+  // Vertex groups: a vertex keeps its weights; a made one mixes its origins'.
+  if (em.vertexGroups) {
+    let ok = !failed;
+    const used = new Set<number>();
+    for (const p of newPolys) for (const v of p) used.add(v);
+    const mixes = new Map<number, Map<number, number>>();
+    for (const v of used) {
+      if (v < oldNumV && !origins.has(v)) continue;
+      const e = expand(v);
+      if (!e) {
+        ok = false;
+        break;
+      }
+      mixes.set(v, e);
+    }
+    if (!ok) em.vertexGroups = undefined;
+    else
+      for (const [name, g] of em.vertexGroups) {
+        const ng = new Map<number, number>();
+        for (const [v, w] of g) if (v < oldNumV && !origins.has(v)) ng.set(v, w);
+        // `layerInterp_mdeformvert`: a source adds a group only where its
+        // weight times the factor is not zero, and the sum is capped at 1.
+        for (const [v, mix] of mixes) {
+          let member = false;
+          let sum = 0;
+          for (const [u, w] of mix) {
+            const x = g.get(u);
+            if (x !== undefined && x * w !== 0) {
+              member = true;
+              sum += w * x;
+            }
+          }
+          if (member) ng.set(v, Math.min(sum, 1));
+        }
+        em.vertexGroups.set(name, ng);
+      }
   }
 }
 

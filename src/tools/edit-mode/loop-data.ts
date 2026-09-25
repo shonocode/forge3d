@@ -40,6 +40,10 @@ function withLayer(data: MeshData, layer: LoopLayer, value: number[][][]): MeshD
     ...(data.edges ? { edges: data.edges.map((e) => [...e]) } : {}),
     ...(data.uvs ? { uvs: data.uvs.map((f) => f.map((c) => [...c])) } : {}),
     ...(data.colors ? { colors: data.colors.map((f) => f.map((c) => [...c])) } : {}),
+    ...(data.normals ? { normals: data.normals.map((f) => f.map((c) => [...c])) } : {}),
+    ...(data.sharp ? { sharp: new Set(data.sharp) } : {}),
+    ...(data.groups ? { groups: new Map([...data.groups].map(([k, g]) => [k, new Map(g)])) } : {}),
+    ...(data.materials ? { materials: [...data.materials] } : {}),
   };
   if (layer === "uv") base.uvs = value;
   else base.colors = value;

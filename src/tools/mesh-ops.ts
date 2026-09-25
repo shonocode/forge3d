@@ -14,8 +14,9 @@
  *
  * Pure and headless — Vitest-pinned.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
+import { carryFaceLayers, type FaceSource } from "./mesh-layers";
 import { compactMesh } from "./mesh-repair";
 import { weldByMap } from "./remove-doubles";
 import { crtQsort } from "./edit-mode/triangle-fill";
@@ -60,7 +61,29 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const polys: number[][] = [];
   const creases = new Map<string, number>();
   const seams = new Set<string>();
-  const uvs: number[][][] | undefined = parts.some((p) => p.uvs) ? [] : undefined;
+  // A layer is there when it is shaped for the part — `meshToData` hands
+  // back `[]` for "none", which is not a layer with no faces.
+  const shaped = (p: MeshData, k: "uvs" | "colors" | "normals" | "materials"): boolean =>
+    (p[k]?.length ?? 0) > 0 && p[k]!.length === p.polys.length;
+  const has = (k: "uvs" | "colors" | "normals" | "sharp" | "edges" | "groups" | "materials") =>
+    parts.some((p) =>
+      k === "uvs" || k === "colors" || k === "normals" || k === "materials"
+        ? shaped(p, k)
+        : k === "sharp" || k === "groups"
+          ? (p[k]?.size ?? 0) > 0
+          : (p[k]?.length ?? 0) > 0,
+    );
+  const uvs: number[][][] | undefined = has("uvs") ? [] : undefined;
+  const colors: number[][][] | undefined = has("colors") ? [] : undefined;
+  // Blender's join fills a part without custom normals with "automatic"
+  // (`short2(0)` in `join_normals`). This layer has no value for
+  // "automatic", so it goes unless every part carries one. Not matched.
+  const normals: number[][][] | undefined =
+    parts.length > 0 && parts.every((p) => shaped(p, "normals")) ? [] : undefined;
+  const sharp: Set<string> | undefined = has("sharp") ? new Set() : undefined;
+  const edges: number[][] | undefined = has("edges") ? [] : undefined;
+  const groups: Map<string, Map<number, number>> | undefined = has("groups") ? new Map() : undefined;
+  const materials: number[] | undefined = has("materials") ? [] : undefined;
   let cursor = 0;
 
   for (const part of parts) {
@@ -68,15 +91,37 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
     positions.set(part.positions, cursor);
     cursor += part.positions.length;
     for (const poly of part.polys) polys.push(poly.map((v) => v + base));
-    if (uvs)
-      part.polys.forEach((poly, f) =>
-        uvs.push(part.uvs ? part.uvs[f]!.map((c) => [...c]) : poly.map(() => [0, 0])),
-      );
+    // A part without a layer gets Blender's default for it: UV (0, 0), a
+    // colour of 0, material slot 0, no group membership.
+    part.polys.forEach((poly, f) => {
+      uvs?.push(shaped(part, "uvs") ? part.uvs![f]!.map((c) => [...c]) : poly.map(() => [0, 0]));
+      colors?.push(shaped(part, "colors") ? part.colors![f]!.map((c) => [...c]) : poly.map(() => [0, 0, 0, 0]));
+      normals?.push(part.normals![f]!.map((c) => [...c]));
+      // Slots are concatenated as numbers. Blender's join renumbers them by
+      // the material in each slot, which `MeshData` does not carry.
+      materials?.push(shaped(part, "materials") ? part.materials![f]! : 0);
+    });
     remapKeys(part.creases, base, (k, v) => creases.set(k, v));
     remapKeys(part.seams, base, (k) => seams.add(k));
+    if (sharp) remapKeys(part.sharp, base, (k) => sharp.add(k));
+    for (const e of part.edges ?? []) edges?.push(e.map((v) => v + base));
+    if (groups)
+      for (const [name, g] of part.groups ?? []) {
+        const ng = groups.get(name) ?? new Map<number, number>();
+        for (const [v, w] of g) ng.set(v + base, w);
+        groups.set(name, ng);
+      }
   }
 
-  return uvs ? { positions, polys, creases, seams, uvs } : { positions, polys, creases, seams };
+  const out: MeshData = { positions, polys, creases, seams };
+  if (uvs) out.uvs = uvs;
+  if (colors) out.colors = colors;
+  if (normals) out.normals = normals;
+  if (sharp) out.sharp = sharp;
+  if (edges) out.edges = edges;
+  if (groups) out.groups = groups;
+  if (materials) out.materials = materials;
+  return out;
 }
 
 export interface TransformOptions {
@@ -133,15 +178,32 @@ export function transformMesh(data: MeshData, opts: TransformOptions): MeshData 
   }
 
   const flipped = s[0] * s[1] * s[2] < 0;
-  return {
-    positions: out,
-    polys: flipped ? data.polys.map((p) => [...p].reverse()) : data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-    ...(data.uvs
-      ? { uvs: data.uvs.map((f) => (flipped ? [...f].reverse() : f).map((c) => [...c])) }
-      : {}),
-  };
+  const placed = withPositions(data, out);
+  if (flipped) {
+    placed.polys = placed.polys.map((p) => p.reverse());
+    for (const k of ["uvs", "colors", "normals"] as const) placed[k] = placed[k]?.map((f) => f.reverse());
+  }
+  // A custom normal turns with the surface: the inverse transpose of the
+  // linear part, which for rotate · scale is rotate · (1 / scale).
+  if (placed.normals && s.some((k) => k === 0)) delete placed.normals;
+  if (placed.normals)
+    placed.normals = placed.normals.map((f) =>
+      f.map(([nx, ny, nz]) => {
+        let x = nx! / s[0], y = ny! / s[1], z = nz! / s[2];
+        let t = y * cx - z * sx;
+        z = y * sx + z * cx;
+        y = t;
+        t = x * cy + z * sy;
+        z = -x * sy + z * cy;
+        x = t;
+        t = x * cz - y * sz2;
+        y = x * sz2 + y * cz;
+        x = t;
+        const l = Math.hypot(x, y, z) || 1;
+        return [x / l, y / l, z / l];
+      }),
+    );
+  return placed;
 }
 
 export interface MirrorOptions {
@@ -157,7 +219,15 @@ export interface MirrorOptions {
   offset?: number;
 }
 
-/** Reflect a mesh across an axis-aligned plane. */
+/**
+ * Reflect a mesh across an axis-aligned plane.
+ *
+ * Every layer is carried (the reflection through `transformMesh`, the two
+ * halves through `mergeMeshes`). Not Blender's Mirror modifier yet: its
+ * default swaps `.L` / `.R` vertex group names on the copy and merges the
+ * seam (`use_mirror_vertex_groups`, `use_mirror_merge`, and
+ * `BKE_defvert_flip_merged` for a merged vertex) — compat-backlog B2.
+ */
 export function mirrorMesh(data: MeshData, axis: "x" | "y" | "z", opts: MirrorOptions = {}): MeshData {
   const k = axis === "x" ? 0 : axis === "y" ? 1 : 2;
   const offset = opts.offset ?? 0;
@@ -272,15 +342,25 @@ function placeAffine(data: MeshData, m: Affine, uvShift?: readonly [number, numb
     out[i + 1] = q[1];
     out[i + 2] = q[2];
   }
-  return {
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-    ...(data.uvs
-      ? { uvs: data.uvs.map((f) => f.map((c) => (uvShift ? [c[0]! + uvShift[0], c[1]! + uvShift[1]] : [...c]))) }
-      : {}),
-  };
+  const placed = withPositions(data, out);
+  if (placed.uvs && uvShift) placed.uvs = placed.uvs.map((f) => f.map((c) => [c[0]! + uvShift[0], c[1]! + uvShift[1]]));
+  // Custom normals by the inverse transpose of the linear part (the rows of
+  // the inverse, read as columns); a singular map drops them.
+  if (placed.normals) {
+    const inv = invertAffine(m);
+    if (!inv.every((r) => r.every(Number.isFinite))) delete placed.normals;
+    else
+      placed.normals = placed.normals.map((f) =>
+        f.map(([x, y, z]) => {
+          const nx = inv[0][0] * x! + inv[1][0] * y! + inv[2][0] * z!;
+          const ny = inv[0][1] * x! + inv[1][1] * y! + inv[2][1] * z!;
+          const nz = inv[0][2] * x! + inv[1][2] * y! + inv[2][2] * z!;
+          const l = Math.hypot(nx, ny, nz) || 1;
+          return [nx / l, ny / l, nz / l];
+        }),
+      );
+  }
+  return placed;
 }
 
 /**
@@ -452,7 +532,7 @@ export function arrayMesh(
     while (map[t] !== -1 && map[t] !== t) t = map[t]!;
     map[v] = t === v ? -1 : t;
   }
-  return weldByMap(merged, (v) => (map[v] === -1 ? v : map[v]!));
+  return weldByMap(merged, (v) => (map[v] === -1 ? v : map[v]!), "array");
 }
 
 /**
@@ -535,7 +615,7 @@ function radialPush(axis: Vec3, by: number): Vec3 {
 
 /** Rotate a mesh by `angle` about an arbitrary axis through `center`. */
 function rotateAbout(data: MeshData, center: Vec3, axis: Vec3, angle: number): MeshData {
-  if (angle === 0) return { ...data, polys: data.polys.map((p) => [...p]) };
+  if (angle === 0) return withPositions(data, Float32Array.from(data.positions));
   const [x, y, z] = normalize(axis);
   const c = Math.cos(angle);
   const s = Math.sin(angle);
@@ -558,12 +638,17 @@ function rotateAbout(data: MeshData, center: Vec3, axis: Vec3, angle: number): M
     out[i + 1] = m[3]! * px + m[4]! * py + m[5]! * pz + center[1];
     out[i + 2] = m[6]! * px + m[7]! * py + m[8]! * pz + center[2];
   }
-  return {
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-  };
+  const turned = withPositions(data, out);
+  // Custom normals turn with the copy.
+  if (turned.normals)
+    turned.normals = turned.normals.map((f) =>
+      f.map(([nx, ny, nz]) => [
+        m[0]! * nx! + m[1]! * ny! + m[2]! * nz!,
+        m[3]! * nx! + m[4]! * ny! + m[5]! * nz!,
+        m[6]! * nx! + m[7]! * ny! + m[8]! * nz!,
+      ]),
+    );
+  return turned;
 }
 
 const crossVec = (a: Vec3, b: Vec3): Vec3 => [
@@ -699,12 +784,7 @@ function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
     out[i + 1] = side[1] * x + vUp[1] * y + tangent[1] * z;
     out[i + 2] = side[2] * x + vUp[2] * y + tangent[2] * z;
   }
-  return {
-    positions: out,
-    polys: data.polys.map((p) => [...p]),
-    creases: data.creases ? new Map(data.creases) : undefined,
-    seams: data.seams ? new Set(data.seams) : undefined,
-  };
+  return withPositions(data, out);
 }
 
 /**
@@ -798,7 +878,7 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
   // A corner that welds onto its neighbour is dropped with its UV, so the
   // layer stays shaped like the surviving polygons.
   const polys: number[][] = [];
-  const uvs: number[][][] | undefined = data.uvs ? [] : undefined;
+  const sources: FaceSource[] = [];
   data.polys.forEach((poly, f) => {
     const ring: number[] = [];
     const corners: number[] = [];
@@ -815,7 +895,7 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
     }
     if (ring.length >= 3) {
       polys.push(ring);
-      if (uvs) uvs.push(corners.map((i) => [...data.uvs![f]![i]!]));
+      sources.push({ face: f, corners });
     }
   });
 
@@ -836,9 +916,29 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
       if (ma !== mb) seams.add(seamKey(ma, mb));
     }
 
-  return uvs
-    ? { positions: new Float32Array(positions), polys, creases, seams, uvs }
-    : { positions: new Float32Array(positions), polys, creases, seams };
+  // The other layers (compat-backlog A3): each corner and face from where it
+  // came, a survivor's groups its own, sharp edges and wire edges moved onto
+  // the survivors.
+  const out: MeshData = { positions: new Float32Array(positions), polys, creases, seams, ...carryFaceLayers(data, sources) };
+  if (data.sharp) {
+    out.sharp = new Set();
+    for (const key of data.sharp) {
+      const [a, b] = key.split("_");
+      const ma = remap[Number(a)]!;
+      const mb = remap[Number(b)]!;
+      if (ma !== mb) out.sharp.add(seamKey(ma, mb));
+    }
+  }
+  if (data.edges) out.edges = data.edges.map((e) => e.map((v) => remap[v]!)).filter((e) => e[0] !== e[1]);
+  if (data.groups) {
+    out.groups = new Map();
+    for (const [name, g] of data.groups) {
+      const ng = new Map<number, number>();
+      for (const [v, w] of g) if (claimedBy[v] === -1) ng.set(remap[v]!, w);
+      out.groups.set(name, ng);
+    }
+  }
+  return out;
 }
 
 /** Axis-aligned bounds, or null for an empty mesh. */
@@ -1047,6 +1147,11 @@ function offsetBasis(data: MeshData): { normals: Float32Array; shell: Float64Arr
  * normal was corner-weighted, and Blender's solidify builds its own per edge
  * (see {@link offsetBasis}) — read from `bmo_extrude.cc` after measuring had
  * ruled out every vertex normal Blender exposes.
+ *
+ * **Layers** (compat-backlog A3): keeps UVs, creases and seams. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   const P = data.positions;
@@ -1160,6 +1265,11 @@ export interface WireframeOptions {
  * `offset` (sliding the bar off the edge) and `use_crease`. Concave corners
  * are untested: the bisector points out of the face there, as it does for
  * `inset`.
+ *
+ * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   const half = opts.thickness / 2;
@@ -1371,6 +1481,11 @@ export interface BisectPlaneOptions {
  * Creases and seams survive, and an edge that gets split passes its sharpness
  * to both halves. Vertices left unused by a cleared side are removed and the
  * indices compacted.
+ *
+ * **Layers** (compat-backlog A3): keeps creases and seams. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData {
   const P = data.positions;
@@ -1527,6 +1642,11 @@ export interface SymmetrizeOptions {
  * becomes exactly symmetric, and a rig mirrored onto it lands on matching
  * geometry. Modelling one half and symmetrizing is cheaper than keeping two
  * halves in step.
+ *
+ * **Layers** (compat-backlog A3): keeps creases and seams. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function symmetrize(data: MeshData, opts: SymmetrizeOptions): MeshData {
   const negative = opts.direction.startsWith("-");
@@ -1578,6 +1698,11 @@ export interface ConvexHullReport {
  * which is what Blender calls, and each of its faces is fanned from its first
  * corner as Blender does. The four-points-with-volume search below only
  * decides the degenerate case.
+ *
+ * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function convexHull(
   data: MeshData,

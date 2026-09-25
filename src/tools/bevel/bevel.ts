@@ -2911,6 +2911,11 @@ function bevelLimitOffset(p: Params, verts: BV[]): void {
  * ```ts
  * const { mesh } = bevelMesh(box({ size: [40, 20, 10] }), { offset: 2, segments: 3, edges: "all" });
  * ```
+ *
+ * **Layers** (compat-backlog A3): keeps materials and wire edges. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   if (opts.miterOuter && opts.miterOuter !== "SHARP")

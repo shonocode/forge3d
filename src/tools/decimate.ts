@@ -134,6 +134,11 @@ function quadricOptimize(q: Quadric, eps: number): number[] | null {
  * ```ts
  * const lod = decimateCollapse(meshToData(em), { ratio: 0.3 });
  * ```
+ *
+ * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
+ * custom normals, vertex groups, materials, sharp and wire edges) is
+ * dropped whole, never left shaped for other faces: Blender interpolates
+ * them over the new geometry, which is not ported (compat-backlog A7).
  */
 export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshData {
   const ratio = f(opts.ratio);
