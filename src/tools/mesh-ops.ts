@@ -1483,10 +1483,10 @@ export interface BisectPlaneOptions {
  * to both halves. Vertices left unused by a cleared side are removed and the
  * indices compacted.
  *
- * **Layers** (compat-backlog A3): keeps creases and seams. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): all of them. A cut vertex's corners are
+ * linear between its edge's two corners in each face, and its vertex groups
+ * mix the edge's ends (`BM_edge_split`); the halves of a face keep its
+ * corners and slot; sharp edges follow the creases (`bisect-plane-layers`).
  */
 export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData {
   const P = data.positions;
@@ -1524,14 +1524,27 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     for (let k = 0; k < 3; k++)
       positions.push(positions[a * 3 + k]! + (positions[b * 3 + k]! - positions[a * 3 + k]!) * t);
     cutVerts.set(key, index);
+    cutAt.set(index, { a, b, t });
     return index;
+  };
+  /** A cut vertex's edge and how far along it from `a`. */
+  const cutAt = new Map<number, { a: number; b: number; t: number }>();
+  /** How far along a→b the cut vertex on that edge sits. */
+  const along = (a: number, m: number): number => {
+    const c = cutAt.get(m)!;
+    return c.a === a ? c.t : 1 - c.t;
   };
 
   const polys: number[][] = [];
   /** Which original edge each half came from, so creases can follow. */
   const splitParent = new Map<string, string>();
+  // Per output face, the input face and each corner's source: one of its
+  // corners, or a point along one of its edges (`BM_edge_split` interpolates
+  // the face's two corners on the edge).
+  type Corner = [number] | [number, number, number];
+  const faceSrc: { face: number; corners: Corner[] }[] = [];
 
-  for (const poly of data.polys) {
+  data.polys.forEach((poly, f) => {
     let hasPos = false;
     let hasNeg = false;
     for (const v of poly) {
@@ -1542,33 +1555,53 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     if (!hasPos || !hasNeg) {
       // Entirely on one side, or lying in the plane — keep or drop whole.
       const keep = hasPos ? !opts.clearOuter : hasNeg ? !opts.clearInner : true;
-      if (keep) polys.push([...poly]);
-      continue;
+      if (keep) {
+        polys.push([...poly]);
+        faceSrc.push({ face: f, corners: poly.map((_, i) => [i] as Corner) });
+      }
+      return;
     }
 
     const above: number[] = [];
     const below: number[] = [];
+    const aboveSrc: Corner[] = [];
+    const belowSrc: Corner[] = [];
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i]!;
       const b = poly[(i + 1) % poly.length]!;
       const sa = side[a]!;
       const sb = side[b]!;
 
-      if (sa >= 0) above.push(a);
-      if (sa <= 0) below.push(a);
+      if (sa >= 0) {
+        above.push(a);
+        aboveSrc.push([i]);
+      }
+      if (sa <= 0) {
+        below.push(a);
+        belowSrc.push([i]);
+      }
 
       if (sa !== 0 && sb !== 0 && sa !== sb) {
         const m = cutOn(a, b);
+        const src: Corner = [i, (i + 1) % poly.length, along(a, m)];
         above.push(m);
         below.push(m);
+        aboveSrc.push(src);
+        belowSrc.push(src);
         splitParent.set(seamKey(a, m), seamKey(a, b));
         splitParent.set(seamKey(m, b), seamKey(a, b));
       }
     }
 
-    if (!opts.clearOuter && above.length >= 3) polys.push(above);
-    if (!opts.clearInner && below.length >= 3) polys.push(below);
-  }
+    if (!opts.clearOuter && above.length >= 3) {
+      polys.push(above);
+      faceSrc.push({ face: f, corners: aboveSrc });
+    }
+    if (!opts.clearInner && below.length >= 3) {
+      polys.push(below);
+      faceSrc.push({ face: f, corners: belowSrc });
+    }
+  });
 
   // Compact: a cleared side leaves vertices nothing refers to.
   //
@@ -1607,12 +1640,71 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     if (data.seams?.has(parent)) carry(half, (m) => seams.add(m));
   }
 
-  return {
+  const out: MeshData = {
     positions: new Float32Array(kept),
     polys: polys.map((poly) => poly.map((v) => remap[v]!)),
     creases,
     seams,
   };
+
+  // The rest of the layers. Sharp edges as creases; wire edges whose ends
+  // both survive (one the cut crosses is not split — not measured).
+  if (data.sharp) {
+    const sharp = new Set<string>();
+    for (const key of data.sharp) if (!wasSplit.has(key)) carry(key, (m) => sharp.add(m));
+    for (const [half, parent] of splitParent) if (data.sharp.has(parent)) carry(half, (m) => sharp.add(m));
+    out.sharp = sharp;
+  }
+  if (data.edges) {
+    const edges = data.edges
+      .filter((e) => remap[e[0]!]! >= 0 && remap[e[1]!]! >= 0)
+      .map((e) => [remap[e[0]!]!, remap[e[1]!]!]);
+    if (edges.length > 0) out.edges = edges;
+  }
+  const corner = (layer: number[][][] | undefined): number[][][] | undefined =>
+    layer && layer.length === data.polys.length
+      ? faceSrc.map(({ face, corners }) =>
+          corners.map((cn) => {
+            const x = layer[face]![cn[0]]!;
+            if (cn.length === 1) return [...x];
+            const y = layer[face]![cn[1]]!;
+            return x.map((v, j) => v + (y[j]! - v) * cn[2]);
+          }),
+        )
+      : undefined;
+  const uvs = corner(data.uvs);
+  if (uvs) out.uvs = uvs;
+  const colors = corner(data.colors);
+  if (colors) out.colors = colors;
+  const normals = corner(data.normals);
+  if (normals) out.normals = normals;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = faceSrc.map(({ face }) => data.materials![face]!);
+  if (data.groups) {
+    // A cut vertex mixes its edge's ends (`BM_data_interp_from_verts` —
+    // `layerInterp_mdeformvert`: a source counts where its weight times the
+    // factor is not zero).
+    out.groups = new Map();
+    for (const [name, g] of data.groups) {
+      const ng = new Map<number, number>();
+      for (const [v, w] of g) if (v < count && remap[v]! >= 0) ng.set(remap[v]!, w);
+      for (const [m, { a, b, t }] of cutAt) {
+        if (remap[m]! < 0) continue;
+        let member = false;
+        let sum = 0;
+        for (const [u, f] of [[a, 1 - t], [b, t]] as const) {
+          const x = g.get(u);
+          if (x !== undefined && x * f !== 0) {
+            member = true;
+            sum += x * f;
+          }
+        }
+        if (member) ng.set(remap[m]!, Math.min(sum, 1));
+      }
+      out.groups.set(name, ng);
+    }
+  }
+  return out;
 }
 
 // ── Symmetrize ─────────────────────────────────────────────────────────────
@@ -1644,10 +1736,9 @@ export interface SymmetrizeOptions {
  * geometry. Modelling one half and symmetrizing is cheaper than keeping two
  * halves in step.
  *
- * **Layers** (compat-backlog A3): keeps creases and seams. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): all of them, from {@link bisectPlane} and
+ * {@link mirrorMesh} — the mirrored half is a copy, UVs not mirrored, as
+ * Blender's (`symmetrize-layers`).
  */
 export function symmetrize(data: MeshData, opts: SymmetrizeOptions): MeshData {
   const negative = opts.direction.startsWith("-");

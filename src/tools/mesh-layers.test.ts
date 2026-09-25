@@ -111,6 +111,9 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   // The wire edge is not a hull edge.
   ["convexHull", () => L.convexHull(cube()), ALL.filter((k) => k !== "edges")],
   ["unsubdivide", () => L.unsubdivide(cube()), ["uvs", "colors", "normals", "materials", "edges"]],
+  ["bisectPlane", () => L.bisectPlane(cube(), { planeCo: [0, 0, 0], planeNo: [1, 0, 0] } as never)],
+  // The wire edge 0-6 crosses to the side that goes.
+  ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ALL.filter((k) => k !== "edges")],
 ];
 
 // New geometry whose layers need interpolation that is not ported: these
@@ -118,8 +121,6 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 }), ["uvs", "creases", "seams"]],
   ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), []],
-  ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ["creases", "seams"]],
-  ["bisectPlane", () => L.bisectPlane(cube(), { planeCo: [0, 0, 0], planeNo: [1, 0, 0] } as never), ["creases", "seams"]],
   ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), []],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [
