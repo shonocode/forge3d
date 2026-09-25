@@ -100,7 +100,7 @@ export {
 // `removeDoubles` is Blender's `remove_doubles` ported to the vertex — the same
 // survivors, the same faces; `weldMesh` (below) stays the generators' quick
 // seam-closer. `build` is the Build modifier at one frame.
-export { removeDoubles, mergeByDistance } from "../tools/remove-doubles";
+export { removeDoubles, mergeByDistance, type MergeByDistanceOptions } from "../tools/remove-doubles";
 export { reorderSpatial } from "../tools/reorder-spatial";
 export { createMonkey, type MonkeyOptions } from "../tools/monkey";
 export { build, type BuildOptions } from "../tools/build";
@@ -319,15 +319,43 @@ export {
 
 // ── Displacement ───────────────────────────────────────────────────────────
 // Pushing vertices around by something irregular — the step that makes a box
-// read as a stone. No Blender reference (a texture-driven modifier and an
-// editor RNG), so the guarantee is determinism: same seed, same mesh.
+// read as a stone. Two kinds: `displace` is this library's own seeded noise
+// (the guarantee is determinism: same seed, same mesh), `textureDisplace` is
+// Blender's Displace modifier with one of its procedural textures, measured.
 export {
   displace,
   offsetAlongNormals,
+  textureDisplace,
   valueNoise,
   hashNoise,
   type DisplaceOptions,
+  type TextureDisplaceOptions,
 } from "../tools/displace";
+
+// ── Procedural textures ────────────────────────────────────────────────────
+// Blender's legacy textures (Clouds, Wood, Marble, Magic, Blend, Stucci,
+// Musgrave, Voronoi, Distorted Noise), read at a point. What Displace and Wave
+// sample; usable on its own for anything that wants Blender's noise.
+export {
+  evaluateTexture,
+  textureValue,
+  type ProceduralTexture,
+  type TextureResult,
+  type TextureValue,
+  type TextureCommon,
+  type CloudsTexture,
+  type WoodTexture,
+  type MarbleTexture,
+  type MagicTexture,
+  type BlendTexture,
+  type StucciTexture,
+  type MusgraveTexture,
+  type VoronoiTexture,
+  type DistortedNoiseTexture,
+  type NoiseType,
+  type WaveForm,
+} from "../tools/texture/texture";
+export { type NoiseBasis, type DistanceMetric } from "../tools/texture/noise";
 
 // ── Deform ─────────────────────────────────────────────────────────────────
 // The regular half of the same job: twist a baluster, bend a rail, taper a
@@ -433,7 +461,17 @@ export {
   type VertexWeightMixSet,
   type ProximityGeometry,
 } from "../tools/edit-mode/vertex-weight";
-export { transferWeights, type TransferWeightsOptions, type TransferMapping } from "../tools/data-transfer";
+export {
+  transferWeights,
+  transferEdgeData,
+  transferLoopData,
+  type TransferWeightsOptions,
+  type TransferMapping,
+  type TransferEdgeDataOptions,
+  type EdgeTransferMapping,
+  type TransferLoopDataOptions,
+  type LoopTransferMapping,
+} from "../tools/data-transfer";
 export { computeLSCM, type LSCMResult, type LSCMOptions } from "../tools/edit-mode/lscm";
 
 // ── Sculpt maths ───────────────────────────────────────────────────────────

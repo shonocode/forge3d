@@ -22,15 +22,19 @@
  * That is what a build script actually needs. A render that changes because
  * `Math.random` was called somewhere is the failure this exists to prevent.
  *
- * The one exception is {@link offsetAlongNormals}: the Displace modifier with
- * **no** texture is a plain push along the normal, and that one is measured
- * (`displace-mod`).
+ * The exceptions are the modifier itself. {@link offsetAlongNormals} is the
+ * Displace modifier with **no** texture, a plain push along the normal
+ * (`displace-mod`); {@link textureDisplace} is the modifier **with** one of
+ * Blender's procedural textures (`tools/texture`, ported 2026-09-25), measured
+ * texture by texture (`displace-tex-*`). Those are Blender's noise, not a
+ * random generator's, so they can be matched — and are.
  *
  * Pure and headless.
  */
 import type { MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
 import { f, meshVertNormals, type V3 } from "./blender-math";
+import { textureValue, type ProceduralTexture } from "./texture/texture";
 
 /**
  * A hash-based value in [0, 1) from three integers.
@@ -180,6 +184,103 @@ export function offsetAlongNormals(data: MeshData, distance: number): MeshData {
     creases: data.creases ? new Map(data.creases) : undefined,
     seams: data.seams ? new Set(data.seams) : undefined,
   };
+}
+
+export interface TextureDisplaceOptions {
+  /** The texture read at each vertex. Absent: every vertex reads 1 (Blender's "white"). */
+  texture?: ProceduralTexture;
+  /** Blender's `strength`. Default 1. */
+  strength?: number;
+  /** Blender's `mid_level`: the texture value that moves nothing. Default 0.5. */
+  midLevel?: number;
+  /**
+   * Blender's `direction`. Default `"normal"`. `"rgbToXyz"` moves each axis by
+   * its own colour channel (a grey texture moves all three alike).
+   */
+  direction?: "normal" | "x" | "y" | "z" | "rgbToXyz";
+  /**
+   * Blender's `texture_coords`. `"local"` (default) reads the texture at the
+   * vertex; `"uv"` at `(2u − 1, 2v − 1, 0)` from the first face corner that
+   * uses the vertex (`uvs` must be present, else it falls back to local, as
+   * Blender does with no UV map). `GLOBAL` / `OBJECT` need an object's
+   * matrix, which a `MeshData` does not have — transform the mesh instead.
+   */
+  coords?: "local" | "uv";
+}
+
+/**
+ * Blender's **Displace** modifier with a procedural texture
+ * (`MOD_displace.cc`): each vertex reads the texture, and moves
+ * `(value − midLevel) · strength` along `direction`, clamped to ±10000.
+ *
+ * ```ts
+ * const rock = textureDisplace(box, { texture: { type: "CLOUDS", noiseScale: 0.3 }, strength: 0.05 });
+ * ```
+ *
+ * The value is `BKE_texture_get_value`'s: the intensity, or for a texture that
+ * returns colour, the plain mean of its channels. The arithmetic is float32
+ * in C's order, and the normal is Blender's (`Mesh::vert_normals`). Textures
+ * are `tools/texture` — every legacy procedural type but `NOISE`, which
+ * Blender seeds from the clock.
+ */
+export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {}): MeshData {
+  const count = data.positions.length / 3;
+  const P: V3[] = [];
+  for (let v = 0; v < count; v++)
+    P.push([f(data.positions[v * 3]!), f(data.positions[v * 3 + 1]!), f(data.positions[v * 3 + 2]!)]);
+  const direction = opts.direction ?? "normal";
+  const mid = f(opts.midLevel ?? 0.5);
+  const strength = f(opts.strength ?? 1);
+  const coords = textureCoords(data, P, opts.coords ?? "local");
+  const normals = direction === "normal" ? meshVertNormals(P, data.polys) : null;
+  const out = new Float32Array(data.positions.length);
+  for (let v = 0; v < count; v++) {
+    const value = opts.texture ? textureValue(opts.texture, coords[v]!) : null;
+    const p = P[v]!;
+    if (direction === "rgbToXyz") {
+      const rgb = value ? value.color : [1, 1, 1];
+      for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(f(rgb[k]! - mid) * strength));
+      continue;
+    }
+    let delta = f((value ? value.intensity : 1) - mid);
+    delta = Math.min(10000, Math.max(-10000, f(delta * strength)));
+    for (let k = 0; k < 3; k++) out[v * 3 + k] = p[k]!;
+    if (normals) for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(normals[v]![k]! * delta));
+    else {
+      const k = direction === "x" ? 0 : direction === "y" ? 1 : 2;
+      out[v * 3 + k] = f(p[k]! + delta);
+    }
+  }
+  return {
+    ...data,
+    positions: out,
+    polys: data.polys.map((p) => [...p]),
+  };
+}
+
+/**
+ * `MOD_get_texture_coords` for `LOCAL` and `UV` — shared by the Displace and
+ * Wave modifiers. A vertex no face reaches has UV coordinates (0, 0, 0).
+ */
+export function textureCoords(
+  data: MeshData,
+  P: readonly V3[],
+  coords: "local" | "uv",
+): [number, number, number][] {
+  if (coords === "uv" && data.uvs) {
+    const out: [number, number, number][] = P.map(() => [0, 0, 0]);
+    const done = new Uint8Array(P.length);
+    data.polys.forEach((poly, face) =>
+      poly.forEach((v, i) => {
+        if (done[v]) return;
+        const uv = data.uvs![face]?.[i] ?? [0, 0];
+        out[v] = [f(f(f(uv[0]!) * 2) - 1), f(f(f(uv[1]!) * 2) - 1), 0];
+        done[v] = 1;
+      }),
+    );
+    return out;
+  }
+  return P.map((p) => [p[0]!, p[1]!, p[2]!]);
 }
 
 /** A quarter of the longest side: coarse enough to read as shape, not grain. */

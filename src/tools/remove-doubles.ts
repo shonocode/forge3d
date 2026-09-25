@@ -25,6 +25,7 @@
  * All distances in float32, as a `BMVert`'s coordinates are.
  */
 import type { MeshData } from "../lib/mesh";
+import { calcEdges } from "./bmesh-lite";
 
 const f = Math.fround;
 type V3 = [number, number, number];
@@ -176,9 +177,24 @@ export function removeDoubles(data: MeshData, dist: number): MeshData {
   return weldByMap(data, (v) => (dup[v] === -1 || dup[v] === v ? v : dup[v]!));
 }
 
+export interface MergeByDistanceOptions {
+  /**
+   * Blender's Weld `mode`. `"all"` (default) merges any vertices within the
+   * distance; `"connected"` only collapses **edges** shorter than it
+   * (`mesh_merge_by_distance_connected`): the mesh's edges are walked in
+   * order, an edge whose two clusters are within range merges the higher
+   * cluster into the lower, and the cluster's centre moves by the weighted
+   * mean — later edges are measured from that centre. Survivors still land on
+   * the plain mean of the positions merged into them.
+   */
+  mode?: "all" | "connected";
+  /** Blender's `loose_edges`: in `"connected"` mode, only collapse edges that belong to no face. */
+  onlyLooseEdges?: boolean;
+}
+
 /**
- * Blender's **Weld** modifier (mode All) and the Geometry Nodes *Merge by
- * Distance* — `mesh_merge_by_distance_all`. A different procedure from
+ * Blender's **Weld** modifier and the Geometry Nodes *Merge by Distance* —
+ * `mesh_merge_by_distance_all` (mode All; for Connected see the options). A different procedure from
  * {@link removeDoubles}, and a different answer:
  *
  * - **Clusters** (`kdtree_calc_duplicates_fast`, index order): vertices are
@@ -189,18 +205,19 @@ export function removeDoubles(data: MeshData, dist: number): MeshData {
  * - Faces are rebuilt by {@link weldByMap}, the `weld_verts` rules. Blender's
  *   weld has its own face pass (`weld_poly_split_recursive`, not ported); the
  *   two gave the same faces on all three cases of the `weld-mod` row
- *   (the production cage among them), which is a measurement, not a proof —
- *   an input where a face folds onto itself in a new way could part them.
+ *   (the production cage among them) and again at a distance wide enough to
+ *   fold faces onto themselves (`weld-mod-wide`) — a measurement, not a proof.
  *
  * ```ts
  * const closed = mergeByDistance(mesh, 0.001); // the Weld modifier's answer
  * ```
  */
-export function mergeByDistance(data: MeshData, dist: number): MeshData {
+export function mergeByDistance(data: MeshData, dist: number, options: MergeByDistanceOptions = {}): MeshData {
   const n = data.positions.length / 3;
   const P = data.positions;
   const range = f(dist);
   const rangeSq = f(range * range);
+  if (options.mode === "connected") return mergeConnected(data, rangeSq, options.onlyLooseEdges ?? false);
   const dest = new Int32Array(n).fill(-1);
   for (let v = 0; v < n; v++) {
     if (dest[v] !== -1 && dest[v] !== v) continue;
@@ -215,6 +232,64 @@ export function mergeByDistance(data: MeshData, dist: number): MeshData {
   }
   const map = (v: number): number => (dest[v] === -1 ? v : dest[v]!);
 
+  const sum = new Float64Array(n * 3);
+  const count = new Uint32Array(n);
+  for (let v = 0; v < n; v++) {
+    const t = map(v);
+    count[t] = count[t]! + 1;
+    for (let k = 0; k < 3; k++) sum[t * 3 + k] = sum[t * 3 + k]! + P[v * 3 + k]!;
+  }
+  const moved = Float32Array.from(P);
+  for (let v = 0; v < n; v++)
+    if (count[v]! > 1) for (let k = 0; k < 3; k++) moved[v * 3 + k] = sum[v * 3 + k]! / count[v]!;
+  return weldByMap({ ...data, positions: moved }, map);
+}
+
+/** `mesh_merge_by_distance_connected`, then the same mixing and face pass as mode All. */
+function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean): MeshData {
+  const n = data.positions.length / 3;
+  const P = data.positions;
+  const polys = data.polys.filter((p) => p.length >= 3);
+  // The mesh's edges in `mesh_calc_edges` order, then the loose ones.
+  const faceEdges = calcEdges(polys, polys.length < 1000 ? 1 : 8);
+  const seen = new Set(faceEdges.map(([a, b]) => `${a}_${b}`));
+  const loose: [number, number][] = [];
+  for (const e of data.edges ?? []) {
+    const a = Math.min(e[0]!, e[1]!);
+    const b = Math.max(e[0]!, e[1]!);
+    if (a === b || seen.has(`${a}_${b}`)) continue;
+    seen.add(`${a}_${b}`);
+    loose.push([a, b]);
+  }
+  const edges = onlyLoose ? loose : [...faceEdges, ...loose];
+
+  const dest = Int32Array.from({ length: n }, (_, i) => i);
+  const co: V3[] = Array.from({ length: n }, (_, i) => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!]);
+  const merged = new Int32Array(n);
+  let killed = 0;
+  for (let [v1, v2] of edges) {
+    while (v1 !== dest[v1]) v1 = dest[v1]!;
+    while (v2 !== dest[v2]) v2 = dest[v2]!;
+    if (v1 === v2) continue;
+    if (v1 > v2) [v1, v2] = [v2, v1];
+    const c1 = co[v1]!;
+    const c2 = co[v2]!;
+    const dir: V3 = [f(c2[0] - c1[0]), f(c2[1] - c1[1]), f(c2[2] - c1[2])];
+    const d = f(f(f(dir[0] * dir[0]) + f(dir[1] * dir[1])) + f(dir[2] * dir[2]));
+    if (d > rangeSq) continue;
+    const influence = f((merged[v2]! + 1) / f(merged[v1]! + merged[v2]! + 2));
+    for (let k = 0; k < 3; k++) c1[k] = f(c1[k]! + f(dir[k]! * influence));
+    merged[v1] = merged[v1]! + merged[v2]! + 1;
+    dest[v2] = v1;
+    killed++;
+  }
+  if (killed === 0) return weldByMap(data, (v) => v);
+  const root = (v: number): number => {
+    while (dest[v] !== v) v = dest[v]!;
+    return v;
+  };
+  const map = (v: number): number => root(v);
+  // `do_mix_data`: each survivor at the plain mean of what merged into it.
   const sum = new Float64Array(n * 3);
   const count = new Uint32Array(n);
   for (let v = 0; v < n; v++) {

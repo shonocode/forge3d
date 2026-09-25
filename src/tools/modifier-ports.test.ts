@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { MeshData } from "../lib/mesh";
 import { smoothMesh } from "./smooth-mesh";
-import { offsetAlongNormals } from "./displace";
+import { offsetAlongNormals, textureDisplace } from "./displace";
 import { mergeByDistance, removeDoubles } from "./remove-doubles";
-import { transferWeights } from "./data-transfer";
+import { transferEdgeData, transferLoopData, transferWeights } from "./data-transfer";
 import { arrayMesh } from "./mesh-ops";
 import { createVert } from "./edit-mode/wire";
 import { beautifyFill } from "./beautify-fill";
@@ -158,5 +158,110 @@ describe("arrayMesh relative offset (the Array modifier)", () => {
     const bar: MeshData = { positions: new Float32Array([0, 0, 0, 2, 0, 0]), polys: [] };
     // Constant 0.5 plus relative 1 × width 2: the copy starts at 2.5.
     expect(xs(arrayMesh(bar, 2, [0.5, 0, 0], { relative: [1, 0, 0] }))).toEqual([0, 2, 2.5, 4.5]);
+  });
+});
+
+describe("arrayMesh object offset, fit length, UV offset", () => {
+  const point: MeshData = { positions: new Float32Array([1, 0, 0]), polys: [], edges: [] };
+  const round = (m: MeshData): number[] => Array.from(m.positions, (x) => Math.round(x * 1e5) / 1e5 + 0);
+
+  it("multiplies the object's transform in, so a quarter turn makes a ring", () => {
+    const ring = arrayMesh(point, 4, [0, 0, 0], { objectOffset: { rotate: [0, 0, Math.PI / 2] } });
+    expect(round(ring)).toEqual([1, 0, 0, 0, 1, 0, -1, 0, 0, 0, -1, 0]);
+  });
+
+  it("fits as many copies as the length allows, whatever count says", () => {
+    const bar: MeshData = { positions: new Float32Array([0, 0, 0, 1, 0, 0]), polys: [], edges: [[0, 1]] };
+    // ⌊(5 + 1e-6) / 2 + 1⌋ = 3 copies at a step of 2.
+    expect(arrayMesh(bar, 10, [2, 0, 0], { fitLength: 5 }).positions.length / 3).toBe(6);
+  });
+
+  it("moves copy c's UVs by c times the UV offset", () => {
+    const quad: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+      uvs: [[[0, 0], [0.1, 0], [0.1, 0.1], [0, 0.1]]],
+    };
+    const out = arrayMesh(quad, 2, [2, 0, 0], { uvOffset: [0.5, 0.25] });
+    expect(out.uvs![1]![0]).toEqual([0.5, 0.25]);
+    expect(out.uvs![0]![0]).toEqual([0, 0]);
+  });
+});
+
+describe("mergeByDistance connected (the Weld modifier, CONNECTED)", () => {
+  it("merges only ends of an edge, not vertices that are merely close", () => {
+    // Two separate edges whose near ends are 0.01 apart, and one short edge.
+    const m: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1.01, 0, 0, 2, 0, 0, 3, 0, 0, 3.005, 0, 0]),
+      polys: [],
+      edges: [[0, 1], [2, 3], [4, 5]],
+    };
+    expect(mergeByDistance(m, 0.02).positions.length / 3).toBe(4);
+    expect(mergeByDistance(m, 0.02, { mode: "connected" }).positions.length / 3).toBe(5);
+  });
+});
+
+describe("transferEdgeData (Data Transfer, edge data)", () => {
+  it("carries sharp and crease by topology, and clears what the source does not have", () => {
+    const quad = (sharp: string[], creases: [string, number][]): MeshData => ({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+      sharp: new Set(sharp),
+      creases: new Map(creases),
+    });
+    const out = transferEdgeData(quad(["2_3"], [["0_3", 1]]), quad(["0_1"], [["1_2", 0.5]]), { mapping: "topology" });
+    expect([...out.sharp!]).toEqual(["0_1"]);
+    expect([...out.creases!]).toEqual([["1_2", 0.5]]);
+  });
+});
+
+describe("transferLoopData (Data Transfer, face corner data)", () => {
+  // Two unit quads side by side, face 0 at x ∈ [0, 1] and face 1 at [1, 2].
+  const strip = (seams: string[]): MeshData => ({
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 1, 1, 0, 2, 1, 0]),
+    polys: [
+      [0, 1, 4, 3],
+      [1, 2, 5, 4],
+    ],
+    seams: new Set(seams),
+    uvs: [
+      [[0, 0], [0.01, 0], [0.02, 0], [0.03, 0]],
+      [[0.5, 0.5], [0.51, 0.5], [0.52, 0.5], [0.53, 0.5]],
+    ],
+  });
+  // A target quad over most of face 1, its left side reaching into face 0.
+  const target: MeshData = {
+    positions: new Float32Array([0.9, 0, 0.01, 2, 0, 0.01, 2, 1, 0.01, 0.9, 1, 0.01]),
+    polys: [[0, 1, 2, 3]],
+  };
+
+  it("copies by corner index under topology", () => {
+    const out = transferLoopData(strip([]), strip([]), { mapping: "topology" });
+    expect(out.uvs).toEqual(strip([]).uvs);
+  });
+
+  it("keeps one face on one side of a seam", () => {
+    // Without a seam the left corners find face 0; with the shared edge a
+    // seam, the face's best island is face 1's and every corner reads it.
+    const joined = transferLoopData(target, strip([]), { mapping: "faceNearest", layers: ["uvs"] });
+    const cut = transferLoopData(target, strip(["1_4"]), { mapping: "faceNearest", layers: ["uvs"] });
+    expect(joined.uvs![0]![0]).toEqual([0.01, 0]);
+    expect(cut.uvs![0]![0]).toEqual([0.5, 0.5]);
+    expect(cut.uvs![0]![1]).toEqual([0.51, 0.5]);
+  });
+});
+
+describe("textureDisplace (the Displace modifier with a texture)", () => {
+  const points: MeshData = { positions: new Float32Array([0.4, 0, 0, -0.6, 0, 0]), polys: [], edges: [] };
+
+  it("moves (value − mid level) · strength; a linear Blend reads (1 + x) / 2", () => {
+    const out = textureDisplace(points, { texture: { type: "BLEND" }, direction: "z", strength: 2 });
+    expect(out.positions[2]).toBeCloseTo(0.4, 6);
+    expect(out.positions[5]).toBeCloseTo(-0.6, 6);
+  });
+
+  it("reads white with no texture", () => {
+    const out = textureDisplace(points, { direction: "y", midLevel: 0.25 });
+    expect(out.positions[1]).toBeCloseTo(0.75, 6);
   });
 });

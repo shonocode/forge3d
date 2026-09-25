@@ -15,6 +15,8 @@ import type { MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
 import { falloffWeight, type ProportionalFalloff } from "./edit-mode/proportional";
 import { meshVertNormals, type V3 } from "./blender-math";
+import { textureCoords } from "./displace";
+import { textureValue, type ProceduralTexture } from "./texture/texture";
 
 /** Which axis a deformation is measured along or turns about. */
 export type DeformAxis = "x" | "y" | "z";
@@ -41,6 +43,9 @@ function deformed(data: MeshData, positions: Float32Array): MeshData {
     polys: data.polys.map((p) => [...p]),
     creases: data.creases ? new Map(data.creases) : undefined,
     seams: data.seams ? new Set(data.seams) : undefined,
+    // The corners are the same corners, so their UVs and colours still apply.
+    ...(data.uvs ? { uvs: data.uvs.map((f) => f.map((c) => [...c])) } : {}),
+    ...(data.colors ? { colors: data.colors.map((f) => f.map((c) => [...c])) } : {}),
   };
 }
 
@@ -377,6 +382,14 @@ export interface WaveOptions {
   lifetime?: number;
   /** Blender's `damping_time`. Default 10, Blender's (0 also reads as 10). */
   damping?: number;
+  /**
+   * Scale the ridge by a procedural texture read at each vertex — Blender's
+   * `texture`: the push is multiplied by the texture's value (its intensity,
+   * or the mean of its colour). Default none.
+   */
+  texture?: ProceduralTexture;
+  /** Where the texture is read: `"local"` (default) or `"uv"`, as `textureDisplace`'s `coords`. */
+  textureCoords?: "local" | "uv";
 }
 
 /**
@@ -453,12 +466,10 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
   const count = P.length / 3;
   const out = new Float32Array(P);
   if (lifefac === 0) return deformed(data, out);
-  let normals: V3[] | null = null;
-  if (byNormal) {
-    const pts: V3[] = [];
-    for (let k = 0; k < count; k++) pts.push([P[k * 3]!, P[k * 3 + 1]!, P[k * 3 + 2]!]);
-    normals = meshVertNormals(pts, data.polys);
-  }
+  const pts: V3[] = [];
+  for (let k = 0; k < count; k++) pts.push([P[k * 3]!, P[k * 3 + 1]!, P[k * 3 + 2]!]);
+  const normals = byNormal ? meshVertNormals(pts, data.polys) : null;
+  const texCo = opts.texture ? textureCoords(data, pts, opts.textureCoords ?? "local") : null;
   // The pedestal: what the Gaussian is worth at the edge of the band. Blender
   // subtracts it so the ridge lands on zero there instead of stepping.
   const pedestal = Math.exp(-((width * narrowness) ** 2));
@@ -482,7 +493,9 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
     }
 
     const n = amp * narrowness;
-    const push = lifefac * fac * (Math.exp(-(n * n)) - pedestal);
+    let ridge = Math.exp(-(n * n)) - pedestal;
+    if (texCo) ridge *= textureValue(opts.texture!, texCo[k]!).intensity;
+    const push = lifefac * fac * ridge;
     if (normals) {
       for (let c = 0; c < 3; c++)
         if (byNormal![c]) out[k * 3 + c] = P[k * 3 + c]! + push * normals[k]![c]!;

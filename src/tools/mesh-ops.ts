@@ -194,6 +194,93 @@ export interface ArrayMeshOptions {
   startCap?: MeshData;
   /** Blender's `end_cap`: one step past the last copy, welded onto it when merging. */
   endCap?: MeshData;
+  /**
+   * Blender's `offset_object`: the empty's transform, **multiplied into** the
+   * step (after the constant and relative offsets). A rotation here is what
+   * makes a ring of copies; a scale makes each copy smaller than the last.
+   */
+  objectOffset?: TransformOptions;
+  /**
+   * Blender's `fit_type = FIT_LENGTH` with this `fit_length`: as many copies
+   * as fit — `count` is then ignored and becomes `⌊(length + 1e-6) / |step| + 1⌋`,
+   * `|step|` being the length of the whole step's translation.
+   */
+  fitLength?: number;
+  /** Blender's `offset_u` / `offset_v`: copy `c` has its UVs moved by `c` times this. */
+  uvOffset?: readonly [number, number];
+}
+
+/** A 4×3 affine map: rows of the linear part, then the translation. */
+type Affine = [Vec3, Vec3, Vec3, Vec3];
+
+/** An object's matrix from `TransformOptions` — scale, then X/Y/Z Euler, then translate (Blender's `loc · rot · scale`). */
+function affineOf(t: TransformOptions): Affine {
+  const s = typeof t.scale === "number" ? ([t.scale, t.scale, t.scale] as Vec3) : (t.scale ?? [1, 1, 1]);
+  const [rx, ry, rz] = t.rotate ?? [0, 0, 0];
+  const [px, py, pz] = t.pivot ?? [0, 0, 0];
+  const [tx, ty, tz] = t.translate ?? [0, 0, 0];
+  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry), cz = Math.cos(rz), sz = Math.sin(rz);
+  // R = Rz · Ry · Rx, row-major.
+  const R: [Vec3, Vec3, Vec3] = [
+    [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+    [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+    [-sy, cy * sx, cy * cx],
+  ];
+  const sc = (row: Vec3): Vec3 => [row[0] * s[0], row[1] * s[1], row[2] * s[2]];
+  const L: [Vec3, Vec3, Vec3] = [sc(R[0]), sc(R[1]), sc(R[2])];
+  // About the pivot: p' = L (p − pivot) + pivot + translate.
+  const tr = (i: 0 | 1 | 2, pv: number, tv: number): number => pv + tv - (L[i][0] * px + L[i][1] * py + L[i][2] * pz);
+  const t3: Vec3 = [tr(0, px, tx), tr(1, py, ty), tr(2, pz, tz)];
+  return [L[0], L[1], L[2], t3];
+}
+const applyAffine = (m: Affine, p: Vec3): Vec3 => [
+  m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[3][0],
+  m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[3][1],
+  m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[3][2],
+];
+/** `a · b` (apply `b` first). */
+function mulAffine(a: Affine, b: Affine): Affine {
+  const lin = (i: number, j: number): number => a[i]![0] * b[0][j]! + a[i]![1] * b[1][j]! + a[i]![2] * b[2][j]!;
+  const t = applyAffine(a, b[3]);
+  return [
+    [lin(0, 0), lin(0, 1), lin(0, 2)],
+    [lin(1, 0), lin(1, 1), lin(1, 2)],
+    [lin(2, 0), lin(2, 1), lin(2, 2)],
+    t,
+  ];
+}
+function invertAffine(m: Affine): Affine {
+  const [a, b, c] = [m[0], m[1], m[2]];
+  const det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+  const inv: [Vec3, Vec3, Vec3] = [
+    [(b[1] * c[2] - b[2] * c[1]) / det, (a[2] * c[1] - a[1] * c[2]) / det, (a[1] * b[2] - a[2] * b[1]) / det],
+    [(b[2] * c[0] - b[0] * c[2]) / det, (a[0] * c[2] - a[2] * c[0]) / det, (a[2] * b[0] - a[0] * b[2]) / det],
+    [(b[0] * c[1] - b[1] * c[0]) / det, (a[1] * c[0] - a[0] * c[1]) / det, (a[0] * b[1] - a[1] * b[0]) / det],
+  ];
+  const t = m[3];
+  const back = (r: Vec3): number => -(r[0] * t[0] + r[1] * t[1] + r[2] * t[2]);
+  const it: Vec3 = [back(inv[0]), back(inv[1]), back(inv[2])];
+  return [inv[0], inv[1], inv[2], it];
+}
+/** Positions through an affine map; faces, creases, seams, UVs as they were (no rewinding — Blender's Array does not). */
+function placeAffine(data: MeshData, m: Affine, uvShift?: readonly [number, number]): MeshData {
+  const P = data.positions;
+  const out = new Float32Array(P.length);
+  for (let i = 0; i < P.length; i += 3) {
+    const q = applyAffine(m, [P[i]!, P[i + 1]!, P[i + 2]!]);
+    out[i] = q[0];
+    out[i + 1] = q[1];
+    out[i + 2] = q[2];
+  }
+  return {
+    positions: out,
+    polys: data.polys.map((p) => [...p]),
+    ...(data.creases ? { creases: new Map(data.creases) } : {}),
+    ...(data.seams ? { seams: new Set(data.seams) } : {}),
+    ...(data.uvs
+      ? { uvs: data.uvs.map((f) => f.map((c) => (uvShift ? [c[0]! + uvShift[0], c[1]! + uvShift[1]] : [...c]))) }
+      : {}),
+  };
 }
 
 /**
@@ -265,11 +352,12 @@ function mapDoublesBetween(
 }
 
 /**
- * Repeat a mesh `count` times, each copy shifted by `offset` from the last —
- * Blender's **Array** modifier with a fixed count, its constant offset and
- * (via `relative`) its relative one. Copies come after the original, vertices
- * and faces alike, as Blender lays them out. Merging, caps and object offsets
- * are not offered.
+ * Repeat a mesh `count` times, each copy one step on from the last —
+ * Blender's **Array** modifier. The step is the constant `offset`, plus the
+ * `relative` one, with the `objectOffset` transform multiplied in; copy `c`
+ * sits at the step applied `c` times. Copies come after the original,
+ * vertices and faces alike, then the start cap, then the end cap, as Blender
+ * lays them out. Fit to a curve is not offered (it needs a curve object).
  */
 export function arrayMesh(
   data: MeshData,
@@ -277,6 +365,8 @@ export function arrayMesh(
   offset: Vec3,
   options: ArrayMeshOptions = {},
 ): MeshData {
+  // `offset`: translation by the constant and relative offsets, then the
+  // object offset multiplied in on the right.
   const step: number[] = [offset[0], offset[1], offset[2]];
   if (options.relative) {
     const P = data.positions;
@@ -290,18 +380,28 @@ export function arrayMesh(
       if (hi >= lo) step[k] = step[k]! + options.relative[k]! * (hi - lo);
     }
   }
+  let M: Affine = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [step[0]!, step[1]!, step[2]!]];
+  if (options.objectOffset) M = mulAffine(M, affineOf(options.objectOffset));
+  // `mat4_to_size`: the column lengths of the linear part.
+  const hasScale = [0, 1, 2].some((j) => Math.abs(Math.hypot(M[0][j]!, M[1][j]!, M[2][j]!) - 1) > 1e-6);
+
+  if (options.fitLength !== undefined) {
+    const dist = Math.hypot(M[3][0], M[3][1], M[3][2]);
+    count = dist > 1e-6 ? Math.floor((options.fitLength + 1e-6) / dist + 1) : 1;
+  }
+  count = Math.max(1, Math.floor(count));
+
   const parts: MeshData[] = [];
-  for (let i = 0; i < count; i++)
-    parts.push(
-      i === 0
-        ? data
-        : transformMesh(data, { translate: [step[0]! * i, step[1]! * i, step[2]! * i] }),
-    );
-  // Caps come after the copies, start then end (`mesh_merge_transform`).
-  if (options.startCap)
-    parts.push(transformMesh(options.startCap, { translate: [-step[0]!, -step[1]!, -step[2]!] }));
-  if (options.endCap)
-    parts.push(transformMesh(options.endCap, { translate: [step[0]! * count, step[1]! * count, step[2]! * count] }));
+  let current: Affine = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]];
+  const uv = options.uvOffset;
+  for (let i = 0; i < count; i++) {
+    if (i > 0) current = mulAffine(current, M);
+    parts.push(i === 0 ? data : placeAffine(data, current, uv ? [uv[0] * i, uv[1] * i] : undefined));
+  }
+  // Caps come after the copies, start then end (`mesh_merge_transform`): the
+  // start one step before the first copy, the end one step after the last.
+  if (options.startCap) parts.push(placeAffine(options.startCap, invertAffine(M)));
+  if (options.endCap) parts.push(placeAffine(options.endCap, mulAffine(current, M)));
   const merged = mergeMeshes(parts);
   const dist = options.merge;
   if (dist === undefined) return merged;
@@ -322,7 +422,8 @@ export function arrayMesh(
   };
   if (count >= 2) mapDoubles(map, P, 0, n, n, dist);
   for (let c = 2; c < count; c++)
-    for (let k = 0; k < n; k++) {
+    if (hasScale) mapDoubles(map, P, (c - 1) * n, c * n, n, dist);
+    else for (let k = 0; k < n; k++) {
       const self = c * n + k;
       let t = map[(c - 1) * n + k]!;
       if (t !== -1) {
