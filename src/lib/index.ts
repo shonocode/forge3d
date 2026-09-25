@@ -211,6 +211,7 @@ export {
 export {
   poke,
   subdivideEdges,
+  bisectEdges,
   smoothVert,
   holesFill,
   edgeloopFill,
@@ -218,6 +219,7 @@ export {
   edgenetFill,
   type PokeOptions,
   type SubdivideEdgesOptions,
+  type SubdivideCornerType,
   type SmoothVertOptions,
   type HolesFillOptions,
 } from "../tools/edit-mode/refine";

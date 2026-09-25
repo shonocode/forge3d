@@ -4,9 +4,11 @@
  * Four Blender operators whose defaults are worth stating out loud, because
  * all three of the surprising ones cost a reader an hour if they are assumed:
  *
- * - {@link subdivideEdges} **does not split faces.** Cutting all four edges of
- *   a quad gives one octagon, not four quads. Blender's UI Subdivide passes
- *   `use_grid_fill`, the operator does not.
+ * - {@link subdivideEdges} splits a face by **how many** of its edges are cut,
+ *   and the two counts people try first are the two that leave it whole: one
+ *   cut edge makes a pentagon, all four an octagon (Blender's UI Subdivide
+ *   passes `use_grid_fill`, the operator does not). Two or three cut edges do
+ *   split. {@link bisectEdges} never splits.
  * - {@link smoothVert} **moves nothing** unless an axis is enabled. All three
  *   `use_axis_*` default to false.
  * - {@link holesFill}'s `sides` is a **maximum**, not a count, and the
@@ -129,42 +131,365 @@ export function poke(
 
 // ── subdivideEdges ─────────────────────────────────────────────────────────
 
+/**
+ * How a quad with two **adjacent** edges cut is split. Blender's
+ * `quad_corner_type`.
+ *
+ * `bmesh.ops.subdivide_edges` defaults to **`STRAIGHT_CUT`** — its enum slot
+ * starts at the first entry of the list, measured on 2026-09-25 (no inner
+ * vertex appears). The UI's Subdivide passes `INNER_VERT` explicitly.
+ *
+ * - `STRAIGHT_CUT` — no pattern; the cut points are joined straight across
+ *   the corner, nested (`cuts` edges, `cuts` + 1 faces)
+ * - `INNER_VERT` — each join gets a midpoint and the midpoints run to the
+ *   far corner, so the corner comes out as quads
+ * - `PATH` — the joins, plus one from the far corner's neighbour across
+ * - `FAN` — every cut point joined to the far corner
+ */
+export type SubdivideCornerType = "STRAIGHT_CUT" | "INNER_VERT" | "PATH" | "FAN";
+
 /** Options for {@link subdivideEdges}. */
 export interface SubdivideEdgesOptions {
   /** New vertices per edge. Blender's `cuts`. */
   cuts: number;
   /**
-   * Rebuild a fully-cut quad as a grid of quads instead of leaving it an
-   * n-gon. Blender's `use_grid_fill`, **off by default in the operator** and
-   * on in the UI's Subdivide, which is why a quad subdivides into four there
-   * and into one octagon here.
-   *
-   * Only the case Blender's UI relies on is implemented: a quad with all four
-   * edges cut the same number of times. Any other face keeps the n-gon form.
+   * Split a quad with all four edges cut into a grid of quads, and a
+   * triangle with all three cut into a grid of triangles. Blender's
+   * `use_grid_fill`, **off by default in the operator** and on in the UI's
+   * Subdivide, which is why a quad subdivides into four there and into one
+   * octagon here.
    */
   useGridFill?: boolean;
+  /**
+   * Split a quad or triangle with exactly **one** edge cut, by fanning the
+   * cut points to the opposite corner(s). Blender's `use_single_edge`, off
+   * by default — the face then just gains the vertices.
+   */
+  useSingleEdge?: boolean;
+  /** Blender's `quad_corner_type`. Default `STRAIGHT_CUT`; see the type. */
+  cornerType?: SubdivideCornerType;
+  /** Leave every face that is not a quad unsplit. Blender's `use_only_quads`. */
+  useOnlyQuads?: boolean;
 }
 
 /**
- * Put `cuts` new vertices along each selected edge — Blender's
- * `bmesh.ops.subdivide_edges(edges=, cuts=)`.
+ * Put `cuts` new vertices along each selected edge and split the faces those
+ * edges belong to — Blender's `bmesh.ops.subdivide_edges(edges=, cuts=,
+ * use_grid_fill=, use_single_edge=, quad_corner_type=, use_only_quads=)`,
+ * ported from `bmesh/operators/bmo_subdivide.cc` (Blender 5.1.1).
  *
- * **The faces are not split.** A quad with one edge cut becomes a pentagon; cut
- * all four and it is an octagon. That is the operator's behaviour, measured,
- * and it is the general form of `loopCut` — which cuts one ring and does split.
+ * Which faces split depends on how many of their edges are cut, and it is
+ * not "only when all of them are":
+ *
+ * | cut edges | quad | triangle | n-gon |
+ * |---|---|---|---|
+ * | 1 | grows (split with `useSingleEdge`) | grows (split with `useSingleEdge`) | grows |
+ * | 2 adjacent | `cornerType` | joined | joined |
+ * | 2 apart | joined straight across | ― | joined |
+ * | 3 | `quad_3edge`, always | grows (grid with `useGridFill`) | grows |
+ * | 4 | grows (grid with `useGridFill`) | ― | grows |
+ *
+ * "Joined" is Blender's pattern-less path: the k-th cut on one edge to the
+ * k-th from the far end of the other. It is skipped for a pair of cut points
+ * that also share some **other** face (Blender #32500), and for two adjacent
+ * edges within about 0.8° of a straight line.
+ *
+ * `cuts: 0` is not a no-op, as in Blender: no vertex is added, but the
+ * patterns still run, so `INNER_VERT` and `PATH` join two corners of a quad
+ * whose two adjacent edges were selected.
+ *
+ * A cut edge's crease, seam and sharp flag go to every piece of it
+ * (`BM_edge_split` copies the edge's attributes). UV / colour / normal
+ * layers and vertex groups are not carried — see `EditMesh.loopUVs`.
+ *
+ * The #32500 test is made once against the faces as they were; Blender makes
+ * it as it goes, after earlier faces have split, and its
+ * `connect_smallest_face` may pick a smaller neighbour holding both points.
+ * The two differ only for faces sharing two edges with degree-2 corners.
+ *
+ * Not ported: `smooth` / `smooth_falloff` / `use_smooth_even` / `fractal` /
+ * `along_normal` / `seed` / `use_sphere` / `edge_percents` — the new
+ * vertices sit evenly on the straight edge.
+ *
+ * Returns the faces that were cut or grew.
  */
 export function subdivideEdges(
   em: EditMesh,
   selectedEdges: ReadonlySet<number>,
   opts: SubdivideEdgesOptions,
 ): Set<number> {
-  const cuts = Math.max(0, Math.floor(opts.cuts));
-  if (cuts === 0 || selectedEdges.size === 0) return new Set();
+  return subdivide(em, selectedEdges, Math.max(0, Math.floor(opts.cuts)), opts);
+}
+
+/**
+ * Put `cuts` new vertices along each selected edge and **split nothing** —
+ * Blender's `bmesh.ops.bisect_edges(edges=, cuts=)`. Every face on a cut
+ * edge just gains the vertices: a quad with one edge cut becomes a pentagon,
+ * with all four an octagon. `edge_percents` is not ported (the cuts are even).
+ *
+ * Returns the faces that grew.
+ */
+export function bisectEdges(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  cuts: number,
+): Set<number> {
+  return subdivide(em, selectedEdges, Math.max(0, Math.floor(cuts)), null);
+}
+
+/** One of `bmo_subdivide.cc`'s face patterns: which edges are cut, and the fill. */
+interface SubdPattern {
+  sel: readonly number[];
+  fill: (c: FaceSplitter, verts: readonly number[], n: number) => void;
+}
+
+/**
+ * The fragments of one face being split, and the two BMesh moves the
+ * patterns are written in: `connect_smallest_face` and cutting an edge.
+ *
+ * Kept to the one face on purpose. Blender's `connect_smallest_face` looks at
+ * every face around the vertex, but both ends are on this face's boundary,
+ * so another face could only hold both by sharing two edges with it — the
+ * case the pattern-less path checks for separately (#32500).
+ */
+class FaceSplitter {
+  readonly frags: number[][];
+  private readonly positions: number[];
+  private readonly nextV: { n: number };
+
+  constructor(first: number[], positions: number[], nextV: { n: number }) {
+    this.frags = [first];
+    this.positions = positions;
+    this.nextV = nextV;
+  }
+
+  /**
+   * Split the smallest fragment holding both `a` and `b` (not side by side)
+   * along a new edge a–b. False if none holds both.
+   */
+  connect(a: number, b: number): boolean {
+    let best = -1;
+    let ia = -1;
+    let ib = -1;
+    for (let f = 0; f < this.frags.length; f++) {
+      const fr = this.frags[f]!;
+      const i = fr.indexOf(a);
+      const j = fr.indexOf(b);
+      if (i < 0 || j < 0) continue;
+      const d = (j - i + fr.length) % fr.length;
+      if (d === 1 || d === fr.length - 1) continue;
+      if (best < 0 || fr.length < this.frags[best]!.length) {
+        best = f;
+        ia = i;
+        ib = j;
+      }
+    }
+    if (best < 0) return false;
+    const fr = this.frags[best]!;
+    const one: number[] = [];
+    for (let k = ia; ; k = (k + 1) % fr.length) {
+      one.push(fr[k]!);
+      if (k === ib) break;
+    }
+    const two: number[] = [];
+    for (let k = ib; ; k = (k + 1) % fr.length) {
+      two.push(fr[k]!);
+      if (k === ia) break;
+    }
+    this.frags[best] = one;
+    this.frags.push(two);
+    return true;
+  }
+
+  /**
+   * Put `k` evenly spaced vertices on the edge a–b, in order from `a`, in
+   * every fragment that has that edge. Blender's `subdivide_edge_num` on an
+   * edge just made by `connect`, whose `v1` is the first vertex it joined.
+   */
+  cut(a: number, b: number, k: number): number[] {
+    const P = this.positions;
+    const made: number[] = [];
+    for (let j = 1; j <= k; j++) {
+      const t = j / (k + 1);
+      made.push(this.nextV.n++);
+      P.push(
+        P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
+        P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
+        P[a * 3 + 2]! + (P[b * 3 + 2]! - P[a * 3 + 2]!) * t,
+      );
+    }
+    for (let f = 0; f < this.frags.length; f++) {
+      const fr = this.frags[f]!;
+      for (let i = 0; i < fr.length; i++) {
+        const x = fr[i]!;
+        const y = fr[(i + 1) % fr.length]!;
+        if (x === a && y === b) {
+          fr.splice(i + 1, 0, ...made);
+          break;
+        }
+        if (x === b && y === a) {
+          fr.splice(i + 1, 0, ...[...made].reverse());
+          break;
+        }
+      }
+    }
+    return made;
+  }
+}
+
+// The patterns, transcribed from `bmo_subdivide.cc`. `verts` starts at the
+// first cut on the pattern's edge 0 and runs round the grown face, so with
+// n cuts a quad's corners sit at n, 2n+1, 3n+2, … as each edge adds n.
+
+const QUAD_1EDGE: SubdPattern = {
+  sel: [1, 0, 0, 0],
+  fill(c, v, n) {
+    let add = 2;
+    if (n % 2 === 0) {
+      for (let i = 0; i < n; i++) {
+        if (i === n / 2) add -= 1;
+        c.connect(v[i]!, v[n + add]!);
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        c.connect(v[i]!, v[n + add]!);
+        if (i === Math.floor(n / 2)) {
+          add -= 1;
+          c.connect(v[i]!, v[n + add]!);
+        }
+      }
+    }
+  },
+};
+
+const QUAD_2EDGE_PATH: SubdPattern = {
+  sel: [1, 1, 0, 0],
+  fill(c, v, n) {
+    for (let i = 0; i < n; i++) c.connect(v[i]!, v[n + (n - i)]!);
+    c.connect(v[n * 2 + 3]!, v[n * 2 + 1]!);
+  },
+};
+
+const QUAD_2EDGE_INNERVERT: SubdPattern = {
+  sel: [1, 1, 0, 0],
+  fill(c, v, n) {
+    let last = v[n]!;
+    for (let i = n - 1; i >= 0; i--) {
+      const a = v[i]!;
+      const b = v[n + (n - i)]!;
+      c.connect(a, b);
+      const mid = c.cut(a, b, 1)[0]!;
+      if (i !== n - 1) c.connect(last, mid);
+      last = mid;
+    }
+    c.connect(last, v[n * 2 + 2]!);
+  },
+};
+
+const QUAD_2EDGE_FAN: SubdPattern = {
+  sel: [1, 1, 0, 0],
+  fill(c, v, n) {
+    for (let i = 0; i < n; i++) {
+      c.connect(v[i]!, v[n * 2 + 2]!);
+      c.connect(v[n + (n - i)]!, v[n * 2 + 2]!);
+    }
+  },
+};
+
+const QUAD_3EDGE: SubdPattern = {
+  sel: [1, 1, 1, 0],
+  fill(c, v, n) {
+    let add = 0;
+    const half = Math.floor(n / 2);
+    for (let i = 0; i < n; i++) {
+      if (i === half) {
+        if (n % 2 !== 0) c.connect(v[n - i - 1 + add]!, v[i + n + 1]!);
+        add = n * 2 + 2;
+      }
+      c.connect(v[n - i - 1 + add]!, v[i + n + 1]!);
+    }
+    for (let i = 0; i < half + 1; i++) c.connect(v[i]!, v[n - i + n * 2 + 1]!);
+  },
+};
+
+const QUAD_4EDGE: SubdPattern = {
+  sel: [1, 1, 1, 1],
+  fill(c, v, n) {
+    const s = n + 2;
+    const lines: number[] = new Array(s * s).fill(-1);
+    for (let i = 0; i < s; i++) lines[i] = v[n * 3 + 2 + (n - i + 1)]!;
+    for (let i = 0; i < s; i++) lines[(s - 1) * s + i] = v[n + i]!;
+    for (let i = 0; i < n; i++) {
+      const a = v[i]!;
+      const b = v[n + 1 + n + 1 + (n - i - 1)]!;
+      if (!c.connect(a, b)) continue;
+      lines[(i + 1) * s] = a;
+      lines[(i + 1) * s + s - 1] = b;
+      const made = c.cut(a, b, n);
+      for (let j = 0; j < n; j++) lines[(i + 1) * s + j + 1] = made[j]!;
+    }
+    for (let i = 1; i < n + 2; i++)
+      for (let j = 1; j <= n; j++) {
+        const a = lines[i * s + j]!;
+        const b = lines[(i - 1) * s + j]!;
+        if (a >= 0 && b >= 0) c.connect(a, b);
+      }
+  },
+};
+
+const TRI_1EDGE: SubdPattern = {
+  sel: [1, 0, 0],
+  fill(c, v, n) {
+    for (let i = 0; i < n; i++) c.connect(v[i]!, v[n + 1]!);
+  },
+};
+
+const TRI_3EDGE: SubdPattern = {
+  sel: [1, 1, 1],
+  fill(c, v, n) {
+    const lines: number[][] = [[v[n * 2 + 1]!]];
+    const rows: number[][] = [];
+    for (let i = 0; i < n; i++) {
+      const a = v[n * 2 + 2 + i]!;
+      const b = v[n + n - i]!;
+      if (!c.connect(a, b)) return;
+      rows.push([a, ...c.cut(a, b, i), b]);
+    }
+    lines.push(...rows);
+    lines.push([v[n * 3 + 2]!, ...v.slice(0, n), v[n]!]);
+    for (let i = 1; i <= n; i++)
+      for (let j = 0; j < i; j++) {
+        c.connect(lines[i]![j]!, lines[i + 1]![j + 1]!);
+        c.connect(lines[i]![j + 1]!, lines[i + 1]![j + 1]!);
+      }
+  },
+};
+
+const CORNER: Record<SubdivideCornerType, SubdPattern | null> = {
+  STRAIGHT_CUT: null,
+  INNER_VERT: QUAD_2EDGE_INNERVERT,
+  PATH: QUAD_2EDGE_PATH,
+  FAN: QUAD_2EDGE_FAN,
+};
+
+/** Two adjacent cut edges closer to a straight line than this don't join. */
+const FACE_SPLIT_EPSILON = 0.00005;
+
+/** `subdivideEdges` and `bisectEdges`; `opts` null means split nothing. */
+function subdivide(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  cuts: number,
+  opts: SubdivideEdgesOptions | null,
+): Set<number> {
+  // cuts=0 still runs the patterns in Blender: INNER_VERT and PATH then join
+  // two corners of a quad with two adjacent edges selected (a diagonal).
+  if (selectedEdges.size === 0 || (cuts === 0 && !opts)) return new Set();
 
   const polys = toPolygons(em);
   const P = em.positions;
   const positions: number[] = Array.from(P);
-  let nextV = em.vertices.length;
+  const nextV = { n: em.vertices.length };
 
   // One set of new vertices per undirected edge, shared by both its faces.
   const cutsOn = new Map<string, number[]>();
@@ -178,7 +503,7 @@ export function subdivideEdges(
     const made: number[] = [];
     for (let k = 1; k <= cuts; k++) {
       const t = k / (cuts + 1);
-      made.push(nextV++);
+      made.push(nextV.n++);
       positions.push(
         P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
         P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
@@ -187,79 +512,185 @@ export function subdivideEdges(
     }
     // Stored low-to-high so both faces can read it in their own direction.
     cutsOn.set(key, a < b ? made : made.reverse());
+    if (cuts > 0) carryEdgeFlags(em, a, b, a < b ? made : [...made].reverse());
+  }
+
+  // The pattern table in `bmo_subdivide.cc`'s order; the first that matches
+  // (at its first rotation) wins.
+  const patterns: SubdPattern[] = [];
+  if (opts) {
+    if (opts.useSingleEdge) patterns.push(QUAD_1EDGE);
+    const corner = CORNER[opts.cornerType ?? "STRAIGHT_CUT"];
+    if (corner) patterns.push(corner);
+    if (opts.useSingleEdge) patterns.push(TRI_1EDGE);
+    if (opts.useGridFill) patterns.push(QUAD_4EDGE);
+    patterns.push(QUAD_3EDGE);
+    if (opts.useGridFill) patterns.push(TRI_3EDGE);
+  }
+
+  // Which faces each cut edge belongs to, for #32500 below.
+  const facesOf = new Map<string, number[]>();
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
+    for (let i = 0; i < poly.length; i++) {
+      const key = seamKey(poly[i]!, poly[(i + 1) % poly.length]!);
+      if (!cutsOn.has(key)) continue;
+      const list = facesOf.get(key);
+      if (list) list.push(f);
+      else facesOf.set(key, [f]);
+    }
   }
 
   const out: number[][] = [];
   const touched = new Set<number>();
   for (let f = 0; f < polys.length; f++) {
     const poly = polys[f]!;
-    const grown: number[] = [];
-    let changed = false;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]!;
-      const b = poly[(i + 1) % poly.length]!;
-      grown.push(a);
-      const made = cutsOn.get(seamKey(a, b));
-      if (!made) continue;
-      changed = true;
-      grown.push(...(a < b ? made : [...made].reverse()));
+    const len = poly.length;
+    const keys: string[] = [];
+    const sel: boolean[] = [];
+    let totesel = 0;
+    for (let i = 0; i < len; i++) {
+      keys.push(seamKey(poly[i]!, poly[(i + 1) % len]!));
+      sel.push(cutsOn.has(keys[i]!));
+      if (sel[i]) totesel++;
     }
-
-    if (!changed) {
+    if (totesel === 0) {
       out.push(poly);
       continue;
     }
 
-    if (opts.useGridFill && poly.length === 4 && grown.length === 4 * (cuts + 1)) {
-      // The UI's Subdivide: a fully-cut quad becomes (cuts+1)^2 quads.
-      const side = cuts + 1;
-      const ring = grown;
-      const at = (i: number, j: number): number => {
-        if (j === 0) return ring[i]!;
-        if (i === side) return ring[side + j]!;
-        if (j === side) return ring[side * 3 - i]!;
-        if (i === 0) return ring[side * 4 - j]!;
-        return -1;
-      };
-      const id: number[][] = [];
-      for (let i = 0; i <= side; i++) {
-        const row: number[] = [];
-        for (let j = 0; j <= side; j++) {
-          const edge = at(i, j);
-          if (edge >= 0) {
-            row.push(edge);
-            continue;
-          }
-          // Bilinear from the four corners of the ring.
-          const u = i / side;
-          const v = j / side;
-          const c = [ring[0]!, ring[side]!, ring[side * 2]!, ring[side * 3]!];
-          const p = [0, 1, 2].map(
-            (k) =>
-              (1 - u) * (1 - v) * P[c[0]! * 3 + k]! +
-              u * (1 - v) * P[c[1]! * 3 + k]! +
-              u * v * P[c[2]! * 3 + k]! +
-              (1 - u) * v * P[c[3]! * 3 + k]!,
-          );
-          row.push(nextV++);
-          positions.push(p[0]!, p[1]!, p[2]!);
-        }
-        id.push(row);
-      }
-      for (let i = 0; i < side; i++)
-        for (let j = 0; j < side; j++) {
-          touched.add(out.length);
-          out.push([id[i]![j]!, id[i + 1]![j]!, id[i + 1]![j + 1]!, id[i]![j + 1]!]);
-        }
-      continue;
+    const grown: number[] = [];
+    const startOf: number[] = []; // index in `grown` of each original corner
+    for (let i = 0; i < len; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % len]!;
+      startOf.push(grown.length);
+      grown.push(a);
+      const made = cutsOn.get(keys[i]!);
+      if (made) grown.push(...(a < b ? made : [...made].reverse()));
     }
 
-    touched.add(out.length);
-    out.push(grown);
+    const splitter = new FaceSplitter(grown, positions, nextV);
+    if (opts && !(opts.useOnlyQuads && len !== 4)) {
+      let pat: SubdPattern | null = null;
+      let rot = 0;
+      for (const p of patterns) {
+        if (p.sel.length !== len) continue;
+        for (let a = 0; a < len && !pat; a++) {
+          let ok = true;
+          for (let b = 0; b < len && ok; b++) ok = sel[(b + a) % len] === (p.sel[b] === 1);
+          if (ok) {
+            pat = p;
+            rot = a;
+          }
+        }
+        if (pat) break;
+      }
+
+      if (pat) {
+        const from = startOf[rot]! + 1;
+        const verts = grown.map((_, k) => grown[(from + k) % grown.length]!);
+        pat.fill(splitter, verts, cuts);
+      } else if (totesel === 2 && !nearlyStraight(poly, sel, P)) {
+        joinTwoEdges(splitter, grown, f, keys, sel, cutsOn, facesOf, cuts);
+      }
+    }
+
+    const changed = splitter.frags.length > 1 || grown.length > len;
+    for (const fr of splitter.frags) {
+      if (changed) touched.add(out.length);
+      out.push(fr);
+    }
   }
 
   rebuildPolygons(em, new Float32Array(positions), out);
   return touched;
+}
+
+/**
+ * The edge a–b is now a, …`made`…, b: give every piece the crease, seam and
+ * sharp flag the whole edge had, and drop the old key. Blender's
+ * `BM_edge_split` copies the edge's attributes to the new half the same way.
+ */
+function carryEdgeFlags(em: EditMesh, a: number, b: number, made: readonly number[]): void {
+  const key = seamKey(a, b);
+  const chain = [a, ...made, b];
+  const pieces: string[] = [];
+  for (let i = 0; i + 1 < chain.length; i++) pieces.push(seamKey(chain[i]!, chain[i + 1]!));
+  const crease = em.creases.get(key);
+  if (crease !== undefined) {
+    em.creases.delete(key);
+    for (const k of pieces) em.creases.set(k, crease);
+  }
+  if (em.seams.delete(key)) for (const k of pieces) em.seams.add(k);
+  if (em.sharpEdges?.delete(key)) for (const k of pieces) em.sharpEdges.add(k);
+}
+
+/**
+ * Two cut edges that share a vertex and point the same way (or exactly
+ * opposite) to within `FACE_SPLIT_EPSILON`: Blender leaves that face whole.
+ */
+function nearlyStraight(poly: readonly number[], sel: readonly boolean[], P: ArrayLike<number>): boolean {
+  const len = poly.length;
+  const picked: number[] = [];
+  for (let i = 0; i < len; i++) if (sel[i]) picked.push(i);
+  const [i, j] = picked as [number, number];
+  const e1 = [poly[i]!, poly[(i + 1) % len]!];
+  const e2 = [poly[j]!, poly[(j + 1) % len]!];
+  if (!e1.some((v) => e2.includes(v))) return false;
+  const dir = (e: number[]) => {
+    const d = [0, 1, 2].map((k) => P[e[1]! * 3 + k]! - P[e[0]! * 3 + k]!);
+    const l = Math.hypot(d[0]!, d[1]!, d[2]!) || 1;
+    return d.map((x) => x / l);
+  };
+  const a = dir(e1);
+  const b = dir(e2);
+  return Math.abs(a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!) > 1 - FACE_SPLIT_EPSILON;
+}
+
+/**
+ * The pattern-less path for a face with two cut edges: the first cut on one
+ * edge to the last on the other, and inwards from there. A pair whose two
+ * points also share another face is skipped (#32500 — two faces on the same
+ * two edges, where cutting both along the same line is ambiguous).
+ */
+function joinTwoEdges(
+  c: FaceSplitter,
+  grown: readonly number[],
+  f: number,
+  keys: readonly string[],
+  sel: readonly boolean[],
+  cutsOn: ReadonlyMap<string, number[]>,
+  facesOf: ReadonlyMap<string, number[]>,
+  n: number,
+): void {
+  const inner = new Set<number>();
+  for (const made of cutsOn.values()) for (const v of made) inner.add(v);
+  const vlen = grown.length;
+  const isIn = (k: number) => inner.has(grown[((k % vlen) + vlen) % vlen]!);
+
+  let a = 0;
+  for (; a < vlen; a++) if (!isIn(a - 1) && isIn(a)) break;
+  let b = 0;
+  if (isIn(a + n + 1)) b = (a + n + 1) % vlen;
+  else
+    for (let j = 0; j < vlen; j++) {
+      b = (j + a + n + 1) % vlen;
+      if (!isIn(b - 1) && isIn(b)) break;
+    }
+  b += n - 1;
+
+  // Another face on both cut edges (#32500): every pair on them is shared.
+  const [k1, k2] = keys.filter((_, i) => sel[i]) as [string, string];
+  const other = (facesOf.get(k1) ?? []).some((g) => g !== f && (facesOf.get(k2) ?? []).includes(g));
+
+  const pairs: [number, number][] = [];
+  for (let j = 0; j < n; j++) {
+    if (!other) pairs.push([grown[a % vlen]!, grown[((b % vlen) + vlen) % vlen]!]);
+    b -= 1;
+    a = (a + 1) % vlen;
+  }
+  for (const [x, y] of pairs) c.connect(x, y);
 }
 
 // ── smoothVert ─────────────────────────────────────────────────────────────

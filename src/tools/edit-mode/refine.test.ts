@@ -1,5 +1,5 @@
 /**
- * poke / subdivideEdges / smoothVert / holesFill against Blender 5.1.1.
+ * poke / subdivideEdges / bisectEdges / smoothVert / holesFill against Blender 5.1.1.
  *
  * Three of the four have a default that does the opposite of what a reader
  * expects, so every number here is one Blender produced rather than one that
@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { forEachEdge } from "./half-edge";
-import { poke, subdivideEdges, smoothVert, holesFill } from "./refine";
+import { poke, subdivideEdges, bisectEdges, smoothVert, holesFill } from "./refine";
 
 function grid(nx: number, ny: number) {
   const positions: number[] = [];
@@ -141,6 +141,92 @@ describe("subdivideEdges", () => {
     const out = meshToData(em);
     expect(out.positions).toHaveLength(21);
     expect(arities(out.polys)).toEqual([5, 5]);
+  });
+
+  /** The edges of face 0 of a 1x1 grid, by position in the face. */
+  function quadEdges(em: ReturnType<typeof meshFromData>, which: number[]): Set<number> {
+    const poly = meshToData(em).polys[0]!;
+    const want = which.map((i) => [poly[i]!, poly[(i + 1) % 4]!].sort().join());
+    const out = new Set<number>();
+    forEachEdge(em, (he) => {
+      const h = em.halfEdges[he]!;
+      if (want.includes([h.v, em.halfEdges[h.next]!.v].sort().join())) out.add(he);
+    });
+    return out;
+  }
+
+  it("two adjacent cut edges are joined straight across the corner by default", () => {
+    // bmesh.ops' quad_corner_type defaults to STRAIGHT_CUT (the enum slot's
+    // first entry): grid row x-ge-z cuts=1 gained faces and no vertex.
+    const em = meshFromData(grid(1, 1));
+    subdivideEdges(em, quadEdges(em, [0, 1]), { cuts: 1 });
+    const out = meshToData(em);
+    expect(out.positions).toHaveLength(6 * 3);
+    expect(arities(out.polys)).toEqual([3, 5]);
+  });
+
+  it("INNER_VERT turns the corner into three quads", () => {
+    const em = meshFromData(grid(1, 1));
+    subdivideEdges(em, quadEdges(em, [0, 1]), { cuts: 1, cornerType: "INNER_VERT" });
+    const out = meshToData(em);
+    expect(out.positions).toHaveLength(7 * 3);
+    expect(arities(out.polys)).toEqual([4, 4, 4]);
+  });
+
+  it("two opposite cut edges are joined across, cut by cut", () => {
+    const em = meshFromData(grid(1, 1));
+    subdivideEdges(em, quadEdges(em, [0, 2]), { cuts: 2 });
+    expect(arities(meshToData(em).polys)).toEqual([4, 4, 4]);
+  });
+
+  it("three cut edges split a quad whatever the options", () => {
+    const em = meshFromData(grid(1, 1));
+    subdivideEdges(em, quadEdges(em, [0, 1, 2]), { cuts: 1 });
+    expect(arities(meshToData(em).polys)).toEqual([3, 3, 3, 4]);
+  });
+
+  it("a triangle with all three edges cut becomes a grid only with useGridFill", () => {
+    const tri = () => meshFromData({ positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), polys: [[0, 1, 2]] });
+    const all = (em: ReturnType<typeof tri>) => {
+      const s = new Set<number>();
+      forEachEdge(em, (he) => s.add(he));
+      return s;
+    };
+    const plain = tri();
+    subdivideEdges(plain, all(plain), { cuts: 2 });
+    expect(arities(meshToData(plain).polys)).toEqual([9]);
+    const filled = tri();
+    subdivideEdges(filled, all(filled), { cuts: 2, useGridFill: true });
+    const out = meshToData(filled);
+    expect(out.polys).toHaveLength(9);
+    expect(out.positions).toHaveLength(10 * 3);
+  });
+
+  it("a cut edge's crease and seam go to every piece of it", () => {
+    const em = meshFromData(grid(1, 1));
+    const poly = meshToData(em).polys[0]!;
+    const [a, b] = [poly[0]!, poly[1]!];
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    em.creases.set(key, 0.7);
+    em.seams.add(key);
+    subdivideEdges(em, quadEdges(em, [0]), { cuts: 2 });
+    expect(em.creases.has(key)).toBe(false);
+    expect([...em.creases.values()]).toEqual([0.7, 0.7, 0.7]);
+    expect(em.seams.size).toBe(3);
+  });
+
+  it("cuts=0 with INNER_VERT joins the corners of a two-edge quad", () => {
+    // Blender runs the patterns even with no cuts; the grid row
+    // `subdivide-edges-zero` pins 16 -> 20 faces with no new vertex.
+    const em = meshFromData(grid(1, 1));
+    subdivideEdges(em, quadEdges(em, [0, 1]), { cuts: 0, cornerType: "INNER_VERT" });
+    expect(arities(meshToData(em).polys)).toEqual([3, 3]);
+  });
+
+  it("bisectEdges never splits", () => {
+    const em = meshFromData(grid(1, 1));
+    bisectEdges(em, quadEdges(em, [0, 1, 2]), 1);
+    expect(arities(meshToData(em).polys)).toEqual([7]);
   });
 
   it("is a no-op for zero cuts", () => {
