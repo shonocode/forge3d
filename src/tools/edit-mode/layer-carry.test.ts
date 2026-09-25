@@ -169,3 +169,16 @@ describe("topology changes go through rebuildPolygons", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("flipQuadTessellation", () => {
+  it("turns quads only — an n-gon keeps its first corner (bmo_flip_quad_tessellation_exec)", () => {
+    // Until 2026-09-25 it turned n-gons too, and BEAUTY splits an n-gon by
+    // where it starts: arm's hexagon caps came out different (compat-backlog A5).
+    const em = meshFromData({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0, 2, 1, 0, 1, 1, 0, 0, 1, 0, 3, 0, 0, 3, 1, 0]),
+      polys: [[0, 1, 2, 3, 4, 5], [2, 6, 7, 3]],
+    });
+    ops.flipQuadTessellation(em, new Set([0, 1]));
+    expect(meshToData(em).polys).toEqual([[0, 1, 2, 3, 4, 5], [6, 7, 3, 2]]);
+  });
+});

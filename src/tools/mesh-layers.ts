@@ -47,11 +47,15 @@ export function carryFaceLayers(
   const uvs = corner(data.uvs);
   const colors = corner(data.colors);
   const normals = corner(data.normals);
-  if (uvs) out.uvs = uvs;
-  if (colors) out.colors = colors;
-  if (normals) out.normals = normals;
-  if (data.materials && data.materials.length === data.polys.length)
-    out.materials = sources.map((s) => data.materials![s.face]!);
+  // Always set, undefined when the input had no layer shaped for its faces,
+  // so spreading this over a copy of the input never leaves an old layer.
+  out.uvs = uvs;
+  out.colors = colors;
+  out.normals = normals;
+  out.materials =
+    data.materials && data.materials.length === data.polys.length
+      ? sources.map((s) => data.materials![s.face]!)
+      : undefined;
   return out;
 }
 

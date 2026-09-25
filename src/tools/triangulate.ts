@@ -18,7 +18,8 @@
  *
  * Pure and headless.
  */
-import type { MeshData } from "../lib/mesh";
+import { withPositions, type MeshData } from "../lib/mesh";
+import { carryFaceLayers, type FaceSource } from "./mesh-layers";
 import { polyfill } from "./boolean/polyfill";
 import {
   f, FLT_EPSILON, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, newell,
@@ -298,13 +299,12 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
   const P = data.positions;
   const at = (v: number): V3 => [f(P[v * 3]!), f(P[v * 3 + 1]!), f(P[v * 3 + 2]!)];
   const polys: number[][] = [];
-  const uvs: number[][][] | undefined = data.uvs ? [] : undefined;
+  const sources: FaceSource[] = [];
   for (let fi = 0; fi < data.polys.length; fi++) {
     const p = data.polys[fi]!;
-    const fuv = data.uvs?.[fi];
     if (p.length <= 3) {
       polys.push([...p]);
-      if (uvs) uvs.push(fuv!.map((c) => [...c]));
+      sources.push({ face: fi, corners: p.map((_, i) => i) });
       continue;
     }
     const co = p.map(at);
@@ -317,9 +317,12 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
     }
     for (const t of tris) {
       polys.push(t.map((k) => p[k]!));
-      // Each triangle corner is a corner of the source face, so its UV is too.
-      if (uvs) uvs.push(t.map((k) => [...fuv![k]!]));
+      // Each triangle corner is a corner of the source face, so every corner
+      // layer is too, and the face's material (`BM_face_triangulate` copies).
+      sources.push({ face: fi, corners: t });
     }
   }
-  return uvs ? { positions: Float32Array.from(P), polys, uvs } : { positions: Float32Array.from(P), polys };
+  // Every layer (compat-backlog A3 / A5): vertices and edge flags as they
+  // were, corner layers and materials from each triangle's source face.
+  return { ...withPositions(data, Float32Array.from(P)), polys, ...carryFaceLayers(data, sources) };
 }

@@ -2662,8 +2662,13 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
 
 /**
  * Fan-triangulate the selected quad / n-gon faces (whole mesh when
- * `selectedFaces` is null) — Blender's Triangulate Faces. Triangle faces are
- * left untouched. Returns the new triangle face ids (∅ when nothing had to
+ * `selectedFaces` is null), from each face's first corner. Triangle faces
+ * are left untouched.
+ *
+ * **Not Blender's Triangulate Faces.** Ctrl+T defaults to BEAUTY for quads
+ * and n-gons; a fan matches it only for quads with `quad_method=FIXED`. For
+ * Blender's answer use `triangulate` (`BM_face_triangulate`, every quad
+ * and n-gon method). Returns the new triangle face ids (∅ when nothing had to
  * be triangulated).
  */
 export function quadsToTris(em: EditMesh, selectedFaces: ReadonlySet<number> | null): Set<number> {
@@ -3547,7 +3552,7 @@ export function dissolveDegenerate(em: EditMesh, dist: number): Set<number> {
 }
 
 /**
- * Turn each face's corner list by one — Blender's
+ * Turn each selected quad's corner list by one — Blender's
  * `bmesh.ops.flip_quad_tessellation(faces=)`.
  *
  * **No geometry moves and no vertex is added.** What changes is which diagonal
@@ -3559,12 +3564,18 @@ export function dissolveDegenerate(em: EditMesh, dist: number): Set<number> {
  *
  * Measured: Blender turns the list rather than reversing it, so the winding
  * and the normal are untouched.
+ *
+ * **Quads only** (`f->len == 4` in `bmo_flip_quad_tessellation_exec`). Until
+ * 2026-09-25 this turned n-gons too, and an n-gon's BEAUTY triangulation
+ * depends on where it starts: `arm`'s two hexagon caps came out split
+ * differently from Blender's, which only a face-set comparison could see
+ * (compat-backlog A5).
  */
 export function flipQuadTessellation(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
   if (selectedFaces.size === 0) return new Set();
   const polys = toPolygons(em);
   const out = polys.map((poly, f) =>
-    selectedFaces.has(f) && poly.length > 3 ? [...poly.slice(1), poly[0]!] : [...poly],
+    selectedFaces.has(f) && poly.length === 4 ? [...poly.slice(1), poly[0]!] : [...poly],
   );
   rebuildPolygons(em, em.positions, out, {});
   return new Set(selectedFaces);

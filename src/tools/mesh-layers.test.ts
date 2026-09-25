@@ -93,6 +93,8 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["warp", () => L.warp(cube(), { radius: 1, from: {}, to: { at: [0.1, 0, 0] } })],
   ["recalcFaceNormals", () => L.recalcFaceNormals(cube())],
   ["connectVertsConcave", () => L.connectVertsConcave(cube())],
+  ["triangulate", () => L.triangulate(cube(), { quadMethod: "fixed" })],
+  ["triangulate (beauty)", () => L.triangulate(cube())],
   ["deleteLoose", () => L.deleteLoose(cube())],
   ["compactMesh", () => L.compactMesh(cube(), new Set([0, 1, 2, 3, 4, 5, 6, 7]))],
   ["uvWarp", () => L.uvWarp(cube())],
