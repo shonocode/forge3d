@@ -16,7 +16,7 @@
  */
 import { withPositions, type MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
-import { carryFaceLayers, type FaceSource } from "./mesh-layers";
+import { carryFaceLayers, carryVertexLayers, onlyEdgesOf, type FaceSource } from "./mesh-layers";
 import { compactMesh } from "./mesh-repair";
 import { weldByMap } from "./remove-doubles";
 import { crtQsort } from "./edit-mode/triangle-fill";
@@ -1700,10 +1700,14 @@ export interface ConvexHullReport {
  * corner as Blender does. The four-points-with-volume search below only
  * decides the degenerate case.
  *
- * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): a hull triangle that is already an input
+ * face keeps it; any other copies the corners of the input faces along its
+ * edges (`BM_face_copy_shared`) and takes its example face's slot; vertex
+ * groups and edge flags stay with the surviving vertices and edges. Wire
+ * edges go (they are not the hull). With the input's faces taken away first,
+ * as the parity row does, the corners are zero and the slots 0
+ * (`convex-hull-layers`); with them present the rule is Blender's but only
+ * measured through that row's companion (`convex-hull-keep-layers`).
  */
 export function convexHull(
   data: MeshData,
@@ -1800,16 +1804,111 @@ export function convexHull(
 
   // Keep only the vertices the hull uses, in input order.
   const remap = new Map<number, number>();
+  const source: number[] = [];
   const positions: number[] = [];
   for (let v = 0; v < n; v++)
     if (used.has(v)) {
       remap.set(v, remap.size);
+      source.push(v);
       positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
     }
-  const polys = tris.map((t) => t.map((v) => remap.get(v)!));
+
+  // The corners, as `hull_output_triangles` sets them. A triangle that is
+  // already an input face is that face, its corners and all. Otherwise each
+  // of its edges that has faces copies the corners at both ends, the first
+  // write winning from the triangle's first corner (`BM_face_copy_shared`):
+  // from the oldest input face on the edge (`radial_next` of the new loop),
+  // or — on an edge only the hull made — from the hull triangle made before
+  // it there. The face's slot is the example's: the newest input face on the
+  // triangle's first edge that has one (`hull_find_example_face`).
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const inputFaces = new Map<string, number[]>();
+  const existing = new Map<string, number>();
+  data.polys.forEach((p, f) => {
+    for (let i = 0; i < p.length; i++) {
+      const k = key(p[i]!, p[(i + 1) % p.length]!);
+      (inputFaces.get(k) ?? inputFaces.set(k, []).get(k)!).push(f);
+    }
+    if (p.length === 3) existing.set([...p].sort((a, b) => a - b).join(","), f);
+  });
+  type Corner = { face: number; corner: number } | { hull: number; corner: number } | null;
+  const hullOn = new Map<string, number>();
+  const corners: Corner[][] = [];
+  const outTris: number[][] = [];
+  const material: number[] = [];
+  tris.forEach((t, h) => {
+    const same = existing.get([...t].sort((a, b) => a - b).join(","));
+    if (same !== undefined) {
+      const p = data.polys[same]!;
+      outTris.push([...p]);
+      corners.push(p.map((_, i) => ({ face: same, corner: i })));
+      material.push(same);
+    } else {
+      outTris.push(t);
+      const c: Corner[] = [null, null, null];
+      let example = -1;
+      for (let i = 0; i < 3; i++) {
+        const a = t[i]!;
+        const b = t[(i + 1) % 3]!;
+        const faces = inputFaces.get(key(a, b));
+        // `BM_FACES_OF_EDGE` starts at `e->l`, the newest loop: the newest
+        // input face, unless a hull triangle already sits there — it is
+        // skipped, and its `radial_next` is the oldest.
+        if (example < 0 && faces) example = hullOn.has(key(a, b)) ? faces[0]! : faces[faces.length - 1]!;
+        for (const [j, v] of [[i, a], [(i + 1) % 3, b]] as const) {
+          if (c[j]) continue;
+          if (faces) c[j] = { face: faces[0]!, corner: data.polys[faces[0]!]!.indexOf(v) };
+          else {
+            const prev = hullOn.get(key(a, b));
+            if (prev !== undefined) c[j] = { hull: prev, corner: outTris[prev]!.indexOf(v) };
+          }
+        }
+      }
+      corners.push(c);
+      material.push(example);
+    }
+    for (let i = 0; i < 3; i++) {
+      const k = key(outTris[h]![i]!, outTris[h]![(i + 1) % 3]!);
+      if (!hullOn.has(k)) hullOn.set(k, h);
+    }
+  });
+
+  const polys = outTris.map((t) => t.map((v) => remap.get(v)!));
+  const out: MeshData = { positions: new Float32Array(positions), polys };
+  // A corner nothing was copied to holds the layer's default: 0, and white
+  // for a colour (`layerDefault_mloopcol`).
+  const layer = (src: number[][][] | undefined, blank: number, width0: number): number[][][] | undefined => {
+    if (!src || src.length !== data.polys.length) return undefined;
+    const width = src.find((f) => f.length > 0)?.[0]?.length ?? width0;
+    const done: number[][][] = [];
+    corners.forEach((cs) => {
+      done.push(
+        cs.map((c) =>
+          !c ? new Array<number>(width).fill(blank) : "face" in c ? [...src[c.face]![c.corner]!] : [...done[c.hull]![c.corner]!],
+        ),
+      );
+    });
+    return done;
+  };
+  const uvs = layer(data.uvs, 0, 2);
+  if (uvs) out.uvs = uvs;
+  const colors = layer(data.colors, 1, 4);
+  if (colors) out.colors = colors;
+  const normals = layer(data.normals, 0, 3);
+  if (normals) out.normals = normals;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = material.map((f) => (f < 0 ? 0 : data.materials![f]!));
+  const vertexLayers = carryVertexLayers({ ...data, edges: undefined }, source);
+  if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  // The hull's edges are made with `BM_CREATE_NO_DOUBLE`: an input edge it
+  // runs along is that edge, flags and all.
+  onlyEdgesOf(vertexLayers, polys);
+  if (vertexLayers.creases) out.creases = vertexLayers.creases;
+  if (vertexLayers.seams) out.seams = vertexLayers.seams;
+  if (vertexLayers.sharp) out.sharp = vertexLayers.sharp;
   report.interior = n - remap.size;
   report.degenerate = polys.length === 0;
-  return { positions: new Float32Array(positions), polys };
+  return out;
 }
 
 export interface MaskOptions {

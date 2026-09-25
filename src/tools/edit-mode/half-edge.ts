@@ -625,7 +625,9 @@ function carryLayers(
     const layerWidth = old.find((fc) => fc.length > 0)?.[0]?.length ?? 2;
     em[k] = sources.map((face) =>
       face.map((src) => {
-        if (src.length === 0) return new Array<number>(layerWidth).fill(0);
+        // A corner made with no example holds the layer's default: 0, and
+        // white for a colour (`layerDefault_mloopcol`).
+        if (src.length === 0) return new Array<number>(layerWidth).fill(k === "loopColors" ? 1 : 0);
         const width = old[src[0]![0]]![src[0]![1]]!.length;
         const out = new Array<number>(width).fill(0);
         for (const [g, c, w] of src) {

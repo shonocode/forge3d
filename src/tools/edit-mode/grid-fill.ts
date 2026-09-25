@@ -557,13 +557,15 @@ function gridLayers(
       corners.push(face);
     }
 
-  const layer = (src: number[][][] | undefined): number[][][] | undefined => {
+  const layer = (src: number[][][] | undefined, blank = 0): number[][][] | undefined => {
     if (!src || src.length !== mesh.polys.length) return undefined;
     const width = src.find((f) => f.length > 0)?.[0]?.length ?? 2;
     const out = src.map((f) => f.map((cn) => [...cn]));
     for (let k = 0; k < added; k++)
       out.push(
         corners[k]!.map((mix) => {
+          // No rim face to read: the layer's default, white for a colour.
+          if (mix.length === 0) return new Array<number>(width).fill(blank);
           const v = new Array<number>(width).fill(0);
           for (const [[f, i], w] of mix) src[f]![i]!.forEach((x, j) => (v[j] = v[j]! + w * x));
           return v;
@@ -575,7 +577,7 @@ function gridLayers(
   const layers: Partial<MeshData> = {};
   const uvs = layer(mesh.uvs);
   if (uvs) layers.uvs = uvs;
-  const colors = layer(mesh.colors);
+  const colors = layer(mesh.colors, 1);
   if (colors) layers.colors = colors;
   const normals = layer(mesh.normals);
   if (normals) layers.normals = normals;
