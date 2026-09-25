@@ -35,8 +35,9 @@
  *
  * - **Symmetry** (`use_symmetry`) — a kd-tree pairing of mirrored edges.
  * - **Vertex group weights** — they scale costs per vertex.
- * - Loop custom data (UVs, colours) is not carried: `MeshData` UVs are
- *   dropped by this operator.
+ * - Custom normals, creases and sharp edges (compat-backlog C21). UVs,
+ *   colours, vertex groups and materials are carried — see
+ *   {@link decimateCollapse}.
  */
 import type { MeshData } from "../lib/mesh";
 import {
@@ -146,8 +147,22 @@ function quadricOptimize(q: Quadric, eps: number): number[] | null {
  */
 export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshData {
   const ratio = f(opts.ratio);
-  // Nothing to collapse: the mesh as it is, layers and all.
-  const copy = (): MeshData => ({ ...data, positions: Float32Array.from(data.positions), polys: data.polys.map((p) => [...p]) });
+  // Nothing to collapse: the mesh as it is, layers and all — copies, so the
+  // result shares nothing with the input (found by review).
+  const copy = (): MeshData => {
+    const out: MeshData = { positions: Float32Array.from(data.positions), polys: data.polys.map((p) => [...p]) };
+    const deep = (l: number[][][] | undefined): number[][][] | undefined => l?.map((f) => f.map((x) => [...x]));
+    if (data.uvs) out.uvs = deep(data.uvs)!;
+    if (data.colors) out.colors = deep(data.colors)!;
+    if (data.normals) out.normals = deep(data.normals)!;
+    if (data.materials) out.materials = [...data.materials];
+    if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+    if (data.creases) out.creases = new Map(data.creases);
+    if (data.seams) out.seams = new Set(data.seams);
+    if (data.sharp) out.sharp = new Set(data.sharp);
+    if (data.edges) out.edges = data.edges.map((e) => [...e]);
+    return out;
+  };
   if (ratio === 1 || data.polys.length <= 3) return copy();
 
   const nv = data.positions.length / 3;
@@ -540,8 +555,19 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     positions: Float32Array.from(positions),
     polys: faces.map((x) => faceLoops(x).map((l) => remap[l.v.index]!)),
   };
-  const read = (k: number): number[][][] | undefined =>
-    cornerLayers[k] ? faces.map((x) => faceLoops(x).map((l) => [...(vals[l.src]?.[k] ?? [])])) : undefined;
+  // A corner with no source (none is made here, but the default is cheap)
+  // holds the layer's default: 0, or white for a colour.
+  const read = (k: number): number[][][] | undefined => {
+    const layer = cornerLayers[k];
+    if (!layer) return undefined;
+    const width = layer.find((f) => f.length > 0)?.[0]?.length ?? (k === 1 ? 4 : 2);
+    return faces.map((x) =>
+      faceLoops(x).map((l) => {
+        const v = vals[l.src]?.[k];
+        return v ? [...v] : new Array<number>(width).fill(k === 1 ? 1 : 0);
+      }),
+    );
+  };
   const uvs = read(0);
   if (uvs) out.uvs = uvs;
   const colors = read(1);
