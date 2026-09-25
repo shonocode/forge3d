@@ -1,5 +1,5 @@
 import { orphanedEdges } from "./wire";
-import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type VertexOrigin } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { walkEdgeRing } from "./edge-walk";
 
@@ -95,10 +95,32 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
 
   // 3. Emit order: unselected faces, skirt quads, then the duplicated caps —
   //    tracking the cap start yields the new selection ids.
+  //
+  //    The per-corner layers, Blender's way for `extrude_face_region` given
+  //    the faces (`bmo_extrude_face_region_exec`): a cap is a copy of its
+  //    face, corners and material. A skirt quad copies both corners at each
+  //    end — the original vertex and its duplicate — and its material from
+  //    one of the old faces on its edge (`bm_extrude_copy_face_loop_attributes`
+  //    takes the loop after the new one in the edge's radial cycle). Given
+  //    faces alone the originals are still there when the wall is made, so
+  //    the edge has the region face and the face across; the new loop goes in
+  //    after the edge's current loop, which is the last face built on it, so
+  //    the loop after it is the **first**: the lower-numbered of the two. On
+  //    the mesh's rim only the region face is there. (The UI's Extrude Region
+  //    passes the edges too, deletes the originals first, and so always copies
+  //    the face across — not what this answers.) A duplicate vertex copies
+  //    its source's vertex data.
   const newPolys: number[][] = [];
+  const stated: Array<ExplicitFace | undefined> = [];
   for (let f = 0; f < polys.length; f++) {
-    if (!selectedFaces.has(f)) newPolys.push(polys[f]!);
+    if (!selectedFaces.has(f)) {
+      newPolys.push(polys[f]!);
+      stated.push(undefined);
+    }
   }
+  const origins = new Map<number, VertexOrigin>();
+  for (const v of dupSource) origins.set(dupMap[v]!, { from: [v], w: [1] });
+
 
   // 4. Skirt quads: walk every half-edge of every selected face, emit a quad
   //    on boundary edges (twin missing or twin's face not selected).
@@ -112,6 +134,10 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
       const b = em.halfEdges[he.next]!.v;
       // Outward-facing quad (a, b on the unselected side; dups on the cap).
       newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
+      const o = twin < 0 ? f : Math.min(f, em.halfEdges[twin]!.face);
+      const ca: [number, number, number][] = [[o, polys[o]!.indexOf(a), 1]];
+      const cb: [number, number, number][] = [[o, polys[o]!.indexOf(b), 1]];
+      stated.push({ corners: [ca, cb, cb, ca], material: o });
     }
   }
 
@@ -119,10 +145,11 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
   const newSelStart = newPolys.length;
   for (const f of selectedFaces) {
     newPolys.push(polys[f]!.map((v) => dupMap[v]!));
+    stated.push({ corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f });
   }
   const newSelEnd = newPolys.length;
 
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys);
+  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
   // The region's **interior** edges are left with no face on them: the new cap
   // is built on duplicated vertices and the skirt only takes up the boundary.
   // Measured — extruding a 4x4 grid leaves 24, which is exactly its interior

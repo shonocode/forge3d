@@ -387,6 +387,12 @@ export interface VertexOrigin {
  * float); and custom normals, which are copied as vectors where Blender
  * copies two angles and reads them back in the new corner's normal space.
  */
+/** One new face's corners and material, as an operator states them (`LayerCarry.faces`). */
+export interface ExplicitFace {
+  corners: ReadonlyArray<ReadonlyArray<readonly [number, number, number]>>;
+  material: number;
+}
+
 export interface LayerCarry {
   origins?: ReadonlyMap<number, VertexOrigin>;
   /**
@@ -406,6 +412,17 @@ export interface LayerCarry {
   sameCorners?: boolean;
   /** With `sameCorners`: old vertex -> new vertex (-1 gone), for the vertex groups. */
   vertexMap?: ArrayLike<number>;
+  /**
+   * Per new face (aligned with the new polygons), where each corner comes
+   * from, stated by the operator: `corners[i]` is a list of
+   * `[old face, old corner, weight]` (empty for Blender's default, a zero
+   * value — a loop created with no example), and `material` the old face
+   * whose slot the face takes (-1 for slot 0). An undefined entry falls back
+   * to the rules above. For operators whose rule is not "copy the face it was
+   * split from" — extrude copies a side face's corners from the face across
+   * the edge (`bm_extrude_copy_face_loop_attributes`).
+   */
+  faces?: ReadonlyArray<ExplicitFace | undefined>;
 }
 
 const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
@@ -507,6 +524,7 @@ function carryLayers(
     return out;
   };
 
+  const explicitMaterial = new Map<number, number>();
   if (!carry) {
     for (const poly of newPolys) {
       const s = exact(poly);
@@ -530,7 +548,14 @@ function carryLayers(
       for (let i = 0; i < p.length; i++) directed.set(`${p[i]}>${p[(i + 1) % p.length]}`, g);
     });
 
-    for (const poly of newPolys) {
+    for (let pi = 0; pi < newPolys.length; pi++) {
+      const poly = newPolys[pi]!;
+      const stated = carry.faces?.[pi];
+      if (stated) {
+        sources.push(stated.corners.map((c) => c.map(([g, k, w]) => [g, k, w] as [number, number, number])));
+        explicitMaterial.set(pi, stated.material);
+        continue;
+      }
       const same = exact(poly);
       if (same) {
         sources.push(same);
@@ -590,15 +615,17 @@ function carryLayers(
   // A custom normal is not a value to average: Blender keeps it as two
   // angles in the corner's own normal space. Copied corners keep theirs;
   // an interpolated one drops the layer rather than invent a direction.
-  const interpolated = !failed && sources.some((f) => f.some((s) => s.length !== 1 || s[0]![2] !== 1));
+  const interpolated = !failed && sources.some((f) => f.some((s) => s.length > 1 || (s.length === 1 && s[0]![2] !== 1)));
   for (const k of live) {
     if (failed || (k === "loopNormals" && interpolated)) {
       em[k] = undefined;
       continue;
     }
     const old = em[k]!;
+    const layerWidth = old.find((fc) => fc.length > 0)?.[0]?.length ?? 2;
     em[k] = sources.map((face) =>
       face.map((src) => {
+        if (src.length === 0) return new Array<number>(layerWidth).fill(0);
         const width = old[src[0]![0]]![src[0]![1]]!.length;
         const out = new Array<number>(width).fill(0);
         for (const [g, c, w] of src) {
@@ -616,7 +643,13 @@ function carryLayers(
   // first is not reproduced here. Not measured.
   if (em.faceMaterials) {
     const old = em.faceMaterials;
-    em.faceMaterials = failed ? undefined : sources.map((face) => old[face[0]![0]![0]] ?? 0);
+    em.faceMaterials = failed
+      ? undefined
+      : sources.map((face, i) => {
+          const stated = explicitMaterial.get(i);
+          if (stated !== undefined) return stated < 0 ? 0 : (old[stated] ?? 0);
+          return old[face[0]![0]![0]] ?? 0;
+        });
   }
 
   // Vertex groups: a vertex keeps its weights; a made one mixes its origins'.
@@ -642,6 +675,16 @@ function carryLayers(
         // `layerInterp_mdeformvert`: a source adds a group only where its
         // weight times the factor is not zero, and the sum is capped at 1.
         for (const [v, mix] of mixes) {
+          // A plain copy (a duplicated vertex, `BM_elem_attrs_copy`) keeps
+          // membership as it is, a weight of 0 included.
+          if (mix.size === 1) {
+            const [[u, w]] = [...mix] as [[number, number]];
+            if (w === 1) {
+              const x = g.get(u);
+              if (x !== undefined) ng.set(v, x);
+              continue;
+            }
+          }
           let member = false;
           let sum = 0;
           for (const [u, w] of mix) {
