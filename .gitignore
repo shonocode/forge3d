@@ -7,9 +7,6 @@ dist
 .env*
 !.env.example
 
-# Local state left by wrangler (Cloudflare, no longer used) — safe to delete
-.wrangler/
-
 # Claude Code per-machine settings
 .claude/settings.local.json
 
