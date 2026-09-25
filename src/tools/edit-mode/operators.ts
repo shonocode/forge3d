@@ -66,8 +66,19 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
  *
  * Returns the new face IDs for the extruded cap so the gizmo immediately picks
  * up the just-created geometry.
+ *
+ * `opts.wallsFrom`: where a wall's corners come from. `"lower"` (default) is
+ * `bmesh.ops.extrude_face_region` handed the faces alone — the
+ * lower-numbered of the region face and the face across. `"outside"` is the
+ * UI's Extrude Region and Extrude Repeat, which pass the edges too and delete
+ * the originals first, so a wall copies the face across (the region face
+ * where there is none) — `extrude-repeat-layers`.
  */
-export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
+export function extrudeFaces(
+  em: EditMesh,
+  selectedFaces: ReadonlySet<number>,
+  opts: { wallsFrom?: "lower" | "outside" } = {},
+): Set<number> {
   if (selectedFaces.size === 0) return new Set();
 
   const polys = toPolygons(em);
@@ -135,7 +146,8 @@ export function extrudeFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): 
       const b = em.halfEdges[he.next]!.v;
       // Outward-facing quad (a, b on the unselected side; dups on the cap).
       newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
-      const o = twin < 0 ? f : Math.min(f, em.halfEdges[twin]!.face);
+      const across = twin < 0 ? f : em.halfEdges[twin]!.face;
+      const o = opts.wallsFrom === "outside" ? across : Math.min(f, across);
       const ca: [number, number, number][] = [[o, polys[o]!.indexOf(a), 1]];
       const cb: [number, number, number][] = [[o, polys[o]!.indexOf(b), 1]];
       stated.push({ corners: [ca, cb, cb, ca], material: o });

@@ -21,7 +21,7 @@
  *
  * Pure and headless — Vitest-pinned.
  */
-import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh } from "./half-edge";
+import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { extrudeFaces, insetFaces } from "./operators";
 import { weldByMap } from "../remove-doubles";
 
@@ -277,6 +277,10 @@ export function extrudeFacesBy(
  * `offset` has no default here: Blender's falls back to the **view**
  * direction, which a function without a view does not have.
  *
+ * The layers are carried as Blender's are (`extrude-repeat-layers`): each
+ * step is the UI's region extrude, whose walls copy the face across
+ * (`wallsFrom: "outside"`), and kept originals are the faces flipped.
+ *
  * Returns the last cap.
  */
 export function extrudeRepeat(
@@ -314,10 +318,26 @@ export function extrudeRepeat(
         if (edgeOwners.has(a < b ? `${a}_${b}` : `${b}_${a}`)) bordersOutside = true;
       }
     }
-    const kept = bordersOutside ? [] : [...caps].map((f) => [...polysBefore[f]!].reverse());
+    // In the set's order — the order `extrudeFaces` appends their caps in.
+    const keptFrom = bordersOutside ? [] : [...caps];
+    const kept = keptFrom.map((f) => [...polysBefore[f]!].reverse());
 
-    caps = extrudeFaces(em, caps);
-    if (kept.length > 0) rebuildPolygons(em, em.positions, [...toPolygons(em), ...kept]);
+    caps = extrudeFaces(em, caps, { wallsFrom: "outside" });
+    if (kept.length > 0) {
+      // The kept originals are the region's faces flipped
+      // (`BM_face_normal_flip`): the same corners, in reverse. They are read
+      // from the caps, which hold the originals' corners — `extrudeFaces`
+      // appends one cap per region face, in the region's order.
+      const now = toPolygons(em);
+      const capList = [...caps];
+      const stated: Array<ExplicitFace | undefined> = now.map(() => undefined);
+      keptFrom.forEach((f, i) => {
+        const n = polysBefore[f]!.length;
+        const cap = capList[i]!;
+        stated.push({ corners: Array.from({ length: n }, (_, j) => [[cap, n - 1 - j, 1]]), material: cap });
+      });
+      rebuildPolygons(em, em.positions, [...now, ...kept], { faces: stated });
+    }
     moveFaces(em, caps, opts.offset[0] * k, opts.offset[1] * k, opts.offset[2] * k);
   }
   // Blender's extrude takes the region's edges along, so the vertices inside
@@ -337,7 +357,10 @@ export function extrudeRepeat(
     positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
   }
   if (positions.length !== em.positions.length)
-    rebuildPolygons(em, Float32Array.from(positions), polys.map((p) => p.map((v) => remap[v]!)));
+    rebuildPolygons(em, Float32Array.from(positions), polys.map((p) => p.map((v) => remap[v]!)), {
+      sameCorners: true,
+      vertexMap: remap,
+    });
   return caps;
 }
 
@@ -366,6 +389,11 @@ function usedVertices(em: EditMesh): Set<number> {
  * there and welded — so a face pushed in until it meets the far side cuts the
  * column out, as Blender's does (`extrude-manifold-through`). Edges crossing
  * other edges mid-span are not split (see {@link automergeAndSplit}).
+ *
+ * The layers (`extrude-manifold-*-layers`): a wall copies the face across,
+ * a folded wall adds the outside face's own corners to it, a copied vertex
+ * keeps its source's groups, and the automerge's split points are linear
+ * along their edge before the weld keeps the survivor's.
  *
  * Returns the moved faces.
  */
@@ -415,7 +443,12 @@ export function extrudeManifold(
       }
 
   const out = polys.map((p) => [...p]);
+  // Where each corner comes from, [old face, old corner], in step with the
+  // faces through every splice below — for the per-corner layers.
+  type Src = [number, number];
+  const outSrc: Src[][] = polys.map((p, f) => p.map((_, i) => [f, i] as Src));
   const sides: number[][] = [];
+  const sidesSrc: Src[][] = [];
   const tagged: number[] = [];
   for (const f of faces) {
     const p = polys[f]!;
@@ -429,14 +462,22 @@ export function extrudeManifold(
       const nb = copy.get(b)!;
       const perpendicular =
         owner !== undefined && Math.abs(avg[0] * normalOf(polys[owner]!)[0] + avg[1] * normalOf(polys[owner]!)[1] + avg[2] * normalOf(polys[owner]!)[2]) <= 0.0001;
+      // A wall copies the face across (the UI's extrude, which passes the
+      // edges too), or the region face on the mesh's rim.
+      const o = owner ?? f;
+      const ca: Src = [o, polys[o]!.indexOf(a)];
+      const cb: Src = [o, polys[o]!.indexOf(b)];
       if (perpendicular) {
         // Join the wall into the outside face: its b→a becomes b→nb→na→a.
+        // The wall's corners were the face's own, so the new ones repeat them.
         const F = out[owner!]!;
         const j = F.findIndex((v, x) => v === b && F[(x + 1) % F.length] === a);
         F.splice(j + 1, 0, nb, na);
+        outSrc[owner!]!.splice(j + 1, 0, cb, ca);
         tagged.push(a, b);
       } else {
         sides.push([a, b, nb, na]);
+        sidesSrc.push([ca, cb, cb, ca]);
       }
     }
   }
@@ -445,6 +486,9 @@ export function extrudeManifold(
   // A rim vertex left between two edges folds into its copy.
   const regionFaces = new Set([...faces].map((f) => out[f]!));
   let all = [...out, ...sides];
+  let allSrc = [...outSrc, ...sidesSrc];
+  // The face each output face takes its material from.
+  let allMat = [...out.map((_, f) => f), ...sidesSrc.map((s) => s[0]![0])];
   for (const v of new Set(tagged)) {
     const nbrs = new Set<number>();
     for (const p of all)
@@ -454,11 +498,17 @@ export function extrudeManifold(
         nbrs.add(p[(i + p.length - 1) % p.length]!);
       }
     if (nbrs.size !== 2) continue;
-    for (const p of all) {
+    all.forEach((p, x) => {
       const i = p.indexOf(v);
-      if (i >= 0) p.splice(i, 1);
-    }
-    all = all.filter((p) => p.length >= 3);
+      if (i >= 0) {
+        p.splice(i, 1);
+        allSrc[x]!.splice(i, 1);
+      }
+    });
+    const keep = all.map((p) => p.length >= 3);
+    all = all.filter((_, x) => keep[x]);
+    allSrc = allSrc.filter((_, x) => keep[x]);
+    allMat = allMat.filter((_, x) => keep[x]);
   }
 
   // Vertices the old region used and nothing uses now go.
@@ -474,7 +524,21 @@ export function extrudeManifold(
   all.forEach((p, i) => {
     if (regionFaces.has(p)) moved.add(i);
   });
-  rebuildPolygons(em, Float32Array.from(positions), all.map((p) => p.map((v) => remap[v]!)));
+  // Built first with every vertex kept — a copy carries its source's vertex
+  // data — and then compacted, which only renumbers.
+  const origins = new Map<number, VertexOrigin>();
+  for (const [v, c] of copy) origins.set(c, { from: [v], w: [1] });
+  const stated: ExplicitFace[] = allSrc.map((s, x) => ({
+    corners: s.map(([f, i]) => [[f, i, 1] as [number, number, number]]),
+    material: allMat[x]!,
+  }));
+  rebuildPolygons(em, Float32Array.from(P), all, { origins, faces: stated });
+  rebuildPolygons(
+    em,
+    Float32Array.from(positions),
+    all.map((p) => p.map((v) => remap[v]!)),
+    { sameCorners: true, vertexMap: remap },
+  );
   moveFaces(em, moved, offset[0], offset[1], offset[2]);
   return automergeAndSplit(em, moved);
 }
@@ -561,25 +625,61 @@ function automergeAndSplit(em: EditMesh, moved: ReadonlySet<number>): Set<number
       splits.set(key, list);
     }
   }
-  const withSplits = polys.map((p) => {
+  // Each split point's corner is `BM_edge_split`'s: linear along the edge
+  // between the face's two corners.
+  const layers = [em.loopUVs, em.loopColors, em.loopNormals].map((l) => (l?.length === polys.length ? l : undefined));
+  const cornerLayers: number[][][][] = layers.map(() => []);
+  const withSplits = polys.map((p, f) => {
     const out: number[] = [];
+    const cs = layers.map(() => [] as number[][]);
     for (let i = 0; i < p.length; i++) {
       const a = p[i]!;
       const b = p[(i + 1) % p.length]!;
       out.push(a);
+      layers.forEach((l, x) => l && cs[x]!.push([...l[f]![i]!]));
       const list = splits.get(a < b ? `${a}_${b}` : `${b}_${a}`);
       if (!list) continue;
       const sorted = [...list].sort((m, n) => m.t - n.t);
-      for (const { s } of a < b ? sorted : sorted.reverse()) out.push(s);
+      for (const { s, t } of a < b ? sorted : sorted.reverse()) {
+        out.push(s);
+        const u = a < b ? t : 1 - t; // from a
+        layers.forEach((l, x) => {
+          if (!l) return;
+          const ca = l[f]![i]!;
+          const cb = l[f]![(i + 1) % p.length]!;
+          cs[x]!.push(ca.map((c, j) => c + (cb[j]! - c) * u));
+        });
+      }
     }
+    layers.forEach((l, x) => l && cornerLayers[x]!.push(cs[x]!));
     return out;
   });
 
+  const materials = em.faceMaterials?.length === polys.length ? em.faceMaterials : undefined;
   const welded = weldByMap(
-    { positions: Float32Array.from(P), polys: withSplits },
+    {
+      positions: Float32Array.from(P),
+      polys: withSplits,
+      ...(layers[0] ? { uvs: cornerLayers[0] } : {}),
+      ...(layers[1] ? { colors: cornerLayers[1] } : {}),
+      ...(layers[2] ? { normals: cornerLayers[2] } : {}),
+      ...(materials ? { materials: [...materials] } : {}),
+      ...(em.vertexGroups ? { groups: em.vertexGroups } : {}),
+    },
     (v) => target[v]!,
   );
+  // Laid down after the rebuild, which would read the welded faces as new.
+  em.loopUVs = undefined;
+  em.loopColors = undefined;
+  em.loopNormals = undefined;
+  em.faceMaterials = undefined;
+  em.vertexGroups = undefined;
   rebuildPolygons(em, welded.positions, welded.polys);
+  if (welded.uvs) em.loopUVs = welded.uvs;
+  if (welded.colors) em.loopColors = welded.colors;
+  if (welded.normals) em.loopNormals = welded.normals;
+  if (welded.materials) em.faceMaterials = welded.materials;
+  if (welded.groups && welded.groups.size > 0) em.vertexGroups = welded.groups;
   // The moved faces, found again: every corner a (surviving) moved vertex.
   const survivorOf = new Map<number, number>();
   let next = 0;
