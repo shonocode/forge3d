@@ -130,7 +130,7 @@ const DROPS: Array<[string, () => MeshData, Layer[]]> = [
         operation: "union",
         parts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
       } as never),
-    [],
+    ["uvs", "colors", "groups", "materials"],
   ],
   ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["materials", "edges"]],
 ];

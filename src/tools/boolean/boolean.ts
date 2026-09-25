@@ -49,6 +49,7 @@
 import type { MeshData } from "../../lib/mesh";
 import { add, cmp, div, fromDouble, mul, neg, orient3dExact, q, q3Cross, q3Dot, q3Sub, sign, sub, type Q, type Q3 } from "./exact";
 import { mergePieces, subdivide, toMeshData, type Piece } from "./intersect";
+import { interpWeightsPoly } from "../edit-mode/interp";
 
 export type BooleanOperation = "union" | "difference" | "intersect";
 
@@ -96,10 +97,13 @@ export interface BooleanOptions {
  * booleanMesh(twoCubes, { operation: "difference", set: new Set([6, 7, 8, 9, 10, 11]) });
  * ```
  *
- * **Layers** (compat-backlog A3): keeps none. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A7): UVs, colours, materials, vertex groups and
+ * edge flags, as the exact solver carries them (`boolean-*-layers`): each
+ * output face takes its input face's slot and copies its corners, or
+ * interpolates them (mean value) at a vertex the cut made; input vertices
+ * keep their groups. The BOOLEAN modifier with an object operand drops that
+ * operand's groups (measured); this takes one mesh, as edit mode does.
+ * Custom normals are dropped.
  */
 export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
   const partOfFace: (face: number) => number = options.parts
@@ -116,15 +120,122 @@ export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
   // `apply_mesh_output_to_bmesh`: a face whose vertices another face already
   // has is that face (`BM_face_exists`), so it appears once.
   const seen = new Set<string>();
-  const polys = merged
-    .filter((f) => {
-      const k = [...f.vert].sort((a, b) => a - b).join(",");
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    })
-    .map((f) => f.vert);
-  return toMeshData(polys, verts);
+  const faces = merged.filter((f) => {
+    const k = [...f.vert].sort((a, b) => a - b).join(",");
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const polys = faces.map((f) => f.vert);
+  return { ...toMeshData(polys, verts), ...booleanLayers(data, faces, verts) };
+}
+
+/**
+ * The layers of a boolean's result, as `mesh_boolean_convert` carries them.
+ * Every output face came from one input face (`face`): it takes that face's
+ * slot, and each of its corners copies the input face's corner at the same
+ * input vertex, or — at a vertex the cut made — the mean-value interpolation
+ * over the input face at that point (`copy_or_interp_loop_attributes`).
+ * Input vertices keep their groups; edges between two input vertices that
+ * were input edges keep their flags.
+ */
+function booleanLayers(
+  data: MeshData,
+  faces: readonly { vert: number[]; face: number }[],
+  verts: readonly { co: readonly [number, number, number] }[],
+): Partial<MeshData> {
+  const nv = data.positions.length / 3;
+  // `toMeshData`'s renumbering: the used vertices, in order.
+  const used = new Set<number>(faces.flatMap((f) => f.vert));
+  const remap = new Map<number, number>();
+  verts.forEach((_, i) => {
+    if (used.has(i)) remap.set(i, remap.size);
+  });
+
+  const out: Partial<MeshData> = {};
+  const weightsFor = new Map<string, number[]>();
+  const cornerOf = (f: { vert: number[]; face: number }, v: number): [number, number][] => {
+    const poly = data.polys[f.face]!;
+    const i = v < nv ? poly.indexOf(v) : -1;
+    if (i >= 0) return [[i, 1]];
+    const key = `${f.face}|${v}`;
+    let w = weightsFor.get(key);
+    if (!w) {
+      const P = data.positions;
+      let nx = 0, ny = 0, nz = 0;
+      for (let k = 0; k < poly.length; k++) {
+        const a = poly[k]! * 3;
+        const b = poly[(k + 1) % poly.length]! * 3;
+        nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
+        ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
+        nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
+      }
+      const len = Math.hypot(nx, ny, nz) || 1;
+      w = interpWeightsPoly(P, poly, [nx / len, ny / len, nz / len], verts[v]!.co as [number, number, number]);
+      weightsFor.set(key, w);
+    }
+    return w.map((x, k) => [k, x] as [number, number]);
+  };
+  const layer = (src: number[][][] | undefined, clamp: boolean): number[][][] | undefined => {
+    if (!src || src.length !== data.polys.length) return undefined;
+    return faces.map((f) =>
+      f.vert.map((v) => {
+        const mix = cornerOf(f, v);
+        const corners = src[f.face]!;
+        const r = corners[mix[0]![0]]!.map(() => 0);
+        for (const [k, w] of mix) corners[k]!.forEach((x, j) => (r[j] = r[j]! + w * x));
+        return clamp ? r.map((x) => Math.min(1, Math.max(0, x))) : r;
+      }),
+    );
+  };
+  const uvs = layer(data.uvs, false);
+  if (uvs) out.uvs = uvs;
+  const colors = layer(data.colors, true);
+  if (colors) out.colors = colors;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = faces.map((f) => data.materials![f.face]!);
+  if (data.groups) {
+    out.groups = new Map(
+      [...data.groups].map(([name, g]) => [
+        name,
+        new Map([...g].filter(([v]) => remap.has(v)).map(([v, w]) => [remap.get(v)!, w] as [number, number])),
+      ]),
+    );
+  }
+  const edgeKeys = new Set<string>();
+  for (const f of faces)
+    for (let i = 0; i < f.vert.length; i++) {
+      const a = f.vert[i]!;
+      const b = f.vert[(i + 1) % f.vert.length]!;
+      if (a < nv && b < nv) edgeKeys.add(a < b ? `${a}_${b}` : `${b}_${a}`);
+    }
+  const keep = (k: string): string | null => {
+    if (!edgeKeys.has(k)) return null;
+    const [a, b] = k.split("_").map(Number) as [number, number];
+    const ra = remap.get(a)!;
+    const rb = remap.get(b)!;
+    return ra < rb ? `${ra}_${rb}` : `${rb}_${ra}`;
+  };
+  for (const name of ["creases", "seams", "sharp"] as const) {
+    const src = data[name];
+    if (!src) continue;
+    if (src instanceof Map) {
+      const m = new Map<string, number>();
+      for (const [k, x] of src) {
+        const nk = keep(k);
+        if (nk) m.set(nk, x);
+      }
+      (out as Record<string, unknown>)[name] = m;
+    } else {
+      const s = new Set<string>();
+      for (const k of src) {
+        const nk = keep(k);
+        if (nk) s.add(nk);
+      }
+      (out as Record<string, unknown>)[name] = s;
+    }
+  }
+  return out;
 }
 
 // ── topology ────────────────────────────────────────────────────────────────
