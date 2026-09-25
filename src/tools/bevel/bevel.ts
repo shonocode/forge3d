@@ -30,8 +30,9 @@
  *   square-in special cases), and the two-edge weld
  * - wire edges reattached, and a material slot per face carried through
  *
- * Refused with a named error rather than approximated: custom profiles, the
- * Arc and Patch miters, the Cutoff vertex mesh, vertex-only bevels. UVs and
+ * Refused with a named error rather than approximated: the Arc and Patch
+ * miters and the Cutoff vertex mesh. Not offered at all (no option to pass):
+ * custom profiles and vertex-only bevels (compat-backlog C17 / C1). UVs and
  * vertex colours are dropped — Blender interpolates them from representative
  * faces, a separate port nobody has needed yet.
  *
