@@ -91,7 +91,9 @@ describe("transformMesh", () => {
   it("reverses winding when a scale mirrors the mesh", () => {
     const src = box();
     const flipped = transformMesh(src, { scale: [-1, 1, 1] });
-    expect(flipped.polys[0]).toEqual([...src.polys[0]!].reverse());
+    // `mesh_flip_faces`: the first corner stays, the rest reverse.
+    const p0 = src.polys[0]!;
+    expect(flipped.polys[0]).toEqual([p0[0], ...p0.slice(1).reverse()]);
     // Two negative axes is a rotation, not a reflection — winding is kept.
     const twice = transformMesh(src, { scale: [-1, -1, 1] });
     expect(twice.polys[0]).toEqual(src.polys[0]);
@@ -455,7 +457,7 @@ describe("UVs through merge / transform / mirror / array / weld", () => {
   it("a mirroring transform reverses the corners and each UV stays on its vertex", () => {
     const src = quad();
     const out = transformMesh(src, { scale: [-1, 1, 1] });
-    expect(out.polys[0]).toEqual([3, 2, 1, 0]);
+    expect(out.polys[0]).toEqual([0, 3, 2, 1]);
     for (let v = 0; v < 4; v++) expect(uvAt(out, 0, v)).toEqual(uvAt(src, 0, v));
   });
 

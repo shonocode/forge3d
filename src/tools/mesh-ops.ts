@@ -180,8 +180,11 @@ export function transformMesh(data: MeshData, opts: TransformOptions): MeshData 
   const flipped = s[0] * s[1] * s[2] < 0;
   const placed = withPositions(data, out);
   if (flipped) {
-    placed.polys = placed.polys.map((p) => p.reverse());
-    for (const k of ["uvs", "colors", "normals"] as const) placed[k] = placed[k]?.map((f) => f.reverse());
+    // `mesh_flip_faces`: the first corner stays first and the rest reverse
+    // (`[a, b, c, d]` → `[a, d, c, b]`), the corner layers with them.
+    const flip = <T>(f: T[]): T[] => (f.length ? [f[0]!, ...f.slice(1).reverse()] : f);
+    placed.polys = placed.polys.map(flip);
+    for (const k of ["uvs", "colors", "normals"] as const) placed[k] = placed[k]?.map(flip);
   }
   // A custom normal turns with the surface: the inverse transpose of the
   // linear part, which for rotate · scale is rotate · (1 / scale).
