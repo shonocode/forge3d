@@ -278,3 +278,66 @@ describe("catmullClark UVs (Blender's UV Smooth = Keep Boundaries)", () => {
     expect(catmullClark(g.positions, g.polys, 1).uvs).toBeUndefined();
   });
 });
+
+describe("catmullClark options (Blender's Subdivision Surface settings, compat-backlog B1)", () => {
+  /** A flat 2×2 grid of unit quads in the XZ plane — four boundary corners. */
+  const grid = (): { positions: Float32Array; polys: number[][] } => {
+    const positions: number[] = [];
+    for (let j = 0; j <= 2; j++) for (let i = 0; i <= 2; i++) positions.push(i, 0, j);
+    const polys: number[][] = [];
+    for (let j = 0; j < 2; j++)
+      for (let i = 0; i < 2; i++) {
+        const a = j * 3 + i;
+        polys.push([a, a + 3, a + 4, a + 1]);
+      }
+    return { positions: Float32Array.from(positions), polys };
+  };
+  const at = (p: Float32Array, v: number): number[] => [p[v * 3]!, p[v * 3 + 1]!, p[v * 3 + 2]!];
+
+  it("puts an input vertex at the same limit point whatever the level", () => {
+    const one = catmullClark(CUBE_POS, CUBE_QUADS, 1, undefined, undefined, { limitSurface: true });
+    const two = catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true });
+    for (let v = 0; v < 8; v++)
+      at(one.positions, v).forEach((x, k) => expect(x).toBeCloseTo(at(two.positions, v)[k]!, 6));
+  });
+
+  it("moves a smooth one-face corner as far as `quality` rounds of refinement", () => {
+    // (a + 6x + b) / 8 three times from the corner at 0 with neighbours at 1
+    // and 0 — 0.1640625, short of the limit 1/6 (measured on Blender's grid).
+    const g = grid();
+    const q3 = catmullClark(g.positions, g.polys, 1, undefined, undefined, { limitSurface: true });
+    expect(at(q3.positions, 0)[0]).toBeCloseTo(0.1640625, 6);
+    expect(at(q3.positions, 0)[2]).toBeCloseTo(0.1640625, 6);
+    const q1 = catmullClark(g.positions, g.polys, 1, undefined, undefined, { limitSurface: true, quality: 1 });
+    expect(at(q1.positions, 0)[0]).toBeCloseTo(0.125, 6);
+    const kept = catmullClark(g.positions, g.polys, 1, undefined, undefined, {
+      limitSurface: true,
+      boundarySmooth: "PRESERVE_CORNERS",
+    });
+    expect(at(kept.positions, 0)).toEqual([0, 0, 0]);
+  });
+
+  it("PRESERVE_CORNERS keeps a one-face vertex where it is without the limit too", () => {
+    const g = grid();
+    expect(at(catmullClark(g.positions, g.polys, 1).positions, 0)[0]).toBeCloseTo(0.125, 6);
+    const kept = catmullClark(g.positions, g.polys, 1, undefined, undefined, { boundarySmooth: "PRESERVE_CORNERS" });
+    expect(at(kept.positions, 0)).toEqual([0, 0, 0]);
+  });
+
+  it("refuses the limit where it would not be Blender's", () => {
+    expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 4, undefined, undefined, { limitSurface: true })).toThrow(/quality/);
+    expect(() =>
+      catmullClark(CUBE_POS, CUBE_QUADS, 1, new Map([["0_1", 1]]), undefined, { limitSurface: true }),
+    ).toThrow(/creases/);
+    const uvs = CUBE_QUADS.map((p) => p.map(() => [0, 0]));
+    expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 1, undefined, uvs, { limitSurface: true })).toThrow(/UVs/);
+  });
+
+  it("UV Smooth NONE subdivides the UVs linearly everywhere", () => {
+    const g = grid();
+    const uvs = g.polys.map((p) => p.map((v) => (v === 4 ? [0.6, 0.5] : [(v % 3) / 2, Math.floor(v / 3) / 2])));
+    const r = catmullClark(g.positions, g.polys, 1, undefined, uvs, { uvSmooth: "NONE" });
+    const centre = r.uvs!.filter((_, f) => r.polys[f]![0] === 4).map((f) => f[0]!);
+    for (const c of centre) expect(c).toEqual([0.6, 0.5]);
+  });
+});

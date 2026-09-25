@@ -254,7 +254,9 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
 /**
  * Blender's Subdivision "Simple": every face cut into quads at its edge
  * midpoints and its centre, the shape left as it was. UVs cut the same way,
- * per face, so seams stay seams.
+ * per face, so seams stay seams. Matches the modifier with
+ * `subdivision_type = SIMPLE` (OpenSubdiv's bilinear scheme) at levels 1 and 2,
+ * UVs included — `subdiv-simple`, `subdiv-simple-uv` (compat-backlog B1).
  */
 export function simpleSubdivide(s: MeshData, level: number): MeshData {
   let positions = Array.from(s.positions);
