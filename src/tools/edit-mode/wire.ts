@@ -14,6 +14,26 @@
 import type { MeshData } from "../../lib/mesh";
 
 /**
+ * Add one loose vertex at `co` — Blender's `bmesh.ops.create_vert`. It goes
+ * last, so its index is the old vertex count; everything else is untouched.
+ *
+ * No parity row: its output has no faces, and two faceless meshes compare
+ * equal whatever they are, so a row would say nothing. The unit test checks
+ * where it lands.
+ */
+export function createVert(data: MeshData, co: readonly [number, number, number]): MeshData {
+  const positions = new Float32Array(data.positions.length + 3);
+  positions.set(data.positions);
+  positions.set(co, data.positions.length);
+  return {
+    ...data,
+    positions,
+    polys: data.polys.map((p) => [...p]),
+    ...(data.edges ? { edges: data.edges.map((e) => [...e]) } : {}),
+  };
+}
+
+/**
  * Duplicate each chosen vertex and join it to its original with a wire edge —
  * Blender's `bmesh.ops.extrude_vert_indiv`.
  *

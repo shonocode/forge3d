@@ -222,11 +222,12 @@ export {
   type HolesFillOptions,
 } from "../tools/edit-mode/refine";
 export { edgeFaceAdd, ringOf } from "../tools/edit-mode/face-add";
+export { beautifyFill, type BeautifyFillOptions } from "../tools/beautify-fill";
 
 // ── Wire edges ─────────────────────────────────────────────────────────────
 // Edges that belong to no face. `MeshData.edges` is where they live; these
 // are the operators that make them.
-export { extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
+export { createVert, extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
 export { laplacianSmooth, type LaplacianSmoothOptions } from "../tools/edit-mode/laplacian-smooth";
@@ -432,7 +433,7 @@ export {
   type VertexWeightMixSet,
   type ProximityGeometry,
 } from "../tools/edit-mode/vertex-weight";
-export { transferWeights, type TransferWeightsOptions } from "../tools/data-transfer";
+export { transferWeights, type TransferWeightsOptions, type TransferMapping } from "../tools/data-transfer";
 export { computeLSCM, type LSCMResult, type LSCMOptions } from "../tools/edit-mode/lscm";
 
 // ── Sculpt maths ───────────────────────────────────────────────────────────

@@ -17,13 +17,12 @@ import { shrinkwrap } from "./shrinkwrap";
  * readings of the offset direction; only the rim separates "back the way it
  * came" from "along the target's normal".
  *
- * **One mode measured here is deliberately absent from the implementation.**
  * `ABOVE_SURFACE` fitted every shape these probes use and then disagreed with
  * Blender on all 36 vertices of `arm` when the parity row gave it a non-cubic
  * box — the shapes here make its normal interpolation degenerate, so they
- * cannot tell the candidate readings apart. That is the same "does this case
- * discriminate?" failure the multi-projector choice hit, caught one step
- * later.
+ * cannot tell the candidate readings apart. It was left out until 2026-09-25,
+ * when `shrinkwrap.cc` settled it (corner-angle vertex normals, the
+ * (0,1,2)(0,2,3) split); its test below uses the probe's own number.
  */
 
 /** The target from the first probe: one quad in the z = 0 plane, ±0.5. */
@@ -172,6 +171,17 @@ describe("shrinkwrap", () => {
     // sits exactly on the box's +z face.
     const out = shrinkwrap(points(PROBES), { target: box(), offset: 0.1 });
     expectPoint(firsts(out, 4)[3]!, [0.2, 0.1, 0.5], "exactly on the face");
+  });
+
+  it("aboveSurface offsets along the blended vertex normal (probe-shrinkwrap2.py)", () => {
+    // Blender, box ±0.5, the point above it: the hit is (0.2, 0.1, 0.5) and the
+    // offset runs along (0.3651, 0.1826, 0.9129) — the top face's corner
+    // normals (±1, ±1, 1)/√3 blended by the hit's weights, not the flat +z.
+    const out = firsts(
+      shrinkwrap(points(PROBES), { target: box(), mode: "aboveSurface", offset: 0.1 }),
+      4,
+    );
+    expectPoint(out[0]!, [0.23651, 0.11826, 0.59129], "above the top face");
   });
 
   it("offsets along the travel direction on a tilted quad too", () => {

@@ -14,6 +14,7 @@
 import type { MeshData } from "../lib/mesh";
 import type { Vec3 } from "./generate";
 import { falloffWeight, type ProportionalFalloff } from "./edit-mode/proportional";
+import { meshVertNormals, type V3 } from "./blender-math";
 
 /** Which axis a deformation is measured along or turns about. */
 export type DeformAxis = "x" | "y" | "z";
@@ -361,6 +362,21 @@ export interface WaveOptions {
   falloff?: number;
   /** The axis the ridge pushes along. Default `"z"`, Blender's. */
   up?: DeformAxis;
+  /**
+   * Push along each vertex's normal instead of `up` — Blender's `use_normal`,
+   * with `use_normal_x/y/z` as the three flags (all on when `true`). Only the
+   * chosen components of the normal move the vertex. The normal is Blender's
+   * (`Mesh::vert_normals`, corner-angle weighted).
+   */
+  normal?: boolean | { x?: boolean; y?: boolean; z?: boolean };
+  /**
+   * Blender's `lifetime`: after this much time past `timeOffset` the wave
+   * starts to die away, reaching nothing `damping` later. 0 (default) lives
+   * for ever.
+   */
+  lifetime?: number;
+  /** Blender's `damping_time`. Default 10, Blender's (0 also reads as 10). */
+  damping?: number;
 }
 
 /**
@@ -399,9 +415,11 @@ export interface WaveOptions {
  * - **the falloff is measured from `start`**, not from where the front has
  *   travelled to
  *
- * Not implemented, and not guessed: `damping_time` / `lifetime` (a fade in
- * time, which a single evaluation has no use for) and `use_normal`
- * (displacement along the surface normal — `MeshData` carries no normals).
+ * `normal`, `lifetime` and `damping` came in on 2026-09-25, read from
+ * `MOD_wave.cc`: past the lifetime the height becomes
+ * `height · (1 − √((t − lifetime) / damping))`, and zero once that passes
+ * `damping`; along the normal the push is `height·amplitude·n` on each chosen
+ * axis. (`up` is then ignored.)
  */
 export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
   const up = opts.up ?? "z";
@@ -415,11 +433,32 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
   const cyclic = opts.cyclic ?? false;
   const falloff = opts.falloff ?? 0;
   const [su, sv] = opts.start ?? [0, 0];
-  const travel = ((opts.time ?? 0) - (opts.timeOffset ?? 0)) * speed;
+  const elapsed = (opts.time ?? 0) - (opts.timeOffset ?? 0);
+  const travel = elapsed * speed;
+
+  // `lifefac`: the height, faded after the lifetime.
+  let lifefac = height;
+  const lifetime = opts.lifetime ?? 0;
+  const damping = opts.damping || 10;
+  if (lifetime !== 0 && elapsed > lifetime) {
+    const over = elapsed - lifetime;
+    lifefac = over > damping ? 0 : height * (1 - Math.sqrt(over / damping));
+  }
+  const byNormal =
+    opts.normal === true ? [true, true, true]
+    : opts.normal ? [opts.normal.x ?? false, opts.normal.y ?? false, opts.normal.z ?? false]
+    : null;
 
   const P = data.positions;
   const count = P.length / 3;
   const out = new Float32Array(P);
+  if (lifefac === 0) return deformed(data, out);
+  let normals: V3[] | null = null;
+  if (byNormal) {
+    const pts: V3[] = [];
+    for (let k = 0; k < count; k++) pts.push([P[k * 3]!, P[k * 3 + 1]!, P[k * 3 + 2]!]);
+    normals = meshVertNormals(pts, data.polys);
+  }
   // The pedestal: what the Gaussian is worth at the edge of the band. Blender
   // subtracts it so the ridge lands on zero there instead of stepping.
   const pedestal = Math.exp(-((width * narrowness) ** 2));
@@ -443,7 +482,11 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
     }
 
     const n = amp * narrowness;
-    out[k * 3 + a] = P[k * 3 + a]! + height * fac * (Math.exp(-(n * n)) - pedestal);
+    const push = lifefac * fac * (Math.exp(-(n * n)) - pedestal);
+    if (normals) {
+      for (let c = 0; c < 3; c++)
+        if (byNormal![c]) out[k * 3 + c] = P[k * 3 + c]! + push * normals[k]![c]!;
+    } else out[k * 3 + a] = P[k * 3 + a]! + push;
   }
 
   return deformed(data, out);

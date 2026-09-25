@@ -17,6 +17,8 @@
 import type { MeshData } from "../lib/mesh";
 import { seamKey } from "./edit-mode/half-edge";
 import { compactMesh } from "./mesh-repair";
+import { weldByMap } from "./remove-doubles";
+import { crtQsort } from "./edit-mode/triangle-fill";
 import type { Vec3 } from "./generate";
 import { bulletConvexHull } from "./hull/bullet-hull";
 
@@ -176,6 +178,90 @@ export interface ArrayMeshOptions {
    * `offset`. `[1, 0, 0]` lays copies end to end along X whatever their size.
    */
   relative?: Vec3;
+  /**
+   * Blender's `use_merge_vertices` with this `merge_threshold`: each copy's
+   * vertices weld onto the previous copy's within the distance. The survivor
+   * stays where it was. Default off.
+   */
+  merge?: number;
+  /** Blender's `use_merge_vertices_cap`: also weld the first copy onto the last. */
+  mergeFirstLast?: boolean;
+  /**
+   * Blender's `start_cap`: a mesh placed one step **before** the first copy
+   * (in its own coordinates, shifted back by the offset), welded onto the
+   * first copy when `merge` is on.
+   */
+  startCap?: MeshData;
+  /** Blender's `end_cap`: one step past the last copy, welded onto it when merging. */
+  endCap?: MeshData;
+}
+
+/**
+ * `dm_mvert_map_doubles` (`MOD_array.cc`): map each `source` vertex to the
+ * nearest `target` vertex within `dist`, scanning both sorted by the sum of
+ * their coordinates (the CRT `qsort`, whose tie order decides equal
+ * distances — `<=` keeps the later). A target already mapped elsewhere is
+ * followed only while its final target stays within `dist`.
+ */
+function mapDoubles(
+  map: Int32Array,
+  P: Float32Array,
+  targetStart: number,
+  sourceStart: number,
+  n: number,
+  dist: number,
+): void {
+  mapDoublesBetween(map, P, targetStart, n, sourceStart, n, dist);
+}
+
+function mapDoublesBetween(
+  map: Int32Array,
+  P: Float32Array,
+  targetStart: number,
+  nTarget: number,
+  sourceStart: number,
+  nSource: number,
+  dist: number,
+): void {
+  const n = nTarget;
+  const f = Math.fround;
+  const sum = (v: number): number => f(f(P[v * 3]! + P[v * 3 + 1]!) + P[v * 3 + 2]!);
+  const lenSq = (a: number, b: number): number => {
+    const x = f(P[b * 3]! - P[a * 3]!);
+    const y = f(P[b * 3 + 1]! - P[a * 3 + 1]!);
+    const z = f(P[b * 3 + 2]! - P[a * 3 + 2]!);
+    return f(f(f(x * x) + f(y * y)) + f(z * z));
+  };
+  const cmp = (a: number, b: number): number => (sum(a) > sum(b) ? 1 : sum(a) < sum(b) ? -1 : 0);
+  const target = Array.from({ length: n }, (_, i) => targetStart + i);
+  const source = Array.from({ length: nSource }, (_, i) => sourceStart + i);
+  crtQsort(target, cmp);
+  crtQsort(source, cmp);
+  const dist3 = f(f(Math.sqrt(3) + 0.00005) * dist);
+  const distSq = f(dist * dist);
+  let low = 0;
+  let completed = false;
+  for (const s of source) {
+    if (map[s] !== -1) continue;
+    if (completed) continue;
+    const ss = sum(s);
+    while (low < n && sum(target[low]!) < f(ss - dist3)) low++;
+    if (low >= n) {
+      completed = true;
+      continue;
+    }
+    let best = -1;
+    let bestSq = distSq;
+    for (let t = low; t < n && sum(target[t]!) <= f(ss + dist3); t++) {
+      const d = lenSq(s, target[t]!);
+      if (d > bestSq) continue;
+      bestSq = d;
+      best = target[t]!;
+      while (best !== -1 && map[best] !== -1 && map[best] !== best)
+        best = lenSq(s, map[best]!) <= distSq ? map[best]! : -1; // `compare_len_v3v3`
+    }
+    map[s] = best;
+  }
 }
 
 /**
@@ -211,7 +297,61 @@ export function arrayMesh(
         ? data
         : transformMesh(data, { translate: [step[0]! * i, step[1]! * i, step[2]! * i] }),
     );
-  return mergeMeshes(parts);
+  // Caps come after the copies, start then end (`mesh_merge_transform`).
+  if (options.startCap)
+    parts.push(transformMesh(options.startCap, { translate: [-step[0]!, -step[1]!, -step[2]!] }));
+  if (options.endCap)
+    parts.push(transformMesh(options.endCap, { translate: [step[0]! * count, step[1]! * count, step[2]! * count] }));
+  const merged = mergeMeshes(parts);
+  const dist = options.merge;
+  if (dist === undefined) return merged;
+
+  // `MOD_array.cc`, merge: copy 1 onto copy 0 by search; every later copy
+  // repeats that mapping shifted by one copy (a pure translation keeps the
+  // distances), followed while the final target stays in range.
+  const n = data.positions.length / 3;
+  const P = merged.positions;
+  const map = new Int32Array(P.length / 3).fill(-1);
+  const distSq = Math.fround(dist * dist);
+  const lenSq = (a: number, b: number): number => {
+    const f = Math.fround;
+    const x = f(P[b * 3]! - P[a * 3]!);
+    const y = f(P[b * 3 + 1]! - P[a * 3 + 1]!);
+    const z = f(P[b * 3 + 2]! - P[a * 3 + 2]!);
+    return f(f(f(x * x) + f(y * y)) + f(z * z));
+  };
+  if (count >= 2) mapDoubles(map, P, 0, n, n, dist);
+  for (let c = 2; c < count; c++)
+    for (let k = 0; k < n; k++) {
+      const self = c * n + k;
+      let t = map[(c - 1) * n + k]!;
+      if (t !== -1) {
+        t += n;
+        while (t !== -1 && map[t] !== -1 && map[t] !== t) t = lenSq(self, map[t]!) <= distSq ? map[t]! : -1;
+      }
+      map[self] = t;
+    }
+  if (options.mergeFirstLast && count > 1) mapDoubles(map, P, (count - 1) * n, 0, n, dist);
+  // Each cap onto the copy it sits against.
+  let capAt = n * count;
+  if (options.startCap) {
+    const m = options.startCap.positions.length / 3;
+    mapDoublesBetween(map, P, 0, n, capAt, m, dist);
+    capAt += m;
+  }
+  if (options.endCap) {
+    const m = options.endCap.positions.length / 3;
+    mapDoublesBetween(map, P, (count - 1) * n, n, capAt, m, dist);
+  }
+
+  // Follow chains to their end; a vertex that ends at itself stays.
+  for (let v = 0; v < map.length; v++) {
+    let t = map[v]!;
+    if (t === -1) continue;
+    while (map[t] !== -1 && map[t] !== t) t = map[t]!;
+    map[v] = t === v ? -1 : t;
+  }
+  return weldByMap(merged, (v) => (map[v] === -1 ? v : map[v]!));
 }
 
 /**

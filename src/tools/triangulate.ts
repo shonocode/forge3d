@@ -78,8 +78,11 @@ export function axisRows(no: V3, negate: boolean): [V3, V3] {
 }
 export const project = (rows: [V3, V3], a: V3): number[] => [dot(rows[0], a), dot(rows[1], a)];
 
-/** `BM_verts_calc_rotate_beauty(v1..v4, 0, 0)`: > 0 means split 2–4. */
-export function rotateBeauty(v1: V3, v2: V3, v3: V3, v4: V3): number {
+/**
+ * `BM_verts_calc_rotate_beauty(v1..v4, flag, 0)`, the area cost: > 0 means
+ * split 2–4. `lockDegenerate` is `EDGE_RESTRICT_DEGENERATE`.
+ */
+export function rotateBeauty(v1: V3, v2: V3, v3: V3, v4: V3, lockDegenerate = false): number {
   if (v1 === v3) return FLT_MAX;
   const noA = crossTriV3(v2, v3, v4);
   const noB = crossTriV3(v2, v4, v1);
@@ -90,7 +93,7 @@ export function rotateBeauty(v1: V3, v2: V3, v3: V3, v4: V3): number {
   const p1 = project(rows, v1), p2 = project(rows, v2), p3 = project(rows, v3), p4 = project(rows, v4);
   const signum = (a: number): number => (a > 1e-5 ? 1 : a < -1e-5 ? -1 : 0);
   if (!(signum(f(crossTri2(p2, p3, p4) / scale)) + signum(f(crossTri2(p2, p4, p1) / scale)))) return FLT_MAX;
-  return quadRotateCalc(p1, p2, p3, p4, false);
+  return quadRotateCalc(p1, p2, p3, p4, lockDegenerate);
 }
 /** `cross_tri_v3`. */
 export function crossTriV3(a: V3, b: V3, c: V3): V3 {

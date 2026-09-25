@@ -5,6 +5,10 @@ import { offsetAlongNormals } from "./displace";
 import { mergeByDistance, removeDoubles } from "./remove-doubles";
 import { transferWeights } from "./data-transfer";
 import { arrayMesh } from "./mesh-ops";
+import { createVert } from "./edit-mode/wire";
+import { beautifyFill } from "./beautify-fill";
+import { wave } from "./deform";
+import { shrinkwrap } from "./edit-mode/shrinkwrap";
 
 /**
  * The five modifiers the map counted as "had" until 2026-09-25, when their
@@ -78,6 +82,74 @@ describe("transferWeights (the Data Transfer modifier, nearest vertex)", () => {
     const target: MeshData = { positions: new Float32Array([0.9, 0, 0, 0.1, 0, 0]), polys: [] };
     const out = transferWeights(target, source);
     expect([...out.groups!.get("A")!]).toEqual([[1, 0.3]]);
+  });
+});
+
+describe("arrayMesh merge (the Array modifier)", () => {
+  it("welds each copy onto the previous one within the distance, the survivor staying put", () => {
+    const bar: MeshData = { positions: new Float32Array([0, 0, 0, 1, 0, 0]), polys: [] };
+    // Copies end to end: the copy's first vertex sits on the original's last.
+    const out = arrayMesh(bar, 3, [0, 0, 0], { relative: [1, 0, 0], merge: 0.01 });
+    expect(xs(out)).toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe("createVert (bmesh.ops.create_vert)", () => {
+  it("adds one loose vertex at the end", () => {
+    const out = createVert({ positions: new Float32Array([0, 0, 0]), polys: [] }, [1, 2, 3]);
+    expect([...out.positions]).toEqual([0, 0, 0, 1, 2, 3]);
+    expect(out.polys).toEqual([]);
+  });
+});
+
+describe("beautifyFill (bmesh.ops.beautify_fill)", () => {
+  it("area turns a long diagonal into the short one; angle only cares about the fold", () => {
+    // A flat thin kite split along its long axis 0–2. By area over perimeter
+    // the pair sharing 1–3 is better; by angle both are flat, so no gain.
+    const kite: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, -0.2, 0, 2, 0, 0, 1, 0.2, 0]),
+      polys: [
+        [0, 1, 2],
+        [0, 2, 3],
+      ],
+    };
+    const shared = (m: MeshData): number[] => m.polys[0]!.filter((v) => m.polys[1]!.includes(v)).sort();
+    expect(shared(beautifyFill(kite, { method: "area" }))).toEqual([1, 3]);
+    expect(shared(beautifyFill(kite, { method: "angle" }))).toEqual([0, 2]);
+  });
+});
+
+describe("wave normal (the Wave modifier's use_normal)", () => {
+  it("moves along the vertex normal, and only on the chosen axes", () => {
+    // A flat sheet facing +z: along the normal is along z, and with only the
+    // normal's x on nothing moves.
+    const sheet: MeshData = {
+      positions: new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+    };
+    const opts = { height: 0.5, width: 3, narrowness: 0.5 };
+    expect([...wave(sheet, { ...opts, normal: true }).positions]).toEqual([...wave(sheet, opts).positions]);
+    expect([...wave(sheet, { ...opts, normal: { x: true } }).positions]).toEqual([...sheet.positions]);
+  });
+});
+
+describe("shrinkwrap targetProject", () => {
+  it("lands where the target's interpolated normal passes through the vertex", () => {
+    // Above a box's top face off-centre: the blended corner normals lean
+    // outward, so the foot is pulled toward the centre relative to the plain
+    // nearest point (0.3, 0.2, 0.5), and stays on the face.
+    const box: MeshData = {
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]],
+    };
+    const point: MeshData = { positions: new Float32Array([0.3, 0.2, 0.9]), polys: [] };
+    const out = shrinkwrap(point, { target: box, method: "targetProject" });
+    expect(out.positions[2]).toBeCloseTo(0.5, 5);
+    expect(out.positions[0]!).toBeLessThan(0.3 - 1e-3);
+    expect(out.positions[1]!).toBeLessThan(0.2 - 1e-3);
   });
 });
 
