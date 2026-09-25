@@ -22,6 +22,7 @@
 import type { MeshData } from "../lib/mesh";
 import { faceNormalCalc, meshVertNormals, type V3 } from "./blender-math";
 import { seamKey } from "./edit-mode/half-edge";
+import { vertexGroupWeights } from "./mesh-layers";
 
 /** Blender's Solidify modifier settings (Simple mode), with its defaults. */
 export interface SolidifyModifierOptions {
@@ -252,13 +253,10 @@ export function solidifyModifier(data: MeshData, opts: SolidifyModifierOptions =
     if (doShell) return { start: V, count: V, align: true };
     return { start: V, count: newVerts, align: false };
   };
-  const weightOf = (v: number): number | null => {
-    if (!opts.vertexGroup) return null;
-    const g = data.groups?.get(opts.vertexGroup);
-    if (!data.groups || !g) return null;
-    const w = g.get(v) ?? 0;
-    return opts.invertVertexGroup ? 1 - w : w;
-  };
+  // A group no vertex belongs to is ignored: Blender's `dvert` is null then.
+  const vgRead = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const vgW = vgRead && !vgRead.empty ? vgRead.weights : null;
+  const weightOf = (v: number): number | null => (vgW ? vgW[v]! : null);
   const fvg = opts.vertexGroupFactor ?? 0;
   const moveBy = (at: number, nor: readonly number[], d: number): void => {
     for (let k = 0; k < 3; k++) pos[at * 3 + k] = f(pos[at * 3 + k]! + f(nor[k]! * d));
@@ -363,8 +361,7 @@ export function solidifyModifier(data: MeshData, opts: SolidifyModifierOptions =
         iCurr = iNext;
       }
     });
-    if (opts.vertexGroup && data.groups?.get(opts.vertexGroup))
-      for (let v = 0; v < V; v++) angles[v] = angles[v]! * (fvg + weightOf(v)! * (1 - fvg));
+    if (vgW) for (let v = 0; v < V; v++) angles[v] = angles[v]! * (fvg + weightOf(v)! * (1 - fvg));
     if (doClamp) {
       const clampFac = 1 + (doAngleClamp ? Math.abs(offsetFac) : 0);
       const offset = Math.abs(thickness) * clampF * clampFac;

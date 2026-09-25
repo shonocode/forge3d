@@ -77,6 +77,7 @@ import {
   loopPair,
 } from "../bmesh-lite";
 import { meshVertNormals } from "../blender-math";
+import { vertexGroupWeights } from "../mesh-layers";
 import { axisRows, project as projectRows } from "../triangulate";
 import { interpWeightsPoly2 } from "../edit-mode/interp";
 import {
@@ -153,8 +154,18 @@ export interface BevelMeshOptions {
    * different edges different widths — a grip strap at 1.0 and the thin tang
    * it runs into at 0.45 — without ending a selection mid-curve, which is what
    * collapses the clamp (the clamp is global: the tightest edge limits all).
+   *
+   * `{ vertexGroup }` is `limit_method = 'VGROUP'`: every manifold edge whose
+   * two ends weigh at least 0.5 in that vertex group (`invert` for
+   * `invert_vertex_group`). The weights choose edges only; the offset is not
+   * scaled (compat-backlog B5).
    */
-  edges?: "all" | { angle: number } | { weights: ReadonlyMap<string, number> } | Iterable<readonly [number, number]>;
+  edges?:
+    | "all"
+    | { angle: number }
+    | { weights: ReadonlyMap<string, number> }
+    | { vertexGroup: string; invert?: boolean }
+    | Iterable<readonly [number, number]>;
   /**
    * Stop the offset where the new geometry would collide. Default **true**,
    * the modifier's default (`use_clamp_overlap`); `bmesh.ops.bevel` defaults
@@ -3555,6 +3566,14 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       const pair = loopPair(e);
       if (pair && dot(pair[0].f.no, pair[1].f.no) < threshold) p.selected.add(e);
     }
+  } else if (typeof sel === "object" && "vertexGroup" in sel) {
+    // The modifier's VGROUP limit: a manifold edge whose two ends both weigh
+    // at least 0.5 (`BKE_defvert_array_find_weight_safe`; 0.5 rather than
+    // 0 so a cascaded bevel's interpolated weights do not select). The
+    // weights only choose — the offsets are not scaled (compat-backlog B5).
+    const vg = vertexGroupWeights(data, sel.vertexGroup, sel.invert);
+    const wOf = (v: BV): number => (!vg ? 1 : vg.empty ? (sel.invert ? 1 : 0) : vg.weights[v.index]!);
+    for (const e of edges) if (isManifold(e) && wOf(e.v1) >= 0.5 && wOf(e.v2) >= 0.5) p.selected.add(e);
   } else if (typeof sel === "object" && "weights" in sel) {
     // The modifier's WEIGHT limit: selected where the weight is non-zero, and
     // `use_weights` on, so every offset is scaled by its edge's weight. Only

@@ -15,6 +15,7 @@
  * Pure and headless.
  */
 import { withPositions, type MeshData } from "../lib/mesh";
+import { vertexGroupWeights } from "./mesh-layers";
 
 export interface SmoothMeshOptions {
   /** How far toward the edge-midpoint mean, per pass — Blender's `factor`. Default 0.5. */
@@ -23,6 +24,13 @@ export interface SmoothMeshOptions {
   iterations?: number;
   /** Which axes move — Blender's `use_x` / `use_y` / `use_z`. Default all three. */
   axes?: { x?: boolean; y?: boolean; z?: boolean };
+  /**
+   * `vertex_group` / `invert_vertex_group`: each vertex moves `factor ×
+   * weight` of the way, and one at weight 0 or below not at all
+   * (compat-backlog B5).
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 /**
@@ -55,6 +63,9 @@ export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): Mes
   for (const e of data.edges ?? []) addEdge(e[0]!, e[1]!);
 
   const n = data.positions.length / 3;
+  // A group no vertex belongs to is ignored: Blender's `dvert` is null then.
+  const vgRead = vertexGroupWeights(data, options.vertexGroup, options.invertVertexGroup);
+  const vg = vgRead && !vgRead.empty ? vgRead.weights : null;
   const P = Float64Array.from(data.positions);
   const sum = new Float64Array(n * 3);
   const count = new Uint32Array(n);
@@ -73,9 +84,14 @@ export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): Mes
     }
     for (let v = 0; v < n; v++) {
       const c = count[v]!;
+      let fn = factor;
+      if (vg) {
+        if (vg[v]! <= 0) continue;
+        fn = vg[v]! * factor;
+      }
       if (c === 0) continue;
       for (let k = 0; k < 3; k++)
-        if (use[k]) P[v * 3 + k] = (1 - factor) * P[v * 3 + k]! + factor * (sum[v * 3 + k]! / c);
+        if (use[k]) P[v * 3 + k] = (1 - fn) * P[v * 3 + k]! + fn * (sum[v * 3 + k]! / c);
     }
   }
 

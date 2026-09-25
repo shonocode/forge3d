@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 import * as L from "../lib/index";
 import { rebuildPolygons } from "./edit-mode/half-edge";
+import { vertexGroupWeights } from "./mesh-layers";
 import type { MeshData } from "../lib/mesh";
 
 
@@ -279,5 +280,27 @@ describe("the values follow their vertex or face", () => {
         expect(Math.sign(centre[axis]!)).toBe(Math.sign(src.positions[parent[0]! * 3 + axis]!));
       });
     }
+  });
+});
+
+describe("vertexGroupWeights (a modifier's vertex group, compat-backlog B5)", () => {
+  it("reads 0 for a non-member, 1 - w inverted, and null for no such group", () => {
+    const g = L.meshToData(L.meshFromData(cube()));
+    g.groups = new Map([["g", new Map([[0, 0.25]])]]);
+    const w = vertexGroupWeights(g, "g")!;
+    expect(w.empty).toBe(false);
+    expect(w.weights[0]).toBeCloseTo(0.25, 6);
+    expect(w.weights[1]).toBe(0);
+    expect(vertexGroupWeights(g, "g", true)!.weights[1]).toBe(1);
+    expect(vertexGroupWeights(g, "missing")).toBeNull();
+  });
+
+  it("marks a group no vertex belongs to as empty — Blender's null dvert", () => {
+    const g = L.meshToData(L.meshFromData(cube()));
+    g.groups = new Map([["g", new Map<number, number>()]]);
+    expect(vertexGroupWeights(g, "g")!.empty).toBe(true);
+    // Displace then leaves the mesh alone.
+    const out = L.textureDisplace(g, { strength: 1, vertexGroup: "g" });
+    expect([...out.positions]).toEqual([...g.positions]);
   });
 });

@@ -145,3 +145,36 @@ export function defined<T extends object>(o: T): T {
   for (const k of Object.keys(o) as (keyof T)[]) if (o[k] === undefined) delete o[k];
   return o;
 }
+
+/**
+ * A modifier's vertex group (`vertex_group` / `invert_vertex_group`), read
+ * the way `MOD_get_vgroup` and `BKE_defvert_find_weight` read it — the
+ * shared rule behind compat-backlog B5:
+ *
+ * - no group of that name (or no name): `null`, and the modifier applies in
+ *   full, as if no group were set;
+ * - a group, but **no vertex in any group** — Blender's mesh then has no
+ *   deform-vertex layer at all, and `dvert` is null with a valid index:
+ *   `empty` is true, and each modifier decides (Displace does nothing,
+ *   Smooth and Solidify ignore the group, Bevel selects by
+ *   `BKE_defvert_array_find_weight_safe`'s 0, or 1 inverted);
+ * - otherwise a weight per vertex, 0 where it is not a member, `1 − w`
+ *   inverted.
+ */
+export function vertexGroupWeights(
+  data: MeshData,
+  name: string | undefined,
+  invert = false,
+): { weights: Float32Array; empty: boolean } | null {
+  if (!name) return null;
+  const group = data.groups?.get(name);
+  if (!group) return null;
+  const n = data.positions.length / 3;
+  const empty = ![...data.groups!.values()].some((g) => g.size > 0);
+  const weights = new Float32Array(n);
+  for (let v = 0; v < n; v++) {
+    const w = Math.fround(group.get(v) ?? 0);
+    weights[v] = invert ? Math.fround(1 - w) : w;
+  }
+  return { weights, empty };
+}

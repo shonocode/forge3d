@@ -32,6 +32,7 @@
  * Pure and headless.
  */
 import { withPositions, type MeshData } from "../lib/mesh";
+import { vertexGroupWeights } from "./mesh-layers";
 import type { Vec3 } from "./generate";
 import { f, meshVertNormals, type V3 } from "./blender-math";
 import { textureValue, type ProceduralTexture } from "./texture/texture";
@@ -196,6 +197,14 @@ export interface TextureDisplaceOptions {
    * matrix, which a `MeshData` does not have — transform the mesh instead.
    */
   coords?: "local" | "uv";
+  /**
+   * `vertex_group` / `invert_vertex_group`: each vertex's strength is
+   * scaled by its weight, and a vertex at weight 0 does not move. A group no
+   * vertex belongs to (and no vertex belongs to any) leaves the mesh alone,
+   * as Blender's does (compat-backlog B5).
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 /**
@@ -221,19 +230,30 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
   const direction = opts.direction ?? "normal";
   const mid = f(opts.midLevel ?? 0.5);
   const strength = f(opts.strength ?? 1);
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  if (vg?.empty) return withPositions(data, Float32Array.from(data.positions));
   const coords = textureCoords(data, P, opts.coords ?? "local");
   const normals = direction === "normal" ? meshVertNormals(P, data.polys) : null;
   const out = new Float32Array(data.positions.length);
   for (let v = 0; v < count; v++) {
-    const value = opts.texture ? textureValue(opts.texture, coords[v]!) : null;
     const p = P[v]!;
+    let s = strength;
+    if (vg) {
+      const w = vg.weights[v]!;
+      if (w === 0) {
+        for (let k = 0; k < 3; k++) out[v * 3 + k] = p[k]!;
+        continue;
+      }
+      s = f(s * w);
+    }
+    const value = opts.texture ? textureValue(opts.texture, coords[v]!) : null;
     if (direction === "rgbToXyz") {
       const rgb = value ? value.color : [1, 1, 1];
-      for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(f(rgb[k]! - mid) * strength));
+      for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(f(rgb[k]! - mid) * s));
       continue;
     }
     let delta = f((value ? value.intensity : 1) - mid);
-    delta = Math.min(10000, Math.max(-10000, f(delta * strength)));
+    delta = Math.min(10000, Math.max(-10000, f(delta * s)));
     for (let k = 0; k < 3; k++) out[v * 3 + k] = p[k]!;
     if (normals) for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(normals[v]![k]! * delta));
     else {

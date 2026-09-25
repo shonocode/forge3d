@@ -20,6 +20,7 @@
 import type { MeshData } from "../lib/mesh";
 import { faceNormalCalc, meshVertNormals, type V3 } from "./blender-math";
 import { seamKey } from "./edit-mode/half-edge";
+import { vertexGroupWeights } from "./mesh-layers";
 
 /** Blender's Wireframe modifier settings, with its defaults. */
 export interface WireframeModifierOptions {
@@ -145,7 +146,9 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   for (let v = 0; v < V; v++) newVert(Pv[v]!, v);
 
   // Relative / vertex group factor per vertex.
-  const groupW = opts.vertexGroup ? data.groups?.get(opts.vertexGroup) : undefined;
+  // `cd_dvert_offset` is -1 when no vertex is in any group: the group is ignored then.
+  const vgRead = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupW = vgRead && !vgRead.empty ? vgRead.weights : null;
   const fvg = opts.vertexGroupFactor ?? 0;
   const relfac = new Array<number>(V).fill(1);
   if (useRelative || groupW)
@@ -162,8 +165,7 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
         r = vertEdges[v]!.length ? len / vertEdges[v]!.length : 0;
       }
       if (groupW) {
-        let w = groupW.get(v) ?? 0;
-        if (opts.invertVertexGroup) w = 1 - w;
+        let w = groupW[v]!;
         if (fvg > 0) w = fvg + w * (1 - fvg);
         r *= w;
       }
