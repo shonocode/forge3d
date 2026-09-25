@@ -12,7 +12,7 @@ npm run build        # tsc && vite build ― tsc は型エラーでも exit 0。
 npm run test         # Vitest
 npm run test:watch   # Vitest ウォッチ
 npm run manual       # MANUAL.html を解説データから作る（コミットしない）
-npm run deploy       # ビルドして wrangler でデプロイ
+npm run preview      # ビルドしてローカルで配信（vite preview）
 ```
 
 型検査だけなら `npx tsc --noEmit -p .` の出力が 0 行で通過。
@@ -34,7 +34,7 @@ npm run deploy       # ビルドして wrangler でデプロイ
 - **3D**：Babylon.js 9.x（`@babylonjs/core` / loaders / serializers）
 - **言語**：TypeScript strict（`noUncheckedIndexedAccess`、`erasableSyntaxOnly` ― パリティの
   ハーネスが Node の型除去でこのソースを読むので、`enum` や引数プロパティは書けない）
-- **ビルド**：Vite 8 + vite-plugin-pwa + vite-plugin-compression + Cloudflare の Vite プラグイン
+- **ビルド**：Vite 8 + vite-plugin-pwa + vite-plugin-compression。公開は GitHub Pages（push のたび、下）
 - **Undo/Redo**：`src/undo.ts` の UndoHistory（コマンドパターン、最大 50）
 - **保存**：OPFS 優先 → IndexedDB（`src/storage/`）、自動保存
 

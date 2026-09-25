@@ -3,12 +3,10 @@ import { VitePWA } from "vite-plugin-pwa";
 import viteCompression from "vite-plugin-compression";
 import react from "@vitejs/plugin-react";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
-
 export default defineConfig({
   // GitHub Pages serves the site under /forge3d/; GitHub Actions sets
   // GITHUB_ACTIONS=true, and the Pages workflow is the only build that runs
-  // there. Local builds and the Cloudflare deploy keep the root.
+  // there. Local builds keep the root.
   base: process.env.GITHUB_ACTIONS === "true" ? "/forge3d/" : "/",
   server: { host: true },
   build: {
@@ -41,5 +39,5 @@ export default defineConfig({
       globPatterns: ["**/*.{js,css,html,wasm}"],
       maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
     },
-  }), viteCompression({ algorithm: "gzip", threshold: 10240 }), cloudflare()],
+  }), viteCompression({ algorithm: "gzip", threshold: 10240 })],
 });

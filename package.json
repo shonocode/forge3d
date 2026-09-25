@@ -12,8 +12,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy",
+    "preview": "npm run build && vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "manual": "node scripts/build-manual.ts"
@@ -26,7 +25,6 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.37.0",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -37,7 +35,6 @@
     "vite": "^8.0.10",
     "vite-plugin-compression": "^0.5.1",
     "vite-plugin-pwa": "^1.2.0",
-    "vitest": "^4.0.18",
-    "wrangler": "^4.91.0"
+    "vitest": "^4.0.18"
   }
 }

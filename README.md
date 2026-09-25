@@ -55,7 +55,7 @@ npm run dev        # http://localhost:5173
 npm run test       # Vitest（node 環境。React の部品は jsdom）
 npm run build      # tsc && vite build ― tsc は型エラーでも exit 0 なので、出力を読むこと
 npm run manual     # MANUAL.html を解説データから作る
-npm run deploy     # ビルドして wrangler でデプロイ
+npm run preview    # ビルドしてローカルで配信
 ```
 
 GitHub Pages には push のたびに `.github/workflows/deploy.yml` が出す

@@ -3,12 +3,12 @@ dist
 .DS_Store
 *.local
 
-# wrangler files
-.wrangler
-.dev.vars*
-!.dev.vars.example
+# env files
 .env*
 !.env.example
+
+# Local state left by wrangler (Cloudflare, no longer used) — safe to delete
+.wrangler/
 
 # Claude Code per-machine settings
 .claude/settings.local.json
