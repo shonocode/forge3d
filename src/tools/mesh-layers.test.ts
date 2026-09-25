@@ -78,6 +78,7 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["transformMesh", () => L.transformMesh(cube(), { translate: [1, 0, 0], rotate: [0.3, 0, 0] })],
   ["transformMesh (mirror)", () => L.transformMesh(cube(), { scale: [-1, 1, 1] })],
   ["mirrorMesh", () => L.mirrorMesh(cube(), "x")],
+  ["mirrorModifier", () => L.mirrorModifier(cube())],
   ["arrayMesh", () => L.arrayMesh(cube(), 2, [2, 0, 0])],
   ["radialArray", () => L.radialArray(cube(), { count: 3 } as never)],
   ["weldMesh", () => L.weldMesh(cube())],

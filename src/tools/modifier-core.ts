@@ -27,7 +27,7 @@ import type { Modifier, OriginalGeometry } from "../state";
 import { catmullClark } from "./edit-mode/subdivide";
 import { smoothVert } from "./edit-mode/refine";
 import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
-import { arrayMesh, mirrorMesh, solidify, weldMesh } from "./mesh-ops";
+import { arrayMesh, mirrorModifier, solidify, weldMesh } from "./mesh-ops";
 import { decimateCollapse } from "./decimate";
 import { triangulate } from "./triangulate";
 
@@ -402,7 +402,8 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
       return r.uvs ? { positions: r.positions, polys: r.polys, uvs: r.uvs } : { positions: r.positions, polys: r.polys };
     }
     case "mirror":
-      return mirrorMesh(s, mod.axis, { weld: mod.merge ? mod.mergeTolerance : 0 });
+      // Blender's Mirror modifier: each vertex welds onto its own image only.
+      return mirrorModifier(s, { axes: { [mod.axis]: true }, merge: mod.merge, mergeThreshold: mod.mergeTolerance });
     case "array":
       return arrayMesh(s, mod.count, [mod.offsetX, mod.offsetY, mod.offsetZ]);
     case "solidify":

@@ -232,10 +232,9 @@ export interface MirrorOptions {
  * Reflect a mesh across an axis-aligned plane.
  *
  * Every layer is carried (the reflection through `transformMesh`, the two
- * halves through `mergeMeshes`). Not Blender's Mirror modifier yet: its
- * default swaps `.L` / `.R` vertex group names on the copy and merges the
- * seam (`use_mirror_vertex_groups`, `use_mirror_merge`, and
- * `BKE_defvert_flip_merged` for a merged vertex) — compat-backlog B2.
+ * halves through `mergeMeshes`). This is `bmesh.ops.mirror`'s reflection;
+ * Blender's Mirror **modifier** — merge onto each vertex's own image, bisect,
+ * several axes, UV mirroring, `.L` / `.R` groups — is {@link mirrorModifier}.
  */
 export function mirrorMesh(data: MeshData, axis: "x" | "y" | "z", opts: MirrorOptions = {}): MeshData {
   const k = axis === "x" ? 0 : axis === "y" ? 1 : 2;
@@ -248,6 +247,201 @@ export function mirrorMesh(data: MeshData, axis: "x" | "y" | "z", opts: MirrorOp
 
   const merged = mergeMeshes([data, reflected]);
   return opts.weld ? weldMesh(merged, opts.weld) : merged;
+}
+
+/** Per-axis switches for {@link MirrorModifierOptions}. */
+export interface MirrorAxes {
+  x?: boolean;
+  y?: boolean;
+  z?: boolean;
+}
+
+/** Blender's Mirror modifier settings, with its defaults (compat-backlog B2). */
+export interface MirrorModifierOptions {
+  /** `use_axis`: which axes to mirror across, in X, Y, Z order. Default X only. */
+  axes?: MirrorAxes;
+  /** `use_mirror_merge`: weld each vertex onto its own image within `mergeThreshold`. Default on. */
+  merge?: boolean;
+  /** `merge_threshold`. Default 0.001. */
+  mergeThreshold?: number;
+  /** `use_bisect_axis`: cut the mesh at the plane first and drop the far side. */
+  bisect?: MirrorAxes;
+  /** `use_bisect_flip_axis`: keep the negative side instead. */
+  bisectFlip?: MirrorAxes;
+  /** `bisect_threshold`. Default 0.001. */
+  bisectThreshold?: number;
+  /** `use_mirror_u` / `use_mirror_v`: the copy's UVs become 1 − u (1 − v), plus `uvOffset`. */
+  mirrorU?: boolean;
+  mirrorV?: boolean;
+  /** `mirror_offset_u` / `_v`: added where a coordinate is mirrored. */
+  uvOffset?: readonly [number, number];
+  /** `offset_u` / `offset_v`: added to every copied UV. */
+  uvOffsetCopy?: readonly [number, number];
+  /** `use_mirror_vertex_groups`: the copy's `.L` groups become `.R` and back. Default on. */
+  mirrorVertexGroups?: boolean;
+}
+
+/**
+ * Blender's `BLI_string_flip_side_name` (without stripping a number): the
+ * name with its side swapped — `Arm.L` ↔ `Arm.R`, `l_hand` ↔ `r_hand`,
+ * `LeftFoot` ↔ `RightFoot` — or the name itself when it has no side.
+ */
+export function flipSideName(name: string): string {
+  if (name.length < 3) return name;
+  let base = name;
+  let number = "";
+  if (/\d$/.test(base)) {
+    const i = base.lastIndexOf(".");
+    if (i >= 0 && /\d/.test(base[i + 1] ?? "")) {
+      number = base.slice(i);
+      base = base.slice(0, i);
+    }
+  }
+  const len = base.length;
+  const sep = (ch: string | undefined): boolean => ch === "." || ch === " " || ch === "-" || ch === "_";
+  const swap: Record<string, string> = { l: "r", r: "l", L: "R", R: "L" };
+  if (len > 1 && sep(base[len - 2]) && swap[base[len - 1]!]) return base.slice(0, len - 1) + swap[base[len - 1]!] + number;
+  if (sep(base[1]) && swap[base[0]!]) return swap[base[0]!] + base.slice(1) + number;
+  if (len > 5) {
+    const low = base.toLowerCase();
+    let i = low.indexOf("right");
+    // Only the first occurrence counts, and only at the start or the end.
+    if (i >= 0 && (i === 0 || i === len - 5)) {
+      const rep = base[i] === "r" ? "left" : base[i + 1] === "I" ? "LEFT" : "Left";
+      return base.slice(0, i) + rep + base.slice(i + 5) + number;
+    }
+    i = low.indexOf("left");
+    if (i >= 0 && (i === 0 || i === len - 4)) {
+      const rep = base[i] === "l" ? "right" : base[i + 1] === "E" ? "RIGHT" : "Right";
+      return base.slice(0, i) + rep + base.slice(i + 4) + number;
+    }
+  }
+  return name;
+}
+
+/**
+ * Blender's **Mirror modifier** (`MOD_mirror.cc`, `mesh_mirror.cc`), with its
+ * defaults — X only, merge on at 0.001, vertex groups mirrored.
+ *
+ * Axis by axis (X, then Y, then Z, each on the result of the last): cut at the
+ * plane and drop the far side when bisecting; append a reflected copy (faces
+ * turned, first corner kept); weld each vertex onto **its own image** — not
+ * onto anything else — when the two are within the threshold, both moving to
+ * their midpoint (`mesh_merge_verts`, no mixing). On the copy, UVs are
+ * mirrored and offset as asked, and `.L` / `.R` vertex groups trade names; a
+ * welded vertex holds both sides' groups at their mean
+ * (`BKE_defvert_flip_merged`).
+ *
+ * {@link mirrorMesh} is `bmesh.ops.mirror`'s simpler reflection.
+ */
+export function mirrorModifier(data: MeshData, opts: MirrorModifierOptions = {}): MeshData {
+  const axes = opts.axes ?? { x: true };
+  let out = data;
+  (["x", "y", "z"] as const).forEach((axis, k) => {
+    if (axes[axis]) out = mirrorOnAxis(out, k, opts, !!opts.bisect?.[axis], !!opts.bisectFlip?.[axis]);
+  });
+  return out;
+}
+
+function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bisect: boolean, flip: boolean): MeshData {
+  let src = data;
+  if (bisect) {
+    // `BKE_mesh_mirror_bisect_on_mirror_plane_for_modifier`: the plane's
+    // normal points to the side that goes (-axis unless flipped), vertices
+    // within the threshold are snapped onto it (`use_snap_center`).
+    const t = opts.bisectThreshold ?? 0.001;
+    const s = flip ? 1 : -1;
+    const planeNo: Vec3 = [k === 0 ? s : 0, k === 1 ? s : 0, k === 2 ? s : 0];
+    src = bisectPlane(src, { planeCo: [0, 0, 0], planeNo, dist: t, clearOuter: true });
+    const P = Float32Array.from(src.positions);
+    // `plane_point_test_v3`: on the plane is strictly within the threshold.
+    for (let v = 0; v < P.length / 3; v++) if (Math.abs(P[v * 3 + k]!) < t) P[v * 3 + k] = 0;
+    src = withPositions(src, P);
+  }
+  const n = src.positions.length / 3;
+  const scale: Vec3 = [k === 0 ? -1 : 1, k === 1 ? -1 : 1, k === 2 ? -1 : 1];
+  const reflected = transformMesh(src, { scale });
+  const joined = mergeMeshes([src, reflected]);
+  const faces0 = src.polys.length;
+
+  // UVs of the copy.
+  if (joined.uvs && (opts.mirrorU || opts.mirrorV || opts.uvOffsetCopy)) {
+    const [ou, ov] = opts.uvOffset ?? [0, 0];
+    const [cu, cv] = opts.uvOffsetCopy ?? [0, 0];
+    for (let f = faces0; f < joined.uvs.length; f++)
+      joined.uvs[f] = joined.uvs[f]!.map(([u, v]) => [
+        (opts.mirrorU ? 1 - u! + ou : u!) + cu,
+        (opts.mirrorV ? 1 - v! + ov : v!) + cv,
+      ]);
+  }
+
+  // Which vertices weld onto their own image, and where they go. The copy
+  // welds into the original (`use_correct_order_on_merge`, on for a modifier
+  // made today), so the original keeps its index and its data.
+  const P = Float32Array.from(joined.positions);
+  const target = new Int32Array(2 * n).map((_, i) => i);
+  if (opts.merge ?? true) {
+    const tol = opts.mergeThreshold ?? 0.001;
+    for (let i = 0; i < n; i++) {
+      let d2 = 0;
+      for (let a = 0; a < 3; a++) d2 += (P[i * 3 + a]! - P[(n + i) * 3 + a]!) ** 2;
+      if (d2 < tol * tol) {
+        target[n + i] = i;
+        for (let a = 0; a < 3; a++) {
+          const m = (P[i * 3 + a]! + P[(n + i) * 3 + a]!) / 2;
+          P[i * 3 + a] = m;
+          P[(n + i) * 3 + a] = m;
+        }
+      }
+    }
+  }
+  let result = withPositions(joined, P);
+
+  // Vertex groups: the copy's sides trade names; a welded original holds both.
+  if ((opts.mirrorVertexGroups ?? true) && result.groups && result.groups.size > 0) {
+    const names = [...result.groups.keys()];
+    const partner = new Map<string, string>();
+    for (const name of names) {
+      if (partner.has(name)) continue;
+      const other = flipSideName(name);
+      if (other !== name && result.groups.has(other)) {
+        partner.set(name, other);
+        partner.set(other, name);
+      }
+    }
+    if (partner.size > 0) {
+      const groups = new Map([...result.groups].map(([g, m]) => [g, new Map(m)]));
+      for (let i = 0; i < n; i++) {
+        const copy = n + i;
+        if (target[copy] !== copy) {
+          // `BKE_defvert_flip_merged` on the original: each side it holds
+          // and its partner both take their mean (a missing side counts 0).
+          const held = names.filter((g) => groups.get(g)!.has(i));
+          for (const g of held) {
+            const p = partner.get(g);
+            if (!p) continue;
+            const w = 0.5 * ((groups.get(p)!.get(i) ?? 0) + groups.get(g)!.get(i)!);
+            groups.get(p)!.set(i, w);
+            groups.get(g)!.set(i, w);
+          }
+        } else {
+          // `BKE_defvert_flip`: each membership moves to the partner group;
+          // a group with no partner keeps its own.
+          const before = new Map(names.map((g) => [g, groups.get(g)!.get(copy)] as const));
+          for (const g of names) {
+            const p = partner.get(g);
+            if (!p) continue;
+            if (before.get(p) === undefined) groups.get(g)!.delete(copy);
+            else groups.get(g)!.set(copy, before.get(p)!);
+          }
+        }
+      }
+      result = { ...result, groups };
+    }
+  }
+
+  if (!target.some((t, i) => t !== i)) return result;
+  return weldByMap(result, (v) => target[v]!, "array");
 }
 
 export interface ArrayMeshOptions {

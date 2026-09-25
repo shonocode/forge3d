@@ -343,7 +343,7 @@ export const TAB_SECTIONS: Record<TabId, Section[]> = {
 /** Each modifier in one line — the add menu and the note under each stack entry. */
 export const MODIFIER_HELP: Record<ModifierType, { name: string; one: string }> = {
   subdivision: { name: "Subdivision", one: "面を細かく割る。「丸く」は角を丸め、「割るだけ」は形を変えない" },
-  mirror: { name: "Mirror", one: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点はくっつく" },
+  mirror: { name: "Mirror", one: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点は自分の鏡像とくっつき、.L / .R の頂点グループは鏡写し側で入れ替わる" },
   array: { name: "Array", one: "同じ形を Offset ずつずらして Count 個並べる" },
   solidify: { name: "Solidify", one: "面を法線の内側へ押し出して厚みをつける。マイナスで外側" },
   decimate: { name: "Decimate", one: "形をなるべく保ったまま面を減らす。Ratio は残す割合" },

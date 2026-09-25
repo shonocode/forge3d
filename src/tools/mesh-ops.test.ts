@@ -5,6 +5,8 @@ import {
   mergeMeshes,
   transformMesh,
   mirrorMesh,
+  mirrorModifier,
+  flipSideName,
   arrayMesh,
   instanceMesh,
   radialArray,
@@ -477,5 +479,62 @@ describe("UVs through merge / transform / mirror / array / weld", () => {
     const out = weldMesh(five, 1e-6);
     expect(out.polys).toEqual([[0, 1, 2, 3]]);
     expect(out.uvs).toEqual([[[0, 0], [1, 0], [1, 1], [0, 1]]]);
+  });
+});
+
+describe("mirrorModifier (Blender's Mirror modifier, compat-backlog B2)", () => {
+  it("swaps the side in a name the way BLI_string_flip_side_name does", () => {
+    expect(flipSideName("Arm.L")).toBe("Arm.R");
+    expect(flipSideName("hand_r")).toBe("hand_l");
+    expect(flipSideName("L_foot")).toBe("R_foot");
+    expect(flipSideName("LeftEye")).toBe("RightEye");
+    expect(flipSideName("eye_right")).toBe("eye_left");
+    expect(flipSideName("Arm.L.001")).toBe("Arm.R.001");
+    expect(flipSideName("Spine")).toBe("Spine");
+    // Only the first "left" counts, and it is not at an end here.
+    expect(flipSideName("theleftbit")).toBe("theleftbit");
+  });
+
+  it("welds each vertex onto its own image on the plane, and nothing else", () => {
+    // A strip from x = 0 to x = 1: the two vertices at x = 0 weld; the ones
+    // at x = 1 are 2 apart from their images and stay.
+    const strip: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+      polys: [[0, 1, 2, 3]],
+    };
+    const m = mirrorModifier(strip);
+    expect(vertCount(m)).toBe(6);
+    expect(m.polys).toHaveLength(2);
+    // With a threshold wide enough to reach across, still only own images.
+    expect(vertCount(mirrorModifier(strip, { mergeThreshold: 1.5 }))).toBe(6);
+    expect(vertCount(mirrorModifier(strip, { merge: false }))).toBe(8);
+  });
+
+  it("bisects first, dropping the side the plane faces away from", () => {
+    const m = mirrorModifier(box({ at: [0.25, 0, 0] }), { bisect: { x: true } });
+    const bb = boundsOf(m)!;
+    expect(bb.min[0]).toBeCloseTo(-0.75, 5);
+    expect(bb.max[0]).toBeCloseTo(0.75, 5);
+  });
+
+  it("gives the copy's .L groups to .R and back, and a welded vertex both at their mean", () => {
+    const strip: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+      polys: [[0, 1, 2, 3]],
+      groups: new Map([
+        ["Arm.L", new Map([[0, 0.8], [1, 1]])],
+        ["Arm.R", new Map<number, number>()],
+      ]),
+    };
+    const m = mirrorModifier(strip);
+    const L = m.groups!.get("Arm.L")!;
+    const R = m.groups!.get("Arm.R")!;
+    // Vertex 0 sits on the plane and welds: both sides at 0.4.
+    expect(L.get(0)).toBeCloseTo(0.4, 6);
+    expect(R.get(0)).toBeCloseTo(0.4, 6);
+    // Vertex 1's image (index 5 after the weld) belongs to Arm.R.
+    expect(L.get(1)).toBe(1);
+    const imageOf1 = [...R.entries()].find(([v, w]) => v !== 0 && w === 1);
+    expect(imageOf1).toBeDefined();
   });
 });
