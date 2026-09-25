@@ -1,8 +1,8 @@
 /**
  * `MANUAL.html`, written from the same data as the screen's help (guide.ts,
  * keymap.ts) — so the manual says what the tool card says, with the same keys.
- * `scripts/build-manual.ts` writes the file; `manual.test.ts` fails when the
- * committed file differs from what this produces.
+ * `scripts/build-manual.ts` writes the file (`npm run manual`); it is not
+ * committed, so generate it when you want to read or share it.
  *
  * Pure string building, no DOM: it runs under Node.
  */
