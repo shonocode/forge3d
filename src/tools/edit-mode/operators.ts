@@ -3557,9 +3557,16 @@ export function duplicateFaces(em: EditMesh, selectedFaces: ReadonlySet<number>)
 
   const out = polys.map((p) => [...p]);
   const start = out.length;
-  for (const f of selectedFaces) out.push(polys[f]!.map(copy));
+  // A copy is a copy: corners, material and vertex data (`bmo_duplicate`).
+  const stated: Array<ExplicitFace | undefined> = out.map(() => undefined);
+  for (const f of selectedFaces) {
+    out.push(polys[f]!.map(copy));
+    stated.push({ corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f });
+  }
+  const origins = new Map<number, VertexOrigin>();
+  for (const [v, c] of copyOf) origins.set(c, { from: [v], w: [1] });
 
-  rebuildPolygons(em, new Float32Array(newPositions), out);
+  rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
   const made = new Set<number>();
   for (let i = start; i < out.length; i++) made.add(i);
   return made;
@@ -3603,7 +3610,14 @@ export function splitFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Se
   const out = polys.map((poly, f) =>
     selectedFaces.has(f) ? poly.map((v) => copyOf.get(v) ?? v) : [...poly],
   );
-  rebuildPolygons(em, new Float32Array(newPositions), out);
+  // The torn faces keep their corners and material; a torn vertex copies its
+  // data (`bmo_split` duplicates, then deletes the originals).
+  const stated = polys.map((poly, f) =>
+    selectedFaces.has(f) ? { corners: poly.map((_, i) => [[f, i, 1] as const]), material: f } : undefined,
+  );
+  const origins = new Map<number, VertexOrigin>();
+  for (const [v, c] of copyOf) origins.set(c, { from: [v], w: [1] });
+  rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
   return new Set(copyOf.values());
 }
 
