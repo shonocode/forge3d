@@ -132,7 +132,8 @@ const DROPS: Array<[string, () => MeshData, Layer[]]> = [
       } as never),
     ["uvs", "colors", "groups", "materials"],
   ],
-  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["materials", "edges"]],
+  // Custom normals and the edge layers (creases, seams, sharp) are compat-backlog C17.
+  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges"]],
 ];
 
 describe("MeshData layers through the operators", () => {

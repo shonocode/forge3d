@@ -789,11 +789,11 @@ export function bevelSelection(): void {
     const info = { skipped: 0 };
     const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset }, info);
     if (newFaces.size === 0) {
-      status("⚠ Bevel: no beveleable edges in selection (boundary / quad-adjacent edges are skipped)");
+      status("⚠ Bevel: nothing was beveled");
       return new Set();
     }
     if (info.skipped > 0) {
-      status(`Bevel: ${info.skipped} 辺はスキップ（端点共有 or 多角形面に隣接）— 端点共有分はもう一度 Bevel で面取り`);
+      status(`Bevel: ${info.skipped} 辺は境界（面が片側だけ）なのでスキップ`);
     }
     state.editSelection.mode = "face";
     return newFaces;

@@ -32,9 +32,16 @@
  *
  * Refused with a named error rather than approximated: the Arc and Patch
  * miters and the Cutoff vertex mesh. Not offered at all (no option to pass):
- * custom profiles and vertex-only bevels (compat-backlog C17 / C1). UVs and
- * vertex colours are dropped — Blender interpolates them from representative
- * faces, a separate port nobody has needed yet.
+ * custom profiles and vertex-only bevels (compat-backlog C17 / C1).
+ *
+ * UVs, colours, vertex groups and materials are carried as Blender carries
+ * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
+ * a representative input face, snapped onto an edge first where the face is
+ * across a seam, each new vertex takes its groups from the same mix (the last
+ * face made at it decides), and the corners that meet at one UV vertex take
+ * their mean at the end (`bevel_merge_uvs`). A "seam" here is where the UV
+ * or colour breaks across an edge, read from the data. Custom normals and the
+ * edge layers (creases, seams, sharp) are dropped (compat-backlog C17).
  *
  * ## Precision
  *
@@ -48,6 +55,7 @@ import {
   type BV,
   type BE,
   type BF,
+  type BL,
   bmFromMesh,
   bmToMesh,
   vertCreate,
@@ -69,6 +77,8 @@ import {
   loopPair,
 } from "../bmesh-lite";
 import { meshVertNormals } from "../blender-math";
+import { axisRows, project as projectRows } from "../triangulate";
+import { interpWeightsPoly2 } from "../edit-mode/interp";
 import {
   type V3,
   type M4,
@@ -95,6 +105,7 @@ import {
   isectLineLine,
   isectLinePlane,
   closestToSegment,
+  distSqToSegment,
   planeFromPointNormal,
   closestToPlaneNormalized,
   closestToPlane,
@@ -178,6 +189,11 @@ export interface BevelResult {
   faceKind: BevelFaceKind[];
   /** The offset actually used, after `clampOverlap` — smaller than asked when it clamped. */
   offset: number;
+  /**
+   * Per output vertex, the input vertex it is (untouched by the bevel), or -1
+   * for a vertex the bevel made. The beveled vertices themselves are gone.
+   */
+  origVert: number[];
 }
 
 // ── constants (bmesh_bevel.cc) ─────────────────────────────────────────────
@@ -308,6 +324,35 @@ interface Params {
   offsetAdjust: boolean;
   /** `use_weights` with `bweight_offset_edge`: the per-edge factor, or null when not weighting. */
   weightOf: ((e: BE) => number) | null;
+  /** The corner layers and vertex groups, as `BM_mesh_bevel` carries them. */
+  layers: LayerState;
+}
+
+/** One corner's values: its UV and its colour (0..1, held to bytes), where the mesh has them. */
+interface CornerVal {
+  uv?: number[];
+  col?: number[];
+}
+
+/**
+ * The layers bevel carries (compat-backlog A8). A corner's values live in
+ * `corners[l.src]` — the input's corners first, then one entry per corner
+ * `BM_loop_interp_from_face` fills — so `faceSplit` (the TRI_FAN corners),
+ * which copies `src`, copies the values the way `BM_face_split` copies loop
+ * data.
+ */
+interface LayerState {
+  hasUv: boolean;
+  hasColor: boolean;
+  corners: CornerVal[];
+  /** Vertex groups per vertex, or null when the mesh has none. */
+  groups: Map<BV, Map<string, number>> | null;
+  /** `math_layer_info.face_component`: UV-connected components, for `choose_rep_face`. */
+  faceComponent: Map<BF, number> | null;
+  /** `uv_face_hash`: each made face's representative input face. */
+  uvFaces: Map<BF, BF | null>;
+  /** `uv_vert_maps[0]`: per vertex, the buckets of corners that share a UV. Null without UVs. */
+  uvVertMap: Map<BV, Set<BL>[]> | null;
 }
 
 // ── small queries ──────────────────────────────────────────────────────────
@@ -384,9 +429,12 @@ function allocMesh(count: number, seg: number): NewVert[] {
   return Array.from({ length: n }, () => ({ v: null, co: [0, 0, 0] as V3 }));
 }
 
-function createMeshBMVert(p: Params, vm: VMesh, i: number, j: number, k: number): void {
+/** `create_mesh_bmvert`: the new vertex copies `eg`'s data (`BM_vert_create` with an example). */
+function createMeshBMVert(p: Params, vm: VMesh, i: number, j: number, k: number, eg: BV): void {
   const nv = meshVert(vm, i, j, k);
   nv.v = vertCreate(p.bm, nv.co);
+  const g = p.layers.groups;
+  if (g) g.set(nv.v, new Map(g.get(eg)));
 }
 
 function copyMeshVert(vm: VMesh, ito: number, jto: number, kto: number, ifrom: number, jfrom: number, kfrom: number): void {
@@ -447,7 +495,10 @@ function faceCenterBounds(f: BF): V3 {
   return mid(lo, hi);
 }
 
-/** `choose_rep_face`, without the UV-component and selection tie-breakers (neither exists here). */
+/**
+ * `choose_rep_face`. The selection tie-breaker is a constant: nothing here
+ * is selected, and the modifier's mesh has no selection either.
+ */
 function chooseRepFace(p: Params, faces: (BF | null)[]): BF | null {
   const vals: number[][] = [];
   const viable = faces.map((f) => f !== null);
@@ -455,7 +506,7 @@ function chooseRepFace(p: Params, faces: (BF | null)[]): BF | null {
   faces.forEach((f, i) => {
     if (!f) return;
     const c = faceCenterBounds(f);
-    vals[i] = [0, 1, p.faceMat.get(f) ?? 0, c[2], c[0], c[1]];
+    vals[i] = [p.layers.faceComponent?.get(f) ?? 0, 1, p.faceMat.get(f) ?? 0, c[2], c[0], c[1]];
   });
   let best = -1;
   for (let vi = 0; numViable > 1 && vi < 6; vi++) {
@@ -500,7 +551,10 @@ function boundvertRepFace(v: BoundVert): BF | null {
   return null;
 }
 
-/** `frep_for_center_poly`, without the UV-area veto (no UV layers here). */
+/**
+ * `frep_for_center_poly`. With a UV layer, a face that would give the centre
+ * polygon a zero-area UV polygon is not a candidate (`is_bad_uv_poly`).
+ */
 function frepForCenterPoly(p: Params, bv: BevVert): BF | null {
   const considerAll = bv.selcount === 1;
   const choices: BF[] = [];
@@ -510,24 +564,356 @@ function frepForCenterPoly(p: Params, bv: BevVert): BF | null {
     const bmf = chooseRepFace(p, [e.fprev, e.fnext]);
     if (!bmf) continue;
     any ??= bmf;
-    if (!choices.includes(bmf)) choices.push(bmf);
+    if (!choices.includes(bmf)) {
+      if (p.layers.hasUv && projectedBoundaryArea(bv, bmf) < BEVEL_EPSILON_BIG) continue;
+      choices.push(bmf);
+    }
   }
   if (choices.length === 0) return any;
   return chooseRepFace(p, choices);
 }
 
+/** `get_incident_edges`: the (first two) edges of `f` at `v`. */
+function incidentEdges(f: BF, v: BV): [BE | null, BE | null] {
+  let e1: BE | null = null;
+  let e2: BE | null = null;
+  for (const l of faceLoops(f)) {
+    const e = l.e!;
+    if (e.v1 === v || e.v2 === v) {
+      if (!e1) e1 = e;
+      else if (!e2) e2 = e;
+    }
+  }
+  return [e1, e2];
+}
+
+/** `find_closer_edge`. */
+const closerEdge = (co: readonly number[], e1: BE, e2: BE): BE =>
+  distSqToSegment(co, e1.v1.co, e1.v2.co) < distSqToSegment(co, e2.v1.co, e2.v2.co) ? e1 : e2;
+
+/** `isect_point_poly_v2`: crossing-number point-in-polygon. */
+function isectPointPoly2(pt: readonly number[], verts: readonly (readonly number[])[]): boolean {
+  let isect = false;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+    const vi = verts[i]!;
+    const vj = verts[j]!;
+    if (vi[1]! > pt[1]! !== vj[1]! > pt[1]! && pt[0]! < ((vj[0]! - vi[0]!) * (pt[1]! - vi[1]!)) / (vj[1]! - vi[1]!) + vi[0]!)
+      isect = !isect;
+  }
+  return isect;
+}
+
+/** `BM_face_point_inside_test`. */
+function facePointInside(f: BF, co: readonly number[]): boolean {
+  const rows = axisRows(copy(f.no), false);
+  return isectPointPoly2(
+    projectRows(rows, copy(co)),
+    faceLoops(f).map((l) => projectRows(rows, l.v.co)),
+  );
+}
+
+/** `find_face_internal_boundverts`: up to three BoundVerts inside `f`'s projection. */
+function faceInternalBoundverts(bv: BevVert, f: BF | null): BoundVert[] {
+  const out: BoundVert[] = [];
+  if (!f) return out;
+  let v = bv.vmesh.boundstart!;
+  do {
+    if (facePointInside(f, v.nv.co)) {
+      out.push(v);
+      if (out.length === 3) break;
+    }
+  } while ((v = v.next) !== bv.vmesh.boundstart);
+  return out;
+}
+
+/** `projected_boundary_area`: the boundary, snapped into `f`, projected, measured. */
+function projectedBoundaryArea(bv: BevVert, f: BF): number {
+  const rows = axisRows(copy(f.no), false);
+  const [e1, e2] = incidentEdges(f, bv.v);
+  if (!e1 || !e2) return 0;
+  const unsnapped = faceInternalBoundverts(bv, f);
+  const proj: number[][] = [];
+  let v = bv.vmesh.boundstart!;
+  do {
+    const co = v.nv.v!.co;
+    if (unsnapped.includes(v)) proj.push(projectRows(rows, copy(co)));
+    else {
+      const s1 = closestToSegment(co, e1.v1.co, e1.v2.co);
+      const s2 = closestToSegment(co, e2.v1.co, e2.v2.co);
+      proj.push(projectRows(rows, distSq(s1, co) <= distSq(s2, co) ? s1 : s2));
+    }
+  } while ((v = v.next) !== bv.vmesh.boundstart);
+  let cross = 0;
+  for (let i = 0, j = proj.length - 1; i < proj.length; j = i++)
+    cross += (proj[j]![0]! - proj[i]![0]!) * (proj[j]![1]! + proj[i]![1]!);
+  return Math.abs(0.5 * cross);
+}
+
+/** A byte colour channel mixed as `layerInterp_mloopcol` does: summed, rounded, clamped. */
+const toByte = (x: number): number => (x <= 0 ? 0 : x > 254.5 ? 255 : Math.floor(x + 0.5));
+
+/**
+ * `BM_loop_interp_from_face(bm, l, fSrc, true, true)`: `l`'s corner values are
+ * the mean-value mix of `fSrc`'s at `l.v` projected into `fSrc`'s plane, and
+ * `l.v`'s vertex groups become the same mix of `fSrc`'s vertices' — every
+ * time, so the last face made at a vertex decides its groups. `at` is where
+ * to measure from, when the caller snaps the vertex to an edge first.
+ */
+function loopInterpFromFace(p: Params, l: BL, fSrc: BF, at: readonly number[]): void {
+  const L = p.layers;
+  const rows = axisRows(copy(fSrc.no), false);
+  const src = faceLoops(fSrc);
+  const w = interpWeightsPoly2(
+    src.map((s) => projectRows(rows, s.v.co) as [number, number]),
+    projectRows(rows, copy(at)) as [number, number],
+  );
+  const val: CornerVal = {};
+  if (L.hasUv) {
+    let u = 0;
+    let v = 0;
+    src.forEach((s, i) => {
+      const x = L.corners[s.src]?.uv ?? [0, 0];
+      u += w[i]! * x[0]!;
+      v += w[i]! * x[1]!;
+    });
+    val.uv = [u, v];
+  }
+  if (L.hasColor) {
+    const col: number[] = [0, 0, 0, 0];
+    src.forEach((s, i) => {
+      const x = L.corners[s.src]?.col ?? [1, 1, 1, 1];
+      for (let c = 0; c < 4; c++) col[c] = col[c]! + w[i]! * Math.round(x[c]! * 255);
+    });
+    val.col = col.map((c) => toByte(c) / 255);
+  }
+  l.src = L.corners.length;
+  L.corners.push(val);
+  if (L.groups) {
+    // `layerInterp_mdeformvert`: a source adds a group only where its weight
+    // times the factor is not zero; the sum is capped at 1. Sources are read
+    // before the vertex is written, since it can be one of them.
+    const out = new Map<string, number>();
+    src.forEach((s, i) => {
+      for (const [name, x] of L.groups!.get(s.v) ?? []) {
+        const v = x * w[i]!;
+        if (v === 0) continue;
+        out.set(name, (out.get(name) ?? 0) + v);
+      }
+    });
+    for (const [name, v] of out) out.set(name, Math.min(v, 1));
+    L.groups.set(l.v, out);
+  }
+}
+
 /**
  * `bev_create_ngon`: every face bevel makes goes through here. The first of
- * `faceArr` or `facerep` lends its material, as `BM_elem_attrs_copy` does.
+ * `faceArr` or `facerep` lends its material, as `BM_elem_attrs_copy` does,
+ * and each corner is interpolated in its `faceArr` entry (else `facerep`),
+ * measured from its vertex snapped onto `snapEdges[i]` where there is one.
+ * `bv` / `nvBvMap` name the input vertex each new one stands for, for the
+ * UV buckets (`update_uv_vert_map`).
  */
-function bevCreateNgon(p: Params, verts: BV[], faceArr: (BF | null)[] | null, facerep: BF | null, kind: FKind): BF | null {
+function bevCreateNgon(
+  p: Params,
+  verts: BV[],
+  faceArr: (BF | null)[] | null,
+  facerep: BF | null,
+  kind: FKind,
+  snapEdges: (BE | null)[] | null = null,
+  bv: BV | null = null,
+  nvBvMap: Map<BV, BV> | null = null,
+): BF | null {
   if (verts.length < 3) return null;
   const rep = facerep ?? (faceArr ? faceArr[0] ?? null : null);
   const f = faceCreateVerts(p.bm, verts, null);
-  if (rep) p.faceMat.set(f, p.faceMat.get(rep) ?? 0);
+  if (rep) {
+    p.faceMat.set(f, p.faceMat.get(rep) ?? 0);
+    faceLoops(f).forEach((l, i) => {
+      const interpF = faceArr ? faceArr[i] ?? null : facerep;
+      if (!interpF) return;
+      const bme = snapEdges?.[i] ?? null;
+      loopInterpFromFace(p, l, interpF, bme ? closestToSegment(l.v.co, bme.v1.co, bme.v2.co) : l.v.co);
+    });
+  }
   f.tag = true;
   if (kind !== FKind.ORIG) p.faceKind.set(f, kind);
+  // `register_uv_face` + `update_uv_vert_map`.
+  const attached = faceArr && faceArr[0] ? faceArr[0] : facerep;
+  p.layers.uvFaces.set(f, attached);
+  updateUvVertMap(p, f, attached, bv, nvBvMap);
   return f;
+}
+
+/** `update_uv_vert_map`: file each corner of `f` in a bucket of corners that will share a UV. */
+function updateUvVertMap(p: Params, f: BF, attached: BF | null, bv: BV | null, nvBvMap: Map<BV, BV> | null): void {
+  const map = p.layers.uvVertMap;
+  if (!map || !attached) return;
+  for (const l of faceLoops(f)) {
+    const buckets = map.get(l.v);
+    if (!buckets) {
+      map.set(l.v, [new Set([l])]);
+      continue;
+    }
+    const origV = nvBvMap ? nvBvMap.get(l.v) ?? null : bv;
+    const origL = origV ? faceVertShareLoop(attached, origV) : null;
+    let found = false;
+    for (const l2 of loopsOfVert(l.v)) {
+      if (l2 === l) continue;
+      const attached2 = p.layers.uvFaces.get(l2.f);
+      if (!attached2) continue;
+      const origL2 = origV ? faceVertShareLoop(attached2, origV) : null;
+      const origBuckets = origV ? map.get(origV) ?? [] : [];
+      const connected = origBuckets.some((b) => b.has(origL!) && b.has(origL2!));
+      if (attached === attached2 || connected) {
+        for (const b of buckets)
+          if (b.has(l2)) {
+            b.add(l);
+            found = true;
+            break;
+          }
+      }
+      if (found) break;
+    }
+    if (!found) buckets.push(new Set([l]));
+  }
+}
+
+/** `determine_uv_vert_connectivity`: bucket an input vertex's corners by UV (0.0001 apart per axis). */
+function determineUvVertConnectivity(p: Params, v: BV): void {
+  const map = p.layers.uvVertMap;
+  if (!map) return;
+  const uvOf = (l: BL): number[] => p.layers.corners[l.src]?.uv ?? [0, 0];
+  const buckets: Set<BL>[] = [];
+  for (const l of loopsOfVert(v)) {
+    const a = uvOf(l);
+    let found = false;
+    for (const b of buckets) {
+      for (const l2 of b) {
+        const c = uvOf(l2);
+        if (Math.abs(a[0]! - c[0]!) <= 0.0001 && Math.abs(a[1]! - c[1]!) <= 0.0001) {
+          b.add(l);
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+    if (!found) buckets.push(new Set([l]));
+  }
+  map.set(v, buckets);
+}
+
+/** `bevel_merge_uvs`: the corners in one bucket take their mean UV. */
+function bevelMergeUvs(p: Params): void {
+  const map = p.layers.uvVertMap;
+  if (!map) return;
+  const C = p.layers.corners;
+  for (const buckets of map.values())
+    for (const b of buckets) {
+      if (b.size <= 1) continue;
+      let u = 0;
+      let v = 0;
+      for (const l of b) {
+        const x = C[l.src]?.uv ?? [0, 0];
+        u += x[0]!;
+        v += x[1]!;
+      }
+      const uv = [u / b.size, v / b.size];
+      for (const l of b) {
+        const old = C[l.src] ?? {};
+        l.src = C.length;
+        C.push({ ...old, uv: [...uv] });
+      }
+    }
+}
+
+/**
+ * `math_layer_info_init`'s face components: faces joined across edges where
+ * the UV and colour run on, numbered by their first face, then renumbered so
+ * the topmost face's component is 0 and the bottom-most's 1.
+ */
+function uvFaceComponents(p: Params, faces: BF[]): Map<BF, number> {
+  const comp = new Map<BF, number>();
+  let current = -1;
+  for (const seed of faces) {
+    if (comp.has(seed)) continue;
+    current++;
+    const stack = [seed];
+    const inStack = new Set([seed]);
+    while (stack.length) {
+      const f = stack.pop()!;
+      inStack.delete(f);
+      if (comp.has(f)) continue;
+      comp.set(f, current);
+      for (const l of faceLoops(f))
+        for (const l2 of radialLoops(l.e!)) {
+          const other = l2.f;
+          if (other === f || comp.has(other) || inStack.has(other)) continue;
+          if (contigAcrossEdge(p, l.e!, f, other)) {
+            stack.push(other);
+            inStack.add(other);
+          }
+        }
+    }
+  }
+  if (current <= 0) return comp;
+  let topZ = -1e30;
+  let botZ = 1e30;
+  let topC = -1;
+  let botC = -1;
+  for (const f of faces) {
+    const z = faceCenterBounds(f)[2];
+    if (z > topZ) {
+      topZ = z;
+      topC = comp.get(f)!;
+    }
+    if (z < botZ) {
+      botZ = z;
+      botC = comp.get(f)!;
+    }
+  }
+  const swap = (c1: number, c2: number): void => {
+    if (c1 === c2) return;
+    for (const [f, c] of comp) comp.set(f, c === c1 ? c2 : c === c2 ? c1 : c);
+  };
+  swap(comp.get(faces[0]!)!, topC);
+  if (botC !== topC) {
+    if (botC === 0) botC = topC;
+    swap(comp.get(faces[1]!)!, botC);
+  }
+  return comp;
+}
+
+/** `contig_ldata_across_edge`: are the UV and colour continuous from `f1` to `f2` over `e`? */
+function contigAcrossEdge(p: Params, e: BE, f1: BF, f2: BF): boolean {
+  const L = p.layers;
+  if (!L.hasUv && !L.hasColor) return true;
+  const pair = loopPair(e);
+  if (!pair) return false;
+  let [lef1, lef2] = pair;
+  if (lef1.f === f2) [lef1, lef2] = [lef2, lef1];
+  if (lef1.f !== f1 || lef2.f !== f2) return false;
+  if (lef1.v === lef2.v) return false;
+  const same = (a: BL, b: BL): boolean => {
+    const x = L.corners[a.src];
+    const y = L.corners[b.src];
+    if (L.hasUv) {
+      const u = x?.uv ?? [0, 0];
+      const w = y?.uv ?? [0, 0];
+      // `layerEqual_propfloat2`.
+      if ((u[0]! - w[0]!) ** 2 + (u[1]! - w[1]!) ** 2 >= 0.00001) return false;
+    }
+    if (L.hasColor) {
+      const u = x?.col ?? [1, 1, 1, 1];
+      const w = y?.col ?? [1, 1, 1, 1];
+      // `layerEqual_mloopcol`, on bytes.
+      let d = 0;
+      for (let c = 0; c < 4; c++) d += (Math.round(u[c]! * 255) - Math.round(w[c]! * 255)) ** 2;
+      if (d >= 0.001) return false;
+    }
+    return true;
+  };
+  return same(lef1, lef2.next) && same(lef1.next, lef2);
 }
 
 // ── offsets ────────────────────────────────────────────────────────────────
@@ -2009,7 +2395,7 @@ function buildSquareInVmesh(p: Params, bv: BevVert, vm1: VMesh): void {
       meshVert(vm, i, 0, k).co = copy(meshVert(vm1, i, 0, k).co);
       if (i > 0 && k <= ns2) meshVert(vm, i, 0, k).v = meshVert(vm, i - 1, 0, ns - k).v;
       else if (i === n - 1 && k > ns2) meshVert(vm, i, 0, k).v = meshVert(vm, 0, 0, ns - k).v;
-      else createMeshBMVert(p, vm, i, 0, k);
+      else createMeshBMVert(p, vm, i, 0, k, bv.v);
     }
   if (odd) {
     for (let i = 0; i < n; i++) meshVert(vm, i, ns2, ns2).v = meshVert(vm, i, 0, ns2).v;
@@ -2022,14 +2408,24 @@ function buildCenterNgon(p: Params, bv: BevVert): void {
   const vm = bv.vmesh;
   const ns2 = Math.floor(vm.seg / 2);
   const frep = bv.anySeam ? frepForCenterPoly(p, bv) : null;
+  const [fe1, fe2] = frep ? incidentEdges(frep, bv.v) : [null, null];
+  const unsnapped = frep ? faceInternalBoundverts(bv, frep) : [];
   const verts: BV[] = [];
   const faces: (BF | null)[] = [];
+  const snaps: (BE | null)[] = [];
   let v = vm.boundstart!;
   do {
-    verts.push(meshVert(vm, v.index, ns2, ns2).v!);
-    faces.push(frep ?? boundvertRepFace(v));
+    const bmv = meshVert(vm, v.index, ns2, ns2).v!;
+    verts.push(bmv);
+    if (frep) {
+      faces.push(frep);
+      snaps.push(unsnapped.includes(v) || !fe1 || !fe2 ? null : closerEdge(bmv.co, fe1, fe2));
+    } else {
+      faces.push(boundvertRepFace(v));
+      snaps.push(null);
+    }
   } while ((v = v.next) !== vm.boundstart);
-  bevCreateNgon(p, verts, faces, frep, FKind.VERT);
+  bevCreateNgon(p, verts, faces, frep, FKind.VERT, snaps, bv.v);
 }
 
 /** `bevel_build_rings`: the ADJ patch's vertices and quads. */
@@ -2056,7 +2452,7 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
         if (j === 0 && (k === 0 || k === ns)) continue;
         if (!isCanon(vm, i, j, k)) continue;
         meshVert(vm, i, j, k).co = copy(meshVert(vm1, i, j, k).co);
-        createMeshBMVert(p, vm, i, j, k);
+        createMeshBMVert(p, vm, i, j, k, bv.v);
       }
   vmeshCopyEquivVerts(vm);
 
@@ -2077,10 +2473,20 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
       frepBeatsNext[i] = fwinner === repFaces[i];
     }
   }
+  const centerSnaps: (BE | null)[] = new Array(nBndv).fill(null);
   bndv = vm.boundstart!;
   do {
     const i = bndv.index;
+    const inext = bndv.next.index;
     const f = repFaces[i]!;
+    const f2 = repFaces[inext]!;
+    const fc = odd ? (frepBeatsNext[i] ? f : f2) : null;
+    const e = bndv.ebev;
+    const eprev = bndv.prev.ebev;
+    const enext = bndv.next.ebev;
+    const bme = e ? e.e : null;
+    const bmeprev = eprev ? eprev.e : null;
+    const bmenext = enext ? enext.e : null;
     for (let j = 0; j < ns2; j++)
       for (let k = 0; k < ns2 + odd; k++) {
         const bmvs = [
@@ -2089,37 +2495,130 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
           meshVert(vm, i, j + 1, k + 1).v!,
           meshVert(vm, i, j + 1, k).v!,
         ];
-        bevCreateNgon(p, bmvs, [f, f, f, f], null, FKind.VERT);
-        if (odd && k === ns2 && j === ns2 - 1) {
-          centerVerts[i] = bmvs[3]!;
-          centerFaces[i] = bv.anySeam ? centerFrep : f;
+        // Each corner interpolates in `fr` and may snap to `se` first.
+        let fr: (BF | null)[] = [f, f, f, f];
+        let se: (BE | null)[] = [null, null, null, null];
+        if (odd) {
+          se = snapEdgesForVmeshVert(
+            i, j, k, ns, ns2, nBndv,
+            eprev?.isSeam ? bmeprev : null,
+            e?.isSeam ? bme : null,
+            enext?.isSeam ? bmenext : null,
+            repFaces, centerFrep, frepBeatsNext,
+          );
+          if (k === ns2) {
+            if (!e || e.isSeam) fr = [fc, fc, fc, fc];
+            else fr = [f, f2, f2, f];
+            if (j === ns2 - 1) {
+              centerVerts[i] = bmvs[3]!;
+              centerSnaps[i] = se[3]!;
+              centerFaces[i] = bv.anySeam ? centerFrep : f;
+            }
+          }
+        } else {
+          if (k === ns2 - 1) se[1] = bme;
+          if (j === ns2 - 1 && bndv.prev.ebev) se[3] = bmeprev;
+          se[2] = se[1] ?? se[3]!;
         }
+        bevCreateNgon(p, bmvs, fr, null, FKind.VERT, se, bv.v);
       }
   } while ((bndv = bndv.next) !== vm.boundstart);
 
   if (odd) {
     const frep = bv.anySeam ? frepForCenterPoly(p, bv) : null;
-    bevCreateNgon(p, centerVerts, centerFaces, frep, FKind.VERT);
+    bevCreateNgon(p, centerVerts, centerFaces, frep, FKind.VERT, centerSnaps, bv.v);
   }
+}
+
+/** `snap_edge_for_center_vmesh_vert`. */
+function snapEdgeForCenterVmeshVert(
+  i: number,
+  nBndv: number,
+  eprev: BE | null,
+  enext: BE | null,
+  repFaces: (BF | null)[],
+  centerFrep: BF | null,
+  frepBeatsNext: boolean[],
+): BE | null {
+  const previ = (i + nBndv - 1) % nBndv;
+  const nexti = (i + 1) % nBndv;
+  if (frepBeatsNext[previ] && repFaces[previ] === centerFrep) return eprev;
+  if (!frepBeatsNext[i] && repFaces[nexti] === centerFrep) return enext;
+  return null;
+}
+
+/** `snap_edges_for_vmesh_vert`: which edge each corner of patch quad (i, j, k) snaps to (odd `ns`). */
+function snapEdgesForVmeshVert(
+  i: number,
+  j: number,
+  k: number,
+  ns: number,
+  ns2: number,
+  nBndv: number,
+  eprev: BE | null,
+  enext: BE | null,
+  enextnext: BE | null,
+  repFaces: (BF | null)[],
+  centerFrep: BF | null,
+  frepBeatsNext: boolean[],
+): (BE | null)[] {
+  const out: (BE | null)[] = [null, null, null, null];
+  if (ns % 2 === 0) return out;
+  const previ = (i + nBndv - 1) % nBndv;
+  for (let corner = 0; corner < 4; corner++) {
+    const jj = corner < 2 ? j : j + 1;
+    const kk = corner === 0 || corner === 3 ? k : k + 1;
+    if (jj < ns2 && kk < ns2) continue;
+    if (jj < ns2 && kk === ns2) {
+      if (!frepBeatsNext[i]) out[corner] = enext;
+    } else if (jj < ns2 && kk === ns2 + 1) {
+      if (frepBeatsNext[i]) out[corner] = enext;
+    } else if (jj === ns2 && kk < ns2) {
+      if (frepBeatsNext[previ]) out[corner] = eprev;
+    } else if (jj === ns2 && kk === ns2) {
+      out[corner] = snapEdgeForCenterVmeshVert(i, nBndv, eprev, enext, repFaces, centerFrep, frepBeatsNext);
+    } else if (jj === ns2 && kk === ns2 + 1) {
+      const nexti = (i + 1) % nBndv;
+      out[corner] = snapEdgeForCenterVmeshVert(nexti, nBndv, enext, enextnext, repFaces, centerFrep, frepBeatsNext);
+    }
+  }
+  return out;
 }
 
 /** `bevel_build_poly`: the corner closed by one polygon (a single segment). */
 function bevelBuildPoly(p: Params, bv: BevVert): BF | null {
   const vm = bv.vmesh;
   const repface = bv.anySeam ? frepForCenterPoly(p, bv) : null;
+  const [re1, re2] = repface ? incidentEdges(repface, bv.v) : [null, null];
+  const unsnapped = repface ? faceInternalBoundverts(bv, repface) : [];
+  const snapTo = (co: readonly number[]): BE | null => (re1 && re2 ? closerEdge(co, re1, re2) : null);
   const verts: BV[] = [];
   const faces: (BF | null)[] = [];
+  const snaps: (BE | null)[] = [];
   let bndv = vm.boundstart!;
   do {
     verts.push(bndv.nv.v!);
-    faces.push(repface ?? boundvertRepFace(bndv));
+    if (repface) {
+      faces.push(repface);
+      snaps.push(unsnapped.includes(bndv) ? null : snapTo(bndv.nv.v!.co));
+    } else {
+      faces.push(boundvertRepFace(bndv));
+      snaps.push(null);
+    }
     if (bndv.ebev && bndv.ebev.seg > 1)
       for (let k = 1; k < bndv.ebev.seg; k++) {
-        verts.push(meshVert(vm, bndv.index, 0, k).v!);
-        faces.push(repface ?? boundvertRepFace(bndv));
+        const bmv = meshVert(vm, bndv.index, 0, k).v!;
+        verts.push(bmv);
+        if (repface) {
+          faces.push(repface);
+          snaps.push(k < Math.floor(bndv.ebev.seg / 2) ? null : snapTo(bmv.co));
+        } else {
+          faces.push(boundvertRepFace(bndv));
+          snaps.push(null);
+        }
       }
   } while ((bndv = bndv.next) !== vm.boundstart);
-  if (verts.length > 2) return bevCreateNgon(p, verts, faces, repface, FKind.VERT);
+  if (verts.length > 2) return bevCreateNgon(p, verts, faces, repface, FKind.VERT, snaps, bv.v);
   return null;
 }
 
@@ -2164,7 +2663,7 @@ function buildVmesh(p: Params, bv: BevVert): void {
   do {
     const i = bndv.index;
     meshVert(vm, i, 0, 0).co = copy(bndv.nv.co);
-    createMeshBMVert(p, vm, i, 0, 0);
+    createMeshBMVert(p, vm, i, 0, 0, bv.v);
     bndv.nv.v = meshVert(vm, i, 0, 0).v;
     if (weld && bndv.ebev) {
       if (!weld1) weld1 = bndv;
@@ -2187,7 +2686,7 @@ function buildVmesh(p: Params, bv: BevVert): void {
       for (let k = 1; k < ns; k++) {
         if (bndv.ebev) {
           meshVert(vm, i, 0, k).co = getProfilePoint(p, bndv.profile, k, ns);
-          if (!weld) createMeshBMVert(p, vm, i, 0, k);
+          if (!weld) createMeshBMVert(p, vm, i, 0, k, bv.v);
         } else if (n === 2 && !bndv.ebev) copyMeshVert(vm, i, 0, k, 1 - i, 0, ns - k);
       }
   } while ((bndv = bndv.next) !== vm.boundstart);
@@ -2202,7 +2701,7 @@ function buildVmesh(p: Params, bv: BevVert): void {
       else if (weld2!.profile.superR === PRO_LINE_R && weld1!.profile.superR !== PRO_LINE_R) co = copy(vw1);
       else co = mid(vw1, vw2);
       meshVert(vm, weld1!.index, 0, k).co = co;
-      createMeshBMVert(p, vm, weld1!.index, 0, k);
+      createMeshBMVert(p, vm, weld1!.index, 0, k, bv.v);
     }
     for (let k = 1; k < ns; k++) copyMeshVert(vm, weld2!.index, 0, ns - k, weld1!.index, 0, k);
   }
@@ -2448,8 +2947,9 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
     }
     e.offsetL = e.offsetLSpec;
     e.offsetR = e.offsetRSpec;
-    // No UV layers: an edge is a seam only where it has no face on one side.
-    e.isSeam = !(e.fprev && e.fnext);
+    // A "seam" to bevel is where the corner data (UV, colour) breaks across
+    // the edge — read from the data, not the seam flag — or a face is missing.
+    e.isSeam = e.fprev && e.fnext ? !contigAcrossEdge(p, e.e, e.fprev, e.fnext) : true;
   }
   if (totWire) bv.wireEdges = diskEdges(v).filter(isWire);
   return bv;
@@ -2461,6 +2961,8 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
 function bevRebuildPolygon(p: Params, f: BF): boolean {
   let doRebuild = false;
   const vv: BV[] = [];
+  const nvBvMap = new Map<BV, BV>();
+  const addMap = (a: BV, b: BV): void => void (nvBvMap.has(a) || nvBvMap.set(a, b));
   for (const l of faceLoops(f)) {
     if (p.tagged.has(l.v)) {
       const lprev = l.prev;
@@ -2493,7 +2995,10 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
         }
       }
       let v = vstart;
-      if (!onProfileStart) vv.push(v.nv.v!);
+      if (!onProfileStart) {
+        vv.push(v.nv.v!);
+        addMap(v.nv.v!, l.v);
+      }
       while (v !== vend) {
         if (goCcw) {
           const i = v.index;
@@ -2505,7 +3010,10 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
           const kend = eprev.rightv === v && eprev.profileIndex > 0 ? eprev.profileIndex : vm.seg;
           for (let k = kstart; k <= kend; k++) {
             const bmv = meshVert(vm, i, 0, k).v;
-            if (bmv) vv.push(bmv);
+            if (bmv) {
+              vv.push(bmv);
+              addMap(bmv, l.v);
+            }
           }
           v = v.next;
         } else {
@@ -2518,16 +3026,22 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
           const kend = e.rightv === v.prev && e.profileIndex > 0 ? e.profileIndex : 0;
           for (let k = kstart; k >= kend; k--) {
             const bmv = meshVert(vm, i, 0, k).v;
-            if (bmv) vv.push(bmv);
+            if (bmv) {
+              vv.push(bmv);
+              addMap(bmv, l.v);
+            }
           }
           v = v.prev;
         }
       }
       doRebuild = true;
-    } else vv.push(l.v);
+    } else {
+      vv.push(l.v);
+      addMap(l.v, l.v);
+    }
   }
   if (doRebuild) {
-    const fNew = bevCreateNgon(p, vv, null, f, FKind.RECON);
+    const fNew = bevCreateNgon(p, vv, null, f, FKind.RECON, null, null, nvBvMap);
     if (fNew) fNew.tag = false;
   }
   return doRebuild;
@@ -2589,14 +3103,47 @@ function bevelBuildEdgePolygons(p: Params, bme: BE): void {
   const vm1 = bv1.vmesh;
   const vm2 = bv2.vmesh;
   const verts: BV[] = [bmv1, bmv2, bmv1, bmv1];
+  // New vertex → the input vertex it stands for (`Map::add`: the first wins).
+  const nvBvMap = new Map<BV, BV>();
+  const addMap = (a: BV, b: BV): void => void (nvBvMap.has(a) || nvBvMap.set(a, b));
+  addMap(verts[0]!, bv1.v);
+  addMap(verts[1]!, bv2.v);
+  const odd = nseg % 2 === 1;
   const mid = Math.floor(nseg / 2);
+  let fChoice: BF | null = null;
+  let centerAdjK = -1;
+  if (odd && e1.isSeam) {
+    fChoice = chooseRepFace(p, [f1, f2]);
+    if (nseg > 1) centerAdjK = fChoice === f1 ? mid + 2 : mid;
+  }
   for (let k = 1; k <= nseg; k++) {
     verts[3] = meshVert(vm1, i1, 0, k).v!;
     verts[2] = meshVert(vm2, i2, 0, nseg - k).v!;
-    // The representative face is f1 for the half nearer f1, f2 for the rest —
-    // which of the two is only a material question here.
-    const rep = nseg % 2 === 1 && k === mid + 1 ? f1 : k <= mid ? f1 : f2;
-    bevCreateNgon(p, [...verts], null, rep, FKind.EDGE);
+    addMap(verts[3]!, bv1.v);
+    addMap(verts[2]!, bv2.v);
+    const vs = [...verts];
+    if (odd && k === mid + 1) {
+      if (e1.isSeam) {
+        // Straddles a seam: interpolate in one face, snapping the other
+        // face's corners onto the edge.
+        const edges = fChoice === f1 ? [null, null, bme, bme] : [bme, bme, null, null];
+        bevCreateNgon(p, vs, null, fChoice, FKind.EDGE, edges, null, nvBvMap);
+      } else {
+        // Straddles, no seam: the left half in f1, the right half in f2.
+        bevCreateNgon(p, vs, [f1, f1, f2, f2], fChoice, FKind.EDGE, null, null, nvBvMap);
+      }
+    } else if (odd && k === centerAdjK && e1.isSeam) {
+      // The strip beside the centre one, in the other island: snap the
+      // side near the seam onto the edge, as the rings do.
+      const edges = k === mid ? [null, null, bme, bme] : [bme, bme, null, null];
+      bevCreateNgon(p, vs, null, k === mid ? f1 : f2, FKind.EDGE, edges, null, nvBvMap);
+    } else if (!odd && k === mid) {
+      bevCreateNgon(p, vs, null, f1, FKind.EDGE, [null, null, bme, bme], null, nvBvMap);
+    } else if (!odd && k === mid + 1) {
+      bevCreateNgon(p, vs, null, f2, FKind.EDGE, [bme, bme, null, null], null, nvBvMap);
+    } else {
+      bevCreateNgon(p, vs, null, k <= mid ? f1 : f2, FKind.EDGE, null, null, nvBvMap);
+    }
     verts[0] = verts[3]!;
     verts[1] = verts[2]!;
   }
@@ -2913,10 +3460,10 @@ function bevelLimitOffset(p: Params, verts: BV[]): void {
  * const { mesh } = bevelMesh(box({ size: [40, 20, 10] }), { offset: 2, segments: 3, edges: "all" });
  * ```
  *
- * **Layers** (compat-backlog A3): keeps materials and wire edges. Every other layer (UVs, colours,
- * custom normals, vertex groups, materials, sharp and wire edges) is
- * dropped whole, never left shaped for other faces: Blender interpolates
- * them over the new geometry, which is not ported (compat-backlog A7).
+ * **Layers** (compat-backlog A8): UVs, colours, vertex groups, materials and
+ * wire edges are carried as Blender's bevel carries them — see the file's
+ * header. Custom normals, creases, seams and sharp edges are dropped whole
+ * (compat-backlog C17).
  */
 export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   if (opts.miterOuter && opts.miterOuter !== "SHARP")
@@ -2935,9 +3482,31 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   const bm = bmFromMesh({ positions: data.positions, polys, edges: data.edges }, { vertNormals: meshVertNormals(P, polys) });
   const faceMat = new Map<BF, number>();
   const origFaces = bm.faces.items.filter((f): f is BF => !!f);
-  if (data.materials) {
-    const kept = data.polys.map((poly, i) => (poly.length >= 3 ? i : -1)).filter((i) => i >= 0);
-    origFaces.forEach((f, i) => faceMat.set(f, data.materials![kept[i]!] ?? 0));
+  const kept = data.polys.map((poly, i) => (poly.length >= 3 ? i : -1)).filter((i) => i >= 0);
+  if (data.materials) origFaces.forEach((f, i) => faceMat.set(f, data.materials![kept[i]!] ?? 0));
+
+  // The layers: corners by `src` (bmFromMesh numbers the kept polys' corners
+  // in order), groups by vertex.
+  const hasUv = !!data.uvs && data.uvs.length === data.polys.length;
+  const hasColor = !!data.colors && data.colors.length === data.polys.length;
+  const corners: CornerVal[] = [];
+  for (const i of kept)
+    data.polys[i]!.forEach((_, k) => {
+      const val: CornerVal = {};
+      if (hasUv) val.uv = [...data.uvs![i]![k]!];
+      if (hasColor) val.col = [...data.colors![i]![k]!];
+      corners.push(val);
+    });
+  let groups: Map<BV, Map<string, number>> | null = null;
+  if (data.groups) {
+    groups = new Map();
+    const g = groups;
+    bm.verts.forEach((v) => v && g.set(v, new Map()));
+    for (const [name, gr] of data.groups)
+      for (const [vi, w] of gr) {
+        const v = bm.verts[vi];
+        if (v) g.get(v)!.set(name, w);
+      }
   }
 
   const segments = Math.max(1, Math.floor(opts.segments ?? 1));
@@ -2959,6 +3528,15 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     limitOffset: opts.clampOverlap ?? true,
     offsetAdjust: false,
     weightOf: null,
+    layers: {
+      hasUv,
+      hasColor,
+      corners,
+      groups,
+      faceComponent: null,
+      uvFaces: new Map(),
+      uvVertMap: hasUv ? new Map() : null,
+    },
   };
   p.offsetAdjust = p.offsetType !== "PERCENT" && p.offsetType !== "ABSOLUTE";
   if (profile >= 0.95) p.proSuperR = PRO_SQUARE_R;
@@ -3007,25 +3585,49 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const names: BevelFaceKind[] = ["orig", "vert", "edge", "recon"];
     const faceKind = live.map((f) => names[p.faceKind.get(f) ?? FKind.ORIG]!);
     if (data.materials) mesh.materials = live.map((f) => faceMat.get(f) ?? 0);
-    return { mesh, faceKind, offset: p.offset };
+    const C = p.layers.corners;
+    if (hasUv) mesh.uvs = live.map((f) => faceLoops(f).map((l) => [...(C[l.src]?.uv ?? [0, 0])]));
+    // A corner nothing was interpolated into holds the default: white.
+    if (hasColor) mesh.colors = live.map((f) => faceLoops(f).map((l) => [...(C[l.src]?.col ?? [1, 1, 1, 1])]));
+    if (groups) {
+      const out = new Map<string, Map<number, number>>();
+      for (const name of data.groups!.keys()) out.set(name, new Map());
+      let n = 0;
+      for (const v of bm.verts) {
+        if (!v) continue;
+        for (const [name, w] of groups.get(v) ?? []) out.get(name)?.set(n, w);
+        n++;
+      }
+      mesh.groups = out;
+    }
+    const n0 = data.positions.length / 3;
+    const origVert = bm.verts.filter((v): v is BV => !!v).map((v) => (v.index < n0 ? v.index : -1));
+    return { mesh, faceKind, offset: p.offset, origVert };
   };
   if (p.offset <= 0 || p.selected.size === 0) return result();
 
   setProfileSpacing(p);
   if (p.seg > 1) p.proSpacing.fullness = findProfileFullness(p);
+  if (hasUv && p.seg % 2 === 1) p.layers.faceComponent = uvFaceComponents(p, origFaces);
 
   const verts = bm.verts.filter((v): v is BV => !!v);
   for (const v of verts) {
     if (!p.tagged.has(v)) continue;
     const bv = bevelVertConstruct(p, v);
-    if (!p.limitOffset && bv) buildBoundary(p, bv, true);
+    if (!p.limitOffset && bv) {
+      buildBoundary(p, bv, true);
+      determineUvVertConnectivity(p, v);
+    }
   }
   if (p.limitOffset) {
     bevelLimitOffset(p, verts);
     for (const v of verts) {
       if (!p.tagged.has(v)) continue;
       const bv = p.vertHash.get(v);
-      if (bv) buildBoundary(p, bv, true);
+      if (bv) {
+        buildBoundary(p, bv, true);
+        determineUvVertConnectivity(p, v);
+      }
     }
   }
   if (p.offsetAdjust) adjustOffsets(p, verts);
@@ -3047,6 +3649,11 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     bevelReattachWires(p, v);
   }
   for (const f of rebuilt) faceKill(bm, f);
-  for (const v of verts) if (p.tagged.has(v)) vertKill(bm, v);
+  for (const v of verts)
+    if (p.tagged.has(v)) {
+      p.layers.uvVertMap?.delete(v);
+      vertKill(bm, v);
+    }
+  bevelMergeUvs(p);
   return result();
 }

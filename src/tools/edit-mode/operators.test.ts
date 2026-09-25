@@ -236,9 +236,12 @@ describe("bevelEdges", () => {
     expect(noop.has(firstEdge)).toBe(true);
   });
 
-  it("greedily bevels a subset when selected edges share endpoints, reporting skips", () => {
+  it("bevels two edges that share a vertex — Blender's branch, once refused", () => {
+    // Until 2026-09-26 this took one of the two and reported the other as
+    // skipped (or threw): the operator's own rules stopped at one beveled
+    // edge per vertex. It now runs the port of Blender's bevel, which builds
+    // the vertex mesh at that vertex.
     const em = buildEditMesh(makeCube())!;
-    // Collect two interior edges that share an endpoint vertex.
     const canonical: number[] = [];
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin >= 0) canonical.push(he); });
     const first = canonical[0]!;
@@ -251,10 +254,96 @@ describe("bevelEdges", () => {
     })!;
     const info = { skipped: 0 };
     const result = bevelEdges(em, new Set([first, second]), { offset: 15 }, info);
-    // One edge beveled (1 chamfer quad in V2), the shared-vertex one skipped.
-    expect(result.size).toBe(1);
-    expect(info.skipped).toBe(1);
-    expect(em.faces.length).toBeGreaterThan(12);
+    expect(result.size).toBe(2);
+    expect(info.skipped).toBe(0);
+    let boundaries = 0;
+    forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
+    expect(boundaries).toBe(0);
+  });
+
+  it("bevels a box's corner — three beveled edges at one vertex", () => {
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+    });
+    const targets = new Set<number>();
+    forEachEdge(em, (he) => {
+      const x = edgeOrigin(em, he);
+      const y = edgeEnd(em, he);
+      if ((x === 0 || y === 0) && [1, 3, 4].includes(x === 0 ? y : x)) targets.add(he);
+    });
+    expect(targets.size).toBe(3);
+    const result = bevelEdges(em, targets, { offset: 20, segments: 2 });
+    expect(result.size).toBe(6);
+    let boundaries = 0;
+    forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
+    expect(boundaries).toBe(0);
+  });
+
+  it("keeps seams and creases away from the bevel, under the new vertex numbers", () => {
+    // Beveling edge 2-3 removes vertices 2 and 3; 4-5 (bottom-front) is far
+    // from it and must come back marked, renumbered. 2-6 touched a beveled
+    // vertex and is rebuilt, so its flag goes (compat-backlog C17).
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+      seams: new Set(["4_5", "2_6"]),
+      creases: new Map([["4_5", 1], ["2_6", 1]]),
+    });
+    let target = -1;
+    forEachEdge(em, (he) => {
+      const x = edgeOrigin(em, he);
+      const y = edgeEnd(em, he);
+      if ((x === 2 && y === 3) || (x === 3 && y === 2)) target = he;
+    });
+    bevelEdges(em, new Set([target]), { offset: 20 });
+    // 0, 1, 4..7 survive as 0, 1, 2..5.
+    expect([...em.seams]).toEqual(["2_3"]);
+    expect([...em.creases]).toEqual([["2_3", 1]]);
+  });
+
+  it("carries UVs, colours, vertex groups and materials (compat-backlog A8)", () => {
+    const polys = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]];
+    const em = meshFromData({
+      positions: new Float32Array([
+        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+      ]),
+      polys,
+      uvs: polys.map((p, f) => p.map((_, k) => [f / 10, k / 10])),
+      colors: polys.map((p) => p.map(() => [1, 0, 0, 1])),
+      groups: new Map([["g", new Map([[2, 1], [3, 1]])]]),
+      materials: polys.map((_, f) => f % 2),
+    });
+    let target = -1;
+    forEachEdge(em, (he) => {
+      const x = edgeOrigin(em, he);
+      const y = edgeEnd(em, he);
+      if ((x === 2 && y === 3) || (x === 3 && y === 2)) target = he;
+    });
+    bevelEdges(em, new Set([target]), { offset: 20 });
+    const out = meshToData(em);
+    expect(out.polys).toHaveLength(7);
+    expect(out.uvs.map((f) => f.length)).toEqual(out.polys.map((p) => p.length));
+    // One colour everywhere stays that colour, however it is mixed.
+    for (const f of out.colors) for (const c of f) expect(c).toEqual([1, 0, 0, 1]);
+    // The four vertices that replace the beveled edge's ends mix their
+    // groups from the faces they sit in — part of the way along an edge to a
+    // vertex outside the group, so under 1 but not 0 (the `bevel-mod-layers`
+    // rows pin the values against Blender).
+    const g = out.groups.get("g")!;
+    expect(g.size).toBe(4);
+    for (const w of g.values()) {
+      expect(w).toBeGreaterThan(0);
+      expect(w).toBeLessThanOrEqual(1);
+    }
+    expect(out.materials).toHaveLength(7);
   });
 
   it("bevels the diagonal of a 2-tri quad into a chamfer band", () => {
@@ -272,35 +361,6 @@ describe("bevelEdges", () => {
     // This used to say 8, from when the operator left the beveled vertices in
     // the buffer unreferenced. Blender counts them gone, and so does this now.
     expect(em.vertices).toHaveLength(6);
-  });
-
-  it("refuses a branch selection rather than beveling half of it", () => {
-    const em = buildEditMesh(makeCube())!;
-    // Two edges sharing a vertex. This is what asking for a loop looks like
-    // from the inside, and the greedy matching can only take one of them.
-    let first = -1;
-    let second = -1;
-    forEachEdge(em, (he) => {
-      if (first < 0) { first = he; return; }
-      if (second >= 0) return;
-      const a = edgeOrigin(em, first);
-      const b = edgeEnd(em, first);
-      const c = edgeOrigin(em, he);
-      const d = edgeEnd(em, he);
-      if (c === a || c === b || d === a || d === b) second = he;
-    });
-    expect(second).toBeGreaterThanOrEqual(0);
-
-    // Silent until 2026-09-18: half the selection was beveled and the caller
-    // was handed a Set with no way to know. A brazier's rim came back with 12
-    // of its 24 edges chamfered and nothing said so.
-    expect(() => bevelEdges(em, new Set([first, second]), { offset: 15 })).toThrow(/branch/);
-
-    // Opting in still works, and still reports.
-    const em2 = buildEditMesh(makeCube())!;
-    const info = { skipped: 0 };
-    bevelEdges(em2, new Set([first, second]), { offset: 15 }, info);
-    expect(info.skipped).toBe(1);
   });
 
   it("bevels a cube edge — one new vertex per non-beveled edge, ring closes the corner", () => {
