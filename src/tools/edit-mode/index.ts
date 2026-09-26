@@ -755,13 +755,13 @@ export function loopCutSelection(): void {
     status("⚠ Select a seed edge for Loop Cut");
     return;
   }
-  // Take the first selected edge as the loop seed. The walker finds the rest
-  // by following the coplanar quad chain.
+  // Take the first selected edge as the seed; the ring through it (quads
+  // only, as Blender's) is what gets cut.
   const seed = state.editSelection.indices.values().next().value!;
   applyTopologyOp("Loop Cut", () => {
     const newVerts = loopCut(em, seed);
     if (newVerts.size === 0) {
-      status("⚠ Loop Cut: no valid loop from this seed (boundary or non-coplanar topology)");
+      status("⚠ Loop Cut: nothing to cut from this seed");
       return new Set();
     }
     // After cut, the natural follow-up is "drag the new ring" — switch to

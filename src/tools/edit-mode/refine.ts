@@ -19,6 +19,7 @@
  * Pure and headless — Vitest-pinned.
  */
 import { scanfillTriangles } from "./triangle-fill";
+import { meshVertNormals } from "../blender-math";
 import { interpWeightsPoly } from "./interp";
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { faceAttributeFillAll } from "./loop-data";
@@ -180,7 +181,20 @@ export interface SubdivideEdgesOptions {
   cornerType?: SubdivideCornerType;
   /** Leave every face that is not a quad unsplit. Blender's `use_only_quads`. */
   useOnlyQuads?: boolean;
+  /**
+   * Blender's `smooth`: each cut point moves this far from the straight edge
+   * toward the arc its two ends' normals describe (`alter_co` — two spheres,
+   * one per end, blended). 0 (default) leaves the points on the edge.
+   */
+  smooth?: number;
+  /** Blender's `smooth_falloff`: how the smoothing fades toward the edge's ends. Default `SMOOTH` (the operator's); `LINEAR` does not fade. Loop Cut uses `INVERSE_SQUARE`. */
+  smoothFalloff?: SubdivideFalloff;
+  /** Blender's `use_smooth_even`: scale the smoothing up where the two normals part. */
+  useSmoothEven?: boolean;
 }
+
+/** Blender's `smooth_falloff` values (`bmesh_subd_falloff_calc`). */
+export type SubdivideFalloff = "SMOOTH" | "SPHERE" | "ROOT" | "SHARP" | "LINEAR" | "INVERSE_SQUARE";
 
 /**
  * Put `cuts` new vertices along each selected edge and split the faces those
@@ -212,16 +226,23 @@ export interface SubdivideEdgesOptions {
  * (`BM_edge_split` copies the edge's attributes). UV and colour follow
  * Blender: a cut point interpolates its face's two corners on the edge, a
  * split face keeps its own corners (`subdivide-edges-uv` parity rows).
- * Custom normals drop — see `LayerCarry`. Vertex groups are not carried.
+ * Vertex groups are interpolated the same way. Custom normals drop — see
+ * `LayerCarry`.
  *
  * The #32500 test is made once against the faces as they were; Blender makes
  * it as it goes, after earlier faces have split, and its
  * `connect_smallest_face` may pick a smaller neighbour holding both points.
  * The two differ only for faces sharing two edges with degree-2 corners.
  *
- * Not ported: `smooth` / `smooth_falloff` / `use_smooth_even` / `fractal` /
- * `along_normal` / `seed` / `use_sphere` / `edge_percents` — the new
- * vertices sit evenly on the straight edge.
+ * `smooth` (`alter_co`) bows each cut point off the edge along its ends'
+ * normals; a grid fill's inner lines then bow again, between the cut points
+ * as bowed and with their interpolated normals, as Blender's do
+ * (`subdivide-edges-smooth*` rows). Blender also re-runs `alter_co` on an
+ * edge's own ends at 0 and 1, which moves them by float rounding only — not
+ * done.
+ *
+ * Not ported: `fractal` / `along_normal` / `seed` / `use_sphere` /
+ * `edge_percents`.
  *
  * Returns the faces that were cut or grew.
  */
@@ -269,12 +290,20 @@ class FaceSplitter {
   private readonly positions: number[];
   private readonly nextV: { n: number };
   private readonly origins: Map<number, VertexOrigin>;
+  private readonly place: CutPlacer | null;
 
-  constructor(first: number[], positions: number[], nextV: { n: number }, origins: Map<number, VertexOrigin>) {
+  constructor(
+    first: number[],
+    positions: number[],
+    nextV: { n: number },
+    origins: Map<number, VertexOrigin>,
+    place: CutPlacer | null = null,
+  ) {
     this.frags = [first];
     this.positions = positions;
     this.nextV = nextV;
     this.origins = origins;
+    this.place = place;
   }
 
   /**
@@ -326,12 +355,14 @@ class FaceSplitter {
     for (let j = 1; j <= k; j++) {
       const t = j / (k + 1);
       this.origins.set(this.nextV.n, { from: [a, b], w: [1 - t, t] });
+      if (this.place) P.push(...this.place(a, b, t, this.nextV.n));
+      else
+        P.push(
+          P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
+          P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
+          P[a * 3 + 2]! + (P[b * 3 + 2]! - P[a * 3 + 2]!) * t,
+        );
       made.push(this.nextV.n++);
-      P.push(
-        P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
-        P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
-        P[a * 3 + 2]! + (P[b * 3 + 2]! - P[a * 3 + 2]!) * t,
-      );
     }
     for (let f = 0; f < this.frags.length; f++) {
       const fr = this.frags[f]!;
@@ -508,6 +539,23 @@ function subdivide(
   // Where each new vertex sits, for the UV / colour layers (`BM_edge_split`).
   const origins = new Map<number, VertexOrigin>();
 
+  // With `smooth`, each cut point is `alter_co`'s, from the ends' normals.
+  // A new vertex gets the normal `bm_subdivide_edge_addvert` gives it — its
+  // ends' normals interpolated — and the grid fills' inner lines bow again
+  // from those, between the cut points **as bowed**: Blender copies the
+  // bowed positions in before the faces split.
+  const smoothFac = opts?.smooth ?? 0;
+  const vno: Vec[] | null = smoothFac !== 0 ? meshVertNormals(polysToV3(P), polys).map((n): Vec => [n[0]!, n[1]!, n[2]!]) : null;
+  const place: CutPlacer | null = vno
+    ? (a, b, t, v) => {
+        const at = (i: number): Vec => [positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!];
+        const no = vlerp(vno[a]!, vno[b]!, t);
+        vnormalize(no);
+        vno[v] = no;
+        return smoothCutPoint(at(a), vno[a]!, at(b), vno[b]!, t, smoothFac, opts?.smoothFalloff ?? "SMOOTH", !!opts?.useSmoothEven);
+      }
+    : null;
+
   // One set of new vertices per undirected edge, shared by both its faces.
   const cutsOn = new Map<string, number[]>();
   for (const he of selectedEdges) {
@@ -521,12 +569,14 @@ function subdivide(
     for (let k = 1; k <= cuts; k++) {
       const t = k / (cuts + 1);
       origins.set(nextV.n, { from: [a, b], w: [1 - t, t] });
+      if (place) positions.push(...place(a, b, t, nextV.n));
+      else
+        positions.push(
+          P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
+          P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
+          P[a * 3 + 2]! + (P[b * 3 + 2]! - P[a * 3 + 2]!) * t,
+        );
       made.push(nextV.n++);
-      positions.push(
-        P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
-        P[a * 3 + 1]! + (P[b * 3 + 1]! - P[a * 3 + 1]!) * t,
-        P[a * 3 + 2]! + (P[b * 3 + 2]! - P[a * 3 + 2]!) * t,
-      );
     }
     // Stored low-to-high so both faces can read it in their own direction.
     cutsOn.set(key, a < b ? made : made.reverse());
@@ -588,7 +638,7 @@ function subdivide(
       if (made) grown.push(...(a < b ? made : [...made].reverse()));
     }
 
-    const splitter = new FaceSplitter(grown, positions, nextV, origins);
+    const splitter = new FaceSplitter(grown, positions, nextV, origins, place);
     if (opts && !(opts.useOnlyQuads && len !== 4)) {
       let pat: SubdPattern | null = null;
       let rot = 0;
@@ -623,6 +673,143 @@ function subdivide(
 
   rebuildPolygons(em, new Float32Array(positions), out, { origins });
   return touched;
+}
+
+/** Where the cut `t` along a → b goes, for new vertex `v`. */
+type CutPlacer = (a: number, b: number, t: number, v: number) => Vec;
+
+const polysToV3 = (P: ArrayLike<number>): [number, number, number][] =>
+  Array.from({ length: P.length / 3 }, (_, i) => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!]);
+
+type Vec = [number, number, number];
+const vsub = (a: readonly number[], b: readonly number[]): Vec => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
+const vadd = (a: readonly number[], b: readonly number[]): Vec => [a[0]! + b[0]!, a[1]! + b[1]!, a[2]! + b[2]!];
+const vscale = (a: readonly number[], s: number): Vec => [a[0]! * s, a[1]! * s, a[2]! * s];
+const vdot = (a: readonly number[], b: readonly number[]): number => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+const vcross = (a: readonly number[], b: readonly number[]): Vec => [
+  a[1]! * b[2]! - a[2]! * b[1]!,
+  a[2]! * b[0]! - a[0]! * b[2]!,
+  a[0]! * b[1]! - a[1]! * b[0]!,
+];
+const vlerp = (a: readonly number[], b: readonly number[], t: number): Vec => [
+  a[0]! + (b[0]! - a[0]!) * t,
+  a[1]! + (b[1]! - a[1]!) * t,
+  a[2]! + (b[2]! - a[2]!) * t,
+];
+function vnormalize(a: number[]): number {
+  const l = Math.hypot(a[0]!, a[1]!, a[2]!);
+  if (l > 1e-35) for (let k = 0; k < 3; k++) a[k] = a[k]! / l;
+  else a[0] = a[1] = a[2] = 0;
+  return l > 1e-35 ? l : 0;
+}
+/** `reflect_v3_v3v3`: `v` mirrored across the plane normal to `n` (unit). */
+const vreflect = (v: readonly number[], n: readonly number[]): Vec => vsub(v, vscale(n, 2 * vdot(v, n)));
+
+/** `bmesh_subd_falloff_calc`. */
+function falloffCalc(f: SubdivideFalloff, val: number): number {
+  switch (f) {
+    case "SMOOTH":
+      return 3 * val * val - 2 * val * val * val;
+    case "SPHERE":
+      return Math.sqrt(2 * val - val * val);
+    case "ROOT":
+      return Math.sqrt(val);
+    case "SHARP":
+      return val * val;
+    case "INVERSE_SQUARE":
+      return val * (2 - val);
+    default:
+      return val;
+  }
+}
+
+/** `interp_slerp_co_no_v3`: the point `fac` along the arc through a and b with these normals. */
+function slerpCoNo(coA: Vec, noA: Vec, coB: Vec, noB: Vec, noDir: Vec, fac: number): Vec {
+  let center: Vec | null = null;
+  const noMid = vadd(noA, noB);
+  vnormalize(noMid);
+  const noOrtho = vcross(noMid, noDir);
+  if (vnormalize(noOrtho) !== 0) {
+    const proj = (v: Vec): Vec => vsub(v, vscale(noOrtho, vdot(v, noOrtho)));
+    const na = proj(vcross(noOrtho, noA));
+    const nb = proj(vcross(noOrtho, noB));
+    // Planes n·x + d = 0 through co_a (na), co_b (nb) and co_b (noOrtho).
+    const pa = [...na, -vdot(na, coA)];
+    const pb = [...nb, -vdot(nb, coB)];
+    const pc = [...noOrtho, -vdot(noOrtho, coB)];
+    const det =
+      pa[0]! * (pb[1]! * pc[2]! - pb[2]! * pc[1]!) -
+      pa[1]! * (pb[0]! * pc[2]! - pb[2]! * pc[0]!) +
+      pa[2]! * (pb[0]! * pc[1]! - pb[1]! * pc[0]!);
+    if (det !== 0) {
+      let x = vscale(vcross(pc, pb), pa[3]!);
+      x = vadd(x, vscale(vcross(pa, pc), pb[3]!));
+      x = vadd(x, vscale(vcross(pb, pa), pc[3]!));
+      center = vscale(x, 1 / det);
+    }
+  }
+  center ??= vlerp(coA, coB, 0.5);
+  const ofsA = vsub(coA, center);
+  const ofsB = vsub(coB, center);
+  const distA = vnormalize(ofsA);
+  const distB = vnormalize(ofsB);
+  // `interp_v3_v3v3_slerp` with `interp_dot_slerp`.
+  const cosom = vdot(ofsA, ofsB);
+  if (cosom < -1 + 1.1920929e-7) return vlerp(coA, coB, fac);
+  let w0: number;
+  let w1: number;
+  if (Math.abs(cosom) < 1 - 1e-4) {
+    const omega = Math.acos(cosom);
+    const sinom = Math.sin(omega);
+    w0 = Math.sin((1 - fac) * omega) / sinom;
+    w1 = Math.sin(fac * omega) / sinom;
+  } else {
+    w0 = 1 - fac;
+    w1 = fac;
+  }
+  const slerp = vadd(vscale(ofsA, w0), vscale(ofsB, w1));
+  return vadd(center, vscale(slerp, fac * distB + (1 - fac) * distA));
+}
+
+/**
+ * `alter_co` with `use_smooth` (`bmo_subdivide.cc`): the cut point `perc`
+ * along a → b, pushed off the straight edge toward two arcs — one using a's
+ * normal and its reflection, one b's — blended, faded by `falloff` and
+ * scaled by `smooth`. Symmetric in a and b.
+ */
+function smoothCutPoint(
+  coA: Vec,
+  noA: readonly number[],
+  coB: Vec,
+  noB: readonly number[],
+  perc: number,
+  smoothFac: number,
+  falloff: SubdivideFalloff,
+  even: boolean,
+): Vec {
+  const eps = 1e-5;
+  const nA: Vec = [noA[0]!, noA[1]!, noA[2]!];
+  const nB: Vec = [noB[0]!, noB[1]!, noB[2]!];
+  const noDir = vsub(coA, coB);
+  vnormalize(noDir);
+  const reflA = vreflect(nA, noDir);
+  const lenSq = (a: Vec, b: Vec): number => vdot(vsub(a, b), vsub(a, b));
+  const coSphereA = lenSq(nA, reflA) < eps ? vlerp(coA, coB, perc) : slerpCoNo(coA, nA, coB, reflA, noDir, perc);
+  const reflB = vreflect(nB, noDir);
+  const coSphereB = lenSq(nB, reflB) < eps ? vlerp(coA, coB, perc) : slerpCoNo(coA, reflB, coB, nB, noDir, perc);
+  let co = vlerp(coSphereA, coSphereB, perc);
+  let smooth: number;
+  if (falloff === "LINEAR") smooth = 1;
+  else smooth = 1 + falloffCalc(falloff, Math.abs(1 - 2 * Math.abs(0.5 - perc)));
+  if (even) {
+    // `shell_v3v3_mid_normalized_to_dist`.
+    const ab = vadd(nA, nB);
+    const cos = vnormalize(ab) !== 0 ? Math.abs(vdot(nA, ab)) : 0;
+    smooth *= cos < 1e-8 ? 1 : 1 / cos;
+  }
+  smooth *= smoothFac;
+  if (smooth !== 1) co = vlerp(vlerp(coA, coB, perc), co, smooth);
+  return co;
 }
 
 /**

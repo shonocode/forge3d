@@ -157,6 +157,7 @@ export {
   bevelEdges,
   type BevelOptions,
   loopCut,
+  type LoopCutOptions,
   rotateEdges,
   edgeSlide,
   vertexSlide,
@@ -229,6 +230,7 @@ export {
   type PokeOptions,
   type SubdivideEdgesOptions,
   type SubdivideCornerType,
+  type SubdivideFalloff,
   type SmoothVertOptions,
   type HolesFillOptions,
 } from "../tools/edit-mode/refine";

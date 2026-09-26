@@ -312,6 +312,32 @@ describe("polygon-aware operators on a quad cube", () => {
     expectManifold(em);
   });
 
+  it("loopCut with three cuts splits each crossed quad into four", () => {
+    const em = makeQuadCubeEM();
+    let seed = -1;
+    forEachEdge(em, (he) => { if (seed < 0) seed = he; });
+    const made = loopCut(em, seed, { cuts: 3 });
+    expect(made.size).toBe(12);
+    expect(em.faces).toHaveLength(4 * 4 + 2);
+    expectManifold(em);
+  });
+
+  it("loopCut smoothness bows the new loop out along the normals", () => {
+    // Cube corners at ±1: a flat cut lands on the edge midpoints, |x| or |y|
+    // or |z| exactly 0 on one axis and 1 on the other two. Smoothed, the
+    // points move outward, off the cube's faces.
+    const flat = makeQuadCubeEM();
+    const bowed = makeQuadCubeEM();
+    let seed = -1;
+    forEachEdge(flat, (he) => { if (seed < 0) seed = he; });
+    const a = loopCut(flat, seed);
+    const b = loopCut(bowed, seed, { smoothness: 1 });
+    const radius = (em: EditMesh, v: number) =>
+      Math.hypot(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+    for (const v of a) expect(radius(flat, v)).toBeCloseTo(Math.SQRT2, 6);
+    for (const v of b) expect(radius(bowed, v)).toBeGreaterThan(Math.SQRT2 + 0.05);
+  });
+
   it("collapseEdges degrades adjacent quads to tris instead of dropping them", () => {
     const em = makeQuadCubeEM();
     // Collapse cube edge 0-1 (shared by -z and -y quads).

@@ -2,7 +2,8 @@ import { orphanedEdges } from "./wire";
 import { interpWeightsPoly } from "./interp";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
-import { walkEdgeRing } from "./edge-walk";
+import { selectEdgeRing } from "./edge-walk";
+import { subdivideEdges, type SubdivideFalloff } from "./refine";
 import { bevelMesh } from "../bevel/bevel";
 import type { MeshData } from "../../lib/mesh";
 
@@ -542,330 +543,60 @@ function thirdVertex(em: EditMesh, f: number, a: number, b: number): number {
   return -1;
 }
 
-function lerpPos(em: EditMesh, from: number, to: number, t: number): [number, number, number] {
-  const fx = em.positions[from * 3]!, fy = em.positions[from * 3 + 1]!, fz = em.positions[from * 3 + 2]!;
-  const tx = em.positions[to * 3]!, ty = em.positions[to * 3 + 1]!, tz = em.positions[to * 3 + 2]!;
-  return [fx + (tx - fx) * t, fy + (ty - fy) * t, fz + (tz - fz) * t];
-}
 
 
 // ── Loop Cut ───────────────────────────────────────────────────────────────
 
-/**
- * Cut an edge loop starting from `seedEdge`.
- *
- * V2 walking rules, per face entered through an edge:
- *  - REAL quad → exit through the opposite edge; the quad is later cut into
- *    two quads by the midpoint-to-midpoint edge (quad flow preserved).
- *  - Triangle → treat the pair of near-coplanar triangles as an implicit quad
- *    (V1 behavior): exit through the partner's off-diagonal edge and
- *    re-triangulate the pair around the cut (4 tris).
- *  - Any other arity (n-gon ≥5) → the loop stops there.
- *
- * Faces adjacent to loop edges but not crossed by the loop get their edge
- * midpoints stitched in: triangles use the classic 1-edge / 2-edge / 3-edge
- * splits, n-gons keep a single polygon with the midpoints inserted into the
- * cycle (no T-vertices either way).
- *
- * Returns the set of new midpoint vertex IDs (caller flips selection mode to
- * "vertex" so the user can immediately drag the new ring with the gizmo).
- *
- * Limitations (kept from V1):
- *   - Coplanarity threshold for the tri-pair walk is fixed (cos ≥ 0.7 ≈ 45°).
- *     Sharp creases break loop continuity, which is usually correct intent.
- *   - If two consecutive loop edges happen to live in the same triangle (a
- *     degenerate quad), that tri is split into 3 instead of re-triangulated
- *     as a real quad.
- *
- * Layers: across a ring of quads this is Blender's Loop Cut
- * (`BM_mesh_esubdivide` with grid fill and `SUBD_CORNER_PATH`) and the UVs,
- * colours, normals and vertex groups are carried the same way — a midpoint
- * halfway along its edge, each half a copy of the quad it was cut from
- * (`loop-cut-layers`). A triangle pair re-cut into four has no Blender
- * counterpart; its faces span two old faces and drop the layers.
- */
-export function loopCut(em: EditMesh, seedEdge: number): Set<number> {
-  const twin = em.halfEdges[seedEdge]?.twin ?? -1;
-  if (twin < 0) return new Set(); // boundary — no loop possible
-
-  const seedCanonical = canonicalEdge(em, seedEdge);
-  // A loop cut walks the *ring* — the faces the new loop will be cut into —
-  // and the triangle-pair rule below is what lets it cross a triangulated
-  // cage. `selectEdgeRing` without that option is Blender's ring select.
-  const loop = walkEdgeRing(em, seedCanonical, { throughTrianglePairs: true }).edges;
-  if (loop.length === 0) return new Set();
-
-  // Insert one midpoint per loop edge.
-  const newPositions: number[] = Array.from(em.positions);
-  let nextV = em.vertices.length;
-  const midpointOf = new Map<number, number>(); // canonical edge → midpoint vert id
-  const midOfPair = new Map<string, number>();  // "vMin_vMax" → midpoint vert id
-  // Each midpoint is `BM_edge_split`: its data halfway along the edge.
-  const origins = new Map<number, VertexOrigin>();
-  for (const e of loop) {
-    const a = edgeOrigin(em, e);
-    const b = edgeEnd(em, e);
-    const mid = nextV++;
-    origins.set(mid, { from: [a, b], w: [0.5, 0.5] });
-    const [mx, my, mz] = lerpPos(em, a, b, 0.5);
-    newPositions.push(mx, my, mz);
-    midpointOf.set(e, mid);
-    midOfPair.set(seamKey(a, b), mid);
-  }
-
-  // Group consecutive loop edges into crossings. Each pair (loop[i],
-  // loop[i+1]) either lies on one polygon face (poly crossing) or straddles
-  // two coplanar triangles (implicit-quad crossing).
-  type PolyCut = { kind: "poly"; f: number; eEntry: number; eExit: number };
-  type TriPairCut = { kind: "tripair"; f1: number; f2: number; eEntry: number; eExit: number };
-  const crossByFace = new Map<number, PolyCut | TriPairCut>();
-  for (let i = 0; i < loop.length; i++) {
-    const e1 = loop[i]!;
-    const e2 = loop[(i + 1) % loop.length]!;
-    // Stop at the wrap-around if loop is open (i.e., the last "next" doesn't
-    // come back to the seed). For closed loops this still works because both
-    // e1 and e2 are real loop edges sharing a face.
-    if (e1 === e2) continue;
-    const shared = sharedFaceBetweenEdges(em, e1, e2);
-    if (shared < 0 || crossByFace.has(shared)) continue;
-    if (faceVertexCount(em, shared) > 3) {
-      crossByFace.set(shared, { kind: "poly", f: shared, eEntry: e1, eExit: e2 });
-      continue;
-    }
-    const partner = quadPartnerOfFaceCrossing(em, shared, e1, e2);
-    if (partner < 0 || faceVertexCount(em, partner) !== 3) continue;
-    if (crossByFace.has(partner)) continue;
-    const cut: TriPairCut = { kind: "tripair", f1: shared, f2: partner, eEntry: e1, eExit: e2 };
-    crossByFace.set(shared, cut);
-    crossByFace.set(partner, cut);
-  }
-
-  // Emit the new polygon list.
-  const newPolys: number[][] = [];
-  for (let f = 0; f < em.faces.length; f++) {
-    const cross = crossByFace.get(f);
-    if (cross && cross.kind === "tripair") {
-      if (f === cross.f1) emitQuadCut(em, cross, midpointOf, newPolys);
-      continue; // f2 handled together with f1
-    }
-
-    const verts = faceVerts(em, f);
-    // Augmented cycle: original corners with loop midpoints inserted after
-    // the origin of each split edge.
-    const aug: number[] = [];
-    let midCount = 0;
-    for (let i = 0; i < verts.length; i++) {
-      aug.push(verts[i]!);
-      const mid = midOfPair.get(seamKey(verts[i]!, verts[(i + 1) % verts.length]!));
-      if (mid !== undefined) { aug.push(mid); midCount++; }
-    }
-
-    if (midCount === 0) {
-      newPolys.push(verts); // untouched face
-      continue;
-    }
-
-    if (cross && cross.kind === "poly") {
-      // Cut the augmented cycle at the entry/exit midpoints → two polygons.
-      // A crossed quad yields two quads (quad flow preserved).
-      const mE = midpointOf.get(cross.eEntry)!;
-      const mX = midpointOf.get(cross.eExit)!;
-      const iE = aug.indexOf(mE);
-      const iX = aug.indexOf(mX);
-      if (iE >= 0 && iX >= 0 && iE !== iX) {
-        const p1 = cycleSlice(aug, iE, iX);
-        const p2 = cycleSlice(aug, iX, iE);
-        if (p1.length >= 3 && p2.length >= 3) {
-          newPolys.push(p1, p2);
-          continue;
-        }
-      }
-      // Inconsistent crossing — fall through to the generic handling below.
-    }
-
-    if (verts.length === 3) {
-      emitTriSplits(em, f, midpointOf, newPolys);
-    } else {
-      // n-gon touched by the loop but not crossed: keep one polygon with the
-      // midpoints stitched into its cycle so neighbors stay watertight.
-      newPolys.push(aug);
-    }
-  }
-
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins });
-  return new Set(midpointOf.values());
-}
-
-/** Inclusive cyclic slice aug[from..to] (wrapping). */
-function cycleSlice(aug: readonly number[], from: number, to: number): number[] {
-  const out: number[] = [];
-  for (let k = from; ; k = (k + 1) % aug.length) {
-    out.push(aug[k]!);
-    if (k === to) break;
-  }
-  return out;
-}
-
-function sharedFaceBetweenEdges(em: EditMesh, e1: number, e2: number): number {
-  const e1Faces = new Set<number>();
-  const t1 = em.halfEdges[e1]!.twin;
-  e1Faces.add(em.halfEdges[e1]!.face);
-  if (t1 >= 0) e1Faces.add(em.halfEdges[t1]!.face);
-  const e2Faces: number[] = [em.halfEdges[e2]!.face];
-  const t2 = em.halfEdges[e2]!.twin;
-  if (t2 >= 0) e2Faces.push(em.halfEdges[t2]!.face);
-  for (const f of e2Faces) if (e1Faces.has(f)) return f;
-  return -1;
+/** Loop Cut's settings. The defaults are the operator's. */
+export interface LoopCutOptions {
+  /** New loops. Blender's `number_cuts`, default 1, at least 1. */
+  cuts?: number;
+  /**
+   * Bow the new loops out along the ends' normals, as Subdivide's `smooth`
+   * does. Blender's `smoothness`, default 0 (the loops lie on the edges).
+   */
+  smoothness?: number;
+  /** How the bow fades toward the ring's ends. Blender's `falloff`, default `INVERSE_SQUARE`. */
+  falloff?: SubdivideFalloff;
 }
 
 /**
- * Given `entryFace` (a triangle containing `e1`), return its quad partner =
- * the most coplanar TRIANGLE neighbor NOT adjacent to e1/e2 (the diagonal
- * partner).
- */
-function quadPartnerOfFaceCrossing(em: EditMesh, entryFace: number, e1: number, e2: number): number {
-  const myNormal = facePolyNormal(em, entryFace);
-  let best = -1;
-  let bestDot = 0.7;
-  for (const h of faceHalfEdges(em, entryFace)) {
-    const can = canonicalEdge(em, h);
-    if (can === e1 || can === e2) continue;
-    const t = em.halfEdges[h]!.twin;
-    if (t < 0) continue;
-    const neighbor = em.halfEdges[t]!.face;
-    if (faceVertexCount(em, neighbor) !== 3) continue;
-    const nNormal = facePolyNormal(em, neighbor);
-    const dot = dot3(myNormal, nNormal);
-    if (dot > bestDot) {
-      bestDot = dot;
-      best = neighbor;
-    }
-  }
-  return best;
-}
-
-/**
- * Re-triangulate one implicit quad (two coplanar tris) into 4 tris with a cut
- * edge running from the midpoint of `eEntry` to the midpoint of `eExit`.
+ * Loop Cut (`bpy.ops.mesh.loopcut`, `editors/mesh/editmesh_loopcut.cc`):
+ * the edge ring through `seedEdge`, then `BM_mesh_esubdivide` over it with
+ * grid fill, `SUBD_CORNER_PATH` and even smoothing.
  *
- * The implicit quad has 4 verts: 2 on eEntry (a, b), 1 in entryFace not on
- * either loop edge, 1 in partnerFace likewise. Corner pairing (which eExit
- * endpoint sits next to a vs b in the quad cycle) is read from partnerFace's
- * CCW order. Triangulation: split along the cut edge mEntry-mExit, then
- * triangulate each half:
- *   Half 1 (a side): (a, mEntry, mExit) + (a, mExit, cornerA)
- *   Half 2 (b side): (mEntry, b, cornerB) + (mEntry, cornerB, mExit)
+ * The ring is Blender's ring select (`BMW_EDGERING` with
+ * `BMW_DELIMIT_EDGE_RING_NGONS`) — `selectEdgeRing`: it crosses quads only
+ * and stops at a triangle, an n-gon or the boundary. The faces at its ends
+ * get the new vertices on one edge and grow (a triangle becomes a quad). A
+ * seed with no quad on it is cut alone.
+ *
+ * Every crossed quad splits into `cuts + 1` quads. Layers follow
+ * `subdivideEdges`: each new vertex is `BM_edge_split` — UVs, colours and
+ * weights interpolated along its edge — and each piece of a quad keeps its
+ * corners (`loop-cut*` parity rows).
+ *
+ * The edge slide that follows in the UI (`TRANSFORM_OT_edge_slide`, the
+ * macro's second half) is not part of this; the loops sit where the cut put
+ * them.
+ *
+ * Returns the new vertices.
  */
-function emitQuadCut(em: EditMesh, qc: { f1: number; f2: number; eEntry: number; eExit: number }, midpointOf: Map<number, number>, out: number[][]): void {
-  const mEntry = midpointOf.get(qc.eEntry)!;
-  const mExit = midpointOf.get(qc.eExit)!;
-  const a = edgeOrigin(em, qc.eEntry);
-  const b = edgeEnd(em, qc.eEntry);
-  const eExitV0 = edgeOrigin(em, qc.eExit);
-  const eExitV1 = edgeEnd(em, qc.eExit);
-
-  // Determine cornerA, cornerB by checking partnerFace's CCW order — the
-  // vertex coming AFTER b in the quad cycle = cornerB; before a = cornerA.
-  let cornerA = -1, cornerB = -1;
-  for (const ph of faceHalfEdges(em, qc.f2)) {
-    const ov = em.halfEdges[ph]!.v;
-    const ev = em.halfEdges[em.halfEdges[ph]!.next]!.v;
-    if ((ov === eExitV0 && ev === eExitV1) || (ov === eExitV1 && ev === eExitV0)) {
-      // This half-edge IS eExit (in partnerFace's CCW order). The half-edge
-      // after it ends at partnerFace's remaining vertex, which is `a` or `b`.
-      const after = em.halfEdges[ph]!.next;
-      const afterEndVert = em.halfEdges[em.halfEdges[after]!.next]!.v;
-      if (afterEndVert === a) { cornerA = ev; cornerB = ov; }
-      else if (afterEndVert === b) { cornerB = ov; cornerA = ev; }
-      break;
-    }
-  }
-  if (cornerA < 0 || cornerB < 0) {
-    // Fallback: arbitrarily assign; visually wrong but topologically valid.
-    cornerA = eExitV0; cornerB = eExitV1;
-  }
-
-  out.push([a, mEntry, mExit]);
-  out.push([a, mExit, cornerA]);
-  out.push([mEntry, b, cornerB]);
-  out.push([mEntry, cornerB, mExit]);
-}
-
-/** Split one triangle face according to how many of its edges carry loop midpoints. */
-function emitTriSplits(em: EditMesh, f: number, midpointOf: Map<number, number>, out: number[][]): void {
-  const [h0, h1, h2] = faceHalfEdges(em, f) as [number, number, number];
-  const subdivHE: number[] = [];
-  for (const h of [h0, h1, h2]) {
-    if (midpointOf.has(canonicalEdge(em, h))) subdivHE.push(h);
-  }
-  if (subdivHE.length === 0) {
-    out.push([em.halfEdges[h0]!.v, em.halfEdges[h1]!.v, em.halfEdges[h2]!.v]);
-  } else if (subdivHE.length === 1) {
-    emitTriSplit1(em, subdivHE[0]!, midpointOf, out);
-  } else if (subdivHE.length === 2) {
-    emitTriSplit2(em, h0, h1, h2, subdivHE, midpointOf, out);
-  } else {
-    emitTriSplit3(em, h0, h1, h2, midpointOf, out);
-  }
-}
-
-/** 1 selected edge in a tri — fan to off-edge vertex. */
-function emitTriSplit1(em: EditMesh, subdivHE: number, midpointOf: Map<number, number>, out: number[][]): void {
-  const mid = midpointOf.get(canonicalEdge(em, subdivHE))!;
-  const a = em.halfEdges[subdivHE]!.v;
-  const nxt = em.halfEdges[subdivHE]!.next;
-  const b = em.halfEdges[nxt]!.v;
-  const c = em.halfEdges[em.halfEdges[nxt]!.next]!.v;
-  out.push([a, mid, c]);
-  out.push([mid, b, c]);
-}
-
-/** 2 selected edges in a tri — split into 3 tris with a midpoint-to-midpoint cut. */
-function emitTriSplit2(em: EditMesh, h0: number, h1: number, h2: number, subdivHE: number[], midpointOf: Map<number, number>, out: number[][]): void {
-  // Identify the un-subdivided edge: this anchors the "third vertex" position.
-  const subdivSet = new Set(subdivHE);
-  const otherHE = [h0, h1, h2].find((h) => !subdivSet.has(h));
-  if (otherHE === undefined) return;
-  // tri = (v[h0], v[h1], v[h2]) CCW. The non-subdivided edge has its two
-  // endpoints "untouched"; the third vertex is the one OPPOSITE to it,
-  // through which both subdivided edges pass.
-  const u = em.halfEdges[otherHE]!.v;
-  const v = em.halfEdges[em.halfEdges[otherHE]!.next]!.v;
-  const allV = [em.halfEdges[h0]!.v, em.halfEdges[h1]!.v, em.halfEdges[h2]!.v];
-  const w = allV.find((x) => x !== u && x !== v)!;
-
-  // Midpoints: M_uw on edge u-w, M_vw on edge v-w.
-  let mUW = -1, mVW = -1;
-  for (const h of subdivHE) {
-    const va = em.halfEdges[h]!.v;
-    const vb = em.halfEdges[em.halfEdges[h]!.next]!.v;
-    const can = canonicalEdge(em, h);
-    if ((va === u && vb === w) || (va === w && vb === u)) mUW = midpointOf.get(can)!;
-    if ((va === v && vb === w) || (va === w && vb === v)) mVW = midpointOf.get(can)!;
-  }
-  if (mUW < 0 || mVW < 0) return;
-
-  // CCW tris:
-  //   (u, v, mVW)   — bottom (the un-subdivided base + cut endpoint at v's side)
-  //   (u, mVW, mUW) — the "cut triangle" interior
-  //   (mUW, mVW, w) — the cap at vertex w
-  out.push([u, v, mVW]);
-  out.push([u, mVW, mUW]);
-  out.push([mUW, mVW, w]);
-}
-
-/** 3 selected edges in a tri — classic 1→4 subdivision. */
-function emitTriSplit3(em: EditMesh, h0: number, h1: number, h2: number, midpointOf: Map<number, number>, out: number[][]): void {
-  const a = em.halfEdges[h0]!.v;
-  const b = em.halfEdges[h1]!.v;
-  const c = em.halfEdges[h2]!.v;
-  const mAB = midpointOf.get(canonicalEdge(em, h0))!;
-  const mBC = midpointOf.get(canonicalEdge(em, h1))!;
-  const mCA = midpointOf.get(canonicalEdge(em, h2))!;
-  out.push([a, mAB, mCA]);
-  out.push([mAB, b, mBC]);
-  out.push([mBC, c, mCA]);
-  out.push([mAB, mBC, mCA]);
+export function loopCut(em: EditMesh, seedEdge: number, opts: LoopCutOptions = {}): Set<number> {
+  if (!em.halfEdges[seedEdge]) return new Set();
+  const ring = selectEdgeRing(em, seedEdge);
+  const before = em.vertices.length;
+  subdivideEdges(em, ring, {
+    cuts: Math.max(1, Math.floor(opts.cuts ?? 1)),
+    smooth: opts.smoothness ?? 0,
+    smoothFalloff: opts.falloff ?? "INVERSE_SQUARE",
+    useSmoothEven: true,
+    useGridFill: true,
+    cornerType: "PATH",
+  });
+  const made = new Set<number>();
+  for (let v = before; v < em.vertices.length; v++) made.add(v);
+  return made;
 }
 
 function dot3(a: [number, number, number], b: [number, number, number]): number {

@@ -698,83 +698,41 @@ function containsEdge(indices: number[], v1: number, v2: number): boolean {
 }
 
 describe("loopCut", () => {
-  it("returns empty on a boundary edge (no twin)", () => {
+  const edgeBetween = (em: ReturnType<typeof buildEditMesh> & object, a: number, b: number): number => {
+    let seed = -1;
+    forEachEdge(em, (he) => {
+      const x = em.halfEdges[he]!.v;
+      const y = em.halfEdges[em.halfEdges[he]!.next]!.v;
+      if ((x === a && y === b) || (x === b && y === a)) seed = he;
+    });
+    expect(seed).toBeGreaterThanOrEqual(0);
+    return seed;
+  };
+
+  it("on triangles the ring is the seed alone: its two faces each gain the vertex", () => {
+    // Blender's ring stops at anything but a quad (BMW_DELIMIT_EDGE_RING_NGONS),
+    // and one cut edge leaves a triangle whole — it becomes a quad.
+    const em = buildEditMesh(makeCube())!;
+    const made = loopCut(em, edgeBetween(em, 0, 1));
+    expect(made.size).toBe(1);
+    expect(em.faces).toHaveLength(12);
+    const sizes = em.faces.map((_, f) => faceVerts(em, f).length);
+    expect(sizes.filter((n) => n === 4)).toHaveLength(2);
+    let boundaries = 0;
+    forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
+    expect(boundaries).toBe(0);
+  });
+
+  it("a boundary edge between triangles is cut alone", () => {
+    // Two triangles: the ring from the rim is that edge alone, and it is cut.
     const em = buildEditMesh(makeQuadPair())!;
-    // Find a boundary half-edge (twin = -1).
     let boundary = -1;
     for (let i = 0; i < em.halfEdges.length; i++) {
       if (em.halfEdges[i]!.twin < 0) { boundary = i; break; }
     }
-    expect(boundary).toBeGreaterThanOrEqual(0);
-    const result = loopCut(em, boundary);
-    expect(result.size).toBe(0);
+    const made = loopCut(em, boundary);
+    expect(made.size).toBe(1);
     expect(em.faces).toHaveLength(2);
-  });
-
-  it("cuts a 4-edge loop around the cube via coplanar quad walking", () => {
-    const em = buildEditMesh(makeCube())!;
-    // Pick a canonical cube edge to seed the loop. The first canonical
-    // half-edge is index 0 (= 0→2, the -z face diagonal) — that's a
-    // diagonal, not a cube outer edge, and isn't on a loop. Find an outer
-    // cube edge instead by looking for a canonical half-edge whose two
-    // adjacent faces have non-parallel normals (which characterizes an
-    // outer edge between two cube sides).
-    let seed = -1;
-    forEachEdge(em, (he) => {
-      if (seed >= 0) return;
-      const tw = em.halfEdges[he]!.twin;
-      if (tw < 0) return;
-      const f1 = em.halfEdges[he]!.face;
-      const f2 = em.halfEdges[tw]!.face;
-      // Compute normals manually
-      const [a1, b1, c1] = [0, 1, 2].map((i) => {
-        const v = i === 0 ? em.halfEdges[em.faces[f1]!.he]!.v
-                : i === 1 ? em.halfEdges[em.halfEdges[em.faces[f1]!.he]!.next]!.v
-                : em.halfEdges[em.halfEdges[em.halfEdges[em.faces[f1]!.he]!.next]!.next]!.v;
-        return [em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!];
-      });
-      const [a2, b2, c2] = [0, 1, 2].map((i) => {
-        const v = i === 0 ? em.halfEdges[em.faces[f2]!.he]!.v
-                : i === 1 ? em.halfEdges[em.halfEdges[em.faces[f2]!.he]!.next]!.v
-                : em.halfEdges[em.halfEdges[em.halfEdges[em.faces[f2]!.he]!.next]!.next]!.v;
-        return [em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!];
-      });
-      const cross = (p: number[][]) => {
-        const u = [p[1]![0]! - p[0]![0]!, p[1]![1]! - p[0]![1]!, p[1]![2]! - p[0]![2]!];
-        const v = [p[2]![0]! - p[0]![0]!, p[2]![1]! - p[0]![1]!, p[2]![2]! - p[0]![2]!];
-        return [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
-      };
-      const n1 = cross([a1!, b1!, c1!]);
-      const n2 = cross([a2!, b2!, c2!]);
-      const len1 = Math.hypot(n1[0]!, n1[1]!, n1[2]!);
-      const len2 = Math.hypot(n2[0]!, n2[1]!, n2[2]!);
-      const dot = (n1[0]! * n2[0]! + n1[1]! * n2[1]! + n1[2]! * n2[2]!) / (len1 * len2);
-      if (Math.abs(dot) < 0.5) seed = he; // non-parallel = outer cube edge
-    });
-    expect(seed).toBeGreaterThanOrEqual(0);
-
-    const result = loopCut(em, seed);
-    // A cube outer-edge loop has 4 edges (goes around one axis).
-    // 4 new midpoints = 4 new verts.
-    expect(result.size).toBe(4);
-    expect(em.vertices).toHaveLength(8 + 4);
-    // Each crossed quad (= 2 tris) becomes 4 tris → net +2 per quad ×
-    // 4 quads = +8 tris on top of the 4 untouched faces.
-    expect(em.faces).toHaveLength(12 + 8);
-  });
-
-  it("loop cut preserves manifold closure", () => {
-    const em = buildEditMesh(makeCube())!;
-    let seed = -1;
-    // Same outer-edge detection as above (simpler — first non-diagonal edge).
-    // The cube's half-edge 6 is in face 2 (-y face's 1st tri = 4,5,6).
-    // Half-edge index 12 is 0→1 (cube edge). Use that.
-    seed = 12;
-    const result = loopCut(em, seed);
-    expect(result.size).toBeGreaterThan(0);
-    let boundaries = 0;
-    forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
-    expect(boundaries).toBe(0);
   });
 });
 

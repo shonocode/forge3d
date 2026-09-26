@@ -240,10 +240,10 @@ export interface EdgeRingOptions {
    * Treat a near-coplanar pair of triangles as one quad and keep walking.
    *
    * Off by default, because Blender's ring select stops at a triangle
-   * (measured: one edge back from an octahedron). `loopCut` turns it **on** —
-   * it has to cut through triangulated cages, and the V1 rule that an implicit
-   * quad is two triangles whose normals agree within 45° is what makes that
-   * work. Nothing else should want it.
+   * (measured: one edge back from an octahedron). Nothing in forge3d turns it
+   * on any more — `loopCut` used to, to cut through triangulated cages, and
+   * now walks Blender's ring. Kept for callers that want the V1 rule (an
+   * implicit quad is two triangles whose normals agree within 45°).
    */
   throughTrianglePairs?: boolean;
 }
@@ -253,8 +253,8 @@ export interface EdgeRingOptions {
  * face, each time leaving through the side opposite the one entered.
  *
  * Only a quad has an opposite side, so the ring stops at triangles and n-gons
- * (and at a boundary, where there is no next face). This is the walk `loopCut`
- * needs: the faces a ring crosses are the faces the new loop is cut into.
+ * (and at a boundary, where there is no next face). This is Blender's ring
+ * select, and the ring `loopCut` cuts.
  *
  * @param seedEdge any half-edge of the edge to start from
  */
@@ -263,9 +263,8 @@ export function selectEdgeRing(em: EditMesh, seedEdge: number, options: EdgeRing
 }
 
 /**
- * The ring as an ordered walk rather than a set — `loopCut` cuts each pair of
- * consecutive edges and needs to know which pairs are consecutive, and whether
- * the ring closes.
+ * The ring as an ordered walk rather than a set — which edges are consecutive,
+ * and whether the ring closes.
  *
  * Order is CCW when the ring is closed, and walk order (one end to the other)
  * when it is open. A degenerate seed comes back as `[seedEdge]`.

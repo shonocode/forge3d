@@ -57,7 +57,7 @@ const CASES: Array<[string, (em: EditMesh) => unknown, boolean]> = [
   ["extrudeEdges", (em) => ops.extrudeEdges(em, edgesOf(em, (a, b) => a < 4 && b < 4)), true],
   ["insetFaces", (em) => ops.insetFaces(em, new Set([4]), 0.1), true],
   ["insetRegion", (em) => ops.insetRegion(em, new Set([4]), { thickness: 0.1 }), true],
-  ["loopCut", (em) => ops.loopCut(em, [...edgesOf(em, (a, b) => (a === 1 && b === 5) || (a === 5 && b === 1))][0]!), false],
+  ["loopCut", (em) => ops.loopCut(em, [...edgesOf(em, (a, b) => (a === 1 && b === 5) || (a === 5 && b === 1))][0]!), true],
   ["deleteFaces", (em) => ops.deleteFaces(em, new Set([4])), true],
   ["deleteFacesByVertices", (em) => ops.deleteFacesByVertices(em, new Set([5])), true],
   ["mergeAtCenter", (em) => ops.mergeAtCenter(em, new Set([5, 6])), true],
