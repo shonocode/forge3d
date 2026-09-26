@@ -64,6 +64,15 @@ export interface DeleteGeom {
  * flag goes with its edge.
  */
 export function deleteGeometry(data: MeshData, geom: DeleteGeom, context: DeleteContext): MeshData {
+  return deleteGeometryMapped(data, geom, context).data;
+}
+
+/** {@link deleteGeometry}, and which input vertex each output vertex is (`source[v]`). */
+export function deleteGeometryMapped(
+  data: MeshData,
+  geom: DeleteGeom,
+  context: DeleteContext,
+): { data: MeshData; source: number[] } {
   const count = data.positions.length / 3;
 
   // Every edge, from the faces and the wire edges, with the faces on it.
@@ -193,11 +202,14 @@ export function deleteGeometry(data: MeshData, geom: DeleteGeom, context: Delete
 
   const vertexLayers = carryVertexLayers(data, source);
   onlyEdgesOf(vertexLayers, polys, wire);
-  return defined({
-    positions: new Float32Array(positions),
-    polys,
-    ...vertexLayers,
-    edges: wire.length > 0 ? wire : undefined,
-    ...carryFaceLayers(data, sameFaces(faces, data)),
-  });
+  return {
+    data: defined({
+      positions: new Float32Array(positions),
+      polys,
+      ...vertexLayers,
+      edges: wire.length > 0 ? wire : undefined,
+      ...carryFaceLayers(data, sameFaces(faces, data)),
+    }),
+    source,
+  };
 }

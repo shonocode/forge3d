@@ -177,6 +177,7 @@ export {
   flipQuadTessellation,
   connectVertsNonplanar,
   subdivideEdgering,
+  type SubdivideEdgeringOptions,
   deleteFaces,
   deleteFacesByEdges,
   deleteFacesByVertices,
@@ -548,3 +549,6 @@ export * from "../tools/paint-layers";
 
 // Delete by context — bmesh.ops.delete (compat-backlog C3).
 export { deleteGeometry, type DeleteContext, type DeleteGeom } from "../tools/delete-geometry";
+
+// Bridge Edge Loops as the operator runs it (compat-backlog C4).
+export { bridgeSelection, type BridgeSelectionOptions } from "../tools/bridge-selection";

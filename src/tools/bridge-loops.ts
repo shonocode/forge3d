@@ -18,8 +18,7 @@
  * - open loops as well as closed ones, and the winding vote that makes the new
  *   faces agree with the faces already attached to the loops.
  *
- * What is not ported: `use_merge` (welding the loops together instead of
- * spanning them).
+ * `useMerge` welds the loops together instead (`bm_bridge_splice_loops`).
  *
  * **Layers** (compat-backlog A7): a new face's corners copy the rim corners
  * on its side (`bm_vert_loop_pair`) and its slot the example face's; the
@@ -32,10 +31,11 @@ import type { MeshData } from "../lib/mesh";
 import { f, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, type V3 } from "./blender-math";
 import {
   bmFromMesh, bmToMesh, bmLayers, liveEdges, liveFaces, diskEdges, otherVert, edgeExists, isBoundary, faceExists,
-  faceCreateVerts, faceCalcNormal, faceTriangulate, faceKill, edgeRotateCheck, loopsOfVert,
+  faceCreateVerts, faceCalcNormal, faceTriangulate, faceKill, edgeRotateCheck, loopsOfVert, faceLoops,
   type BM, type BV, type BE, type BF, type BL,
 } from "./bmesh-lite";
 import { bmBeautifyFill } from "./beautify-fill";
+import { weldByMap } from "./remove-doubles";
 
 export interface BridgeLoopsOptions {
   /** Bridge the last loop back to the first (three or more loops). Default false. */
@@ -44,6 +44,23 @@ export interface BridgeLoopsOptions {
   usePairs?: boolean;
   /** Rotate the second loop of each closed pair by this many vertices. Default 0. */
   twistOffset?: number;
+  /**
+   * Weld the loops together instead of spanning them (`use_merge`): each
+   * vertex of the first loop merges into its partner on the second, which
+   * moves to `mergeFactor` of the way from the first (0 at the first loop,
+   * 1 where it is). The loops must be the same length. `useCyclic` is
+   * ignored, as Blender ignores it. Default false.
+   */
+  useMerge?: boolean;
+  /** Where merged vertices land. Default 0.5. */
+  mergeFactor?: number;
+  /**
+   * Called with `edges.out` (without `useMerge`), as output vertex pairs:
+   * the edges of every face each pair made or found in place, less that
+   * pair's loop edges — its cross edges, including those of faces that were
+   * already there.
+   */
+  onEdgesOut?: (edges: [number, number][]) => void;
   /** Hash tables Blender used for the Mesh's edges — see `DecimateOptions.edgeTables`. */
   edgeTables?: number;
 }
@@ -135,8 +152,8 @@ function calcCenter(el: EdgeLoop): void {
   }
   el.co = co;
 }
-/** `BM_edgeloop_calc_normal`: Newell over the loop. */
-function calcNormal(el: EdgeLoop): void {
+/** `BM_edgeloop_calc_normal`: Newell over the loop. False when it is degenerate (the normal is then +Z). */
+function calcNormal(el: EdgeLoop): boolean {
   const n = [0, 0, 0];
   let prev = el.verts[el.verts.length - 1]!.co;
   for (const v of el.verts) {
@@ -146,8 +163,10 @@ function calcNormal(el: EdgeLoop): void {
     n[2] = f(n[2]! + f(f(prev[0]! - c[0]!) * f(prev[1]! + c[1]!)));
     prev = c;
   }
-  if (normalizeInPlace(n) < EDGELOOP_EPS) n[2] = 1;
+  const ok = normalizeInPlace(n) >= EDGELOOP_EPS;
+  if (!ok) n[2] = 1;
   el.no = n;
+  return ok;
 }
 /** `BM_edgeloop_calc_normal_aligned`. */
 function calcNormalAligned(el: EdgeLoop, align: V3): void {
@@ -162,6 +181,29 @@ function calcNormalAligned(el: EdgeLoop, align: V3): void {
   }
   if (normalizeInPlace(n) < EDGELOOP_EPS) n[2] = 1;
   el.no = n;
+}
+const asLoop = (verts: readonly { co: V3 }[]): EdgeLoop => ({
+  verts: verts as unknown as BV[], // only `co` is read
+  closed: false,
+  co: [0, 0, 0],
+  no: [0, 0, 0],
+});
+/** `BM_edgeloop_calc_center` of points in loop order (weighted as a closed loop, as Blender's is). */
+export function edgeloopCenter(verts: readonly { co: V3 }[]): V3 {
+  const el = asLoop(verts);
+  calcCenter(el);
+  return el.co;
+}
+/** `BM_edgeloop_calc_normal` of points in loop order, or null when it is degenerate. */
+export function edgeloopNormal(verts: readonly { co: V3 }[]): V3 | null {
+  const el = asLoop(verts);
+  return calcNormal(el) ? el.no : null;
+}
+/** `BM_edgeloop_calc_normal_aligned` of points in loop order. */
+export function edgeloopNormalAligned(verts: readonly { co: V3 }[], align: V3): V3 {
+  const el = asLoop(verts);
+  calcNormalAligned(el, align);
+  return el.no;
 }
 function flip(el: EdgeLoop): void {
   el.no = el.no.map((c) => -c);
@@ -253,7 +295,24 @@ function bestRotation(a: EdgeLoop, b: EdgeLoop): void {
 
 // ── bridge_loop_pair ───────────────────────────────────────────────────────
 
-function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): void {
+/** A merge: vertex `a` welds into `b`, which moves to `factor` of the way from `a`. */
+interface Splice {
+  a: BV;
+  b: BV;
+  factor: number;
+}
+
+function bridgeLoopPair(
+  bm: BM,
+  a: EdgeLoop,
+  b: EdgeLoop,
+  twistOffset: number,
+  merge: { factor: number; out: Splice[] } | null = null,
+  edgesOut: Set<BE> | null = null,
+): void {
+  const tagOut = (x: BF): void => {
+    if (edgesOut) for (const l of faceLoops(x)) edgesOut.add(l.e!);
+  };
   const eps = f(0.00001);
   const isClosed = a.closed && b.closed;
   let aLen = a.verts.length;
@@ -292,7 +351,7 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
   }
 
   // use_merge is false: make the faces point the right way.
-  {
+  if (!merge) {
     const no = [f(a.no[0]! + b.no[0]!), f(a.no[1]! + b.no[1]!), f(a.no[2]! + b.no[2]!)];
     if (dot(no, elDir) < 0) {
       flip(a);
@@ -336,10 +395,24 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
   if (isClosed) {
     bestRotation(a, b);
     if (twistOffset !== 0) {
+      // `BLI_rfindlink(lb_b, mod_i(twist_offset, len_b))` — counted from the
+      // **end**: the new first vertex is the (k+1)-th from last.
       const n = b.verts.length;
       const k = ((twistOffset % n) + n) % n;
-      b.verts = [...b.verts.slice(k), ...b.verts.slice(0, k)];
+      const first = n - 1 - k;
+      b.verts = [...b.verts.slice(first), ...b.verts.slice(0, first)];
     }
+  }
+
+  if (merge) {
+    // bm_bridge_splice_loops: the vertex data and the position move to the
+    // second loop's vertex, then `weld_verts` joins the first into it.
+    a.verts.forEach((va, i) => {
+      const vb = b.verts[i]!;
+      for (let k = 0; k < 3; k++) vb.co[k] = f(va.co[k]! + (vb.co[k]! - va.co[k]!) * merge.factor);
+      merge.out.push({ a: va, b: vb, factor: merge.factor });
+    });
+    return;
   }
 
   // the band
@@ -406,6 +479,8 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
         face.src = example.src;
       }
       face.tag = true;
+      // bm_face_edges_tag_out: a face made **or found** marks its edges.
+      tagOut(face);
     }
     if (na === 0) break;
     ia = na!;
@@ -435,7 +510,19 @@ function bridgeLoopPair(bm: BM, a: EdgeLoop, b: EdgeLoop, twistOffset: number): 
       (e) => edgeRotateCheck(e) && marked.has(e.l!.f) && marked.has(e.l!.rn!.f),
     );
     bmBeautifyFill(bm, edgeArray, { method: "angle", restrictTag: true });
+    // The band's faces, before and after the rotations, mark their edges.
+    for (const x of liveFaces(bm)) if (x.tag) tagOut(x);
   }
+
+  // … and then this pair's loop edges are unmarked (the expanded copy of
+  // the shorter loop repeats vertices, which join by no edge).
+  if (edgesOut)
+    for (const el of [a, b])
+      el.verts.forEach((v, k) => {
+        const kn = nextIndex(el, k);
+        const e = kn === null ? null : edgeExists(v, el.verts[kn]!);
+        if (e) edgesOut.delete(e);
+      });
 }
 
 /**
@@ -458,6 +545,10 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
   for (const el of loops) calcCenter(el);
   if (loops.length < 2) throw new Error("bridgeLoops: select at least two edge loops");
   if (opts.usePairs && loops.length % 2) throw new Error("bridgeLoops: select an even number of loops to bridge pairs");
+  if (opts.useMerge && loops.some((el) => el.verts.length !== loops[0]!.verts.length))
+    throw new Error("bridgeLoops: selected loops must have equal edge counts to merge");
+  const merge = opts.useMerge ? { factor: opts.mergeFactor ?? 0.5, out: [] as Splice[] } : null;
+  const edgesOut = opts.onEdgesOut && !merge ? new Set<BE>() : null;
   if (loops.length > 2) {
     if (opts.usePairs) for (const el of loops) calcNormal(el);
     loops = calcOrder(loops, !!opts.usePairs);
@@ -465,12 +556,16 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
   for (let i = 0; i < loops.length; i++) {
     let next = loops[i + 1];
     if (!next) {
-      if (opts.useCyclic && loops.length > 2) next = loops[0]!;
+      if (opts.useCyclic && !merge && loops.length > 2) next = loops[0]!;
       else break;
     }
-    bridgeLoopPair(bm, loops[i]!, next, opts.twistOffset ?? 0);
+    bridgeLoopPair(bm, loops[i]!, next, opts.twistOffset ?? 0, merge, edgesOut);
     if (opts.usePairs) i++;
   }
+  if (edgesOut && opts.onEdgesOut)
+    opts.onEdgesOut(
+      [...edgesOut].filter((e) => bm.edges.items[e.slot] === e).map((e) => [e.v1.index, e.v2.index] as [number, number]),
+    );
   // No vertex is made or removed, so the vertex groups and the old edges'
   // flags stand as they are; the corners and slots follow `src`.
   const out: MeshData = { ...bmToMesh(bm), ...bmLayers(bm, data) };
@@ -478,5 +573,39 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
   if (data.creases) out.creases = new Map(data.creases);
   if (data.seams) out.seams = new Set(data.seams);
   if (data.sharp) out.sharp = new Set(data.sharp);
-  return out;
+  if (!merge) return out;
+
+  // The splices, in order: each moves its second vertex's groups
+  // (`BM_data_interp_from_verts`), then every first vertex welds into its
+  // partner — through a chain, when a loop was merged into and then out of.
+  const into = new Map<number, number>();
+  for (const { a, b, factor } of merge.out) {
+    into.set(a.index, b.index);
+    // `layerInterp_mdeformvert`: each source's weight times its factor, a
+    // product of 0 not counted — a group nothing contributes to is dropped.
+    if (out.groups)
+      for (const g of out.groups.values()) {
+        let sum = 0;
+        let any = false;
+        for (const [v, w] of [
+          [a.index, f(1 - factor)],
+          [b.index, factor],
+        ] as const) {
+          const x = g.get(v);
+          if (x === undefined) continue;
+          const p = f(x * w);
+          if (p === 0) continue;
+          sum = f(sum + p);
+          any = true;
+        }
+        if (any) g.set(b.index, sum);
+        else g.delete(b.index);
+      }
+  }
+  const root = (v: number): number => {
+    let t = v;
+    for (let guard = 0; into.has(t) && guard < into.size + 1; guard++) t = into.get(t)!;
+    return t;
+  };
+  return weldByMap(out, root, "bmesh");
 }

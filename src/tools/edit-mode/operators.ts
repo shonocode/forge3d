@@ -3,7 +3,8 @@ import { interpWeightsPoly } from "./interp";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { selectEdgeRing } from "./edge-walk";
-import { subdivideEdges, type SubdivideFalloff } from "./refine";
+import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine";
+import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
 import { bevelMesh } from "../bevel/bevel";
 import type { MeshData } from "../../lib/mesh";
 
@@ -3111,9 +3112,22 @@ export function connectVertsNonplanar(
   return made;
 }
 
+/** `subdivide_edgering`'s shape options. The defaults are `bmesh.ops`'s — the cuts stay on the edges. */
+export interface SubdivideEdgeringOptions {
+  /** `interp_mode`. Default `LINEAR`; Bridge Edge Loops and Subdivide Edge-Ring in the UI use `PATH`. */
+  interpolation?: EdgeringInterpolation;
+  /** `smooth`: how far the splines reach. Default 0 (the UI's is 1). */
+  smooth?: number;
+  /** `profile_shape`. Default `SMOOTH`. */
+  profileShape?: SubdivideFalloff;
+  /** `profile_shape_factor`: how much the middle loops shrink (−) or swell (+). Default 0. */
+  profileShapeFactor?: number;
+}
+
 /**
  * Cut across the faces a ring of edges runs through — Blender's
- * `bmesh.ops.subdivide_edgering(edges=, cuts=)`.
+ * `bmesh.ops.subdivide_edgering(edges=, cuts=, interp_mode=, smooth=,
+ * profile_shape=, profile_shape_factor=)`, `bmo_subdivide_edgering.cc`.
  *
  * The many-ring form of `loopCut`. Given the edges that run *along* a tube,
  * every quad they cross is cut `cuts` times perpendicular to them, so an
@@ -3121,10 +3135,26 @@ export function connectVertsNonplanar(
  * vertices and 24 faces become 56 and 48 at `cuts` 1.
  *
  * **Scope: quads crossed by exactly two of the selected edges, opposite each
- * other.** That is what a ring is; a face touched by one selected edge, or by
- * two adjacent ones, has no "across" to cut and is refused rather than cut
- * somewhere plausible. `subdivideEdges` is the operator for cutting edges
- * without deciding what the faces should become.
+ * other, and triangles with two** (the fan a bridge between loops of
+ * different lengths makes — the cuts step towards the corner the two share,
+ * `bm_face_slice`). A face with one ring edge, or with more than four sides,
+ * is not crossed: its ring edges gain the cuts and it grows, as Blender's
+ * `BM_edge_split` leaves it — that is where an open ring ends. Only the
+ * edges joining a pair of rim loops that the ring joins at every vertex are
+ * cut (every such edge, selected or not); no such pair throws, where Blender
+ * cancels with an error and changes nothing. Each piece of a cut edge keeps
+ * its crease, seam and sharp flag. A quad with
+ * two **adjacent** ring edges (or three, or four) is refused: Blender slices
+ * it from its first rim edge, which is not a ring's cut. `subdivideEdges` is
+ * the operator for cutting edges without deciding what the faces should
+ * become.
+ *
+ * Then the new vertices move (`bm_edgering_pair_interpolate`,
+ * `edgering-interp.ts`): each pair of rim loops — the edges of the cut
+ * faces that are not in the ring — is joined by a spline between their
+ * centres (`PATH`) or one per edge (`SURFACE`), and a profile can shrink
+ * or swell the loops in between. `LINEAR` with no profile leaves them on the
+ * edges. `subdivide-edgering*` parity rows.
  *
  * Returns the faces it produced.
  */
@@ -3132,6 +3162,7 @@ export function subdivideEdgering(
   em: EditMesh,
   selectedEdges: ReadonlySet<number>,
   cuts: number,
+  opts: SubdivideEdgeringOptions = {},
 ): Set<number> {
   const n = Math.max(0, Math.floor(cuts));
   if (n === 0 || selectedEdges.size === 0) return new Set();
@@ -3144,6 +3175,8 @@ export function subdivideEdgering(
 
   const polys = toPolygons(em);
   const P = em.positions;
+  // The rim loops and their pairs, before anything is cut; Blender's errors.
+  const plan = edgeringPlan(P, polys, chosen);
   const positions: number[] = Array.from(P);
   let nextV = em.vertices.length;
   // Where each cut sits, for the UV / colour layers (`BM_edge_split`).
@@ -3168,18 +3201,52 @@ export function subdivideEdgering(
       );
     }
     cutsOn.set(key, made);
+    // BM_edge_split copies the edge's crease, seam and sharp flag to each piece.
+    carryEdgeFlags(em, a < b ? a : b, a < b ? b : a, made);
     return a < b ? made : [...made].reverse();
   };
 
   const out: number[][] = [];
   const made = new Set<number>();
-  for (const poly of polys) {
+  for (let f = 0; f < polys.length; f++) {
+    const poly = polys[f]!;
     const hits: number[] = [];
     for (let i = 0; i < poly.length; i++)
-      if (chosen.has(seamKey(poly[i]!, poly[(i + 1) % poly.length]!))) hits.push(i);
+      if (plan.cut.has(seamKey(poly[i]!, poly[(i + 1) % poly.length]!))) hits.push(i);
 
     if (hits.length === 0) {
       out.push([...poly]);
+      continue;
+    }
+    if (!plan.faceOut.has(f)) {
+      // Not a face the ring crosses (Blender's FACE_OUT wants four sides or
+      // fewer and two ring edges): its cut edges are split and it grows.
+      const grown: number[] = [];
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        grown.push(a);
+        if (hits.includes(i)) grown.push(...cutRun(a, b));
+      }
+      made.add(out.length);
+      out.push(grown);
+      continue;
+    }
+    if (poly.length === 3 && hits.length === 2) {
+      // Two ring edges meet at a corner: the rim is the third edge, p–q, and
+      // the cuts step from it towards the corner r.
+      const rimAt = [0, 1, 2].find((i) => !hits.includes(i))!;
+      const p = poly[rimAt]!;
+      const q = poly[(rimAt + 1) % 3]!;
+      const rr = poly[(rimAt + 2) % 3]!;
+      const alongP = [p, ...cutRun(p, rr)];
+      const alongQ = [q, ...cutRun(q, rr)];
+      for (let k = 0; k < n; k++) {
+        made.add(out.length);
+        out.push([alongP[k]!, alongQ[k]!, alongQ[k + 1]!, alongP[k + 1]!]);
+      }
+      made.add(out.length);
+      out.push([alongP[n]!, alongQ[n]!, rr]);
       continue;
     }
     const opposite =
@@ -3206,6 +3273,12 @@ export function subdivideEdgering(
     }
   }
 
+  edgeringInterpolate(positions, plan, cutRun, n, {
+    interpolation: opts.interpolation ?? "LINEAR",
+    smooth: opts.smooth ?? 0,
+    profileShape: opts.profileShape ?? "SMOOTH",
+    profileShapeFactor: opts.profileShapeFactor ?? 0,
+  });
   rebuildPolygons(em, new Float32Array(positions), out, { origins });
   return made;
 }

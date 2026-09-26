@@ -706,7 +706,7 @@ function vnormalize(a: number[]): number {
 const vreflect = (v: readonly number[], n: readonly number[]): Vec => vsub(v, vscale(n, 2 * vdot(v, n)));
 
 /** `bmesh_subd_falloff_calc`. */
-function falloffCalc(f: SubdivideFalloff, val: number): number {
+export function falloffCalc(f: SubdivideFalloff, val: number): number {
   switch (f) {
     case "SMOOTH":
       return 3 * val * val - 2 * val * val * val;
@@ -817,7 +817,7 @@ function smoothCutPoint(
  * sharp flag the whole edge had, and drop the old key. Blender's
  * `BM_edge_split` copies the edge's attributes to the new half the same way.
  */
-function carryEdgeFlags(em: EditMesh, a: number, b: number, made: readonly number[]): void {
+export function carryEdgeFlags(em: EditMesh, a: number, b: number, made: readonly number[]): void {
   const key = seamKey(a, b);
   const chain = [a, ...made, b];
   const pieces: string[] = [];
