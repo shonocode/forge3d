@@ -160,6 +160,18 @@ export interface BevelMeshOptions {
    * `invert_vertex_group`). The weights choose edges only; the offset is not
    * scaled (compat-backlog B5).
    */
+  /**
+   * `affect`: `"EDGES"` (default) bevels edges; `"VERTICES"` cuts each chosen
+   * vertex off instead — every edge at it gets a boundary point `offset`
+   * along it, and the corner is closed by a polygon (one segment) or a patch
+   * (compat-backlog C1). Which vertices: every vertex with `edges: "all"`
+   * (or the default angle limit, which vertices ignore, as in Blender), those
+   * weighing 0.5 or more with `{ vertexGroup }` — and then the offset is
+   * also scaled by the vertex's weight — or `vertices`.
+   */
+  affect?: "EDGES" | "VERTICES";
+  /** With `affect: "VERTICES"`: exactly these vertices (`bmesh.ops.bevel`'s `geom`). */
+  vertices?: Iterable<number>;
   edges?:
     | "all"
     | { angle: number }
@@ -299,6 +311,8 @@ interface VMesh {
 
 interface BevVert {
   v: BV;
+  /** `bv->offset`: the bevel's offset, scaled by the vertex's weight on a vertex bevel. */
+  offset: number;
   edgecount: number;
   selcount: number;
   wirecount: number;
@@ -337,6 +351,12 @@ interface Params {
   weightOf: ((e: BE) => number) | null;
   /** The corner layers and vertex groups, as `BM_mesh_bevel` carries them. */
   layers: LayerState;
+  /** `affect_type == BEVEL_AFFECT_VERTICES`. */
+  affectVertices: boolean;
+  /** `affect_vertices_odd`: vertices, with an odd segment count. */
+  affectVerticesOdd: boolean;
+  /** With a vertex group on a vertex bevel: its raw weight scales each vertex's offset. */
+  vertexOffsetWeight: ((v: BV) => number) | null;
 }
 
 /** One corner's values: its UV and its colour (0..1, held to bytes), where the mesh has them. */
@@ -567,7 +587,7 @@ function boundvertRepFace(v: BoundVert): BF | null {
  * polygon a zero-area UV polygon is not a candidate (`is_bad_uv_poly`).
  */
 function frepForCenterPoly(p: Params, bv: BevVert): BF | null {
-  const considerAll = bv.selcount === 1;
+  const considerAll = bv.selcount === 1 || p.affectVerticesOdd;
   const choices: BF[] = [];
   let any: BF | null = null;
   for (const e of bv.edges) {
@@ -603,24 +623,35 @@ const closerEdge = (co: readonly number[], e1: BE, e2: BE): BE =>
   distSqToSegment(co, e1.v1.co, e1.v2.co) < distSqToSegment(co, e2.v1.co, e2.v2.co) ? e1 : e2;
 
 /** `isect_point_poly_v2`: crossing-number point-in-polygon. */
+/** `isect_point_poly_v2`, in float as Blender runs it. */
 function isectPointPoly2(pt: readonly number[], verts: readonly (readonly number[])[]): boolean {
+  const ff = Math.fround;
   let isect = false;
   for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
     const vi = verts[i]!;
     const vj = verts[j]!;
-    if (vi[1]! > pt[1]! !== vj[1]! > pt[1]! && pt[0]! < ((vj[0]! - vi[0]!) * (pt[1]! - vi[1]!)) / (vj[1]! - vi[1]!) + vi[0]!)
+    if (
+      vi[1]! > pt[1]! !== vj[1]! > pt[1]! &&
+      pt[0]! < ff(ff(ff(ff(vj[0]! - vi[0]!) * ff(pt[1]! - vi[1]!)) / ff(vj[1]! - vi[1]!)) + vi[0]!)
+    )
       isect = !isect;
   }
   return isect;
 }
 
-/** `BM_face_point_inside_test`. */
+/**
+ * `BM_face_point_inside_test`, in float: the projection (`mul_v2_m3v3`) and
+ * the crossing test. A vertex bevel's boundary points lie **on** the face's
+ * edges, so whether one counts as inside is decided by the rounding — in
+ * double it went the other way on `gridUV`'s rim and moved the centre
+ * polygon's UVs by up to 1e-3 (compat-backlog C1).
+ */
 function facePointInside(f: BF, co: readonly number[]): boolean {
+  const ff = Math.fround;
   const rows = axisRows(copy(f.no), false);
-  return isectPointPoly2(
-    projectRows(rows, copy(co)),
-    faceLoops(f).map((l) => projectRows(rows, l.v.co)),
-  );
+  const proj = (a: readonly number[]): number[] =>
+    rows.map((m) => ff(ff(ff(m[0]! * ff(a[0]!)) + ff(m[1]! * ff(a[1]!))) + ff(m[2]! * ff(a[2]!))));
+  return isectPointPoly2(proj(co), faceLoops(f).map((l) => proj(l.v.co)));
 }
 
 /** `find_face_internal_boundverts`: up to three BoundVerts inside `f`'s projection. */
@@ -1256,6 +1287,16 @@ function setProfileParams(p: Params, bv: BevVert, bndv: BoundVert): void {
     pro.planeNo = [0, 0, 0];
     pro.projDir = [0, 0, 0];
     doLinearInterp = false;
+  } else if (p.affectVertices) {
+    // A vertex bevel's profile bulges toward the vertex it cuts off.
+    pro.start = copy(start);
+    pro.middle = copy(bv.v.co);
+    pro.end = copy(end);
+    pro.superR = p.proSuperR;
+    pro.planeCo = [0, 0, 0];
+    pro.planeNo = [0, 0, 0];
+    pro.projDir = [0, 0, 0];
+    doLinearInterp = false;
   }
   if (doLinearInterp) {
     pro.superR = PRO_LINE_R;
@@ -1492,6 +1533,55 @@ function setBoundVertSeams(bv: BevVert): void {
   } while ((v = v.next) !== bv.vmesh.boundstart);
 }
 
+/** `build_boundary_vertex_only`: one boundary point on each edge, `offset_l` along it. */
+function buildBoundaryVertexOnly(p: Params, bv: BevVert, construct: boolean): void {
+  const vm = bv.vmesh;
+  const efirst = bv.edges[0]!;
+  let e = efirst;
+  do {
+    const co = slideDist(e, bv.v, e.offsetL);
+    if (construct) {
+      const v = addNewBoundVert(vm, co);
+      v.efirst = v.elast = e;
+      e.leftv = e.rightv = v;
+    } else e.leftv!.nv.co = copy(co);
+  } while ((e = e.next) !== efirst);
+  if (construct) {
+    setBoundVertSeams(bv);
+    // Odd segments: a seam at the vertex itself counts too.
+    if (p.affectVerticesOdd && !bv.anySeam && !contigAroundVert(p, bv.v)) bv.anySeam = true;
+    if (vm.count === 2) vm.kind = MeshKind.NONE;
+    else if (p.seg === 1) vm.kind = MeshKind.POLY;
+    else vm.kind = MeshKind.ADJ;
+  }
+}
+
+/** `contig_ldata_around_vert`: do all the corners at `v` hold the same UV and colour? */
+function contigAroundVert(p: Params, v: BV): boolean {
+  const L = p.layers;
+  if (!L.hasUv && !L.hasColor) return true;
+  const loops = loopsOfVert(v);
+  const first = loops[0];
+  if (!first) return true;
+  const a = L.corners[first.src];
+  for (const l of loops.slice(1)) {
+    const b = L.corners[l.src];
+    if (L.hasUv) {
+      const u = a?.uv ?? [0, 0];
+      const w = b?.uv ?? [0, 0];
+      if ((u[0]! - w[0]!) ** 2 + (u[1]! - w[1]!) ** 2 >= 0.00001) return false;
+    }
+    if (L.hasColor) {
+      const u = a?.col ?? [1, 1, 1, 1];
+      const w = b?.col ?? [1, 1, 1, 1];
+      let d = 0;
+      for (let k = 0; k < 4; k++) d += (Math.round(u[k]! * 255) - Math.round(w[k]! * 255)) ** 2;
+      if (d >= 0.001) return false;
+    }
+  }
+  return true;
+}
+
 /** `build_boundary_terminal_edge`: one beveled edge at the vertex. */
 function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, construct: boolean): void {
   const vm = bv.vmesh;
@@ -1567,6 +1657,10 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
  */
 function buildBoundary(p: Params, bv: BevVert, construct: boolean): void {
   if (bv.edgecount <= 1) return;
+  if (p.affectVertices) {
+    buildBoundaryVertexOnly(p, bv, construct);
+    return;
+  }
   const vm = bv.vmesh;
   const efirst = nextBev(bv, null)!;
   if (bv.selcount === 1) {
@@ -2168,6 +2262,7 @@ function edgeFaceAngleSigned(e: BE, fallback: number): number {
 
 /** `tri_corner_test`: −1 no, 0 maybe, 1 yes. */
 function triCornerTest(p: Params, bv: BevVert): number {
+  if (p.affectVertices) return -1;
   if (bv.vmesh.count !== 3) return 0;
   const offset = bv.edges[0]!.offsetL;
   let totang = 0;
@@ -2476,7 +2571,8 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
   const frepBeatsNext: boolean[] = [];
   const centerVerts: BV[] = new Array(nBndv);
   const centerFaces: (BF | null)[] = new Array(nBndv).fill(null);
-  if (odd) {
+  const oddEdges = odd && !p.affectVertices;
+  if (oddEdges) {
     centerFrep = frepForCenterPoly(p, bv);
     for (let i = 0; i < nBndv; i++) {
       const inext = (i + 1) % nBndv;
@@ -2491,10 +2587,10 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
     const inext = bndv.next.index;
     const f = repFaces[i]!;
     const f2 = repFaces[inext]!;
-    const fc = odd ? (frepBeatsNext[i] ? f : f2) : null;
-    const e = bndv.ebev;
-    const eprev = bndv.prev.ebev;
-    const enext = bndv.next.ebev;
+    const fc = oddEdges ? (frepBeatsNext[i] ? f : f2) : null;
+    const e = p.affectVertices ? bndv.efirst : bndv.ebev;
+    const eprev = p.affectVertices ? bndv.prev.efirst : bndv.prev.ebev;
+    const enext = p.affectVertices ? bndv.next.efirst : bndv.next.ebev;
     const bme = e ? e.e : null;
     const bmeprev = eprev ? eprev.e : null;
     const bmenext = enext ? enext.e : null;
@@ -2509,7 +2605,19 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
         // Each corner interpolates in `fr` and may snap to `se` first.
         let fr: (BF | null)[] = [f, f, f, f];
         let se: (BE | null)[] = [null, null, null, null];
-        if (odd) {
+        if (p.affectVertices) {
+          fr = [f2, f2, f2, f2];
+          if (j < k) {
+            if (k === ns2 && j === ns2 - 1) {
+              se[2] = bndv.next.efirst!.e;
+              se[3] = bme;
+            }
+          } else if (j === k) {
+            // Only one edge at the vertex's boundary point.
+            se[0] = se[2] = bme;
+            if (!e!.isSeam) fr[3] = f;
+          }
+        } else if (odd) {
           se = snapEdgesForVmeshVert(
             i, j, k, ns, ns2, nBndv,
             eprev?.isSeam ? bmeprev : null,
@@ -2535,10 +2643,10 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
       }
   } while ((bndv = bndv.next) !== vm.boundstart);
 
-  if (odd) {
+  if (oddEdges) {
     const frep = bv.anySeam ? frepForCenterPoly(p, bv) : null;
     bevCreateNgon(p, centerVerts, centerFaces, frep, FKind.VERT, centerSnaps, bv.v);
-  }
+  } else if (odd) buildCenterNgon(p, bv);
 }
 
 /** `snap_edge_for_center_vmesh_vert`. */
@@ -2660,6 +2768,41 @@ function bevelBuildTrifan(p: Params, bv: BevVert): void {
   }
 }
 
+/**
+ * `bevel_vert_two_edges`: a vertex bevel at a vertex with two edges — the
+ * profile's points between the two boundary points, and the edges between
+ * them where no face will be rebuilt to make them.
+ */
+function bevelVertTwoEdges(p: Params, bv: BevVert): void {
+  const vm = bv.vmesh;
+  let v1 = meshVert(vm, 0, 0, 0).v!;
+  let v2 = meshVert(vm, 1, 0, 0).v!;
+  const ns = vm.seg;
+  if (ns > 1) {
+    const pro = vm.boundstart!.profile;
+    pro.superR = p.proSuperR;
+    pro.start = copy(v1.co);
+    pro.end = copy(v2.co);
+    pro.middle = copy(bv.v.co);
+    pro.planeCo = [0, 0, 0];
+    pro.planeNo = [0, 0, 0];
+    pro.projDir = [0, 0, 0];
+    for (let k = 1; k < ns; k++) {
+      meshVert(vm, 0, 0, k).co = getProfilePoint(p, pro, k, ns);
+      createMeshBMVert(p, vm, 0, 0, k, bv.v);
+    }
+    meshVert(vm, 0, 0, ns).co = copy(v2.co);
+    for (let k = 1; k < ns; k++) copyMeshVert(vm, 1, 0, ns - k, 0, 0, k);
+  }
+  if (loopsOfVert(bv.v).length === 0) {
+    for (let k = 0; k < ns; k++) {
+      v1 = meshVert(vm, 0, 0, k).v!;
+      v2 = meshVert(vm, 0, 0, k + 1).v!;
+      if (!edgeExists(v1, v2)) edgeCreate(p.bm, v1, v2);
+    }
+  }
+}
+
 /** `build_vmesh`: the BMVerts of the boundary and the patch inside it. */
 function buildVmesh(p: Params, bv: BevVert): void {
   const vm = bv.vmesh;
@@ -2725,6 +2868,7 @@ function buildVmesh(p: Params, bv: BevVert): void {
 
   switch (vm.kind) {
     case MeshKind.NONE:
+      if (n === 2 && p.affectVertices) bevelVertTwoEdges(p, bv);
       break;
     case MeshKind.POLY:
       bevelBuildPoly(p, bv);
@@ -2863,26 +3007,29 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
   let totWire = 0;
   let firstBme: BE | null = null;
   const tagged = new Set<BE>();
+  const vo = p.affectVertices;
   for (const bme of diskEdges(v)) {
     const faceCount = edgeFaceCount(bme);
-    if (p.selected.has(bme)) {
+    if (p.selected.has(bme) && !vo) {
       nsel++;
       firstBme ??= bme;
     }
     if (faceCount === 1) firstBme = bme;
-    if (faceCount > 0) totEdges++;
+    if (faceCount > 0 || vo) totEdges++;
     if (isWire(bme)) {
       totWire++;
-      tagged.add(bme);
+      // Edge bevels leave wire edges out of the fan; vertex bevels keep them.
+      if (!vo) tagged.add(bme);
     }
   }
   firstBme ??= v.e;
-  if (nsel === 0) {
+  if ((nsel === 0 && !vo) || (totEdges < 2 && vo)) {
     p.tagged.delete(v);
     return null;
   }
   const bv: BevVert = {
     v,
+    offset: p.offset,
     edgecount: totEdges,
     selcount: nsel,
     wirecount: totWire,
@@ -2895,7 +3042,7 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
   findBevelEdgeOrder(bv, firstBme!, tagged);
 
   for (const e of bv.edges) {
-    if (p.selected.has(e.e)) {
+    if (p.selected.has(e.e) && !vo) {
       e.isBev = true;
       e.seg = p.seg;
     } else {
@@ -2917,13 +3064,47 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
     }
   }
 
+  // A vertex bevel: the vertex's weight scales its offset; WIDTH and DEPTH
+  // measure against the mean of the edge directions.
+  let vertAxis: V3 = [0, 0, 0];
+  if (vo) {
+    if (p.vertexOffsetWeight) bv.offset *= p.vertexOffsetWeight(v);
+    if (p.offsetType === "WIDTH" || p.offsetType === "DEPTH")
+      for (const e of bv.edges) {
+        const d = sub(v.co, otherVert(e.e, v).co);
+        normalize(d);
+        vertAxis = add(vertAxis, d);
+      }
+  }
   for (let i = 0; i < totEdges; i++) {
     const e = bv.edges[i]!;
     e.next = bv.edges[(i + 1) % totEdges]!;
     e.prev = bv.edges[(i + totEdges - 1) % totEdges]!;
   }
   for (const e of bv.edges) {
-    if (e.isBev) {
+    if (vo && !e.isBev) {
+      const d = sub(v.co, otherVert(e.e, v).co);
+      switch (p.offsetType) {
+        case "OFFSET":
+        case "ABSOLUTE":
+          e.offsetLSpec = bv.offset;
+          break;
+        case "WIDTH": {
+          const z = Math.abs(2 * Math.sin(angle(vertAxis, d)));
+          e.offsetLSpec = z < BEVEL_EPSILON ? 0.01 * p.offset : p.offset / z;
+          break;
+        }
+        case "DEPTH": {
+          const z = Math.abs(Math.cos(angle(vertAxis, d)));
+          e.offsetLSpec = z < BEVEL_EPSILON ? 0.01 * p.offset : p.offset / z;
+          break;
+        }
+        case "PERCENT":
+          e.offsetLSpec = (edgeLength(e.e) * bv.offset) / 100;
+          break;
+      }
+      e.offsetRSpec = e.offsetLSpec;
+    } else if (e.isBev) {
       switch (p.offsetType) {
         case "OFFSET":
           e.offsetLSpec = p.offset;
@@ -3434,13 +3615,26 @@ function geometryCollideOffset(p: Params, eb: EdgeHalf): number {
 }
 
 /** `bevel_limit_offset`. */
+/** `vertex_collide_offset`: where two vertex bevels on one edge would meet. */
+function vertexCollideOffset(p: Params, ea: EdgeHalf): number {
+  const noCollide = p.offset + 1e6;
+  if (p.offset === 0) return noCollide;
+  const ka = ea.offsetLSpec / p.offset;
+  const eb = findOtherEndEdgeHalf(p, ea).eh;
+  const kb = eb ? eb.offsetLSpec / p.offset : 0;
+  const kab = ka + kb;
+  if (kab <= 0) return noCollide;
+  return edgeLength(ea.e) / kab;
+}
+
 function bevelLimitOffset(p: Params, verts: BV[]): void {
   let limited = p.offset;
   for (const bmv of verts) {
     if (!p.tagged.has(bmv)) continue;
     const bv = p.vertHash.get(bmv);
     if (!bv) continue;
-    for (const eh of bv.edges) limited = Math.min(geometryCollideOffset(p, eh), limited);
+    for (const eh of bv.edges)
+      limited = Math.min(p.affectVertices ? vertexCollideOffset(p, eh) : geometryCollideOffset(p, eh), limited);
   }
   if (limited < p.offset) {
     const factor = limited / p.offset;
@@ -3548,8 +3742,11 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       uvFaces: new Map(),
       uvVertMap: hasUv ? new Map() : null,
     },
+    affectVertices: opts.affect === "VERTICES",
+    affectVerticesOdd: opts.affect === "VERTICES" && segments % 2 === 1,
+    vertexOffsetWeight: null,
   };
-  p.offsetAdjust = p.offsetType !== "PERCENT" && p.offsetType !== "ABSOLUTE";
+  p.offsetAdjust = !p.affectVertices && p.offsetType !== "PERCENT" && p.offsetType !== "ABSOLUTE";
   if (profile >= 0.95) p.proSuperR = PRO_SQUARE_R;
   else if (Math.abs(p.proSuperR - PRO_CIRCLE_R) < 1e-4) p.proSuperR = PRO_CIRCLE_R;
   else if (Math.abs(p.proSuperR - PRO_LINE_R) < 1e-4) p.proSuperR = PRO_LINE_R;
@@ -3593,10 +3790,36 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       if (isManifold(e)) p.selected.add(e);
     }
   }
-  for (const e of p.selected) {
-    p.tagged.add(e.v1);
-    p.tagged.add(e.v2);
-  }
+  if (p.affectVertices) {
+    // A vertex bevel chooses vertices: every one (limit NONE — and ANGLE,
+    // which the modifier ignores for vertices), those at 0.5 or more in a
+    // vertex group, whose raw weight then scales the offset, or a list.
+    p.selected.clear();
+    // An edge list or bevel weights choose edges, which a vertex bevel has no
+    // use for — refused rather than read as "every vertex" (found by review).
+    if (!opts.vertices && typeof sel === "object" && sel !== null && !("vertexGroup" in sel) && !("angle" in sel))
+      throw new Error(
+        'bevelMesh: affect "VERTICES" chooses vertices — pass `vertices`, a `{ vertexGroup }`, or "all"; not an edge list or edge weights.',
+      );
+    const all = bm.verts.filter((v): v is BV => !!v);
+    if (opts.vertices) {
+      for (const i of opts.vertices) {
+        const v = bm.verts[i];
+        if (!v) throw new Error(`bevelMesh: no vertex ${i}`);
+        p.tagged.add(v);
+      }
+    } else if (typeof sel === "object" && sel !== null && "vertexGroup" in sel) {
+      const vg = vertexGroupWeights(data, sel.vertexGroup, sel.invert);
+      const wOf = (v: BV): number => (!vg ? 1 : vg.empty ? (sel.invert ? 1 : 0) : vg.weights[v.index]!);
+      for (const v of all) if (wOf(v) >= 0.5) p.tagged.add(v);
+      const raw = vertexGroupWeights(data, sel.vertexGroup, false);
+      if (raw && !raw.empty) p.vertexOffsetWeight = (v) => raw.weights[v.index]!;
+    } else for (const v of all) p.tagged.add(v);
+  } else
+    for (const e of p.selected) {
+      p.tagged.add(e.v1);
+      p.tagged.add(e.v2);
+    }
 
   const result = (): BevelResult => {
     const mesh = bmToMesh(bm);
@@ -3623,7 +3846,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const origVert = bm.verts.filter((v): v is BV => !!v).map((v) => (v.index < n0 ? v.index : -1));
     return { mesh, faceKind, offset: p.offset, origVert };
   };
-  if (p.offset <= 0 || p.selected.size === 0) return result();
+  if (p.offset <= 0 || (p.affectVertices ? p.tagged.size === 0 : p.selected.size === 0)) return result();
 
   setProfileSpacing(p);
   if (p.seg > 1) p.proSpacing.fullness = findProfileFullness(p);
@@ -3656,7 +3879,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const bv = p.vertHash.get(v);
     if (bv) buildVmesh(p, bv);
   }
-  for (const e of edges) if (p.selected.has(e)) bevelBuildEdgePolygons(p, e);
+  if (!p.affectVertices) for (const e of edges) if (p.selected.has(e)) bevelBuildEdgePolygons(p, e);
 
   const rebuilt = new Set<BF>();
   for (const v of verts) {

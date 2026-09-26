@@ -90,3 +90,36 @@ describe("bevelMesh", () => {
     expect(() => bevelMesh(unitCube(), { offset: 0.1, vmeshMethod: "CUTOFF" })).toThrow(/not ported/);
   });
 });
+
+describe("vertex bevel (affect VERTICES, compat-backlog C1)", () => {
+  const unitCube = (): MeshData => ({
+    positions: new Float32Array([
+      -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+      -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+    ]),
+    polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+  });
+
+  it("cuts every corner of a cube off with a triangle", () => {
+    const { mesh } = bevelMesh(unitCube(), { offset: 0.1, affect: "VERTICES", edges: "all" });
+    expect(mesh.positions.length / 3).toBe(24);
+    expect(mesh.polys).toHaveLength(6 + 8);
+    expect(mesh.polys.filter((p) => p.length === 3)).toHaveLength(8);
+  });
+
+  it("refuses an edge list for a vertex bevel instead of taking every vertex", () => {
+    expect(() => bevelMesh(unitCube(), { offset: 0.1, affect: "VERTICES", edges: [[0, 1]] })).toThrow(/VERTICES/);
+  });
+
+  it("puts each boundary point `offset` along its edge", () => {
+    const { mesh } = bevelMesh(unitCube(), { offset: 0.1, affect: "VERTICES", vertices: [0] });
+    // Vertex 0 is gone; three points 0.1 from (-0.5, -0.5, -0.5) take its place.
+    const near: number[] = [];
+    for (let v = 0; v < mesh.positions.length / 3; v++) {
+      const d = Math.hypot(mesh.positions[v * 3]! + 0.5, mesh.positions[v * 3 + 1]! + 0.5, mesh.positions[v * 3 + 2]! + 0.5);
+      if (d < 0.2) near.push(d);
+    }
+    expect(near).toHaveLength(3);
+    for (const d of near) expect(d).toBeCloseTo(0.1, 6);
+  });
+});
