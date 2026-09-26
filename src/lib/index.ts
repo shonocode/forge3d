@@ -552,3 +552,6 @@ export { deleteGeometry, type DeleteContext, type DeleteGeom } from "../tools/de
 
 // Bridge Edge Loops as the operator runs it (compat-backlog C4).
 export { bridgeSelection, type BridgeSelectionOptions } from "../tools/bridge-selection";
+
+// Spin over any geometry, about any axis (compat-backlog C5).
+export { spin, type SpinOptions, type SpinGeom } from "../tools/spin";
