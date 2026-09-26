@@ -545,3 +545,6 @@ export * from "../tools/key-retime";
 export * from "../tools/paint-brush";
 export * from "../tools/paint-channels";
 export * from "../tools/paint-layers";
+
+// Delete by context — bmesh.ops.delete (compat-backlog C3).
+export { deleteGeometry, type DeleteContext, type DeleteGeom } from "../tools/delete-geometry";
