@@ -5,15 +5,20 @@
 **コードから呼べるモデリングライブラリ**と、作ったものを目で確かめるためのブラウザ GUI。
 Babylon.js と TypeScript で作っている。
 
-**状態：保守フェーズ（2026-09-25〜）。** ライブラリは、Blender 5.1.1 と同じだと言っている所は
-すべて実測で一致させてある（推測ではなく、同じ入力を両方に通して比べている）。GUI は React で
-作り直した。これからの仕事は、使って出てきた不具合の修正と小さな追加。
+ライブラリの多くは Blender 5.1.1 の移植で、「Blender と一致」と書いているものは、同じ入力を両方に
+通して比べた結果だ（推測ではない）。いまは新機能より、使って出てきた不具合の修正を優先している。
 
-## ライブラリ
+## 使い方
 
-公開 API は [`src/lib/index.ts`](src/lib/index.ts)。ここから出ているものはすべてヘッドレスで、
-DOM・エディタの状態・シーンを持たない。想定している使い手は、ビルドスクリプト、アセットの
-パイプライン、モデリングのコードを書くエージェント。
+npm には出していない。GitHub から入れる：
+
+```bash
+npm install github:shonocode/forge3d
+```
+
+パッケージは TypeScript のソース（`src/lib/index.ts`）をそのまま指している。Vite などのバンドラや
+`tsx` からはそのまま読める。素の `node` は `node_modules` の中の `.ts` を実行しないので、
+その場合はバンドラを通すこと。
 
 ```ts
 import { meshFromData, meshToData, extrudeFaces, catmullClark } from "forge3d";
@@ -24,18 +29,22 @@ const { positions: p, polys: f, creases } = meshToData(em);
 const smooth = catmullClark(p, f, 2, creases);
 ```
 
-Blender 5.1.1 と比べた範囲（詳細は chiikawa-soul 側の文書）：
+公開 API は [`src/lib/index.ts`](src/lib/index.ts) に全部ある。どれもヘッドレスで、DOM・エディタの
+状態・シーンを持たない。想定している使い手は、ビルドスクリプト、アセットのパイプライン、
+モデリングのコードを書くエージェント。
 
-| Blender の面 | 状態 |
+## Blender との一致
+
+| Blender の機能 | 状態 |
 |---|---|
-| `bmesh.ops`（80 個） | 76 個が Blender と一致。1 個は実装済みだが比べようがない（`create_vert`）、3 個は型変換で対応物が無い |
+| `bmesh.ops`（80 個） | 76 個が一致。1 個は実装済みだが比べようがない（`create_vert`）。3 個は型の変換で、対応するものが無い |
 | `bpy.ops.mesh` 専用の操作 | 15 / 15 |
-| モディファイア（メッシュ用 36 個） | 31 個あり、すべて一致。残りは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
-| 手続きテクスチャ | Clouds・Wood・Marble・Magic・Blend・Stucci・Musgrave・Voronoi・Distorted Noise（Noise は Blender が時計で種を取るので不可） |
+| モディファイア（メッシュ用 36 個） | 31 個。無いのは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
+| 手続きテクスチャ | Clouds・Wood・Marble・Magic・Blend・Stucci・Musgrave・Voronoi・Distorted Noise（Noise は Blender が時計から種を取るので比べられない） |
 
-「一致」は**パリティの行**があるという意味 ― 同じ入力を Blender と forge3d の両方に通し、
-頂点ごと・面ごとに比べている。比較の仕組みと各行の記録は chiikawa-soul の
-`tools/modeling/parity/` にある。
+ここでの「一致」は、**測った引数と入力で**、頂点・面・層（UV・色・法線など）まで Blender と
+同じ出力が出たという意味だ。比べ方、基準、まだ合っていないオプションの一覧は
+[`docs/parity.md`](docs/parity.md) にある。
 
 ## GUI
 
@@ -45,21 +54,24 @@ Babylon のビューポートの上に React の画面（`src/app/`）。編集�
 - **ショートカットは Blender と同じ**（`src/keymap.ts`）
 - **道具・タブ・パネルの各セクションに、平易な解説が付いている。** 文面は
   `src/app/guide/guide.ts` の1か所に書き、画面のヘルプと単体のマニュアル `MANUAL.html` の
-  両方をそこから作る（`npm run manual`、コミットはしない）
+  両方をそこから作る（`npm run manual`）
 
-## コマンド
+GitHub Pages に公開している：<https://shonocode.github.io/forge3d/>
+
+## 開発
 
 ```bash
+git clone https://github.com/shonocode/forge3d.git
+cd forge3d
 npm install
 npm run dev        # http://localhost:5173
 npm run test       # Vitest（node 環境。React の部品は jsdom）
-npm run build      # tsc && vite build ― tsc は型エラーでも exit 0 なので、出力を読むこと
+npm run build      # tsc && vite build
 npm run manual     # MANUAL.html を解説データから作る
 npm run preview    # ビルドしてローカルで配信
 ```
 
-GitHub Pages には push のたびに `.github/workflows/deploy.yml` が出す
-（`/forge3d/` の下に配信）。
+`main` に push するたびに `.github/workflows/deploy.yml` が GitHub Pages に出す。
 
 ## ライセンス
 
@@ -72,15 +84,3 @@ GitHub Pages には push のたびに `.github/workflows/deploy.yml` が出す
 実際の意味：forge3d は自由に使い・変え・配ってよい。forge3d のコードを取り込んだプログラムを
 配るなら、それも GPL で配ることになる。forge3d で**作った**メッシュやファイルはあなたのもの
 ― ライセンスがかかるのはコードで、その出力ではない。
-
-## 文書の置き場
-
-chiikawa-soul リポジトリ側（このリポジトリはその中にチェックアウトされている）：
-
-- `docs/architecture/forge3d.md` ― 入口。状態、安全に変える手順、未解決のこと
-- `docs/architecture/forge3d-blender-api-matrix.md`、`forge3d-blender-surface-map.md` ―
-  Blender との対応表
-- `docs/architecture/adr-012` / `013` / `014` ― boolean、remesh、React の GUI
-- `docs/architecture/archive/forge3d/` ― 開発中のロードマップと記録
-
-このリポジトリの作業規約は [`CLAUDE.md`](CLAUDE.md)。
