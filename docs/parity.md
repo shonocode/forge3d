@@ -62,7 +62,7 @@ README の「一致」は **same の行がすべて通っている**という意
 
 | | |
 |---|---|
-| 行 | **585**（全体の回帰で 562 行、そのあと足した 23 行は個別に一致） |
+| 行 | **593**（全体の回帰ですべて一致、2026-09-28） |
 | `bmesh.ops`（80 個） | 76 個が一致。`create_vert` は実装済みだが、面ゼロの出力は比較器が何とでも一致と言うので行が作れない。3 個は型の変換で、forge3d に対応するものが無い |
 | `bpy.ops.mesh` 専用の操作 | 15 / 15 |
 | モディファイア（メッシュ用 36 個） | 31 個。無いのは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
@@ -72,11 +72,11 @@ README の「一致」は **same の行がすべて通っている**という意
 **行が緑なのは、その引数・その入力で一致したということだ。** 同じ操作の別のオプションや既定値が
 合っているとは言っていない。2026-09-25 に、Blender のソース（引数と既定値）・forge3d の関数・行の
 3つを突き合わせる監査をして、範囲の狭いものを洗い出した。そのうち大きいもの（頂点ベベル、
-Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect）は、その後に移植して行を足した。
+Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merge by Distance の bpy 既定）は、その後に移植して行を足した。
 
 **残っている既知の差**（2026-09-28）：
 
-- **既定値・オプションが未対応、または未測定**：Merge by Distance（bpy）、Triangulate の方式、
+- **既定値・オプションが未対応、または未測定**：Merge by Distance の Sharp Edges、Triangulate の方式、
   Edge Split、Dissolve Limited の `delimit`、Inset のオプション、Grid Fill のレール形、
   Subdivide Edge Ring、Subdivide（bpy の既定）、Laplacian Smooth の `preserve_volume`、
   Bevel の残りのオプション、Weighted Normal の face influence、Displace の画像テクスチャ、
