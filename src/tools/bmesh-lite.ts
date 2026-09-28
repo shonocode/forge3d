@@ -407,6 +407,123 @@ export function edgeFacePair(e: BE): [BF, BF] | null {
   const p = loopPair(e);
   return p ? [p[0].f, p[1].f] : null;
 }
+/** `BM_face_find_double`: another face over the same edges, walked either way from the first loop's edge. */
+export function faceFindDouble(face: BF): BF | null {
+  const lf = face.first!;
+  for (let li = lf.rn!; li !== lf; li = li.rn!) {
+    if (li.f.len !== face.len) continue;
+    const init = li;
+    let la = lf;
+    let lb = li;
+    const forward = li.v === lf.v;
+    do {
+      if (la.e !== lb.e) break;
+      la = forward ? la.next : la.prev;
+      lb = lb.next;
+    } while (lb !== init);
+    if (lb === init) return li.f;
+  }
+  return null;
+}
+
+/**
+ * `bmesh_kernel_loop_reverse`: turn a face round. Each loop keeps its vertex
+ * and its data; the edges move to the loop that now precedes them.
+ */
+export function loopReverse(face: BF): void {
+  // The in-place version (not the `#if 0` remove / append one), so the
+  // radial cycles keep their order.
+  const lFirst = face.first!;
+  let ePrev = lFirst.prev.e!;
+  let prn = lFirst.prev.rn!;
+  let prp = lFirst.prev.rp!;
+  let prevBoundary = prn === prn.rn;
+  let l = lFirst;
+  do {
+    const eIter = l.e!;
+    const irn = l.rn!;
+    const irp = l.rp!;
+    const iterBoundary = irn === irn.rn;
+    if (prevBoundary) {
+      l.rn = l;
+      l.rp = l;
+    } else {
+      l.rn = prn;
+      l.rp = prp;
+      prn.rp = l;
+      prp.rn = l;
+    }
+    if (eIter.l === l) eIter.l = l.next;
+    l.e = ePrev;
+    const next = l.next;
+    l.next = l.prev;
+    l.prev = next;
+    ePrev = eIter;
+    prn = irn;
+    prp = irp;
+    prevBoundary = iterBoundary;
+  } while ((l = l.prev) !== lFirst);
+}
+
+/**
+ * `BM_vert_collapse_edge(e_kill, v_kill, do_del, kill_degenerate_faces,
+ * kill_duplicate_faces)` — remove a vertex between two edges
+ * (`bmesh_kernel_join_edge_kill_vert`): `e_kill` goes, the other edge now
+ * runs to `e_kill`'s far end, each face loses its corner at the vertex. With
+ * fac 1 (as `BM_vert_collapse_faces` calls it), the corner left at the far end
+ * carries that end's data. An existing edge between the two ends is spliced
+ * in; faces left with two corners, and faces now repeating another, go.
+ * Returns the kept edge, or null when the vertex does not have two edges.
+ */
+export function joinEdgeKillVert(bm: BM, eKill: BE, vKill: BV): BE | null {
+  if (!vertInEdge(eKill, vKill)) return null;
+  const disk = diskEdges(vKill);
+  if (disk.length !== 2) return null;
+  const eOld = diskNext(eKill, vKill);
+  const vTarget = otherVert(eKill, vKill);
+  const vOld = otherVert(eOld, vKill);
+  if (vertInEdge(eOld, vKill) && vertInEdge(eOld, vTarget)) return null;
+
+  // Loop data first (`CustomData_bmesh_interp` at fac 1).
+  for (const l of radialLoops(eKill)) if (l.v === vTarget && l.next.v === vKill) l.next.src = l.src;
+
+  const eSplice = edgeExists(vTarget, vOld);
+  // `bmesh_disk_vert_replace(e_old, v_target, v_kill)`.
+  diskRemove(eOld, vKill);
+  if (eOld.v1 === vKill) {
+    eOld.v1 = vTarget;
+    eOld.d1.next = eOld.d1.prev = null;
+  } else {
+    eOld.v2 = vTarget;
+    eOld.d2.next = eOld.d2.prev = null;
+  }
+  diskAppend(eOld, vTarget);
+  diskRemove(eKill, vTarget);
+
+  const degenerate: BF[] = [];
+  const dupCandidates: BF[] = [];
+  for (const l of radialLoops(eKill)) {
+    if (l.next.v === vKill) l.next.v = vTarget;
+    l.next.prev = l.prev;
+    l.prev.next = l.next;
+    if (l.f.first === l) l.f.first = l.next;
+    l.f.len--;
+    if (l.f.len < 3) degenerate.push(l.f);
+    else dupCandidates.push(l.f);
+  }
+  eKill.l = null;
+  diskRemove(eKill, vKill);
+  poolFree(bm.edges, eKill);
+  vKill.e = null;
+  bm.verts[vKill.index] = null;
+
+  if (eSplice) edgeSplice(bm, eOld, eSplice);
+  // Both lists are stacks in the C: popped last first.
+  for (const face of degenerate.reverse()) if (face.first) faceKill(bm, face);
+  for (const face of dupCandidates.reverse()) if (face.first && faceFindDouble(face)) faceKill(bm, face);
+  return eOld;
+}
+
 /** `BM_face_exists`: a face over exactly these verts, in either winding. */
 export function faceExists(varr: BV[]): BF | null {
   const v0 = varr[0]!;
@@ -468,7 +585,14 @@ function faceCreateNgon(bm: BM, v1: BV, v2: BV, edges: BE[], example: BF): BF | 
 }
 
 /** `BM_faces_join`. */
-export function facesJoin(bm: BM, faces: BF[], doDel: boolean): BF | null {
+/**
+ * `BM_faces_join`. With `reuseDouble` (the C's `r_double == nullptr`, as
+ * `BM_faces_join_pair` is called by Limited Dissolve), a joined face that
+ * repeats an existing one is dropped and the existing one returned, keeping
+ * its own data (#144383). Off by default: the other callers here were
+ * measured without it.
+ */
+export function facesJoin(bm: BM, faces: BF[], doDel: boolean, reuseDouble = false): BF | null {
   if (faces.length === 1) return faces[0]!;
   const jf = new Set(faces);
   const eFlag = new Set<BE>();
@@ -517,14 +641,20 @@ export function facesJoin(bm: BM, faces: BF[], doDel: boolean): BF | null {
         }
       }
     }
-  const fNew = edges.length ? faceCreateNgon(bm, v1!, v2!, edges, faces[0]!) : null;
+  let fNew = edges.length ? faceCreateNgon(bm, v1!, v2!, edges, faces[0]!) : null;
   if (!fNew) return null;
-  // Each new loop takes the data of the joined face's loop on its edge, at
-  // its vertex (`BM_faces_join`, "copy over loop data").
-  for (const l of faceLoops(fNew)) {
-    let l2 = l.rn!;
-    while (l2 !== l && !jf.has(l2.f)) l2 = l2.rn!;
-    if (l2 !== l) l.src = (l2.v !== l.v ? l2.next : l2).src;
+  const existing = reuseDouble ? faceFindDouble(fNew) : null;
+  if (existing) {
+    faceKill(bm, fNew);
+    fNew = existing;
+  } else {
+    // Each new loop takes the data of the joined face's loop on its edge, at
+    // its vertex (`BM_faces_join`, "copy over loop data").
+    for (const l of faceLoops(fNew)) {
+      let l2 = l.rn!;
+      while (l2 !== l && !jf.has(l2.f)) l2 = l2.rn!;
+      if (l2 !== l) l.src = (l2.v !== l.v ? l2.next : l2).src;
+    }
   }
   if (doDel) {
     for (const e of delEdges) edgeKill(bm, e);

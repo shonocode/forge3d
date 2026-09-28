@@ -411,9 +411,10 @@ export {
 // ── Decimation ────────────────────────────────────────────────────────────
 // The other direction: a cage built for modelling turned into something a
 // game can afford. Blender's Decimate has three modes and the other two are
-// already above -- Planar is `dissolveLimit` (measured: the modifier and
-// `bmesh.ops.dissolve_limit` agree), Un-Subdivide is deliberately unwritten.
+// already above -- Planar is `decimatePlanar` (the same procedure as
+// `dissolveLimit`, with the modifier's defaults and early outs), Un-Subdivide is `unsubdivide`.
 export { decimateCollapse, type DecimateOptions } from "../tools/decimate";
+export { dissolveLimitMesh, decimatePlanar, type DissolveLimitMeshOptions, type DecimatePlanarOptions, type DissolveDelimit } from "../tools/dissolve-limit";
 export { triangulate, triangulateModifier, type TriangulateOptions, type QuadMethod, type NgonMethod } from "../tools/triangulate";
 export { bridgeLoops, type BridgeLoopsOptions } from "../tools/bridge-loops";
 

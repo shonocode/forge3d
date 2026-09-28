@@ -13,6 +13,8 @@
  * Pure and headless — Vitest-pinned.
  */
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { meshFromData, meshToData } from "../../lib/mesh";
+import { dissolveLimitMesh, type DissolveDelimit } from "../dissolve-limit";
 
 /** Shared by the three: what came out, for callers that want to assert on it. */
 export interface DissolveReport {
@@ -333,61 +335,56 @@ export function dissolveEdges(
 /** Options for {@link dissolveLimit}. */
 export interface DissolveLimitOptions {
   /**
-   * Blender's `angle_limit`, in **radians**. An edge whose two faces meet at
-   * less than this is dissolved.
+   * Blender's `angle_limit`, in **radians** (clamped to π/2). Faces whose
+   * normals are less than this apart are joined, and vertices whose edges
+   * turn by less are removed.
    *
    * Strictly less: measured, a limit of exactly 0 leaves a perfectly flat grid
    * alone, and 0.01 merges it into one quad.
    */
   angleLimit: number;
+  /**
+   * `delimit` — edges that are never dissolved. Default none, as
+   * `bmesh.ops.dissolve_limit`; Blender's Limited Dissolve in the editor and
+   * the Decimate modifier default to `["normal"]`.
+   */
+  delimit?: Iterable<DissolveDelimit>;
+  /** `use_dissolve_boundaries`: remove every input vertex left between two edges. */
+  useDissolveBoundaries?: boolean;
+  /** The input vertices (default all). */
+  verts?: Iterable<number>;
+  /** The input edges as vertex pairs (default all). */
+  edges?: Iterable<readonly [number, number]>;
 }
 
 /**
  * Dissolve every edge flat enough not to be carrying shape — Blender's
- * `bmesh.ops.dissolve_limit(angle_limit=)`, "Limited Dissolve".
+ * `bmesh.ops.dissolve_limit(angle_limit=)`, "Limited Dissolve", and the
+ * Decimate modifier's Planar mode. The procedure is Blender's
+ * `BM_mesh_decimate_dissolve_ex`, see {@link dissolveLimitMesh}: faces joined
+ * across their flattest edge first, one at a time, then the vertices left
+ * between two edges.
  *
  * This is the one that earns its keep on generated geometry: a room built from
  * boxes and lathes arrives with thousands of coplanar quads that exist because
- * of how it was made, not because of what it looks like. Limited dissolve
- * removes exactly those and leaves every edge that turns a corner.
+ * of how it was made, not because of what it looks like.
  *
- * Vertices left with two edges go too, matching Blender — measured on a 3x1
- * grid, which comes back as a single quad rather than a 8-vertex one.
+ * Unlike the other dissolves here, vertices that end up on nothing are
+ * removed and the rest renumbered, as Blender does — the mesh is rebuilt.
  */
 export function dissolveLimit(
   em: EditMesh,
   opts: DissolveLimitOptions,
   report: DissolveReport = blank(),
 ): DissolveReport {
-  const polys = toPolygons(em);
-  const P = em.positions;
-
-  const normals: Array<[number, number, number]> = polys.map((poly) => {
-    let nx = 0;
-    let ny = 0;
-    let nz = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]! * 3;
-      const b = poly[(i + 1) % poly.length]! * 3;
-      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
-      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
-      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
-    }
-    const len = Math.hypot(nx, ny, nz);
-    return len < 1e-20 ? [0, 0, 0] : [nx / len, ny / len, nz / len];
-  });
-
-  const flat = new Set<number>();
-  for (let he = 0; he < em.halfEdges.length; he++) {
-    const h = em.halfEdges[he]!;
-    if (h.twin < 0 || h.twin < he) continue; // each edge once
-    const n1 = normals[h.face]!;
-    const n2 = normals[em.halfEdges[h.twin]!.face]!;
-    const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
-    if (Math.acos(dot) < opts.angleLimit) flat.add(he);
-  }
-
-  return dissolveEdges(em, flat, { useVerts: true }, report);
+  const faces = em.faces.length;
+  const verts = em.vertices.length;
+  const out = dissolveLimitMesh(meshToData(em), opts);
+  const source = em.source;
+  Object.assign(em, meshFromData(out), { source });
+  report.merged += faces - em.faces.length;
+  report.vertsRemoved += verts - em.vertices.length;
+  return report;
 }
 
 /**
