@@ -138,6 +138,8 @@ export function validateModifierEntry(raw: unknown): import("../state").Modifier
     case "triangulate": {
       const quads = ["beauty", "fixed", "alternate", "shortEdge", "longEdge"] as const;
       const ngons = ["beauty", "earClip"] as const;
+      // A missing or unknown value reads as "beauty", the value every file saved before
+      // 2026-09-28 used; a new modifier starts at "shortEdge", Blender's default (modifiers.ts).
       const quadMethod = quads.find((q) => q === m.quadMethod) ?? "beauty";
       const ngonMethod = ngons.find((q) => q === m.ngonMethod) ?? "beauty";
       return { id, type: "triangulate", enabled: m.enabled, quadMethod, ngonMethod };

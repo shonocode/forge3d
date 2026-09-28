@@ -30,7 +30,7 @@ import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
 import { arrayMesh, mirrorModifier, weldMesh } from "./mesh-ops";
 import { solidifyModifier } from "./solidify-modifier";
 import { decimateCollapse } from "./decimate";
-import { triangulate } from "./triangulate";
+import { triangulateModifier } from "./triangulate";
 
 /** Distance within which render vertices are the same surface point. */
 const WELD_DIST = 1e-6;
@@ -429,7 +429,7 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
       return out;
     }
     case "triangulate":
-      return triangulate(s, { quadMethod: mod.quadMethod, ngonMethod: mod.ngonMethod });
+      return triangulateModifier(s, { quadMethod: mod.quadMethod, ngonMethod: mod.ngonMethod });
     case "weld":
       return weldMesh(s, mod.distance);
   }

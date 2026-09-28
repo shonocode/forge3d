@@ -92,7 +92,8 @@ export function addModifier(mesh: AbstractMesh, type: ModifierType): Modifier | 
       mod = { id, type: "smooth", enabled: true, factor: 0.5, repeat: 1 };
       break;
     case "triangulate":
-      mod = { id, type: "triangulate", enabled: true, quadMethod: "beauty", ngonMethod: "beauty" };
+      // Blender's Triangulate modifier defaults: quads on the shortest diagonal (not bmesh.ops' BEAUTY).
+      mod = { id, type: "triangulate", enabled: true, quadMethod: "shortEdge", ngonMethod: "beauty" };
       break;
     case "weld":
       mod = { id, type: "weld", enabled: true, distance: 0.001 };

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { MeshData } from "../lib/mesh";
-import { triangulate } from "./triangulate";
+import { triangulate, triangulateModifier } from "./triangulate";
 
 /**
  * `triangulate` — `BM_face_triangulate`. The agreement with Blender is the
@@ -86,5 +86,47 @@ describe("triangulate carries UVs", () => {
     const out = triangulate(src);
     expect(out.uvs).toHaveLength(out.polys.length);
     out.polys.forEach((p, f) => p.forEach((v, i) => expect(out.uvs![f]![i]).toEqual(uvOfVertex[v])));
+  });
+});
+
+describe("triangulateModifier (the Triangulate modifier's defaults)", () => {
+  // A long thin quad: 0-2 is the short diagonal, 1-3 the long one.
+  const quad = (): MeshData => ({
+    positions: Float32Array.from([0, 0, 0, 4, 0, 0, 5, 1, 0, 1, 1, 0]),
+    polys: [[0, 1, 2, 3]],
+  });
+  const diagonal = (m: MeshData): string => {
+    const [a, b] = m.polys as number[][];
+    const shared = a!.filter((v) => b!.includes(v)).sort();
+    return shared.join("-");
+  };
+
+  it("splits quads on the shortest diagonal by default", () => {
+    expect(diagonal(triangulateModifier(quad()))).toBe("1-3");
+    expect(diagonal(triangulate(quad(), { quadMethod: "longEdge" }))).toBe("0-2");
+  });
+
+  it("leaves faces below min_vertices whole", () => {
+    const pentagonAndQuad: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1.5, 1, 0, 0.5, 1.8, 0, -0.5, 1, 0, 3, 0, 0, 3, 1, 0]),
+      polys: [[0, 1, 2, 3, 4], [1, 5, 6, 2]],
+    };
+    const out = triangulateModifier(pentagonAndQuad, { minVertices: 5 });
+    expect(out.polys.filter((p) => p.length === 4)).toHaveLength(1);
+    expect(out.polys.filter((p) => p.length === 3)).toHaveLength(3);
+    // Below the RNA minimum of 4 it behaves as 4.
+    expect(triangulateModifier(pentagonAndQuad, { minVertices: 2 }).polys.every((p) => p.length === 3)).toBe(true);
+  });
+});
+
+describe("triangulateModifier drops repeated triangles (faces_double)", () => {
+  // A rhombus, short diagonal 1–3, twice: the second quad's triangles repeat the first's.
+  it("keeps one copy of each triangle", () => {
+    const stacked: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, -0.3, 2, 0, 0, 1, 0, 0.3]),
+      polys: [[0, 3, 2, 1], [1, 2, 3, 0]],
+    };
+    expect(triangulateModifier(stacked).polys).toHaveLength(2);
+    expect(triangulate(stacked, { quadMethod: "shortEdge" }).polys).toHaveLength(4);
   });
 });

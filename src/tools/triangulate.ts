@@ -229,6 +229,20 @@ export interface TriangulateOptions {
   quadMethod?: QuadMethod;
   /** How a face of five or more corners is split. Default `"beauty"`. */
   ngonMethod?: NgonMethod;
+  /**
+   * `min_vertices` (the modifier's; default and minimum 4): faces with fewer
+   * corners are left whole (`BM_mesh_triangulate`'s `face->len >= min_vertices`)
+   * — 5 keeps the quads and cuts only the n-gons.
+   */
+  minVertices?: number;
+  /**
+   * Drop a new triangle whose three corners already form a triangle — one
+   * that was there, or one an earlier face (in face order) was cut into.
+   * The Triangulate modifier does this (`BM_mesh_triangulate`'s
+   * `faces_double`, found by `BM_face_triangulate` on the radial cycle);
+   * `bmesh.ops.triangulate` only reports them, so the default is false.
+   */
+  dropDuplicates?: boolean;
 }
 
 /**
@@ -296,13 +310,20 @@ export function ngonTriangles(co: readonly V3[], normal: V3, method: NgonMethod)
 export function triangulate(data: MeshData, opts: TriangulateOptions = {}): MeshData {
   const quadMethod = opts.quadMethod ?? "beauty";
   const ngonMethod = opts.ngonMethod ?? "beauty";
+  // RNA's range starts at 4; below it nothing changes (triangles are whole already).
+  const minVertices = Math.max(4, Math.floor(opts.minVertices ?? 4));
   const P = data.positions;
   const at = (v: number): V3 => [f(P[v * 3]!), f(P[v * 3 + 1]!), f(P[v * 3 + 2]!)];
   const polys: number[][] = [];
   const sources: FaceSource[] = [];
+  // Triangles by their corner set, for `dropDuplicates`: every triangle of
+  // the input is there from the start, as in the BMesh.
+  const triKey = (t: readonly number[]): string => [...t].sort((a, b) => a - b).join(",");
+  const tris3 = new Set<string>();
+  if (opts.dropDuplicates) for (const p of data.polys) if (p.length === 3) tris3.add(triKey(p));
   for (let fi = 0; fi < data.polys.length; fi++) {
     const p = data.polys[fi]!;
-    if (p.length <= 3) {
+    if (p.length <= 3 || p.length < minVertices) {
       polys.push([...p]);
       sources.push({ face: fi, corners: p.map((_, i) => i) });
       continue;
@@ -316,6 +337,11 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
       tris = ngonTriangles(co, n, ngonMethod);
     }
     for (const t of tris) {
+      if (opts.dropDuplicates) {
+        const key = triKey(t.map((k) => p[k]!));
+        if (tris3.has(key)) continue;
+        tris3.add(key);
+      }
       polys.push(t.map((k) => p[k]!));
       // Each triangle corner is a corner of the source face, so every corner
       // layer is too, and the face's material (`BM_face_triangulate` copies).
@@ -325,4 +351,26 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
   // Every layer (compat-backlog A3 / A5): vertices and edge flags as they
   // were, corner layers and materials from each triangle's source face.
   return { ...withPositions(data, Float32Array.from(P)), polys, ...carryFaceLayers(data, sources) };
+}
+
+/**
+ * Blender's **Triangulate modifier** (`MOD_triangulate.cc`) — the same
+ * `BM_mesh_triangulate` as {@link triangulate}, with the modifier's defaults
+ * (read from Blender 5.1.1, `probe-triangulate-defaults.py`): quads on the
+ * **shortest diagonal** (`SHORTEST_DIAGONAL`, not `bmesh.ops`' `BEAUTY`),
+ * n-gons `BEAUTY`, `min_vertices` 4 — and a new triangle that repeats one
+ * already there is dropped (`dropDuplicates`).
+ *
+ * Custom normals are carried as vectors, which is the modifier with
+ * `keep_custom_normals` on. With it off (the default) Blender keeps each
+ * corner's two stored angles and reads them in the triangle's own normal
+ * space, so a corner of a bent quad turns (compat-backlog C29).
+ *
+ * ```ts
+ * triangulateModifier(mesh);                           // the modifier as added
+ * triangulateModifier(mesh, { minVertices: 5 });       // n-gons only
+ * ```
+ */
+export function triangulateModifier(data: MeshData, opts: TriangulateOptions = {}): MeshData {
+  return triangulate(data, { quadMethod: "shortEdge", ngonMethod: "beauty", minVertices: 4, dropDuplicates: true, ...opts });
 }
