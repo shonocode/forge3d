@@ -1,7 +1,8 @@
 # FORGE 3D
 
-**保守フェーズ（2026-09-25〜）。** ライブラリは Blender 5.1.1 と実測で一致させ終え、GUI は
-React で作り直した。これからの仕事は、使って出てきた不具合の修正と小さな追加。
+**保守フェーズ。** ライブラリは Blender 5.1.1 の移植で、一致と言えるのはパリティ行が測った
+引数と入力の範囲だけ。範囲の外で分かっている差は chiikawa-soul の
+`docs/architecture/forge3d-compat-backlog.md` にあり、1件ずつ移植している。GUI は React。
 状態・手順・未解決の入口は chiikawa-soul の `docs/architecture/forge3d.md`。
 
 ## Quick Reference
@@ -20,8 +21,8 @@ npm run preview      # ビルドしてローカルで配信（vite preview）
 **GitHub Pages**（`.github/workflows/deploy.yml`、push のたび）は forge3d **単体**で `npm ci` する。
 ふだんは chiikawa-soul の workspaces（root のロックファイル）経由で入れるので、この
 `package-lock.json` は勝手には更新されない ― 依存を変えたら単体の clone で
-`rm package-lock.json && npm install --package-lock-only` して作り直すこと（2026-09 に vite 7 のまま
-残っていて、Pages のビルドが毎回落ちていた）。`/forge3d/` 配下への配信は `vite.config.ts` が
+`rm package-lock.json && npm install --package-lock-only` して作り直すこと（古いロックのままだと、
+Actions の `npm ci` が古い版を入れて Pages のビルドが落ちる）。`/forge3d/` 配下への配信は `vite.config.ts` が
 `GITHUB_ACTIONS` を見て切り替える。
 
 ## 構成
@@ -69,15 +70,14 @@ made from **one place** (ADR-014):
   `{key:<action>}` marker is filled from `src/keymap.ts`.
 - `src/keymap.ts` — the keys (Blender's).
 - `MANUAL.html` is **generated** with `npm run manual` and **not committed**
-  (gitignored since 2026-09-25) — generate it when you want to read or share it.
+  (gitignored) — generate it when you want to read or share it.
 
 When the code changes what a user sees or does — a new operator, a changed
 default, a rebound key, a new tab or section — change `guide.ts` in the same
 commit. `guide.test.ts` holds the guide to the code
 (every marker names a bound key, the modifier list is the real one, …).
 
-A tutorial for the new screen does not exist yet (the old
-`TUTORIAL-KURIMANJU.html` was removed with the old screen).
+There is no tutorial for the GUI yet.
 
 ## Testing
 
