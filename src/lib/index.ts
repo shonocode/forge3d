@@ -168,6 +168,7 @@ export {
   reverseFaces,
   extrudeDiscreteFaces,
   connectVertPair,
+  connectVertPath,
   splitEdges,
   offsetEdgeLoops,
   duplicateFaces,

@@ -1165,9 +1165,24 @@ describe("reverseFaces / extrudeDiscreteFaces / connectVertPair / splitEdges / o
     expect(em.vertices).toHaveLength(9);
   });
 
-  it("connectVertPair refuses corners that are already neighbours", () => {
+  it("connectVertPair leaves corners that are already neighbours alone", () => {
+    // The walk reaches 1 along the edge, and connect_verts has nothing to
+    // cut between neighbours — Blender returns the edge and changes nothing.
     const em = grid2();
-    expect(() => connectVertPair(em, 0, 1)).toThrow(/share no face|already joined/);
+    expect(connectVertPair(em, 0, 1).size).toBe(0);
+    expect(em.faces).toHaveLength(4);
+  });
+
+  it("connectVertPair cuts across faces, splitting the edges it crosses", () => {
+    // 0 at (0,0,0) to 5 at (1,0,2) on the 2×2 grid: the plane crosses edge 1–4
+    // at its middle, so one new vertex, and the two faces it runs through
+    // are each cut in two.
+    const em = grid2();
+    const made = connectVertPair(em, 0, 5);
+    expect(em.vertices).toHaveLength(10);
+    expect(made.size).toBe(4);
+    expect(em.faces).toHaveLength(6);
+    expect(Array.from(em.positions.slice(27, 30)).map((x) => +x.toFixed(6))).toEqual([0.5, 0, 1].map((x) => +x.toFixed(6)));
   });
 
   it("splitEdges tears a vertex only when its faces stop being reachable", () => {

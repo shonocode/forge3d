@@ -14,7 +14,8 @@ licences, and where the ported code lives:
   that licence permits)
 - **Source** <https://projects.blender.org/blender/blender>, tag `v5.1.1`
 - **Ported into** most of `src/tools/`: the `bmesh` operators and their
-  helpers (`bmesh/operators/bmo_*.cc`, `bmesh/intern/`), the mesh modifiers
+  helpers (`bmesh/operators/bmo_*.cc`, `bmesh/intern/`), the steps the
+  edit-mode operators add around them (`editors/mesh/editmesh_*.cc`), the mesh modifiers
   (`modifiers/intern/MOD_*.cc`), mesh remapping (`blenkernel/intern/mesh_remap.cc`,
   `mesh_mapping.cc`), the exact boolean solver (`blenlib/intern/mesh_intersect.cc`,
   `mesh_boolean.cc`), the Remesh modifier's dual contouring

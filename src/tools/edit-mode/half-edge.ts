@@ -429,6 +429,14 @@ export interface LayerCarry {
    * the edge (`bm_extrude_copy_face_loop_attributes`).
    */
   faces?: ReadonlyArray<ExplicitFace | undefined>;
+  /**
+   * The operator holds custom normals as **vectors** around its work, as
+   * Blender's editor operators do (`BM_custom_loop_normals_to_vector_layer`
+   * before, `..._from_vector_layer` after): an interpolated corner is then
+   * the weighted sum of its sources, normalised (`layerInterp_normal`),
+   * instead of dropping the layer. `vert-connect-path-normals`.
+   */
+  normalsAsVectors?: boolean;
 }
 
 const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
@@ -649,7 +657,7 @@ function carryLayers(
   // an interpolated one drops the layer rather than invent a direction.
   const interpolated = !failed && sources.some((f) => f.some((s) => s.length > 1 || (s.length === 1 && s[0]![2] !== 1)));
   for (const k of live) {
-    if (failed || (k === "loopNormals" && interpolated)) {
+    if (failed || (k === "loopNormals" && interpolated && !carry?.normalsAsVectors)) {
       em[k] = undefined;
       continue;
     }
@@ -670,6 +678,10 @@ function carryLayers(
         // (`layerInterp_mloopcol`) — mean-value weights go negative outside
         // a face and would otherwise push it below 0 (`inset-individual-layers`).
         if (k === "loopColors") for (let j = 0; j < width; j++) out[j] = Math.min(1, Math.max(0, out[j]!));
+        if (k === "loopNormals" && src.length > 1) {
+          const len = Math.hypot(...out);
+          if (len > 0) for (let j = 0; j < width; j++) out[j] = out[j]! / len;
+        }
         return out;
       }),
     );

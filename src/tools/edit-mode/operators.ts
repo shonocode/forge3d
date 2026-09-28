@@ -2218,64 +2218,8 @@ export function extrudeDiscreteFaces(
   return out;
 }
 
-/**
- * Cut a face in two by joining two of its vertices — Blender's
- * `bmesh.ops.connect_vert_pair(verts=)`.
- *
- * The two vertices have to share a face and must not already be neighbours in
- * it: adjacent corners are joined by an edge already, and asking for that edge
- * again would be asking for a zero-width face.
- *
- * **Scope: one face.** Blender's version will route a path across several
- * faces when the pair does not share one, and that is a different (and much
- * larger) operation — a path search with tie-breaks nobody here has measured.
- * A pair with no common face is refused rather than approximated, so the
- * caller finds out instead of receiving a mesh that quietly did nothing.
- *
- * Returns the two faces the original became.
- */
-export function connectVertPair(em: EditMesh, a: number, b: number): Set<number> {
-  if (a === b) throw new Error(`connectVertPair: ${a} and ${b} are the same vertex`);
+export { connectVertPair, connectVertPath } from "./connect-pair";
 
-  const polys = toPolygons(em);
-  let target = -1;
-  let ia = -1;
-  let ib = -1;
-  for (let f = 0; f < polys.length; f++) {
-    const poly = polys[f]!;
-    const pa = poly.indexOf(a);
-    const pb = poly.indexOf(b);
-    if (pa < 0 || pb < 0) continue;
-    const gap = Math.abs(pa - pb);
-    if (gap === 1 || gap === poly.length - 1) continue; // already an edge
-    target = f;
-    ia = pa;
-    ib = pb;
-    break;
-  }
-  if (target < 0)
-    throw new Error(
-      `connectVertPair: ${a} and ${b} share no face they could be cut apart in — ` +
-        `either they are not on one face, or they are already joined by an edge. ` +
-        `Routing a cut across several faces is Blender's behaviour and is not ` +
-        `implemented here.`,
-    );
-
-  const poly = polys[target]!;
-  const lo = Math.min(ia, ib);
-  const hi = Math.max(ia, ib);
-  // Both halves keep the parent's direction, so both keep its winding.
-  const first = poly.slice(lo, hi + 1);
-  const second = [...poly.slice(hi), ...poly.slice(0, lo + 1)];
-
-  const out: number[][] = [];
-  for (let f = 0; f < polys.length; f++) if (f !== target) out.push(polys[f]!);
-  const start = out.length;
-  out.push(first, second);
-
-  rebuildPolygons(em, em.positions, out, {});
-  return new Set([start, start + 1]);
-}
 
 // ── Split Edges (rip) ──────────────────────────────────────────────────────
 
