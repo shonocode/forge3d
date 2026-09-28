@@ -2244,21 +2244,50 @@ export { connectVertPair, connectVertPath } from "./connect-pair";
  * Positions are copied, so the two sides start coincident. Moving one of them
  * is the second half, the same split of responsibilities the extrudes have.
  *
+ * Only the cut edges' endpoints are torn (`BM_mesh_edgesplit` tags them and
+ * separates nothing else) — a vertex elsewhere whose faces meet only at the
+ * vertex stays as it is. `opts.verts` is `use_verts`: tear only those
+ * vertices (those on a cut edge), except that a cut edge with neither end
+ * among them tears both. A wire edge at a torn vertex takes a copy of its own.
+ *
  * Returns the vertices that gained a copy (their **new** indices).
  */
-export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+export function splitEdges(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  opts: { verts?: ReadonlySet<number> } = {},
+): Set<number> {
   if (selectedEdges.size === 0) return new Set();
 
   const polys = toPolygons(em);
 
-  /** The undirected edges being cut. */
+  /** The undirected edges being cut, and the vertices that may be torn. */
   const cut = new Set<string>();
+  const tearable = new Set<number>();
+  const ends = new Set<number>();
   for (const heRaw of selectedEdges) {
     const he = em.halfEdges[heRaw];
     if (!he) continue;
-    cut.add(seamKey(edgeOrigin(em, heRaw), edgeEnd(em, heRaw)));
+    const a = edgeOrigin(em, heRaw);
+    const b = edgeEnd(em, heRaw);
+    cut.add(seamKey(a, b));
+    ends.add(a);
+    ends.add(b);
+    if (!opts.verts || (!opts.verts.has(a) && !opts.verts.has(b))) {
+      tearable.add(a);
+      tearable.add(b);
+    }
   }
   if (cut.size === 0) return new Set();
+  // `BM_mesh_edgesplit` visits only the cut edges' ends.
+  if (opts.verts) for (const v of opts.verts) if (ends.has(v)) tearable.add(v);
+
+  /** Wire edges at each vertex: each is a fan of its own and gets its own copy of a torn vertex. */
+  const wires = (em.wireEdges ?? []).map((w) => [...w]);
+  const wiresAt = new Map<number, number[]>();
+  wires.forEach((w, i) => {
+    for (const v of w) (wiresAt.get(v) ?? wiresAt.set(v, []).get(v)!).push(i);
+  });
 
   /** Which faces use each vertex, and through which of its two edges there. */
   const facesAt = new Map<number, number[]>();
@@ -2277,7 +2306,8 @@ export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Se
   const added = new Set<number>();
 
   for (const [v, faces] of facesAt) {
-    if (faces.length < 2) continue;
+    const wireHere = wiresAt.get(v) ?? [];
+    if (!tearable.has(v) || faces.length + wireHere.length < 2) continue;
 
     // Two faces at this vertex stay together when they share an edge that
     // runs through it and was not cut.
@@ -2318,7 +2348,14 @@ export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Se
       if (list) list.push(f);
       else runs.set(r, [f]);
     }
-    if (runs.size < 2) continue; // still one piece — nothing to tear here
+    if (runs.size + wireHere.length < 2) continue; // still one piece — nothing to tear here
+    for (const i of wireHere) {
+      const copy = nextV++;
+      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
+      added.add(copy);
+      const w = wires[i]!;
+      w[w.indexOf(v)] = copy;
+    }
 
     // The first run keeps the original index so unrelated geometry is untouched.
     let first = true;
@@ -2354,8 +2391,63 @@ export function splitEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Se
   );
   const origins = new Map<number, VertexOrigin>();
   for (const [, map] of rename) for (const [v, c] of map) origins.set(c, { from: [v], w: [1] });
+  // Every copy of a torn edge keeps its crease, seam and sharp flag
+  // (`bmesh_kernel_edge_separate` copies the edge's attributes).
+  const copies: [string, string][] = [];
+  polys.forEach((poly, f) => {
+    const map = rename.get(f);
+    if (!map) return;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const from = seamKey(a, b);
+      const to = seamKey(map.get(a) ?? a, map.get(b) ?? b);
+      if (from !== to) copies.push([from, to]);
+    }
+  });
+  const creases = new Map(em.creases);
+  const seams = new Set(em.seams);
+  const sharp = em.sharpEdges ? new Set(em.sharpEdges) : undefined;
+  for (const [i, w] of wires.entries())
+    for (let k = 0; k < w.length; k++) if (w[k] !== em.wireEdges![i]![k]) origins.set(w[k]!, { from: [em.wireEdges![i]![k]!], w: [1] });
   rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
+  if (em.wireEdges) em.wireEdges = wires;
+  const live = new Set<string>();
+  for (const poly of out) for (let i = 0; i < poly.length; i++) live.add(seamKey(poly[i]!, poly[(i + 1) % poly.length]!));
+  for (const [from, to] of copies) {
+    const c = creases.get(from);
+    if (c !== undefined) em.creases.set(to, c);
+    if (seams.has(from)) em.seams.add(to);
+    if (sharp?.has(from)) (em.sharpEdges ??= new Set()).add(to);
+  }
+  // An edge every face moved off is gone, and so are its flags.
+  for (const [from] of copies)
+    if (!live.has(from)) {
+      em.creases.delete(from);
+      em.seams.delete(from);
+      em.sharpEdges?.delete(from);
+    }
   return added;
+}
+
+/**
+ * Blender's Edge Split with **Faces & Edges by Vertices** —
+ * `bpy.ops.mesh.edge_split(type='VERT')` (`edbm_edge_split_selected_verts`):
+ * every edge on a face that touches a selected vertex is cut, and only the
+ * selected vertices are torn (`split_edges(use_verts=True)`), so each face
+ * round a selected vertex gets its own copy of it and the other ends stay
+ * joined. A wire edge at a selected vertex gets its own copy of it (Blender's
+ * "split out wire").
+ *
+ * Returns the vertices that gained a copy (their new indices).
+ */
+export function edgeSplitVerts(em: EditMesh, verts: ReadonlySet<number>): Set<number> {
+  if (verts.size === 0) return new Set();
+  const edges = new Set<number>();
+  forEachEdge(em, (he) => {
+    if (verts.has(edgeOrigin(em, he)) || verts.has(edgeEnd(em, he))) edges.add(he);
+  });
+  return splitEdges(em, edges, { verts });
 }
 
 // ── Offset Edge Loops ──────────────────────────────────────────────────────

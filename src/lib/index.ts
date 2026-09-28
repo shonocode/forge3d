@@ -144,6 +144,7 @@ export {
 export { solidifyModifier, type SolidifyModifierOptions } from "../tools/solidify-modifier";
 /** Blender's Wireframe **modifier** (`BM_mesh_wireframe`) — `wireframe` above has only thickness and boundary. */
 export { wireframeModifier, type WireframeModifierOptions } from "../tools/wireframe-modifier";
+export { edgeSplitModifier, type EdgeSplitModifierOptions } from "../tools/edge-split-modifier";
 
 // ── Topology operators ─────────────────────────────────────────────────────
 // Each mutates the mesh and returns the faces it created or touched.
@@ -170,6 +171,7 @@ export {
   connectVertPair,
   connectVertPath,
   splitEdges,
+  edgeSplitVerts,
   offsetEdgeLoops,
   duplicateFaces,
   splitFaces,
