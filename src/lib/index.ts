@@ -250,6 +250,9 @@ export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-
 export { laplacianSmooth, type LaplacianSmoothOptions } from "../tools/edit-mode/laplacian-smooth";
 export { smoothMesh, type SmoothMeshOptions } from "../tools/smooth-mesh";
 export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
+// Grid Fill as Blender's operator runs it, from a selection: one closed loop,
+// two open loops with their rails, or faces to refill (`bpy.ops.mesh.fill_grid`).
+export { fillGrid, type FillGridOptions } from "../tools/fill-grid";
 export { unsubdivide, type UnsubdivideOptions } from "../tools/edit-mode/unsubdivide";
 export { edgenetPrepare, type EdgenetPrepareOptions } from "../tools/edit-mode/edgenet-prepare";
 export { setSharpnessByAngle, type SetSharpnessByAngleOptions } from "../tools/edit-mode/sharpness";

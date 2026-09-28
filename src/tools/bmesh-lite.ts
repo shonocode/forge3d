@@ -406,6 +406,248 @@ export function loopSeparate(bm: BM, lSep: BL): { v: BV; eNew: [from: BE, made: 
   return { v: vNew, eNew };
 }
 
+/**
+ * `bmesh_kernel_split_edge_make_vert(tv, e)`: a new vertex on `e` next to
+ * `tv` (made with `tv` as example, at its position), and a new edge
+ * `(tv, v_new)`; `e` now runs `(v_new, other)`. Each face on `e` gains a loop
+ * at `v_new`, made with the loop before it as example — `made` pairs each new
+ * loop with that example, for the caller's data. Returns the vertex and edge.
+ */
+export function splitEdgeMakeVert(bm: BM, tv: BV, e: BE): { v: BV; e: BE; made: [made: BL, example: BL][] } {
+  const vNew = vertCreate(bm, tv.co);
+  vNew.no = [...tv.no];
+  vNew.tag = tv.tag;
+  const eNew = edgeCreateLike(bm, tv, vNew, e);
+  diskRemove(eNew, tv);
+  diskRemove(eNew, vNew);
+  // `bmesh_disk_vert_replace(e, v_new, tv)`.
+  diskRemove(e, tv);
+  if (e.v1 === tv) {
+    e.v1 = vNew;
+    e.d1.next = e.d1.prev = null;
+  } else {
+    e.v2 = vNew;
+    e.d2.next = e.d2.prev = null;
+  }
+  diskAppend(e, vNew);
+  diskAppend(eNew, vNew);
+  diskAppend(eNew, tv);
+
+  const made: [BL, BL][] = [];
+  let lNext = e.l;
+  e.l = null;
+  let isFirst = true;
+  while (lNext) {
+    const l: BL = lNext;
+    l.f.len++;
+    lNext = lNext !== lNext.rn ? lNext.rn : null;
+    // `bmesh_radial_loop_unlink`.
+    if (l.rn !== l) {
+      l.rn!.rp = l.rp;
+      l.rp!.rn = l.rn;
+    }
+    l.rn = l.rp = null;
+    const lNew = newLoop(vNew, l.f, l.src);
+    made.push([lNew, l]);
+    lNew.prev = l;
+    lNew.next = l.next;
+    lNew.prev.next = lNew;
+    lNew.next.prev = lNew;
+    const inEdge = (a: BV, b: BV, x: BE): boolean => (x.v1 === a && x.v2 === b) || (x.v1 === b && x.v2 === a);
+    if (inEdge(lNew.v, lNew.next.v, e)) {
+      lNew.e = e;
+      l.e = eNew;
+    } else if (inEdge(lNew.v, lNew.next.v, eNew)) {
+      lNew.e = eNew;
+      l.e = e;
+    } else continue;
+    if (isFirst) {
+      isFirst = false;
+      l.rn = l.rp = null;
+    }
+    const le = lNew.e!;
+    const lNewE = le;
+    lNew.e = null;
+    radialAppend(lNewE, lNew);
+    const lE = l.e!;
+    l.e = null;
+    radialAppend(lE, l);
+  }
+  return { v: vNew, e: eNew, made };
+}
+
+/**
+ * `bmesh_kernel_join_vert_kill_edge(e_kill, v_kill, do_del, check_edge_exists,
+ * kill_degenerate_faces)` with all three on (`BM_edge_collapse`): each face
+ * on `e_kill` loses the loop that starts the edge (the loop after it keeps its
+ * data, now at the target), `v_kill`'s edges move to the other end — an edge
+ * that would repeat one there is spliced into it — faces left with two
+ * corners go, last pushed first, and `v_kill` goes. Returns the target.
+ */
+export function joinVertKillEdge(bm: BM, eKill: BE, vKill: BV): BV {
+  const vTarget = otherVert(eKill, vKill);
+  const degenerate: BF[] = [];
+  if (eKill.l) {
+    const lFirst = eKill.l;
+    let lKill = lFirst;
+    do {
+      if (lKill.next.v === vKill) lKill.next.v = vTarget;
+      lKill.next.prev = lKill.prev;
+      lKill.prev.next = lKill.next;
+      if (lKill.f.first === lKill) lKill.f.first = lKill.next;
+      lKill.f.len--;
+      if (lKill.f.len < 3) degenerate.push(lKill.f);
+      const nextKill = lKill.rn!;
+      lKill = nextKill;
+    } while (lKill !== lFirst);
+    eKill.l = null;
+  }
+  diskRemove(eKill, eKill.v1);
+  diskRemove(eKill, eKill.v2);
+  poolFree(bm.edges, eKill);
+  if (vTarget.e && vKill.e) {
+    let e: BE | null;
+    while ((e = vKill.e)) {
+      const eTarget = edgeExists(vTarget, otherVert(e, vKill));
+      edgeVertSwap(e, vTarget, vKill);
+      if (eTarget) edgeSplice(bm, eTarget, e);
+    }
+  }
+  for (const face of degenerate.reverse()) if (face.first) faceKill(bm, face);
+  vKill.e = null;
+  bm.verts[vKill.index] = null;
+  bm.vertPool?.free.push(vKill.index);
+  return vTarget;
+}
+
+/** An edge loop as `BM_mesh_edgeloops_find` stores it: its vertices in list order. */
+export interface EdgeLoop {
+  verts: BV[];
+  closed: boolean;
+}
+
+/**
+ * `BM_mesh_edgeloops_find`: the chains of edges passing `test`, in the order
+ * their first edge comes in the mesh. Each is built from that edge's `v2`
+ * outward (prepended) and then from its `v1` (appended); a vertex with more
+ * than two such edges spoils the chain it is on.
+ */
+export function edgeloopsFind(bm: BM, test: (e: BE) => boolean): EdgeLoop[] {
+  const eTag = new Set<BE>();
+  const vTag = new Set<BV>();
+  const edges: BE[] = [];
+  for (const e of liveEdges(bm))
+    if (test(e)) {
+      eTag.add(e);
+      vTag.add(e.v1);
+      vTag.add(e.v2);
+      edges.push(e);
+    }
+  const otherTag = (v: BV, vPrev: BV | null): { count: number; e: BE | null } => {
+    let count = 0;
+    let next: BE | null = null;
+    for (const e of diskEdges(v))
+      if (eTag.has(e) && otherVert(e, v) !== vPrev) {
+        next = e;
+        count++;
+      }
+    return { count, e: next };
+  };
+  const build = (el: EdgeLoop, vPrev0: BV, v0: BV, dir: 1 | -1): boolean => {
+    let v: BV | null = v0;
+    let vPrev: BV = vPrev0;
+    const vFirst = v0;
+    if (!vTag.has(v0)) return true;
+    while (v) {
+      if (dir === 1) el.verts.unshift(v);
+      else el.verts.push(v);
+      vTag.delete(v);
+      const { count, e: eNext } = otherTag(v, vPrev);
+      let vNext: BV | null = null;
+      if (count === 1) {
+        vNext = otherVert(eNext!, v);
+        eTag.delete(eNext!);
+        if (vNext === vFirst) {
+          el.closed = true;
+          vNext = null;
+        }
+      } else if (count > 1) return false;
+      vPrev = v;
+      v = vNext;
+    }
+    return true;
+  };
+  const out: EdgeLoop[] = [];
+  for (const e of edges) {
+    if (!eTag.has(e)) continue;
+    const el: EdgeLoop = { verts: [], closed: false };
+    if (build(el, e.v1, e.v2, 1) && build(el, e.v2, e.v1, -1) && el.verts.length > 1) out.push(el);
+  }
+  return out;
+}
+
+/**
+ * `BM_mesh_edgeloops_find_path`: the shortest chain of edges passing `test`
+ * from `vSrc` to `vDst`, searched from both ends a ring at a time. Like the C
+ * it points each vertex it reaches at the edge it came by (`v->e`), which
+ * changes where later walks round that vertex start.
+ */
+export function edgeloopsFindPath(bm: BM, test: (e: BE) => boolean, vSrc: BV, vDst: BV): BV[] | null {
+  const idx = new Map<BV, number>();
+  const eTag = new Set<BE>();
+  for (const e of liveEdges(bm)) if (test(e)) eTag.add(e);
+  const add = (lb: BV[], v: BV, ePrev: BE | null, n: number): void => {
+    idx.set(v, n);
+    if (ePrev) v.e = ePrev;
+    lb.push(v);
+  };
+  let lbSrc: BV[] = [];
+  let lbDst: BV[] = [];
+  add(lbSrc, vSrc, vSrc.e, 1);
+  add(lbDst, vDst, vDst.e, -1);
+  let match: [BV, BV] | null = null;
+  const step = (lb: BV[], dir: 1 | -1): BV[] | null => {
+    const tmp: BV[] = [];
+    for (const v of lb) {
+      const next = (idx.get(v) ?? 0) + dir;
+      for (const e of diskEdges(v)) {
+        if (!eTag.has(e)) continue;
+        const w = otherVert(e, v);
+        const wi = idx.get(w) ?? 0;
+        eTag.delete(e);
+        if (wi === 0) add(tmp, w, e, next);
+        else if (dir < 0 === wi < 0) {
+          // the same side
+        } else {
+          match = dir === 1 ? [v, w] : [w, v];
+          return null;
+        }
+      }
+    }
+    return tmp;
+  };
+  for (;;) {
+    const s = step(lbSrc, 1);
+    if (match || !s || s.length === 0) break;
+    lbSrc = s;
+    const d = step(lbDst, -1);
+    if (match || !d || d.length === 0) break;
+    lbDst = d;
+  }
+  if (!match) return null;
+  const [m0, m1] = match as [BV, BV];
+  const out: BV[] = [];
+  for (let v = m0; ; v = otherVert(v.e!, v)) {
+    out.unshift(v);
+    if (v === vSrc) break;
+  }
+  for (let v = m1; ; v = otherVert(v.e!, v)) {
+    out.push(v);
+    if (v === vDst) break;
+  }
+  return out;
+}
+
 /** `BM_edge_other_loop`: the loop of the next face round `e`, at `l`'s vertex. */
 export function edgeOtherLoop(e: BE, l: BL): BL {
   let o = l.e === e ? l : l.prev;

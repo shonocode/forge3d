@@ -1,6 +1,14 @@
 /**
  * Grid fill — close a ring of vertices with a grid of quads.
  *
+ * **For Blender's operator from a selection, use `fillGrid`** (`tools/fill-grid.ts`,
+ * compat-backlog C13): it takes the selected edges or faces, walks them the
+ * way Blender does — which decides the grid's first side and so, on a hole,
+ * which rim face each grid corner copies (the difference recorded against
+ * this function below) — and also does the two-open-loop form with rails and
+ * the face-select form. This function takes the ring's order from the caller
+ * and is kept for that; its interior math is what `fillGrid` uses.
+ *
  * Blender's `bpy.ops.mesh.fill_grid()`. **Not `bmesh.ops.grid_fill`**, which
  * returns `faces: []` however it is driven: it wants *two open* edge loops plus
  * two connecting rails, and the "one closed loop" form everybody actually uses
@@ -88,7 +96,7 @@ export interface GridFillOptions {
   interpSimple?: boolean;
 }
 
-type Vec3 = [number, number, number];
+export type Vec3 = [number, number, number];
 
 const at = (P: Float32Array, v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -122,7 +130,7 @@ function cornerAngle(P: Float32Array, prev: number, v: number, next: number): nu
  * a corner the point sits on takes everything, and a point on an edge splits
  * it between that edge's ends.
  */
-function quadWeights(
+export function quadWeights(
   v: readonly [number, number][],
   co: readonly [number, number],
 ): [number, number, number, number] {
@@ -202,7 +210,7 @@ const triArea = (a: Vec3, b: Vec3, c: Vec3): number => length(cross(sub(b, a), s
  * the out-of-plane part is re-applied along `dst`'s normal, scaled by the
  * square roots of the two areas so it survives a change of size.
  */
-function transformPointByTri(pt: Vec3, dst: readonly Vec3[], src: readonly Vec3[]): Vec3 {
+export function transformPointByTri(pt: Vec3, dst: readonly Vec3[], src: readonly Vec3[]): Vec3 {
   const noDst = normalized(cross(sub(dst[1]!, dst[0]!), sub(dst[2]!, dst[0]!)));
   const noSrc = normalized(cross(sub(src[1]!, src[0]!), sub(src[2]!, src[0]!)));
   const [ax, ay, az] = frame(noSrc);
@@ -232,7 +240,7 @@ function edgesToNormal(a1: Vec3, a2: Vec3, b1: Vec3, b2: Vec3): Vec3 {
  * row is heading, at a distance equal to the row's width, which is what ties
  * the frame's scale to the geometry.
  */
-function rowFrame(
+export function rowFrame(
   a: Vec3,
   b: Vec3,
   aNext: Vec3,
