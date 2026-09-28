@@ -6,7 +6,8 @@ import { selectEdgeRing } from "./edge-walk";
 import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine";
 import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
 import { bevelMesh } from "../bevel/bevel";
-import type { MeshData } from "../../lib/mesh";
+import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
+import { insetRegionMesh } from "../inset";
 
 /**
  * Topology operators. Each operator mutates `em` in place (rebuilds positions,
@@ -329,7 +330,8 @@ export function insetFaces(
   // corners and all, and each rim quad — made with the face as its example —
   // copies the face's corner at each end to both the outer vertex and the
   // inner one. (`use_interpolate`, the UI's default, re-interpolates the inner
-  // face over the old one's shape — not ported, compat-backlog C12.)
+  // face over the old one's shape — `opts.interpolate`; the whole operator is
+  // `insetIndividual`, the port of `bmo_inset.cc`.)
   const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
 
   // Skirts: each original edge vᵢ→vᵢ₊₁ becomes a (vᵢ, vᵢ₊₁, dupᵢ₊₁, dupᵢ) quad.
@@ -1825,8 +1827,7 @@ export interface InsetRegionOptions {
    * Push the inset region along its normal afterwards. Moves every vertex of
    * the region, border included even when nothing was inset there. The new
    * ring goes along the sum of its inset edges' faces; every other vertex
-   * along its ordinary vertex normal from before the inset — Blender's
-   * `bmo_inset.cc`, and 0.0000 mm on curved cages since 2026-09-25.
+   * along its ordinary vertex normal from before the inset.
    */
   depth?: number;
   /**
@@ -1841,281 +1842,66 @@ export interface InsetRegionOptions {
   useBoundary?: boolean;
   /**
    * Measure `thickness` perpendicular to each border edge instead of along the
-   * bisector, so a mitred frame has one width all the way round.
-   *
-   * This is what {@link insetFacesByWidth} already does per face.
+   * bisector, so a mitred frame has one width all the way round. It also
+   * slides a corner on the mesh boundary along the boundary edge, and scales
+   * `depth` by each vertex's shell factor.
    */
   useEvenOffset?: boolean;
-  /** Not implemented — passing true throws rather than insetting differently. */
+  /** Scale `thickness` (and `depth`) by the mean length of the border edges at each corner. */
   useRelativeOffset?: boolean;
-  /** Not implemented — passing true throws. */
+  /**
+   * Where the two border edges at a corner belong to different faces that
+   * meet along an edge through the corner, move the corner along that edge
+   * instead of along the bisector — the inset follows the mesh's own edges.
+   */
+  useEdgeRail?: boolean;
+  /**
+   * Re-interpolate the region's corners (UVs, colours) and vertex groups over
+   * the faces' old shapes, as the Inset tool does; off, the region keeps its
+   * values and the rim copies them.
+   */
+  useInterpolate?: boolean;
+  /** Inset the faces **around** the selection instead — the border moves outward. `useBoundary` is ignored. */
   useOutset?: boolean;
+  /** With {@link useOutset}: faces that are left alone too (Blender's `faces_exclude`). */
+  facesExclude?: Iterable<number>;
 }
 
 /**
  * Inset a face selection as **one region**: only the border of the selection
  * moves in, and faces inside it keep the edges they share.
  *
- * Blender's `bmesh.ops.inset_region(faces=, thickness=, depth=, use_boundary=,
- * use_even_offset=)`, and the mode the Inset tool uses unless you press I
- * twice.
+ * Blender's `bmesh.ops.inset_region`, every option — the port of
+ * `bmo_inset.cc` in `tools/inset.ts` ({@link insetRegionMesh}) — and the mode
+ * the Inset tool uses unless you press I twice.
  *
- * This is the one that was missing. {@link insetFaces} and
- * {@link insetFacesByWidth} are both *individual* mode — every selected face
- * gets its own ring and its own cap, so two faces that touch come back as two
- * separate insets with a seam between them. Insetting the four faces at the
- * top of a limb that way gives four stubs instead of one socket, and the
- * industry default being the other way round makes it a trap rather than a
- * preference.
+ * {@link insetFaces} and {@link insetFacesByWidth} are both *individual* mode —
+ * every selected face gets its own ring and its own cap, so two faces that
+ * touch come back as two separate insets with a seam between them. Insetting
+ * the four faces at the top of a limb that way gives four stubs instead of one
+ * socket, and the industry default being the other way round makes it a trap
+ * rather than a preference.
  *
  * Topology, measured against Blender on a cube's top face: the border vertices
  * stay where they are (the faces outside the region still need them), a new
  * ring is created inside, the region's faces are re-pointed at the new ring,
  * and one quad per border edge bridges the two. 8 verts and 6 faces become 12
- * and 10.
+ * and 10. The rim faces come after every old face, in the Mesh's edge order.
  *
- * Returns the re-pointed region faces, so insets chain the way extrudes do.
+ * Returns the region faces (the same numbers: no face is removed), so insets
+ * chain the way extrudes do. With `useOutset` these are still the faces given
+ * — the ones that stayed; the faces that were inset are the others.
  */
 export function insetRegion(
   em: EditMesh,
   selectedFaces: ReadonlySet<number>,
   opts: InsetRegionOptions,
 ): Set<number> {
-  if (opts.useRelativeOffset)
-    throw new Error(
-      "insetRegion: useRelativeOffset is not implemented. Blender scales the " +
-        "thickness by the adjacent edge lengths; silently ignoring the flag " +
-        "would inset by the wrong amount rather than fail.",
-    );
-  if (opts.useOutset)
-    throw new Error("insetRegion: useOutset is not implemented — this only insets inward.");
-
-  const depth = opts.depth ?? 0;
-  if (selectedFaces.size === 0) return new Set(selectedFaces);
-  if (opts.thickness <= 0 && depth === 0) return new Set(selectedFaces);
-
-  const polys = toPolygons(em);
-  const P = em.positions;
-
-  /**
-   * A face's normal as `BM_face_normal_update` makes it: a triangle's cross
-   * product, a quad's **diagonals** crossed, Newell's for the rest. On a bent
-   * quad the diagonals and Newell disagree, which is where `depth` drifted.
-   */
-  const normalOf = (poly: readonly number[]): [number, number, number] => {
-    if (poly.length === 3 || poly.length === 4) {
-      const c = (i: number): [number, number, number] => [P[poly[i]! * 3]!, P[poly[i]! * 3 + 1]!, P[poly[i]! * 3 + 2]!];
-      const d = (a: [number, number, number], b: [number, number, number]): [number, number, number] => [
-        a[0] - b[0],
-        a[1] - b[1],
-        a[2] - b[2],
-      ];
-      const n =
-        poly.length === 3 ? cross3(d(c(0), c(1)), d(c(1), c(2))) : cross3(d(c(0), c(2)), d(c(1), c(3)));
-      const len = Math.hypot(n[0], n[1], n[2]);
-      return len < 1e-20 ? [0, 0, 0] : [n[0] / len, n[1] / len, n[2] / len];
-    }
-    let nx = 0;
-    let ny = 0;
-    let nz = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]! * 3;
-      const b = poly[(i + 1) % poly.length]! * 3;
-      nx += (P[a + 1]! - P[b + 1]!) * (P[a + 2]! + P[b + 2]!);
-      ny += (P[a + 2]! - P[b + 2]!) * (P[a]! + P[b]!);
-      nz += (P[a]! - P[b]!) * (P[a + 1]! + P[b + 1]!);
-    }
-    const len = Math.hypot(nx, ny, nz);
-    return len < 1e-20 ? [0, 0, 0] : [nx / len, ny / len, nz / len];
-  };
-
-  // An edge used by exactly one *selected* face is on the region's border. One
-  // used by exactly one face overall is on the mesh's boundary as well, and
-  // those are the ones `useBoundary` decides about.
-  const selUse = new Map<string, number>();
-  const allUse = new Map<string, number>();
-  const bump = (m: Map<string, number>, k: string): void => {
-    m.set(k, (m.get(k) ?? 0) + 1);
-  };
-  for (let f = 0; f < polys.length; f++) {
-    const poly = polys[f]!;
-    for (let i = 0; i < poly.length; i++) {
-      const k = seamKey(poly[i]!, poly[(i + 1) % poly.length]!);
-      bump(allUse, k);
-      if (selectedFaces.has(f)) bump(selUse, k);
-    }
-  }
-
-  const borderKeys = new Set<string>();
-  const insetKeys = new Set<string>();
-  for (const [k, n] of selUse) {
-    if (n !== 1) continue;
-    borderKeys.add(k);
-    if (allUse.get(k) === 1 && !opts.useBoundary) continue; // mesh boundary, left alone
-    insetKeys.add(k);
-  }
-
-  const borderVerts = new Set<number>();
-  const dupVerts = new Set<number>();
-  for (const k of borderKeys) for (const s of k.split("_")) borderVerts.add(Number(s));
-  for (const k of insetKeys) for (const s of k.split("_")) dupVerts.add(Number(s));
-
-  // Per vertex: the inward perpendiculars of its border edges, and the region's
-  // normal there. `cross(faceNormal, edgeDirection)` points into the face
-  // because the winding runs counter-clockwise about the normal.
-  const perps = new Map<number, [number, number, number][]>();
-  // Which way `depth` pushes, as Blender's inset does it: a vertex on the new
-  // ring goes along the sum of the faces **of its inset edges** (one per edge,
-  // unweighted), and every other vertex of the region along its ordinary
-  // vertex normal from before the inset — all faces round it, weighted by
-  // corner angle.
-  const ringNormals = new Map<number, [number, number, number]>();
-  const regionVerts = new Set<number>();
-
-  for (const f of selectedFaces) {
-    const poly = polys[f]!;
-    const n = normalOf(poly);
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i]!;
-      const b = poly[(i + 1) % poly.length]!;
-      regionVerts.add(a);
-
-      if (!insetKeys.has(seamKey(a, b))) continue;
-      const e = unit3([P[b * 3]! - P[a * 3]!, P[b * 3 + 1]! - P[a * 3 + 1]!, P[b * 3 + 2]! - P[a * 3 + 2]!]);
-      const m = unit3(cross3(n, e));
-      for (const v of [a, b]) {
-        const list = perps.get(v);
-        if (list) list.push(m);
-        else perps.set(v, [m]);
-        const prev = ringNormals.get(v) ?? [0, 0, 0];
-        ringNormals.set(v, [prev[0] + n[0], prev[1] + n[1], prev[2] + n[2]]);
-      }
-    }
-  }
-
-  /** `BM_vert_normal_update`: corner-angle-weighted, over every face at `v`. */
-  const vertNormal = (v: number): [number, number, number] => {
-    let sx = 0;
-    let sy = 0;
-    let sz = 0;
-    for (const poly of polys) {
-      const i = poly.indexOf(v);
-      if (i < 0) continue;
-      const k = poly.length;
-      const q = poly[(i + k - 1) % k]!;
-      const r = poly[(i + 1) % k]!;
-      const e1 = unit3([P[q * 3]! - P[v * 3]!, P[q * 3 + 1]! - P[v * 3 + 1]!, P[q * 3 + 2]! - P[v * 3 + 2]!]);
-      const e2 = unit3([P[r * 3]! - P[v * 3]!, P[r * 3 + 1]! - P[v * 3 + 1]!, P[r * 3 + 2]! - P[v * 3 + 2]!]);
-      const w = Math.acos(Math.max(-1, Math.min(1, e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2])));
-      const n = normalOf(poly);
-      sx += n[0] * w;
-      sy += n[1] * w;
-      sz += n[2] * w;
-    }
-    return unit3([sx, sy, sz]);
-  };
-
-  const newPositions: number[] = Array.from(P);
-  let nextV = em.vertices.length;
-  const dup = new Map<number, number>();
-
-  for (const v of [...dupVerts].sort((x, y) => x - y)) {
-    const ms = perps.get(v) ?? [];
-    const n = unit3(ringNormals.get(v) ?? [0, 0, 0]);
-    let bx = 0;
-    let by = 0;
-    let bz = 0;
-    for (const m of ms) {
-      bx += m[0];
-      by += m[1];
-      bz += m[2];
-    }
-    const b = unit3([bx, by, bz]);
-    // 1 / cos(half angle), clamped — a near-spike corner would run away.
-    const cosHalf = ms.length > 0 ? b[0] * ms[0]![0] + b[1] * ms[0]![1] + b[2] * ms[0]![2] : 1;
-    const reach = opts.useEvenOffset ? opts.thickness / Math.max(0.2, cosHalf) : opts.thickness;
-
-    dup.set(v, nextV++);
-    newPositions.push(
-      P[v * 3]! + b[0] * reach + n[0] * depth,
-      P[v * 3 + 1]! + b[1] * reach + n[1] * depth,
-      P[v * 3 + 2]! + b[2] * reach + n[2] * depth,
-    );
-  }
-
-  // `depth` moves the whole region, so the vertices inside it travel too —
-  // measured on a 2x2 grid, whose middle vertex moves with the rest. So does
-  // a border vertex that was not duplicated (a mesh-boundary edge left alone
-  // by `useBoundary: false`): it is still a corner of the region's faces.
-  if (depth !== 0) {
-    const moves = [...regionVerts].filter((v) => !dup.has(v)).map((v) => [v, vertNormal(v)] as const);
-    for (const [v, n] of moves) {
-      newPositions[v * 3] = newPositions[v * 3]! + n[0] * depth;
-      newPositions[v * 3 + 1] = newPositions[v * 3 + 1]! + n[1] * depth;
-      newPositions[v * 3 + 2] = newPositions[v * 3 + 2]! + n[2] * depth;
-    }
-  }
-
-  // Emit unselected, then skirts, then the caps — so the caps are contiguous
-  // at the end and the returned set is a range.
-  //
-  // The per-corner layers as `bmo_inset_region_exec` sets them with
-  // `use_interpolate` off (the op's default): each region face keeps its
-  // corners on the moved vertices, and each rim quad — made with the region
-  // face on its edge as example — copies that face's corner at each end to
-  // both the inner vertex and the outer one. A duplicate copies its vertex
-  // data. (`use_interpolate` is not ported, compat-backlog C12.)
-  const newPolys: number[][] = [];
-  const stated: Array<ExplicitFace | undefined> = [];
-  for (let f = 0; f < polys.length; f++)
-    if (!selectedFaces.has(f)) {
-      newPolys.push(polys[f]!);
-      stated.push(undefined);
-    }
-
-  for (const f of selectedFaces) {
-    const poly = polys[f]!;
-    for (let i = 0; i < poly.length; i++) {
-      const j = (i + 1) % poly.length;
-      const a = poly[i]!;
-      const b = poly[j]!;
-      if (!insetKeys.has(seamKey(a, b))) continue;
-      newPolys.push([a, b, dup.get(b)!, dup.get(a)!]);
-      const ci: [number, number, number][] = [[f, i, 1]];
-      const cj: [number, number, number][] = [[f, j, 1]];
-      stated.push({ corners: [ci, cj, cj, ci], material: f });
-    }
-  }
-
-  const capStart = newPolys.length;
-  for (const f of selectedFaces) {
-    newPolys.push(polys[f]!.map((v) => dup.get(v) ?? v));
-    stated.push({ corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f });
-  }
-  const capEnd = newPolys.length;
-  const origins = new Map<number, VertexOrigin>();
-  for (const [v, d] of dup) origins.set(d, { from: [v], w: [1] });
-
-  rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
-
-  const newSel = new Set<number>();
-  for (let i = capStart; i < capEnd; i++) newSel.add(i);
-  return newSel;
+  const out = insetRegionMesh(meshToData(em), selectedFaces, opts);
+  const source = em.source;
+  Object.assign(em, meshFromData(out.mesh), { source });
+  return new Set(out.inner);
 }
-
-const unit3 = (v: readonly [number, number, number]): [number, number, number] => {
-  const l = Math.hypot(v[0], v[1], v[2]);
-  return l < 1e-12 ? [0, 0, 0] : [v[0] / l, v[1] / l, v[2] / l];
-};
-
-const cross3 = (
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-): [number, number, number] => [
-  a[1] * b[2] - a[2] * b[1],
-  a[2] * b[0] - a[0] * b[2],
-  a[0] * b[1] - a[1] * b[0],
-];
 
 // ── Winding / discrete extrude / connecting verts ──────────────────────────
 

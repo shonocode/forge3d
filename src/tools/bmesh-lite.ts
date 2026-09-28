@@ -93,6 +93,13 @@ function poolFree<T extends { slot: number }>(p: Pool<T>, item: T): void {
 
 export interface BM {
   verts: (BV | null)[];
+  /**
+   * Set to reuse killed vertices' slots as `BLI_mempool` does (the most
+   * recently freed first). Off by default: the operators written before it
+   * create every vertex before killing any, where the two agree, and some
+   * of them key tables by `index`. Inset kills (a glue) between creations.
+   */
+  vertPool?: { free: number[] };
   edges: Pool<BE>;
   faces: Pool<BF>;
   totface: number;
@@ -174,13 +181,15 @@ export function radialLoops(e: BE): BL[] {
 
 /**
  * `BM_vert_create`: appended, so a new vertex comes after every one that was
- * there. The vertex array is not a mempool here — `vertKill` leaves a hole
- * that `bmToMesh` compacts — which is Blender's order as long as vertices are
- * created before any are killed, as every operator using this does.
+ * there. The vertex array is not a mempool unless `bm.vertPool` is set —
+ * `vertKill` leaves a hole that `bmToMesh` compacts — which is Blender's
+ * order as long as vertices are created before any are killed. With
+ * `vertPool`, a killed slot is handed out again, last freed first.
  */
 export function vertCreate(bm: BM, co: V3): BV {
-  const v: BV = { co: [f(co[0]!), f(co[1]!), f(co[2]!)], no: [0, 0, 0], e: null, index: bm.verts.length, tag: false };
-  bm.verts.push(v);
+  const slot = bm.vertPool?.free.length ? bm.vertPool.free.pop()! : bm.verts.length;
+  const v: BV = { co: [f(co[0]!), f(co[1]!), f(co[2]!)], no: [0, 0, 0], e: null, index: slot, tag: false };
+  bm.verts[slot] = v;
   return v;
 }
 
@@ -256,6 +265,7 @@ export function edgeKill(bm: BM, e: BE): void {
 export function vertKill(bm: BM, v: BV): void {
   while (v.e) edgeKill(bm, v.e);
   bm.verts[v.index] = null;
+  bm.vertPool?.free.push(v.index);
 }
 /** `bmesh_face_swap_data`: everything but the index moves. */
 export function faceSwapData(a: BF, b: BF): void {
@@ -296,6 +306,119 @@ export function edgeSplice(bm: BM, dst: BE, src: BE): void {
     radialAppend(dst, l);
   }
   edgeKill(bm, src);
+}
+
+/**
+ * `BM_edge_create(bm, v1, v2, e_example, BM_CREATE_NOP)`: the example's flags
+ * come along (`BM_elem_attrs_copy` keeps every hflag but select — the tag
+ * included). The caller copies whatever edge data it tracks.
+ */
+export function edgeCreateLike(bm: BM, v1: BV, v2: BV, example: BE): BE {
+  const e = edgeCreate(bm, v1, v2);
+  e.tag = example.tag;
+  return e;
+}
+
+/**
+ * `bmesh_kernel_edge_separate`: `lSep` leaves `e` for a new edge over the
+ * same two vertices (made with `e` as example). Returns the new edge, or null
+ * on a boundary edge, where there is nothing to separate.
+ */
+export function edgeSeparate(bm: BM, e: BE, lSep: BL): BE | null {
+  if (isBoundary(e)) return null;
+  if (lSep === e.l) e.l = lSep.rn;
+  const eNew = edgeCreateLike(bm, e.v1, e.v2, e);
+  radialRemove(e, lSep);
+  radialAppend(eNew, lSep);
+  return eNew;
+}
+
+/**
+ * `bmesh_kernel_vert_separate`: one vertex per fan of faces round `v` (edges
+ * reached from each other through a face count as one fan; a wire edge is a
+ * fan of its own). The fan reached from `v.e` last keeps `v`. Returns `v`
+ * first, then the new vertices newest first (`BLI_SMALLSTACK_AS_TABLE`); each
+ * was made with `v` as example — normal and tag copied, the caller copies its
+ * data.
+ */
+export function vertSeparate(bm: BM, v: BV): BV[] {
+  const made: BV[] = [];
+  if (v.e) {
+    const visit = new Set<BE>(diskEdges(v));
+    const total = visit.size;
+    let found = 0;
+    for (;;) {
+      const edges: BE[] = [];
+      const search: BE[] = [];
+      let e: BE | undefined = v.e!;
+      visit.delete(e);
+      do {
+        edges.push(e);
+        found++;
+        if (e.l) {
+          let l = e.l;
+          do {
+            const adj = l.v === v ? l.prev : l.next;
+            if (visit.has(adj.e!)) {
+              visit.delete(adj.e!);
+              search.push(adj.e!);
+            }
+          } while ((l = l.rn!) !== e.l);
+        }
+      } while ((e = search.pop()));
+      if (found === total) break;
+      const vNew = vertCreate(bm, v.co);
+      vNew.no = [...v.no];
+      vNew.tag = v.tag;
+      while ((e = edges.pop())) edgeVertSwap(e, vNew, v);
+      made.push(vNew);
+    }
+  }
+  return [v, ...made.reverse()];
+}
+
+/**
+ * `bmesh_kernel_unglue_region_make_vert` (`BM_face_loop_separate`): peel
+ * `lSep`'s face off the edges either side of its corner and give the corner a
+ * vertex of its own. Returns the corner's vertex — the old one when the
+ * corner had no other edges to leave (nothing changes then).
+ */
+export function loopSeparate(bm: BM, lSep: BL): { v: BV; eNew: [from: BE, made: BE][] } {
+  const vSep = lSep.v;
+  const eNew: [BE, BE][] = [];
+  for (const l of [lSep, lSep.prev]) {
+    const from = l.e!;
+    if (isBoundary(from)) continue;
+    const e = edgeSeparate(bm, from, l);
+    if (e) eNew.push([from, e]);
+  }
+  let eIter = vSep.e!;
+  while (eIter !== lSep.e && eIter !== lSep.prev.e) {
+    eIter = diskNext(eIter, vSep);
+    if (eIter === vSep.e) return { v: vSep, eNew };
+  }
+  vSep.e = lSep.e;
+  const vNew = vertCreate(bm, vSep.co);
+  vNew.no = [...vSep.no];
+  vNew.tag = vSep.tag;
+  const edges = [lSep.e!, lSep.prev.e!];
+  for (const e of edges) edgeVertSwap(e, vNew, vSep);
+  return { v: vNew, eNew };
+}
+
+/** `BM_edge_other_loop`: the loop of the next face round `e`, at `l`'s vertex. */
+export function edgeOtherLoop(e: BE, l: BL): BL {
+  let o = l.e === e ? l : l.prev;
+  o = o.rn!;
+  if (o.v === l.v) return o;
+  return o.next;
+}
+
+/** `BM_loop_other_vert_loop`: the loop past `v` in `l`'s face, away from `l`'s edge. */
+export function loopOtherVertLoop(l: BL, v: BV): BL {
+  const vPrev = otherVert(l.e!, v);
+  if (l.v === v) return l.prev.v === vPrev ? l.next : l.prev;
+  return l.prev.v === v ? l.prev.prev : l.next.next;
 }
 
 export const isBoundary = (e: BE): boolean => !!e.l && e.l.rn === e.l;

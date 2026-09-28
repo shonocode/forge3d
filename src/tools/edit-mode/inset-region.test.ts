@@ -140,14 +140,27 @@ describe("insetRegion", () => {
     expect(xs).toHaveLength(6);
   });
 
-  it("refuses the flags it does not implement instead of insetting differently", () => {
+  it("insets the faces around the selection with useOutset", () => {
+    // The ring goes down the four side faces (their tangents both point down
+    // at each corner), and the selected top face keeps its corners.
     const em = meshFromData(cube());
-    expect(() => insetRegion(em, new Set([3]), { thickness: 0.2, useRelativeOffset: true })).toThrow(
-      /useRelativeOffset/,
-    );
-    expect(() => insetRegion(em, new Set([3]), { thickness: 0.2, useOutset: true })).toThrow(
-      /useOutset/,
-    );
+    insetRegion(em, new Set([3]), { thickness: 0.2, useOutset: true });
+    const d = meshToData(em);
+    expect(d.positions.length / 3).toBe(12);
+    expect(d.polys).toHaveLength(10);
+    let ring = 0;
+    for (let v = 0; v < 12; v++) if (Math.abs(d.positions[v * 3 + 1]! - 0.8) < 1e-6) ring++;
+    expect(ring).toBe(4);
+    for (const v of d.polys[3]!) expect(d.positions[v * 3 + 1]).toBeCloseTo(1, 6);
+  });
+
+  it("scales the width by the border edge lengths with useRelativeOffset", () => {
+    // Edges of length 2: 0.1 relative is 0.2 along the bisector.
+    const em = meshFromData(cube());
+    insetRegion(em, new Set([3]), { thickness: 0.1, useRelativeOffset: true });
+    const d = meshToData(em);
+    const inner = d.polys[3]!;
+    for (const v of inner) expect(Math.abs(d.positions[v * 3]!)).toBeCloseTo(1 - 0.2 / Math.SQRT2, 5);
   });
 
   it("is a no-op for an empty selection", () => {

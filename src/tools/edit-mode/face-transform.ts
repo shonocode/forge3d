@@ -22,8 +22,10 @@
  * Pure and headless — Vitest-pinned.
  */
 import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
-import { extrudeFaces, insetFaces } from "./operators";
+import { extrudeFaces } from "./operators";
 import { weldByMap } from "../remove-doubles";
+import { insetIndividualMesh, type InsetIndividualMeshOptions } from "../inset";
+import { meshFromData, meshToData } from "../../lib/mesh";
 
 /** Every distinct vertex used by the given faces. */
 function vertsOf(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
@@ -171,83 +173,57 @@ export function facesFacing(
  * concave face insets correctly until the offset would cross itself.
  *
  * This is exactly Blender's `bmesh.ops.inset_individual(thickness=width,
- * use_even_offset=True)` — measured, not assumed: on a cube face inset by 0.2,
- * even offset lands the ring at 0.8 where the default bisector offset lands it
- * at 0.8586 and relative offset at 0.7172. `width` is Blender's `thickness`.
+ * use_even_offset=True)` — {@link insetIndividual} with `useEvenOffset` on,
+ * and `depth`, `useRelativeOffset` and `interpolate` passed through.
  *
  * For the *region* form — one ring around a whole selection rather than one per
  * face — see `insetRegion`, which is what Blender's Inset tool does by default.
  *
- * Returns the new inner cap faces, like `insetFaces`.
+ * A width of 0 with no depth leaves the mesh alone, as this function always
+ * has — Blender would add rims of zero width; {@link insetIndividual} does.
+ *
+ * Returns the inner faces, like `insetFaces`.
  */
 export function insetFacesByWidth(
   em: EditMesh,
   faces: ReadonlySet<number>,
   width: number,
-  opts: { interpolate?: boolean } = {},
+  opts: { interpolate?: boolean; depth?: number; useRelativeOffset?: boolean } = {},
 ): Set<number> {
-  if (faces.size === 0 || width <= 0) return new Set(faces);
-
-  // Work out every vertex's target from the old face before touching the
-  // mesh, and hand the ring to insetFaces — which needs the final positions
-  // to interpolate the corner data at (`interpolate`, Blender's
-  // `use_interpolate`; see `InsetFacesOptions`).
-  const polys = toPolygons(em);
-  const inner = new Map<number, number[]>();
-  for (const f of faces) {
-    const verts = polys[f]!;
-    const n = facePolyNormal(em, f);
-    const moved: [number, number, number][] = [];
-
-    for (let i = 0; i < verts.length; i++) {
-      const prev = verts[(i - 1 + verts.length) % verts.length]!;
-      const cur = verts[i]!;
-      const next = verts[(i + 1) % verts.length]!;
-
-      const e1 = unit([
-        em.positions[cur * 3]! - em.positions[prev * 3]!,
-        em.positions[cur * 3 + 1]! - em.positions[prev * 3 + 1]!,
-        em.positions[cur * 3 + 2]! - em.positions[prev * 3 + 2]!,
-      ]);
-      const e2 = unit([
-        em.positions[next * 3]! - em.positions[cur * 3]!,
-        em.positions[next * 3 + 1]! - em.positions[cur * 3 + 1]!,
-        em.positions[next * 3 + 2]! - em.positions[cur * 3 + 2]!,
-      ]);
-
-      // Inward edge normals, in the face plane.
-      const m1 = unit(cross(n, e1));
-      const m2 = unit(cross(n, e2));
-      const b = unit([m1[0] + m2[0], m1[1] + m2[1], m1[2] + m2[2]]);
-      // 1 / cos(half angle) — clamped, or a near-straight corner runs away.
-      const reach = width / Math.max(0.2, b[0] * m1[0] + b[1] * m1[1] + b[2] * m1[2]);
-
-      moved.push([
-        em.positions[cur * 3]! + b[0] * reach,
-        em.positions[cur * 3 + 1]! + b[1] * reach,
-        em.positions[cur * 3 + 2]! + b[2] * reach,
-      ]);
-    }
-
-    inner.set(f, moved.flat());
-  }
-
-  return insetFaces(em, faces, 1e-6, { inner, interpolate: opts.interpolate });
+  if (width === 0 && !opts.depth) return new Set(faces);
+  return insetIndividual(em, faces, {
+    thickness: width,
+    depth: opts.depth,
+    useEvenOffset: true,
+    useRelativeOffset: opts.useRelativeOffset,
+    useInterpolate: opts.interpolate,
+  });
 }
 
-const unit = (v: [number, number, number]): [number, number, number] => {
-  const l = Math.hypot(v[0], v[1], v[2]);
-  return l < 1e-12 ? [0, 0, 0] : [v[0] / l, v[1] / l, v[2] / l];
-};
-
-const cross = (
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-): [number, number, number] => [
-  a[1] * b[2] - a[2] * b[1],
-  a[2] * b[0] - a[0] * b[2],
-  a[0] * b[1] - a[1] * b[0],
-];
+/**
+ * Inset every selected face on its own — Blender's
+ * `bmesh.ops.inset_individual`, every option, through the port of
+ * `bmo_inset.cc` ({@link insetIndividualMesh}).
+ *
+ * Each corner moves along the sum of its two edges' in-face perpendiculars by
+ * `thickness` (divided by the half angle's cosine with `useEvenOffset`, times
+ * the corner's mean edge length with `useRelativeOffset`), then along the
+ * face's normal by `depth`. The flags default to off, as in `bmesh.ops`; the
+ * Inset tool's individual mode turns `useEvenOffset` and `useInterpolate` on.
+ *
+ * The face stays (moved, same number); its rim quads come after every old
+ * face. Returns the inner faces.
+ */
+export function insetIndividual(
+  em: EditMesh,
+  faces: ReadonlySet<number>,
+  opts: InsetIndividualMeshOptions,
+): Set<number> {
+  const out = insetIndividualMesh(meshToData(em), faces, opts);
+  const source = em.source;
+  Object.assign(em, meshFromData(out.mesh), { source });
+  return new Set(out.inner);
+}
 
 /**
  * Extrude a face selection by a distance, in one call.

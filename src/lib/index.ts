@@ -305,7 +305,17 @@ export {
   extrudeRepeat,
   extrudeManifold,
   insetFacesByWidth,
+  insetIndividual,
 } from "../tools/edit-mode/face-transform";
+// The pure form of both insets: `bmesh.ops.inset_region` / `inset_individual`
+// on a `MeshData`, every option (the port of `bmo_inset.cc`).
+export {
+  insetRegionMesh,
+  insetIndividualMesh,
+  type InsetRegionMeshOptions,
+  type InsetIndividualMeshOptions,
+  type InsetResult,
+} from "../tools/inset";
 
 // ── Choosing a face selection ──────────────────────────────────────────────
 // The operators take a `Set<faceIndex>`, which is what a mouse produces and
