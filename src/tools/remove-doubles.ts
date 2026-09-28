@@ -90,8 +90,11 @@ function distSq(a: V3, b: V3): number {
   return f(f(f(x * x) + f(y * y)) + f(z * z));
 }
 
-/** `kdtree_range_search_cb`: a stack walk, right child popped before left. */
-function rangeSearch(nodes: KDNode[], root: number, co: V3, range: number, cb: (index: number) => void): void {
+/**
+ * `kdtree_range_search_cb`: a stack walk, right child popped before left.
+ * The callback gets the squared distance it tested.
+ */
+function rangeSearch(nodes: KDNode[], root: number, co: V3, range: number, cb: (index: number, distSq: number) => void): void {
   const rangeSq = f(range * range);
   const stack = [root];
   while (stack.length > 0) {
@@ -101,7 +104,8 @@ function rangeSearch(nodes: KDNode[], root: number, co: V3, range: number, cb: (
     } else if (f(co[node.d]! - range) > node.co[node.d]!) {
       if (node.right !== UNSET) stack.push(node.right);
     } else {
-      if (distSq(node.co, co) <= rangeSq) cb(node.index);
+      const d = distSq(node.co, co);
+      if (d <= rangeSq) cb(node.index, d);
       if (node.left !== UNSET) stack.push(node.left);
       if (node.right !== UNSET) stack.push(node.right);
     }
@@ -111,16 +115,47 @@ function rangeSearch(nodes: KDNode[], root: number, co: V3, range: number, cb: (
 /**
  * Which vertex each one merges into — `bmesh_find_doubles_by_distance_impl`.
  * `-1` or itself means it stays.
+ *
+ * `keep` is `find_doubles`' `keep_verts`: those vertices never merge and are
+ * offered as targets first (`kdtree_calc_duplicates_cb`'s first pass,
+ * `has_self_index`) — each, in tree order, claims every free vertex in range
+ * and takes one another kept vertex claimed when it is nearer (the lower
+ * index on a tie). What is left clusters among itself as without `keep`.
  */
-export function doublesByDistance(positions: Float32Array, dist: number): Int32Array {
+export function doublesByDistance(positions: Float32Array, dist: number, keep?: (i: number) => boolean): Int32Array {
   const n = positions.length / 3;
   const co = (i: number): V3 => [positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!];
   const nodes: KDNode[] = [];
   for (let i = 0; i < n; i++) nodes.push({ co: co(i), index: i, d: 0, left: UNSET, right: UNSET });
   const root = balance(nodes, 0, n, 0);
   const duplicates = new Int32Array(n).fill(-1);
+  let hasSelf = false;
+  if (keep)
+    for (let i = 0; i < n; i++)
+      if (keep(i)) {
+        duplicates[i] = i;
+        hasSelf = true;
+      }
   if (root === UNSET) return duplicates;
   const range = f(dist);
+
+  if (hasSelf) {
+    const bestSq = new Float64Array(n);
+    for (const node of nodes) {
+      const v = node.index;
+      if (duplicates[v] !== v) continue;
+      rangeSearch(nodes, root, node.co, range, (i, dsq) => {
+        const t = duplicates[i]!;
+        if (t === -1) {
+          duplicates[i] = v;
+          bestSq[i] = dsq;
+        } else if (t !== i && (dsq < bestSq[i]! || (dsq === bestSq[i]! && v < t))) {
+          bestSq[i] = dsq;
+          duplicates[i] = v;
+        }
+      });
+    }
+  }
 
   /** The `deduplicate_target_calc_fn` callback: the most central, lowest index on a tie. */
   const target = (cluster: readonly number[]): number => {
@@ -176,6 +211,86 @@ const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_$
 export function removeDoubles(data: MeshData, dist: number): MeshData {
   const dup = doublesByDistance(data.positions, dist);
   return weldByMap(data, (v) => (dup[v] === -1 || dup[v] === v ? v : dup[v]!));
+}
+
+export interface RemoveDoublesSelectedOptions {
+  /** The selected vertices (default: all). None selected changes nothing — the operator skips the mesh. */
+  verts?: Iterable<number>;
+  /** `use_centroid` (default true): the survivor moves to its cluster's mean; false leaves it where it is. */
+  useCentroid?: boolean;
+  /**
+   * `use_unselected` (default false): search every vertex and merge selected
+   * ones into unselected ones where one is in range (`EDBM_automerge`:
+   * `find_doubles` with the unselected as `keep_verts`). Selected vertices
+   * with no unselected one in range still merge among themselves.
+   */
+  useUnselected?: boolean;
+}
+
+/**
+ * Blender's **Merge by Distance** in edit mode —
+ * `bpy.ops.mesh.remove_doubles(threshold=, use_centroid=, use_unselected=)`.
+ *
+ * Two defaults differ from {@link removeDoubles} (`bmesh.ops.remove_doubles`):
+ * only the selection is searched (the KD-tree holds the selected vertices
+ * alone, in index order), and **the survivor moves to its cluster's
+ * centroid** (`weld_verts(use_centroid=True)`: its own position plus every
+ * vertex merged into it, summed in float, times `1 / count`). Which vertex
+ * survives is the same procedure. Only the position moves; the survivor keeps
+ * its vertex groups and the faces keep their corners.
+ *
+ * `dist` is clamped to the operator's range, 1e-6 to 50 (its RNA limits).
+ *
+ * Custom normals are carried as vectors, corner by corner, which is
+ * Blender's answer on **flat** faces (every corner its own fan — the parity
+ * inputs). On smooth faces Blender writes the vectors back per smooth fan
+ * (`BM_custom_loop_normals_from_vector_layer`), so corners a weld joins into
+ * one fan come out averaged; not done here (compat-backlog C29, the normal
+ * spaces). For the same reason `use_sharp_edge_from_normals`, which splits
+ * those fans instead, is not taken (on flat faces it does nothing,
+ * `probe-remove-doubles-bpy.py`).
+ *
+ * ```ts
+ * removeDoublesSelected(mesh, 0.0001); // M → By Distance, as Blender sets it
+ * ```
+ */
+export function removeDoublesSelected(data: MeshData, dist = 1e-4, options: RemoveDoublesSelectedOptions = {}): MeshData {
+  const n = data.positions.length / 3;
+  const selected = new Set(options.verts ?? Array.from({ length: n }, (_, i) => i));
+  for (const v of selected) if (!(v >= 0 && v < n)) throw new Error(`removeDoublesSelected: no vertex ${v}`);
+  dist = Math.min(50, Math.max(1e-6, dist));
+  const target = new Int32Array(n).fill(-1);
+  if (selected.size > 0 && options.useUnselected) {
+    const dup = doublesByDistance(data.positions, dist, (i) => !selected.has(i));
+    for (let v = 0; v < n; v++) if (dup[v] !== -1 && dup[v] !== v) target[v] = dup[v]!;
+  } else if (selected.size > 0) {
+    const order = [...selected].sort((a, b) => a - b);
+    const sub = new Float32Array(order.length * 3);
+    order.forEach((v, i) => sub.set(data.positions.subarray(v * 3, v * 3 + 3), i * 3));
+    const dup = doublesByDistance(sub, dist);
+    order.forEach((v, i) => {
+      if (dup[i] !== -1 && dup[i] !== i) target[v] = order[dup[i]!]!;
+    });
+  }
+
+  const positions = Float32Array.from(data.positions);
+  if (options.useCentroid ?? true) {
+    const members = new Map<number, number[]>();
+    for (let v = 0; v < n; v++) {
+      const t = target[v]!;
+      if (t === -1) continue;
+      const l = members.get(t);
+      if (l) l.push(v);
+      else members.set(t, [v]);
+    }
+    for (const [t, list] of members) {
+      const c = [data.positions[t * 3]!, data.positions[t * 3 + 1]!, data.positions[t * 3 + 2]!];
+      for (const v of list) for (let k = 0; k < 3; k++) c[k] = f(c[k]! + data.positions[v * 3 + k]!);
+      const inv = f(1 / (list.length + 1));
+      for (let k = 0; k < 3; k++) positions[t * 3 + k] = f(c[k]! * inv);
+    }
+  }
+  return weldByMap({ ...data, positions }, (v) => (target[v] === -1 ? v : target[v]!));
 }
 
 export interface MergeByDistanceOptions {

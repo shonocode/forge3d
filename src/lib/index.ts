@@ -100,7 +100,7 @@ export {
 // `removeDoubles` is Blender's `remove_doubles` ported to the vertex — the same
 // survivors, the same faces; `weldMesh` (below) stays the generators' quick
 // seam-closer. `build` is the Build modifier at one frame.
-export { removeDoubles, mergeByDistance, type MergeByDistanceOptions } from "../tools/remove-doubles";
+export { removeDoubles, removeDoublesSelected, mergeByDistance, type MergeByDistanceOptions, type RemoveDoublesSelectedOptions } from "../tools/remove-doubles";
 export { reorderSpatial } from "../tools/reorder-spatial";
 export { createMonkey, type MonkeyOptions } from "../tools/monkey";
 export { build, type BuildOptions } from "../tools/build";
