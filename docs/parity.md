@@ -62,7 +62,7 @@ README の「一致」は **same の行がすべて通っている**という意
 
 | | |
 |---|---|
-| 行 | **667**（全体の回帰で 663 一致、2026-10-02。残り4行は入力の cage が 10-01 に変わった後に割れた `body` / `characterCage` のケース ― 未調査、`production/handoff.md`） |
+| 行 | **682**（全体の回帰で 678 一致、2026-10-02。残り4行は入力の cage が 10-01 に変わった後に割れた `body` / `characterCage` のケース ― 未調査、`production/handoff.md`） |
 | `bmesh.ops`（80 個） | 76 個が一致。`create_vert` は実装済みだが、面ゼロの出力は比較器が何とでも一致と言うので行が作れない。3 個は型の変換で、forge3d に対応するものが無い |
 | `bpy.ops.mesh` 専用の操作 | 15 / 15 |
 | モディファイア（メッシュ用 36 個） | 31 個。無いのは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
@@ -77,7 +77,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 **残っている既知の差**（2026-09-29）：
 
 - **既定値・オプションが未対応、または未測定**：Merge by Distance の Sharp Edges、
-  Subdivide（bpy の既定）、Laplacian Smooth の `preserve_volume`、
+  Laplacian Smooth の `preserve_volume`、
   Bevel の残りのオプション、Weighted Normal の face influence、Displace の画像テクスチャ、
   Decimate Collapse の対称と層、Boolean の FLOAT / MANIFOLD ソルバー、Shrinkwrap の cull、
   Convex Hull（bpy の既定）、Bisect の埋め、Simple Deform の origin と limits、

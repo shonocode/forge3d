@@ -225,6 +225,7 @@ export {
 export {
   poke,
   subdivideEdges,
+  subdivideSelection,
   bisectEdges,
   smoothVert,
   holesFill,
@@ -233,6 +234,7 @@ export {
   edgenetFill,
   type PokeOptions,
   type SubdivideEdgesOptions,
+  type SubdivideSelectionOptions,
   type SubdivideCornerType,
   type SubdivideFalloff,
   type SmoothVertOptions,

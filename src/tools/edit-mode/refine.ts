@@ -20,6 +20,9 @@
  */
 import { scanfillTriangles } from "./triangle-fill";
 import { meshVertNormals } from "../blender-math";
+import { calcEdges } from "../bmesh-lite";
+import { rngSrandom } from "../blender-rng";
+import { genericTurbulence } from "../texture/noise";
 import { interpWeightsPoly } from "./interp";
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { faceAttributeFillAll } from "./loop-data";
@@ -191,6 +194,16 @@ export interface SubdivideEdgesOptions {
   smoothFalloff?: SubdivideFalloff;
   /** Blender's `use_smooth_even`: scale the smoothing up where the two normals part. */
   useSmoothEven?: boolean;
+  /**
+   * Blender's `fractal`: each cut point is pushed by turbulence noise, `fractal`
+   * times the length of the edge it is on (`alter_co`). The operator divides its
+   * own property by 2.5 first — {@link subdivideSelection} does. 0 (default) is off.
+   */
+  fractal?: number;
+  /** Blender's `along_normal`, 0..1: how much of the fractal push is along the normal only (1 = all of it). */
+  alongNormal?: number;
+  /** Blender's `seed`: where in the noise the push reads (`BLI_rng_new_srandom`). Default 0. */
+  seed?: number;
 }
 
 /** Blender's `smooth_falloff` values (`bmesh_subd_falloff_calc`). */
@@ -238,11 +251,14 @@ export type SubdivideFalloff = "SMOOTH" | "SPHERE" | "ROOT" | "SHARP" | "LINEAR"
  * normals; a grid fill's inner lines then bow again, between the cut points
  * as bowed and with their interpolated normals, as Blender's do
  * (`subdivide-edges-smooth*` rows). Blender also re-runs `alter_co` on an
- * edge's own ends at 0 and 1, which moves them by float rounding only — not
- * done.
+ * edge's own ends at 0 and 1: smoothing moves them by float rounding only
+ * (not done), but the **fractal** moves them for real, so it is — the corner
+ * takes the value of the last cut edge on it, in the mesh's edge order.
+ * `fractal` / `along_normal` / `seed` (`subdivide-edges-fractal*` rows) read
+ * turbulence noise at each cut point; the cut point is placed in float32 the
+ * way `BM_edge_split` does, because the noise reads it at ten times its size.
  *
- * Not ported: `fractal` / `along_normal` / `seed` / `use_sphere` /
- * `edge_percents`.
+ * Not ported: `use_sphere` / `edge_percents`.
  *
  * Returns the faces that were cut or grew.
  */
@@ -252,6 +268,61 @@ export function subdivideEdges(
   opts: SubdivideEdgesOptions,
 ): Set<number> {
   return subdivide(em, selectedEdges, Math.max(0, Math.floor(opts.cuts)), opts);
+}
+
+/** Options of {@link subdivideSelection}: `bpy.ops.mesh.subdivide`'s, with its defaults. */
+export interface SubdivideSelectionOptions {
+  /** `number_cuts`, default 1. */
+  numberCuts?: number;
+  /** `smoothness`, default 0. */
+  smoothness?: number;
+  /** `ngon`, default true. Off, the faces it makes are triangles and quads: single-edge faces fan, and `quadCorner` STRAIGHT_CUT becomes INNERVERT. */
+  ngon?: boolean;
+  /** `quadcorner`, default STRAIGHT_CUT. */
+  quadCorner?: SubdivideCornerType;
+  /** `fractal`, default 0 (the operator divides it by 2.5). */
+  fractal?: number;
+  /** `fractal_along_normal`, default 0. */
+  fractalAlongNormal?: number;
+  /** `seed`, default 0. */
+  seed?: number;
+}
+
+/**
+ * Subdivide as the **operator** runs it — Blender's `bpy.ops.mesh.subdivide`
+ * (`edbm_subdivide_exec`), which is `bmesh.ops.subdivide_edges` with the
+ * choices the operator makes on the way:
+ *
+ * - `use_grid_fill` is **on** (the bmesh op's default is off);
+ * - the smooth falloff is LINEAR and `use_smooth_even` off;
+ * - `fractal` is divided by 2.5;
+ * - with `ngon` off, `quadcorner` STRAIGHT_CUT is turned into INNERVERT,
+ *   `use_single_edge` is on, and `use_only_quads` stays off — the property
+ *   is "no n-gons", and what it passes to the op is the **single-edge** flag.
+ *
+ * `selectedEdges` is the selection's edges (a face selection brings its own).
+ */
+export function subdivideSelection(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  opts: SubdivideSelectionOptions = {},
+): Set<number> {
+  const quadTri = opts.ngon === false;
+  let corner = opts.quadCorner ?? "STRAIGHT_CUT";
+  if (quadTri && corner === "STRAIGHT_CUT") corner = "INNER_VERT";
+  return subdivideEdges(em, selectedEdges, {
+    cuts: opts.numberCuts ?? 1,
+    smooth: opts.smoothness ?? 0,
+    smoothFalloff: "LINEAR",
+    useSmoothEven: false,
+    fractal: Math.fround((opts.fractal ?? 0) / 2.5),
+    alongNormal: opts.fractalAlongNormal ?? 0,
+    seed: opts.seed ?? 0,
+    cornerType: corner,
+    useSingleEdge: quadTri,
+    useGridFill: true,
+    useOnlyQuads: false,
+  });
 }
 
 /**
@@ -355,7 +426,7 @@ class FaceSplitter {
     for (let j = 1; j <= k; j++) {
       const t = j / (k + 1);
       this.origins.set(this.nextV.n, { from: [a, b], w: [1 - t, t] });
-      if (this.place) P.push(...this.place(a, b, t, this.nextV.n));
+      if (this.place) P.push(...this.place(a, b, t, this.nextV.n, k));
       else
         P.push(
           P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
@@ -545,14 +616,46 @@ function subdivide(
   // from those, between the cut points **as bowed**: Blender copies the
   // bowed positions in before the faces split.
   const smoothFac = opts?.smooth ?? 0;
-  const vno: Vec[] | null = smoothFac !== 0 ? meshVertNormals(polysToV3(P), polys).map((n): Vec => [n[0]!, n[1]!, n[2]!]) : null;
+  const fractal = opts?.fractal ?? 0;
+  const vno: Vec[] | null =
+    smoothFac !== 0 || fractal !== 0 ? meshVertNormals(polysToV3(P), polys).map((n): Vec => [n[0]!, n[1]!, n[2]!]) : null;
+  // `bmo_subdivide_edges`: the fractal's offset into the noise is three
+  // numbers from the seeded generator, times 200.
+  const fractalOfs: Vec | null = (() => {
+    if (fractal === 0) return null;
+    const rng = rngSrandom(opts?.seed ?? 0);
+    return [Math.fround(rng.float() * 200), Math.fround(rng.float() * 200), Math.fround(rng.float() * 200)];
+  })();
   const place: CutPlacer | null = vno
-    ? (a, b, t, v) => {
+    ? (a, b, t, v, n) => {
         const at = (i: number): Vec => [positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!];
         const no = vlerp(vno[a]!, vno[b]!, t);
         vnormalize(no);
         vno[v] = no;
-        return smoothCutPoint(at(a), vno[a]!, at(b), vno[b]!, t, smoothFac, opts?.smoothFalloff ?? "SMOOTH", !!opts?.useSmoothEven);
+        // Where `BM_edge_split` leaves the vertex: float32, one cut at a time
+        // from `a`, each by `1 / (n + 1 - cut)` of what is left. The noise is
+        // read at ten times this position, so a rounding step matters.
+        const k = Math.round(t * (n + 1));
+        let lin: Vec = vlerp(at(a), at(b), t);
+        if (fractalOfs && Math.abs(t * (n + 1) - k) < 1e-9) {
+          const f32 = Math.fround;
+          const end = at(b);
+          let cur = at(a).map(f32) as Vec;
+          for (let j = 0; j < k; j++) {
+            const fac = f32(1 / (n + 1 - j));
+            cur = cur.map((c, i) => f32(c + f32(f32(end[i]! - c) * fac))) as Vec;
+          }
+          lin = cur;
+        }
+        // Blender's coordinates are float32 here; a later grid line splits
+        // between these cut points, and the noise reads that split, so with
+        // the fractal the smoothed point is rounded the way Blender holds it.
+        const smoothed =
+          smoothFac !== 0
+            ? smoothCutPoint(at(a), vno[a]!, at(b), vno[b]!, t, smoothFac, opts?.smoothFalloff ?? "SMOOTH", !!opts?.useSmoothEven)
+            : lin;
+        const co: Vec = fractalOfs ? (smoothed.map(Math.fround) as Vec) : smoothed;
+        return fractalOfs ? fractalPush(co, lin, at(a), at(b), vno[a]!, vno[b]!, fractal, opts?.alongNormal ?? 0, fractalOfs) : co;
       }
     : null;
 
@@ -569,7 +672,9 @@ function subdivide(
     for (let k = 1; k <= cuts; k++) {
       const t = k / (cuts + 1);
       origins.set(nextV.n, { from: [a, b], w: [1 - t, t] });
-      if (place) positions.push(...place(a, b, t, nextV.n));
+      // Blender's edge runs from its lower-numbered end (`mesh_calc_edges`) and
+      // is cut from there: the placer is asked that way round.
+      if (place) positions.push(...(a < b ? place(a, b, t, nextV.n, cuts) : place(b, a, 1 - t, nextV.n, cuts)));
       else
         positions.push(
           P[a * 3]! + (P[b * 3]! - P[a * 3]!) * t,
@@ -581,6 +686,31 @@ function subdivide(
     // Stored low-to-high so both faces can read it in their own direction.
     cutsOn.set(key, a < b ? made : made.reverse());
     if (cuts > 0) carryEdgeFlags(em, a, b, a < b ? made : [...made].reverse());
+  }
+
+  // `bm_subdivide_multicut` also runs `alter_co` on each cut edge's two ends
+  // (at 0 and 1). Smoothing leaves an end where it is; the fractal does not —
+  // it moves the corner by the noise at the corner, scaled by **that edge's**
+  // length and normals. A corner on several cut edges takes the value of the
+  // one processed last, and they are processed in the mesh's edge order
+  // (`mesh_calc_edges`). The corners move after every cut point is placed:
+  // Blender keeps the result in a temporary layer until then.
+  if (fractalOfs && vno) {
+    const rank = new Map<string, number>();
+    calcEdges(polys, polys.length < 1000 ? 1 : 8).forEach(([x, y], i) => rank.set(seamKey(x, y), i));
+    const byRank = [...cutsOn.keys()].sort((x, y) => (rank.get(x) ?? Infinity) - (rank.get(y) ?? Infinity));
+    const moved = new Map<number, Vec>();
+    for (const key of byRank) {
+      const [a, b] = key.split("_").map(Number) as [number, number];
+      const at = (i: number): Vec => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!];
+      for (const v of [a, b])
+        moved.set(v, fractalPush(at(v), at(v), at(a), at(b), vno[a]!, vno[b]!, fractal, opts?.alongNormal ?? 0, fractalOfs));
+    }
+    for (const [v, co] of moved) {
+      positions[v * 3] = co[0];
+      positions[v * 3 + 1] = co[1];
+      positions[v * 3 + 2] = co[2];
+    }
   }
 
   // The pattern table in `bmo_subdivide.cc`'s order; the first that matches
@@ -676,7 +806,8 @@ function subdivide(
 }
 
 /** Where the cut `t` along a → b goes, for new vertex `v`. */
-type CutPlacer = (a: number, b: number, t: number, v: number) => Vec;
+/** Where cut point `v`, `t` of the way from `a` to `b` of `n` cuts on that edge, goes. Always walked from `a` — the end Blender's `edge->v1` is. */
+type CutPlacer = (a: number, b: number, t: number, v: number, n: number) => Vec;
 
 const polysToV3 = (P: ArrayLike<number>): [number, number, number][] =>
   Array.from({ length: P.length / 3 }, (_, i) => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!]);
@@ -777,6 +908,56 @@ function slerpCoNo(coA: Vec, noA: Vec, coB: Vec, noB: Vec, noDir: Vec, fac: numb
  * normal and its reflection, one b's — blended, faded by `falloff` and
  * scaled by `smooth`. Symmetric in a and b.
  */
+/**
+ * `alter_co`'s fractal step: three turbulence samples around the cut point
+ * `at` (the point on the edge, before any smoothing, plus the seed's offset,
+ * times 10) give a displacement along the edge ends' mean normal and the two
+ * directions across it, `fractal` times the edge length. `alongNormal`
+ * takes the two across directions away.
+ */
+function fractalPush(
+  co: Vec,
+  at: Vec,
+  coA: Vec,
+  coB: Vec,
+  noA: Vec,
+  noB: Vec,
+  fractal: number,
+  alongNormal: number,
+  ofs: Vec,
+): Vec {
+  const f = Math.fround;
+  const len = f(Math.hypot(coA[0] - coB[0], coA[1] - coB[1], coA[2] - coB[2]));
+  const fac = f(f(fractal) * len);
+  const normal: Vec = [f(f(noA[0] + noB[0]) * 0.5), f(f(noA[1] + noB[1]) * 0.5), f(f(noA[2] + noB[2]) * 0.5)];
+  // `ortho_basis_v3v3_v3`
+  const l2 = f(f(normal[0] * normal[0]) + f(normal[1] * normal[1]));
+  let b1: Vec;
+  let b2: Vec;
+  if (l2 > 1.1920928955078125e-7) {
+    const d = f(1 / f(Math.sqrt(l2)));
+    b1 = [f(normal[1] * d), f(-normal[0] * d), 0];
+    b2 = [f(-normal[2] * b1[1]), f(normal[2] * b1[0]), f(f(normal[0] * b1[1]) - f(normal[1] * b1[0]))];
+  } else {
+    b1 = [normal[2] < 0 ? -1 : 1, 0, 0];
+    b2 = [0, 1, 0];
+  }
+  const c0 = f(f(at[0] + ofs[0]) * 10);
+  const c1 = f(f(at[1] + ofs[1]) * 10);
+  const c2 = f(f(at[2] + ofs[2]) * 10);
+  const t0 = f(fac * f(genericTurbulence(1, c0, c1, c2, 15, false, 2) - 0.5));
+  const t1 = f(fac * f(genericTurbulence(1, c1, c0, c2, 15, false, 2) - 0.5));
+  const t2 = f(fac * f(genericTurbulence(1, c1, c2, c0, 15, false, 2) - 0.5));
+  const across = f(1 - f(alongNormal));
+  const out: Vec = [co[0], co[1], co[2]];
+  for (let k = 0; k < 3; k++) {
+    out[k] = f(out[k]! + f(normal[k]! * t0));
+    out[k] = f(out[k]! + f(b1[k]! * f(t1 * across)));
+    out[k] = f(out[k]! + f(b2[k]! * f(t2 * across)));
+  }
+  return out;
+}
+
 function smoothCutPoint(
   coA: Vec,
   noA: readonly number[],
