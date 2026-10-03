@@ -1,6 +1,7 @@
 /**
  * Laplacian smoothing — Blender's `smooth_laplacian_vert`
- * (the `LAPLACIANSMOOTH` modifier).
+ * (`bmo_smooth_laplacian.cc`, 5.1.1; the operator behind
+ * `bpy.ops.mesh.vertices_smooth_laplacian`), ported whole on `bmesh-lite`.
  *
  * Unlike `smoothVert`, which averages a vertex with its neighbours and so
  * shrinks whatever it touches, this relaxes the surface toward its own
@@ -10,19 +11,10 @@
  *
  * Pure and headless.
  *
- * ## It was recorded as unmeasurable, and the axis flags were why
- *
- * The API matrix listed this under "the reference will not act" over five
- * configurations, all of which varied `lambda_factor` and `lambda_border` and
- * none of which mentioned `use_x` / `use_y` / `use_z`. **Those default to
- * false**, so every one of the five asked Blender to move nothing and Blender
- * obliged. This project had already been caught by exactly that default on
- * `smoothVert`'s reference, and the note was in the record.
- *
  * ## The rule
  *
- * It is **implicit** — one linear solve, not a sweep. For every vertex that
- * is not on a boundary:
+ * It is **implicit** — one linear least-squares solve, not a sweep. For every
+ * vertex that is not on a boundary:
  *
  * ```
  * (1 + L_i) x_i  −  L_i · (Σ_j w_ij x_j) / (Σ_j w_ij)  =  x0_i
@@ -30,127 +22,107 @@
  * ```
  *
  * where `ring_i` is the sum of the **corner triangles** touching `i` — for
- * each corner of each face, the triangle (prev, curr, next), its area added to
- * all three of them — and `w_ij` are the usual cotangent weights. A triangle's
- * own area therefore lands in `ring_i` three times, which is why this is the
- * same thing as the `lambda / (12 · A_i)` the probes fitted on fans.
+ * each corner of each selected face, the triangle (prev, curr, next), its
+ * area added to all three of them — and `w_ij` the cotangent weights, each
+ * corner contributing half of its triangle's. A triangle's own area therefore
+ * lands in `ring_i` three times (the `lambda / (12 · A_i)` the first probes
+ * fitted on fans), and a quad's corner triangles are the four of its two
+ * triangulations, which is why a quad is not simply two triangles.
  *
- * Boundary vertices are pinned. Everything in it is measured, and each piece
- * took its own probe (`tools/modeling/parity/probe-laplacian*.py`):
+ * ## Selection decides what a vertex is
  *
- * - **implicit, not explicit.** Fitting `x = (x0 + L t)/(1 + L)` to four
- *   values of `lambda` gives the same `L/lambda` to six places, which a
- *   single explicit step cannot do.
- * - **the target is the cotangent umbrella**, not the neighbour mean. On nine
- *   differently-shaped fans the measured displacement points at it to within
- *   1e-9, where the mean is 10° away.
- * - **`L_i = lambda/(12 A_i)`**, over 27 fans across three valences, three
- *   radii and three apex heights. This took three probes: on a cone
- *   `Σw/L` happens to be independent of the height, which sent two runs
- *   looking for a denominator with no area in it at all.
- * - **it is one coupled solve.** Every fan has a boundary rim, so its single
- *   interior vertex decouples and Jacobi, Gauss-Seidel and a solve all agree.
- *   Grids and a closed icosphere tell them apart, and the solve wins.
+ * Blender does not read `verts=` alone. A **face counts only if it is
+ * selected**, and a vertex is a *boundary* vertex when one of its edges has a
+ * single face **or one of its faces is not selected**. Boundary rows are the
+ * identity plus `lambda_border` — and the border-edge terms that would smooth
+ * them along the border (`1 / length` weights) are built only for edges that
+ * are boundary and **not** selected. With everything selected, which is what
+ * the operator sees when the whole mesh is, no edge qualifies, so a boundary
+ * vertex's row is `(1 + 2·lambda_border) · x_i = x0_i` — a **scaling toward
+ * the world origin**, which {@link SmoothLaplacianOptions.lambdaBorder} reproduces.
+ * An earlier version of this file called that "frame-dependent" and refused
+ * `lambda_border`; the frame dependence is real and it is this.
  *
- * Against Blender the whole rule reproduces to **1.2e-7** — float32, which is
- * what Blender stores coordinates in — on fans, on grids whose interior
- * vertices are coupled, and on an icosphere with no boundary at all.
+ * `verts` is taken as a vertex selection in **vertex select mode**: an edge
+ * is selected when both ends are, a face when all its corners are.
  *
- * ## Quads
+ * Variables are locked for every vertex **not** in `verts`, at the value `0`
+ * (Blender only sets the unlocked ones). The solve itself never reads them — a
+ * selected, non-boundary vertex only references the corners of its own
+ * selected faces — but `validate_solution` does, so a selected vertex next to
+ * an unselected one sees that edge as stretched to or from the origin and is
+ * frozen, and one border term (a boundary edge with a single selected end) is
+ * built from the raw `1 / length` sum and pulls toward 0. That is the reason a
+ * partial selection gives results "no reading fits": they are all one reading
+ * of the same quirk.
  *
- * A cotangent weight is a statement about a triangle, and Blender does not
- * simply triangulate: a quad contributes **both** of its triangulations with
- * every weight halved, diagonals included. Measured, that predicts Blender's
- * whole output to 2.0e-17 on a 4x4 quad grid and 2.5e-11 on a 6x6, against
- * 3.7e-3 to 1.5e-2 for plain triangulation either way round. It is also what
- * the loop walk in `init_laplacian_matrix` comes to, read later: the four
- * corner triangles, each weight halved.
+ * ## The clamps
  *
- * **The area is the part that took reading the source.** For three sessions
- * this file said "half its area to each corner", which is the closest of six
- * guesses and still left 2.9e-6 on a strongly bent sheet — thirty times
- * float32, so a real remainder. There is no triangulation in it: the ring area
- * is the sum of the corner triangles, so a quad gives each of its corners
- * three of its four, with the fourth — the one opposite — left out. With that,
- * the `saddleGrid` parity case went from 0.02 mm to **0.0000 mm**.
- *
- * ## What this does not do, and why
- *
- * - **`lambda_border` is not offered.** Blender's is **frame-dependent**,
- *   which makes it a bug rather than a rule to copy: at the origin every rim
- *   vertex comes back at exactly `x / (1 + 2·lambda_border)` — a scaling
- *   toward the world origin, not a move toward its neighbours, measured on an
- *   irregular rim where the two are nothing alike. Translate the same mesh to
- *   x+4 and the operator stops doing anything at all, interior vertices
- *   included; past `lambda_border` 4 it also stops. With it at 0 the operator
- *   is exact and translating the mesh 100 units changes nothing.
- * - **no vertex selection.** Blender's `verts=` does not mean "smooth these
- *   and pin the rest". Measured on a 25-vertex grid: selecting the 9 interior
- *   vertices moves the same 9 but lands them 0.036 away from selecting all
- *   25; selecting one or two moves nothing; and selecting the 16 border
- *   vertices moves exactly the 10 of them that are **not** in any
- *   fully-selected face. No reading fits all four. Smoothing part of a mesh
- *   is better served by running this and blending the result.
- * - **n-gons are refused.** Blender's loop walk is general and would handle
- *   them, and the corner-triangle form above is the shape of that path — but
- *   it has not been *measured* here, and guessing would be the fourth time
- *   this operator got written down wrong.
- *
- * ## The two clamps, which no well-proportioned mesh can see
- *
- * Both come straight from `bmo_smooth_laplacian.cc` and both only ever
- * subtract movement:
- *
- * - **a corner triangle under `1e-5` freezes its own vertex** (Blender's
- *   `zerola`), not its neighbours.
+ * - **a corner triangle under `1e-5` freezes its own vertex** (`zerola`);
  * - **`validate_solution`** throws away the answer for *both* ends of any edge
  *   the solve would stretch past **1.8x** or squash below **0.15x** of its
  *   original length. Those vertices keep the positions they came in with.
  *
- * A cage's edges never come near either limit, which is exactly why the
- * `character` parity case was the only one of three that could see it: dense
- * thin triangles, and 22 mm of average error on the interior vertices that no
- * amount of solver tuning was going to explain. With the clamps in, that case
- * reads **0.0001 mm**, and the two sides freeze **the same 812 vertices of
- * 1495** — the same set, not just the same count.
+ * ## Volume
  *
- * **What is not read: exactly when the edge clamp fires.** A 4x4 sheet with two
- * interior vertices deliberately brought 0.0005 apart has the solve pull that
- * edge to 79x its length, which is far past the 1.8x ceiling, and **neither
- * Blender nor this freezes them** — both move them to the same place, to six
- * decimals (`probe-laplacian24.py`). So the trigger is narrower than the code
- * reads, in the same way on both sides. It is recorded rather than guessed at:
- * every case measured agrees, and the next person should not assume the
- * condition is understood.
+ * `preserve_volume` measures the mesh's volume before and after
+ * (`BM_mesh_calc_volume`, every face tessellated by the ear-clip polyfill,
+ * absolute value) and scales the smoothed vertices by `cbrt(before / after)`
+ * **about the world origin** — frame-dependent by construction.
+ *
+ * Coordinates, weights and areas are held in float32 as Blender does; the
+ * solve is double (Eigen's sparse LU on the normal equations, here
+ * preconditioned conjugate gradients on the same system).
  */
 import { withPositions, type MeshData } from "../../lib/mesh";
+import { f, sub, dot, cross, type V3 } from "../blender-math";
+import { bmFromMesh, diskEdges, faceLoops, isBoundary, liveEdges, liveFaces, loopsOfVert, type BM, type BV } from "../bmesh-lite";
+import { ngonTriangles } from "../triangulate";
 
 export interface SmoothLaplacianOptions {
   /** Blender's `lambda_factor`. Default 1. Larger relaxes further. */
   lambda?: number;
-  /** Whether each axis may move. Default **true** — see below. */
+  /**
+   * Blender's `lambda_border`. Default **0**, which leaves the boundary where
+   * it is; see the module comment for what a positive value does with the
+   * whole mesh selected. (The operator's own default is 5e-5.)
+   */
+  lambdaBorder?: number;
+  /** Whether each axis may move. Default **true** — Blender's bmesh op defaults to false and then does nothing. */
   useX?: boolean;
   useY?: boolean;
   useZ?: boolean;
+  /** Blender's `preserve_volume`. Default false (the operator's is true). */
+  preserveVolume?: boolean;
   /**
-   * Residual the solver stops at, relative to the right-hand side.
-   * Default 1e-12, which is well inside the float32 the comparison is made
-   * in.
+   * The vertices to smooth, as a vertex selection. Default all. Vertices
+   * outside it are locked at the origin, as Blender does — see above.
    */
+  verts?: Iterable<number>;
+  /** Residual the solver stops at, relative to the right-hand side. Default 1e-13. */
   tolerance?: number;
-  /** Cap on solver iterations. Default 2000. */
+  /** Cap on solver iterations. Default 20000. */
   maxIterations?: number;
 }
 
-/** One row of the system: the diagonal, and the off-diagonal entries. */
-export interface Row {
-  diag: number;
-  cols: number[];
-  vals: number[];
+const SMOOTH_LAPLACIAN_MAX_EDGE_PERCENTAGE = 1.8;
+const SMOOTH_LAPLACIAN_MIN_EDGE_PERCENTAGE = 0.15;
+const MIN_AREA = f(0.00001);
+const FLT_EPSILON = 1.1920928955078125e-7;
+
+const len3 = (a: V3): number => f(Math.sqrt(dot(a, a)));
+/** `area_tri_v3`: `len(cross_tri) / 2`, `cross_tri_v3 = (v1 − v2) × (v2 − v3)`. */
+const areaTri = (a: V3, b: V3, c: V3): number => f(len3(cross(sub(a, b), sub(b, c))) * 0.5);
+/** `cotangent_tri_weight_v3`. */
+function cotTriWeight(v1: V3, v2: V3, v3: V3): number {
+  const a = sub(v2, v1);
+  const b = sub(v3, v1);
+  const cLen = len3(cross(a, b));
+  return cLen > FLT_EPSILON ? f(dot(a, b) / cLen) : 0;
 }
 
 /**
- * Relax a surface toward its own curvature.
+ * Relax a surface toward its own curvature — `bmesh.ops.smooth_laplacian_vert`.
  *
  * ```ts
  * const relaxed = smoothLaplacianVert(noisy, { lambda: 2 });
@@ -159,205 +131,415 @@ export interface Row {
  * **The axis flags default to `true` here and to `false` in Blender.** That
  * is deliberate: Blender's defaults make the operator do nothing, which is
  * how it spent three sessions in this project's "the reference will not act"
- * list. Anyone who wants one axis can say so; nobody wants the no-op.
+ * list.
  *
- * Boundary vertices are held. Triangles and quads only — an n-gon throws,
- * because Blender's n-gon path has not been measured.
+ * Triangles, quads and n-gons. A mesh with no faces comes back unchanged.
  */
-export function smoothLaplacianVert(
-  data: MeshData,
-  opts: SmoothLaplacianOptions = {},
-): MeshData {
-  const lambda = opts.lambda ?? 1;
+export function smoothLaplacianVert(data: MeshData, opts: SmoothLaplacianOptions = {}): MeshData {
+  if (data.polys.length === 0) return data;
+  const lambdaFactor = f(opts.lambda ?? 1);
+  const lambdaBorder = f(opts.lambdaBorder ?? 0);
   const use = [opts.useX ?? true, opts.useY ?? true, opts.useZ ?? true];
-  const tolerance = opts.tolerance ?? 1e-12;
-  const maxIterations = opts.maxIterations ?? 2000;
+  const preserveVolume = !!opts.preserveVolume;
+  const count = data.positions.length / 3;
+  const slot = [...new Set(opts.verts ?? Array.from({ length: count }, (_, i) => i))].filter((v) => v >= 0 && v < count);
+  const out = solveOnce(data, slot, lambdaFactor, lambdaBorder, use, preserveVolume, opts.tolerance ?? 1e-13, opts.maxIterations ?? 20000);
+  return withPositions(data, out);
+}
 
-  const P = Float64Array.from(data.positions);
-  const count = P.length / 3;
-  // Blender's three constants, from `bmo_smooth_laplacian.cc`: a corner
-  // triangle thinner than `min_area` freezes its vertex, and an edge the solve
-  // would stretch or squash past these ratios disqualifies both of its ends.
-  const MIN_AREA = 0.00001;
-  const MAX_EDGE_RATIO = 1.8;
-  const MIN_EDGE_RATIO = 0.15;
+/** Options of {@link smoothLaplacianSelection}: `bpy.ops.mesh.vertices_smooth_laplacian`'s. */
+export interface SmoothLaplacianSelectionOptions {
+  /** `repeat`, default 1: passes, each reading the last one's result. */
+  repeat?: number;
+  /** `lambda_factor`, default 1. */
+  lambdaFactor?: number;
+  /** `lambda_border`, default **5e-5**. */
+  lambdaBorder?: number;
+  /** `use_x` / `use_y` / `use_z`, default true. */
+  useX?: boolean;
+  useY?: boolean;
+  useZ?: boolean;
+  /** `preserve_volume`, default **true**. */
+  preserveVolume?: boolean;
+  /** The selected vertices, default all. */
+  verts?: Iterable<number>;
+}
 
-  for (const poly of data.polys)
-    if (poly.length > 4)
-      throw new Error(
-        `smoothLaplacianVert: ${poly.length}-gon — Blender's n-gon path is not measured`,
-      );
+/**
+ * Laplacian Smooth as the **operator** runs it —
+ * `bpy.ops.mesh.vertices_smooth_laplacian` (`edbm_do_smooth_laplacian_vertex_exec`):
+ * {@link smoothLaplacianVert} with the operator's defaults (a `lambda_border`
+ * of 5e-5 and the volume preserved, where the bmesh op's are 0 and off) and
+ * `repeat` passes. The border value is not a no-op — with the whole mesh
+ * selected it scales every rim vertex by `1 / (1 + 2·5e-5)` toward the origin.
+ */
+export function smoothLaplacianSelection(data: MeshData, opts: SmoothLaplacianSelectionOptions = {}): MeshData {
+  let out = data;
+  const verts = opts.verts ? [...opts.verts] : undefined;
+  for (let i = 0; i < Math.max(1, Math.floor(opts.repeat ?? 1)); i++)
+    out = smoothLaplacianVert(out, {
+      lambda: opts.lambdaFactor ?? 1,
+      lambdaBorder: opts.lambdaBorder ?? 5e-5,
+      useX: opts.useX,
+      useY: opts.useY,
+      useZ: opts.useZ,
+      preserveVolume: opts.preserveVolume ?? true,
+      verts,
+    });
+  return out;
+}
 
-  // ── weights, areas, and which edges have one face ────────────────────────
-  const weights: Map<number, number>[] = Array.from({ length: count }, () => new Map());
-  /** Blender's `ring_areas`: the sum of the corner triangles touching a vertex. */
-  const area = new Float64Array(count);
-  /** Blender's `zerola`: vertices whose row is the identity, so they do not move. */
-  const frozen = new Uint8Array(count);
-  const edgeFaces = new Map<number, number>();
+/** One `bmo_smooth_laplacian_vert_exec`. */
+function solveOnce(
+  data: MeshData,
+  slot: number[],
+  lambdaFactor: number,
+  lambdaBorder: number,
+  use: boolean[],
+  preserveVolume: boolean,
+  tolerance: number,
+  maxIterations: number,
+): Float32Array {
+  const bm = bmFromMesh(data);
+  const faces = liveFaces(bm);
+  const count = bm.verts.length;
+  const co = (v: BV): V3 => v.co;
+  const id = (v: BV): number => v.index;
 
-  const at = (v: number): [number, number, number] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  // The selection, as vertex select mode flushes it.
+  const inSlot = new Uint8Array(count);
+  for (const v of slot) inSlot[v] = 1;
+  const edgeSel = new Map<object, boolean>();
+  for (const e of liveEdges(bm)) edgeSel.set(e, !!inSlot[e.v1.index] && !!inSlot[e.v2.index]);
+  const faceSel = new Map<object, boolean>();
+  for (const fc of faces) faceSel.set(fc, faceLoops(fc).every((l) => inSlot[l.v.index]));
 
-  const addWeight = (p: number, q: number, value: number): void => {
-    weights[p]!.set(q, (weights[p]!.get(q) ?? 0) + value);
-    weights[q]!.set(p, (weights[q]!.get(p) ?? 0) + value);
+  const eweights = new Map<object, number>();
+  const fweights: [number, number, number][] = [];
+  const ringAreas = new Float64Array(count);
+  const vlengths = new Float64Array(count);
+  const vweights = new Float64Array(count);
+  const zerola = new Uint8Array(count);
+  // Float32 accumulators: JS doubles rounded at every add.
+  const addF = (arr: Float64Array, i: number, x: number): void => {
+    arr[i] = f(arr[i]! + x);
   };
 
-  /** cot of the angle at `o`, for the edge (p, q). */
-  const cot = (p: number, q: number, o: number): number => {
-    const [ox, oy, oz] = at(o);
-    const [px, py, pz] = at(p);
-    const [qx, qy, qz] = at(q);
-    const ux = px - ox, uy = py - oy, uz = pz - oz;
-    const tx = qx - ox, ty = qy - oy, tz = qz - oz;
-    const cx = uy * tz - uz * ty;
-    const cy = uz * tx - ux * tz;
-    const cz = ux * ty - uy * tx;
-    const s = Math.hypot(cx, cy, cz);
-    return s > 1e-14 ? (ux * tx + uy * ty + uz * tz) / s : 0;
-  };
-
-  const triArea = (a: number, b: number, c: number): number => {
-    const [ax, ay, az] = at(a);
-    const [bx, by, bz] = at(b);
-    const [cx0, cy0, cz0] = at(c);
-    const ux = bx - ax, uy = by - ay, uz = bz - az;
-    const vx = cx0 - ax, vy = cy0 - ay, vz = cz0 - az;
-    return Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
-  };
-
-  const triangle = (a: number, b: number, c: number, scale = 1): void => {
-    addWeight(a, b, cot(a, b, c) * scale);
-    addWeight(b, c, cot(b, c, a) * scale);
-    addWeight(c, a, cot(c, a, b) * scale);
-  };
-
-  for (const poly of data.polys) {
-    if (poly.length === 3) {
-      const [a, b, c] = poly as [number, number, number];
-      triangle(a, b, c);
-    } else if (poly.length === 4) {
-      const [a, b, c, d] = poly as [number, number, number, number];
-      // Both triangulations, halved, diagonals kept — measured, and the one
-      // reading of six that gets a quad grid exactly right. It is also what
-      // Blender's loop walk comes to: the four corner triangles, each weight
-      // halved. Only the **scale** of these matters, because the row divides
-      // by the vertex's own weight sum.
-      triangle(a, b, c, 0.5);
-      triangle(a, c, d, 0.5);
-      triangle(b, c, d, 0.5);
-      triangle(b, d, a, 0.5);
+  // init_laplacian_matrix
+  for (const e of liveEdges(bm)) {
+    if (edgeSel.get(e) || !isBoundary(e)) continue;
+    let w1 = f(Math.sqrt(dot(sub(co(e.v1), co(e.v2)), sub(co(e.v1), co(e.v2)))));
+    if (w1 > MIN_AREA) {
+      w1 = f(1 / w1);
+      eweights.set(e, w1);
+      addF(vlengths, id(e.v1), w1);
+      addF(vlengths, id(e.v2), w1);
     } else {
-      continue; // a 1- or 2-gon carries no area and no angle
-    }
-
-    // The one-ring area, exactly as `init_laplacian_matrix` accumulates it:
-    // **per corner**, the triangle (prev, curr, next), its area added to all
-    // three of those vertices. For a triangle that is the face's own area
-    // counted three times over — which is where the 12 in `lambda/(12·A)`
-    // comes from — and for a quad it is three of the four corner triangles at
-    // each corner, which is a different number from "half of one
-    // triangulation" and the 0.02 mm the `saddleGrid` row used to be out by.
-    for (let i = 0; i < poly.length; i++) {
-      const prev = poly[(i - 1 + poly.length) % poly.length]!;
-      const curr = poly[i]!;
-      const next = poly[(i + 1) % poly.length]!;
-      const areaf = triArea(prev, curr, next);
-      // A corner thinner than this freezes **its own** vertex, not its
-      // neighbours — `sys->zerola[vi_curr] = true` and nothing else.
-      if (areaf < MIN_AREA) frozen[curr] = 1;
-      area[prev]! += areaf;
-      area[curr]! += areaf;
-      area[next]! += areaf;
-    }
-    for (let i = 0; i < poly.length; i++) {
-      const p = poly[i]!;
-      const q = poly[(i + 1) % poly.length]!;
-      const key = p < q ? p * count + q : q * count + p;
-      edgeFaces.set(key, (edgeFaces.get(key) ?? 0) + 1);
+      zerola[id(e.v1)] = 1;
+      zerola[id(e.v2)] = 1;
     }
   }
-
-  const boundary = new Uint8Array(count);
-  for (const [key, n] of edgeFaces) {
-    if (n !== 1) continue;
-    boundary[Math.floor(key / count)] = 1;
-    boundary[key % count] = 1;
-  }
-
-  // ── the system ──────────────────────────────────────────────────────────
-  const rows: Row[] = [];
-  for (let i = 0; i < count; i++) {
-    const w = weights[i]!;
-    let ws = 0;
-    for (const value of w.values()) ws += value;
-    if (frozen[i] || boundary[i] || area[i]! <= 0 || w.size === 0 || Math.abs(ws) < 1e-14) {
-      rows.push({ diag: 1, cols: [], vals: [] });
+  const loopBase = new Map<object, number>();
+  let lCurr = 0;
+  for (const fc of faces) {
+    loopBase.set(fc, lCurr);
+    if (!faceSel.get(fc)) {
+      lCurr += fc.len;
       continue;
     }
-    // `1 + lambda/(4·ring_areas)` on the diagonal. The familiar `12·A` is this
-    // with a triangle's ring area written out — it counts each incident
-    // triangle three times.
-    const L = lambda / (4 * area[i]!);
-    const cols: number[] = [];
-    const vals: number[] = [];
-    for (const [j, wij] of w) {
-      cols.push(j);
-      vals.push((-L * wij) / ws);
+    for (const l of faceLoops(fc)) {
+      const viPrev = id(l.prev.v);
+      const viCurr = id(l.v);
+      const viNext = id(l.next.v);
+      const cp = co(l.prev.v);
+      const cc = co(l.v);
+      const cn = co(l.next.v);
+      const areaf = areaTri(cp, cc, cn);
+      if (areaf < MIN_AREA) zerola[viCurr] = 1;
+      addF(ringAreas, viPrev, areaf);
+      addF(ringAreas, viCurr, areaf);
+      addF(ringAreas, viNext, areaf);
+      const w1 = f(cotTriWeight(cc, cn, cp) / 2);
+      const w2 = f(cotTriWeight(cn, cp, cc) / 2);
+      const w3 = f(cotTriWeight(cp, cc, cn) / 2);
+      const k = lCurr++;
+      fweights[k] = [w1, w2, w3];
+      addF(vweights, viPrev, f(w1 + w2));
+      addF(vweights, viCurr, f(w2 + w3));
+      addF(vweights, viNext, f(w1 + w3));
     }
-    rows.push({ diag: 1 + L, cols, vals });
   }
 
-  // All three axes are solved whatever `use` says, because the check below
-  // reads the solved position as a whole — Blender sets the right-hand side
-  // for x, y and z unconditionally and only consults `use_*` when writing the
-  // answer back.
-  const solved = Float64Array.from(P);
-  for (let axis = 0; axis < 3; axis++) {
-    const b = new Float64Array(count);
-    for (let i = 0; i < count; i++) b[i] = P[i * 3 + axis]!;
-    const x = bicgstab(rows, b, tolerance, maxIterations);
-    for (let i = 0; i < count; i++) solved[i * 3 + axis] = x[i]!;
+  const isBoundaryVert = (v: BV): boolean => {
+    for (const e of diskEdges(v)) if (isBoundary(e)) return true;
+    for (const l of loopsOfVert(v)) if (!faceSel.get(l.f)) return true;
+    return false;
+  };
+  const boundaryCache = new Map<BV, boolean>();
+  const vertIsBoundary = (v: BV): boolean => {
+    let b = boundaryCache.get(v);
+    if (b === undefined) boundaryCache.set(v, (b = isBoundaryVert(v)));
+    return b;
+  };
+
+  // The matrix: rows = every vertex, columns = the slot's vertices (the rest are locked at 0).
+  const colOf = new Int32Array(count).fill(-1);
+  slot.forEach((v, k) => (colOf[v] = k));
+  const rowsT: { r: number; c: number; v: number }[] = [];
+  const add = (row: number, col: number, value: number): void => {
+    if (colOf[col]! < 0) return; // a locked column at 0 contributes nothing
+    rowsT.push({ r: row, c: colOf[col]!, v: value });
+  };
+  const rhs: Float64Array[] = [0, 1, 2].map(() => new Float64Array(count));
+
+  for (const vi of slot) {
+    const v = bm.verts[vi]!;
+    for (let a = 0; a < 3; a++) rhs[a]![vi] = v.co[a]!;
+    const i = vi;
+    if (!zerola[i] && ringAreas[i] !== 0) {
+      let w = f(vweights[i]! * ringAreas[i]!);
+      vweights[i] = w === 0 ? 0 : f(f(-lambdaFactor) / f(4 * w));
+      w = vlengths[i]!;
+      vlengths[i] = w === 0 ? 0 : f(f(f(-lambdaBorder) * 2) / w);
+      if (!vertIsBoundary(v)) add(i, i, f(1 + f(lambdaFactor / f(4 * ringAreas[i]!))));
+      else add(i, i, f(1 + f(lambdaBorder * 2)));
+    } else {
+      add(i, i, 1);
+    }
   }
 
-  // `validate_solution`: an edge that the solve would stretch past 1.8x or
-  // squash below 0.15x of its length **disqualifies both of its ends**, which
-  // keep the positions they came in with. This is the whole of the 22 mm the
-  // `character` row was out by, and it is invisible on anything well
-  // proportioned: a cage's edges never come near either limit, so the row's
-  // other two cases cannot see it. Dense thin triangles can, and do.
-  const rejected = new Uint8Array(count);
-  const seen = new Set<number>();
-  const check = (p: number, q: number): void => {
-    const key = p < q ? p * count + q : q * count + p;
-    if (seen.has(key)) return;
-    seen.add(key);
-    const before = Math.hypot(
-      P[p * 3]! - P[q * 3]!,
-      P[p * 3 + 1]! - P[q * 3 + 1]!,
-      P[p * 3 + 2]! - P[q * 3 + 2]!,
-    );
-    const after = Math.hypot(
-      solved[p * 3]! - solved[q * 3]!,
-      solved[p * 3 + 1]! - solved[q * 3 + 1]!,
-      solved[p * 3 + 2]! - solved[q * 3 + 2]!,
-    );
-    if (after > before * MAX_EDGE_RATIO || after < before * MIN_EDGE_RATIO) {
-      rejected[p] = 1;
-      rejected[q] = 1;
+  // fill_laplacian_matrix
+  for (const fc of faces) {
+    if (!faceSel.get(fc)) continue;
+    const ls = faceLoops(fc);
+    let k = loopBase.get(fc)!;
+    let l0 = ls[0]!;
+    let viPrev = id(l0.prev.v);
+    let viCurr = id(l0.v);
+    const okOf = (v: BV): boolean => !zerola[id(v)] && !vertIsBoundary(v);
+    let okPrev = okOf(l0.prev.v);
+    let okCurr = okOf(l0.v);
+    for (const l of ls) {
+      const viNext = id(l.next.v);
+      const okNext = okOf(l.next.v);
+      const fw = fweights[k]!;
+      if (okPrev) {
+        add(viPrev, viCurr, f(fw[1] * vweights[viPrev]!));
+        add(viPrev, viNext, f(fw[0] * vweights[viPrev]!));
+      }
+      if (okCurr) {
+        add(viCurr, viNext, f(fw[2] * vweights[viCurr]!));
+        add(viCurr, viPrev, f(fw[1] * vweights[viCurr]!));
+      }
+      if (okNext) {
+        add(viNext, viCurr, f(fw[2] * vweights[viNext]!));
+        add(viNext, viPrev, f(fw[0] * vweights[viNext]!));
+      }
+      viPrev = viCurr;
+      viCurr = viNext;
+      okPrev = okCurr;
+      okCurr = okNext;
+      k++;
+    }
+    l0 = ls[0]!;
+  }
+  for (const e of liveEdges(bm)) {
+    if (edgeSel.get(e) || !isBoundary(e)) continue;
+    const i1 = id(e.v1);
+    const i2 = id(e.v2);
+    if (!zerola[i1] && !zerola[i2]) {
+      const w = eweights.get(e) ?? 0;
+      add(i1, i2, f(w * vlengths[i1]!));
+      add(i2, i1, f(w * vlengths[i2]!));
+    }
+  }
+
+  const solved = leastSquares(rowsT, rhs, count, slot.length, colOf, tolerance, maxIterations);
+  const start = Float32Array.from(data.positions);
+  if (!solved) return start;
+
+  // validate_solution — the locked variables read as 0.
+  const ve = (vi: number, a: number): number => (colOf[vi]! >= 0 ? f(solved[a]![colOf[vi]!]!) : 0);
+  for (const e of liveEdges(bm)) {
+    const i1 = id(e.v1);
+    const i2 = id(e.v2);
+    const v1: V3 = [ve(i1, 0), ve(i1, 1), ve(i1, 2)];
+    const v2: V3 = [ve(i2, 0), ve(i2, 1), ve(i2, 2)];
+    const leni = len3(sub(co(e.v1), co(e.v2)));
+    const lene = len3(sub(v1, v2));
+    if (
+      lene > f(leni * f(SMOOTH_LAPLACIAN_MAX_EDGE_PERCENTAGE)) ||
+      lene < f(leni * f(SMOOTH_LAPLACIAN_MIN_EDGE_PERCENTAGE))
+    ) {
+      zerola[i1] = 1;
+      zerola[i2] = 1;
+    }
+  }
+  const vini = preserveVolume ? bmVolume(bm) : 0;
+  for (const vi of slot) {
+    if (zerola[vi]) continue;
+    for (let a = 0; a < 3; a++) if (use[a]) bm.verts[vi]!.co[a] = f(solved[a]![colOf[vi]!]!);
+  }
+  if (preserveVolume) {
+    const vend = bmVolume(bm);
+    if (f(vend) !== 0) {
+      const beta = f(Math.pow(f(f(vini) / f(vend)), f(1 / 3)));
+      for (const vi of slot) {
+        const v = bm.verts[vi]!;
+        for (let a = 0; a < 3; a++) if (use[a]) v.co[a] = f(v.co[a]! * beta);
+      }
+    }
+  }
+  const res = Float32Array.from(data.positions);
+  for (const v of bm.verts) if (v) for (let a = 0; a < 3; a++) res[v.index * 3 + a] = v.co[a]!;
+  return res;
+}
+
+/** `BM_mesh_calc_volume(bm, false)`: every face tessellated by the ear-clip polyfill, in double. */
+function bmVolume(bm: BM): number {
+  let vol = 0;
+  for (const fc of liveFaces(bm)) {
+    const ls = faceLoops(fc);
+    const tris = ls.length === 3 ? [[0, 1, 2]] : ngonTriangles(ls.map((l) => l.v.co), fc.no, "earClip");
+    for (const t of tris) {
+      const [p1, p2, p3] = t.map((k) => ls[k!]!.v.co) as [V3, V3, V3];
+      const cx = p2[1]! * p3[2]! - p2[2]! * p3[1]!;
+      const cy = p2[2]! * p3[0]! - p2[0]! * p3[2]!;
+      const cz = p2[0]! * p3[1]! - p2[1]! * p3[0]!;
+      vol += (p1[0]! * cx + p1[1]! * cy + p1[2]! * cz) / 6;
+    }
+  }
+  return Math.abs(vol);
+}
+
+/**
+ * `min ‖M x − b‖²` for the three right-hand sides at once — the system Eigen's
+ * `EIG_linear_least_squares_solver_new` factorises. A square system is solved
+ * as it is (BiCGSTAB); otherwise, and when that does not converge, by
+ * conjugate gradients on the normal equations (`MᵀM`, Jacobi-preconditioned).
+ * Returns null when neither converges, so nothing half-solved is applied.
+ */
+function leastSquares(
+  triplets: { r: number; c: number; v: number }[],
+  rhs: Float64Array[],
+  rows: number,
+  cols: number,
+  colOfRow: Int32Array,
+  tolerance: number,
+  maxIterations: number,
+): Float64Array[] | null {
+  if (cols === 0) return rhs.map(() => new Float64Array(0));
+  // The usual case: every row with an entry belongs to a selected vertex (a
+  // vertex outside the selection is a boundary one, which gets none), so the
+  // system is square in the selected vertices and the other rows are zero.
+  // Its least-squares solution is its solution, and BiCGSTAB on it converges
+  // where conjugate gradients on `MᵀM` (condition number squared) stalls for a
+  // large `lambda_factor`.
+  if (triplets.every((t) => colOfRow[t.r]! >= 0)) {
+    const sq: Row[] = Array.from({ length: cols }, () => ({ diag: 0, cols: [] as number[], vals: [] as number[] }));
+    for (const t of triplets) {
+      const i = colOfRow[t.r]!;
+      if (t.c === i) sq[i]!.diag += t.v;
+      else {
+        sq[i]!.cols.push(t.c);
+        sq[i]!.vals.push(t.v);
+      }
+    }
+    const out: Float64Array[] = [];
+    let ok = true;
+    for (const b of rhs) {
+      const bs = new Float64Array(cols);
+      for (let r = 0; r < rows; r++) if (colOfRow[r]! >= 0) bs[colOfRow[r]!] = b[r]!;
+      const x = bicgstab(sq, bs, tolerance, maxIterations);
+      // bicgstab does not say whether it got there: look.
+      const ax = new Float64Array(cols);
+      apply(sq, x, ax);
+      let rn = 0;
+      let bn = 0;
+      for (let i = 0; i < cols; i++) {
+        rn += (ax[i]! - bs[i]!) ** 2;
+        bn += bs[i]! ** 2;
+      }
+      if (!(Math.sqrt(rn) <= 1e-9 * (Math.sqrt(bn) || 1))) {
+        ok = false;
+        break;
+      }
+      out.push(x);
+    }
+    if (ok) return out;
+  }
+  const byRow: { c: number; v: number }[][] = Array.from({ length: rows }, () => []);
+  for (const t of triplets) byRow[t.r]!.push({ c: t.c, v: t.v });
+  const mulM = (x: Float64Array, y: Float64Array): void => {
+    for (let r = 0; r < rows; r++) {
+      let s = 0;
+      for (const { c, v } of byRow[r]!) s += v * x[c]!;
+      y[r] = s;
     }
   };
-  for (const poly of data.polys)
-    for (let i = 0; i < poly.length; i++) check(poly[i]!, poly[(i + 1) % poly.length]!);
-  for (const e of data.edges ?? []) check(e[0]!, e[1]!);
-
-  const out = Float64Array.from(P);
-  for (let i = 0; i < count; i++) {
-    if (rejected[i]) continue;
-    for (let axis = 0; axis < 3; axis++) if (use[axis]) out[i * 3 + axis] = solved[i * 3 + axis]!;
+  const mulMt = (y: Float64Array, x: Float64Array): void => {
+    x.fill(0);
+    for (let r = 0; r < rows; r++) for (const { c, v } of byRow[r]!) x[c]! += v * y[r]!;
+  };
+  const diag = new Float64Array(cols);
+  for (const t of triplets) diag[t.c]! += t.v * t.v;
+  const tmp = new Float64Array(rows);
+  const mtm = (x: Float64Array, out: Float64Array): void => {
+    mulM(x, tmp);
+    mulMt(tmp, out);
+  };
+  const result: Float64Array[] = [];
+  for (const b of rhs) {
+    const mtb = new Float64Array(cols);
+    mulMt(b, mtb);
+    const x = new Float64Array(cols);
+    const r = Float64Array.from(mtb);
+    const z = new Float64Array(cols);
+    for (let i = 0; i < cols; i++) z[i] = diag[i]! > 0 ? r[i]! / diag[i]! : r[i]!;
+    const p = Float64Array.from(z);
+    const q = new Float64Array(cols);
+    let rz = 0;
+    let bnorm = 0;
+    for (let i = 0; i < cols; i++) {
+      rz += r[i]! * z[i]!;
+      bnorm += mtb[i]! * mtb[i]!;
+    }
+    bnorm = Math.sqrt(bnorm) || 1;
+    for (let it = 0; it < maxIterations; it++) {
+      let rn = 0;
+      for (let i = 0; i < cols; i++) rn += r[i]! * r[i]!;
+      if (Math.sqrt(rn) <= tolerance * bnorm) break;
+      mtm(p, q);
+      let pq = 0;
+      for (let i = 0; i < cols; i++) pq += p[i]! * q[i]!;
+      if (!(pq > 0)) return null;
+      const alpha = rz / pq;
+      for (let i = 0; i < cols; i++) {
+        x[i]! += alpha * p[i]!;
+        r[i]! -= alpha * q[i]!;
+      }
+      let rzNew = 0;
+      for (let i = 0; i < cols; i++) {
+        z[i] = diag[i]! > 0 ? r[i]! / diag[i]! : r[i]!;
+        rzNew += r[i]! * z[i]!;
+      }
+      const beta = rzNew / rz;
+      rz = rzNew;
+      for (let i = 0; i < cols; i++) p[i] = z[i]! + beta * p[i]!;
+      if (it === maxIterations - 1) return null;
+    }
+    result.push(x);
   }
+  return result;
+}
 
-  return withPositions(data, new Float32Array(out));
+// ── the square-system solver `laplacian-smooth.ts` (the modifier) shares ──
+
+/** One row of the system: the diagonal, and the off-diagonal entries. */
+export interface Row {
+  diag: number;
+  cols: number[];
+  vals: number[];
 }
 
 /** y = A·x, with A in the row form above. */

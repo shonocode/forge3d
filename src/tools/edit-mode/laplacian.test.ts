@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { smoothLaplacianVert } from "./laplacian";
+import { smoothLaplacianVert, smoothLaplacianSelection } from "./laplacian";
 import type { MeshData } from "../../lib/mesh";
 
 // Every expected number below is Blender 5.1.1, printed by
@@ -170,14 +170,61 @@ describe("smoothLaplacianVert", () => {
     expect(out.polys).toEqual(base.polys);
   });
 
-  it("refuses an n-gon, because Blender's n-gon path is not measured", () => {
+  it("takes an n-gon: a lone pentagon is all boundary, so every row is the identity", () => {
     const m: MeshData = {
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0.5, 1.5, 0, 0, 1, 0]),
       polys: [[0, 1, 2, 3, 4]],
     };
-    expect(() => smoothLaplacianVert(m)).toThrow(/5-gon/);
+    expect(Array.from(smoothLaplacianVert(m).positions)).toEqual(Array.from(m.positions));
   });
 
+  it("scales a rim toward the origin with lambdaBorder when everything is selected", () => {
+    // No edge is "boundary and not selected", so a rim vertex's row is
+    // (1 + 2·λb) x = x0 (parity row smooth-laplacian-border).
+    const m = sheet(true);
+    const out = smoothLaplacianVert(m, { lambda: 1, lambdaBorder: 0.1 });
+    const rim = [0, 1, 2, 3, 4, 5, 9, 10, 14, 15, 19, 20, 21, 22, 23, 24];
+    for (const v of rim) for (let k = 0; k < 2; k++) expect(out.positions[v * 3 + k]).toBeCloseTo(m.positions[v * 3 + k]! / 1.2, 5);
+  });
+
+  it("locks the vertices outside `verts` at the origin, and so does not move a vertex next to one", () => {
+    // validate_solution reads the locked neighbour as (0,0,0): the edge looks
+    // wrong and both its ends keep their positions.
+    const m = sheet(true);
+    const out = smoothLaplacianVert(m, { lambda: 1, verts: [12] });
+    expect(Array.from(out.positions)).toEqual(Array.from(m.positions));
+  });
+});
+
+describe("smoothLaplacianSelection (the operator's defaults)", () => {
+  /** `BM_mesh_calc_volume`'s sum, for a mesh of triangles. */
+  const volume = (m: MeshData): number => {
+    let v = 0;
+    for (const [a, b, c] of m.polys as [number, number, number][]) {
+      const p = (i: number): number[] => [m.positions[i * 3]!, m.positions[i * 3 + 1]!, m.positions[i * 3 + 2]!];
+      const [pa, pb, pc] = [p(a), p(b), p(c)];
+      v += pa[0]! * (pb[1]! * pc[2]! - pb[2]! * pc[1]!) + pa[1]! * (pb[2]! * pc[0]! - pb[0]! * pc[2]!) + pa[2]! * (pb[0]! * pc[1]! - pb[1]! * pc[0]!);
+    }
+    return Math.abs(v / 6);
+  };
+
+  it("keeps the volume of a closed mesh (preserve_volume is on) where the bmesh op does not", () => {
+    const m = icosphere();
+    const raw = smoothLaplacianVert(m, { lambda: 2 });
+    const op = smoothLaplacianSelection(m, { lambdaFactor: 2 });
+    expect(Math.abs(volume(raw) - volume(m))).toBeGreaterThan(1e-3);
+    expect(Math.abs(volume(op) - volume(m))).toBeLessThan(1e-5);
+  });
+
+  it("repeat runs the passes one after the other", () => {
+    const m = icosphere();
+    const once = smoothLaplacianSelection(m, { lambdaFactor: 0.5 });
+    const twice = smoothLaplacianSelection(once, { lambdaFactor: 0.5 });
+    expect(Array.from(smoothLaplacianSelection(m, { lambdaFactor: 0.5, repeat: 2 }).positions)).toEqual(Array.from(twice.positions));
+  });
+});
+
+describe("smoothLaplacianVert, continued", () => {
   it("moves a near-degenerate pair exactly where Blender moves it", () => {
     // A 4x4 alternating sheet with two interior vertices brought 0.0005 apart
     // instead of a full 0.1 step. The solve pulls that edge to 79x its length

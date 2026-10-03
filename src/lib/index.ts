@@ -248,7 +248,12 @@ export { beautifyFill, type BeautifyFillOptions } from "../tools/beautify-fill";
 // are the operators that make them.
 export { createVert, extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
-export { smoothLaplacianVert, type SmoothLaplacianOptions } from "../tools/edit-mode/laplacian";
+export {
+  smoothLaplacianVert,
+  smoothLaplacianSelection,
+  type SmoothLaplacianOptions,
+  type SmoothLaplacianSelectionOptions,
+} from "../tools/edit-mode/laplacian";
 export { laplacianSmooth, type LaplacianSmoothOptions } from "../tools/edit-mode/laplacian-smooth";
 export { smoothMesh, type SmoothMeshOptions } from "../tools/smooth-mesh";
 export { gridFill, type GridFillOptions } from "../tools/edit-mode/grid-fill";
