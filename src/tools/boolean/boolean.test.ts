@@ -144,3 +144,47 @@ describe("booleanMesh", () => {
     expect(volume(inter)).toBeCloseTo(0.0225, 5);
   });
 });
+
+describe("booleanMesh edge layers (compat-backlog C22)", () => {
+  const edgeKeys = (m: MeshData): string[] => {
+    const out = new Set<string>();
+    for (const p of m.polys) p.forEach((v, i) => out.add([v, p[(i + 1) % p.length]!].sort((a, b) => a - b).join("_")));
+    return [...out];
+  };
+  /** Two overlapping boxes, every edge creased and sharp and a seam. */
+  const marked = (): MeshData => {
+    const a = box([0, 0, 0], [1, 1, 1]);
+    const b = box([0.5, 0.3, 0.2], [1, 1, 1]);
+    const n = a.positions.length / 3;
+    const data: MeshData = {
+      positions: Float32Array.from([...a.positions, ...b.positions]),
+      polys: [...a.polys, ...b.polys.map((p) => p.map((v) => v + n))],
+    };
+    const keys = edgeKeys(data);
+    return { ...data, creases: new Map(keys.map((k) => [k, 0.75] as [string, number])), sharp: new Set(keys), seams: new Set(keys) };
+  };
+
+  it("a split input edge keeps its flags on every piece; the edges the cut makes have none", () => {
+    const out = booleanMesh(marked(), { operation: "union", set: B });
+    const total = edgeKeys(out).length;
+    expect(out.creases!.size).toBeGreaterThan(12);
+    expect(out.creases!.size).toBeLessThan(total);
+    expect(out.sharp!.size).toBe(out.creases!.size);
+    expect(out.seams!.size).toBe(out.creases!.size);
+    for (const c of out.creases!.values()) expect(c).toBe(0.75);
+  });
+
+  it("without the layers on the input, none come out", () => {
+    const m = marked();
+    const out = booleanMesh({ positions: m.positions, polys: m.polys }, { operation: "union", set: B });
+    expect(out.creases).toBeUndefined();
+    expect(out.sharp).toBeUndefined();
+  });
+
+  it("the modifier and the operator disagree only where the first face that makes an edge names no original", () => {
+    const op = booleanMesh(marked(), { operation: "difference", set: B });
+    const mod = booleanMesh(marked(), { operation: "difference", set: B, modifier: true });
+    expect(mod.creases!.size).toBeGreaterThan(0);
+    expect(Math.abs(op.creases!.size - mod.creases!.size)).toBeLessThanOrEqual(4);
+  });
+});

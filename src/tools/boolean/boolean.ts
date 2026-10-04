@@ -88,6 +88,15 @@ export interface BooleanOptions {
    * came out 10 and more faces apart until those pairs were skipped.
    */
   useSelf?: boolean;
+  /**
+   * Carry the edge layers (crease, sharp, seam) as the **BOOLEAN modifier** does rather than as the
+   * edit-mode `intersect_boolean` does (compat-backlog C22). The modifier builds the result mesh
+   * and gives each edge the attributes of the input edge that the **last** face using it names
+   * (`imesh_to_mesh`); the operator applies the result to the BMesh, where an edge already there
+   * (every input edge) keeps its own attributes and a new edge copies the one named by the **first**
+   * face that makes it, or none if that face names none (`apply_mesh_output_to_bmesh`). Default false.
+   */
+  modifier?: boolean;
 }
 
 /**
@@ -127,7 +136,7 @@ export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
     return true;
   });
   const polys = faces.map((f) => f.vert);
-  return { ...toMeshData(polys, verts), ...booleanLayers(data, faces, verts) };
+  return { ...toMeshData(polys, verts), ...booleanLayers(data, faces, verts, options.modifier ?? false) };
 }
 
 /**
@@ -136,13 +145,15 @@ export function booleanMesh(data: MeshData, options: BooleanOptions): MeshData {
  * slot, and each of its corners copies the input face's corner at the same
  * input vertex, or — at a vertex the cut made — the mean-value interpolation
  * over the input face at that point (`copy_or_interp_loop_attributes`).
- * Input vertices keep their groups; edges between two input vertices that
- * were input edges keep their flags.
+ * Input vertices keep their groups; each edge keeps the crease, sharp flag and
+ * seam of the input edge it lies along — a piece of a split edge included
+ * (compat-backlog C22) — and the edges the cut makes have none.
  */
 function booleanLayers(
   data: MeshData,
-  faces: readonly { vert: number[]; face: number }[],
+  faces: readonly { vert: number[]; face: number; origs: (string | null)[] }[],
   verts: readonly { co: readonly [number, number, number] }[],
+  modifier: boolean,
 ): Partial<MeshData> {
   const nv = data.positions.length / 3;
   // `toMeshData`'s renumbering: the used vertices, in order.
@@ -202,37 +213,72 @@ function booleanLayers(
       ]),
     );
   }
-  const edgeKeys = new Set<string>();
-  for (const f of faces)
-    for (let i = 0; i < f.vert.length; i++) {
-      const a = f.vert[i]!;
-      const b = f.vert[(i + 1) % f.vert.length]!;
-      if (a < nv && b < nv) edgeKeys.add(a < b ? `${a}_${b}` : `${b}_${a}`);
-    }
-  const keep = (k: string): string | null => {
-    if (!edgeKeys.has(k)) return null;
-    const [a, b] = k.split("_").map(Number) as [number, number];
+  // Edge layers: `imesh_to_mesh` gives each output edge the attributes of the input edge named by
+  // `edge_orig` of a face that has it (the last face wins, a null does not overwrite), and the
+  // default — no crease, not sharp, no seam — where none does. Every piece of a split input edge
+  // names that edge.
+  const outOrig = new Map<string, string>();
+  const outKey = (a: number, b: number): string => {
     const ra = remap.get(a)!;
     const rb = remap.get(b)!;
     return ra < rb ? `${ra}_${rb}` : `${rb}_${ra}`;
   };
+  const usedEdges = new Set<string>();
+  for (const f of faces) f.vert.forEach((v, i) => usedEdges.add(outKey(v, f.vert[(i + 1) % f.vert.length]!)));
+  if (modifier) {
+    for (const f of faces)
+      f.vert.forEach((v, i) => {
+        const o = f.origs[i];
+        if (o != null) outOrig.set(outKey(v, f.vert[(i + 1) % f.vert.length]!), o);
+      });
+  } else {
+    // `apply_mesh_output_to_bmesh`: an edge that is already in the mesh (an input edge between two
+    // input vertices) keeps its own attributes; a face identical to an input face is reused as it is;
+    // any other edge is made by the first face that has it, copying the input edge that face names.
+    const inputEdge = new Set<string>();
+    const sameFace = new Map<string, readonly number[]>();
+    for (const poly of data.polys) {
+      poly.forEach((v, i) => inputEdge.add(v < poly[(i + 1) % poly.length]! ? `${v}_${poly[(i + 1) % poly.length]}` : `${poly[(i + 1) % poly.length]}_${v}`));
+      sameFace.set([...poly].sort((a, b) => a - b).join(","), poly);
+    }
+    for (const [a, b] of data.edges ?? []) inputEdge.add(a! < b! ? `${a}_${b}` : `${b}_${a}`);
+    const made = new Set<string>();
+    for (const f of faces) {
+      const reused = sameFace.get([...f.vert].sort((a, b) => a - b).join(","));
+      if (reused && f.vert.every((v) => v < nv)) {
+        // `face_has_verts_in_order`: the same winding, not the reverse.
+        const i0 = reused.indexOf(f.vert[0]!);
+        if (reused[(i0 + 1) % reused.length] === f.vert[1]) continue;
+      }
+      f.vert.forEach((v, i) => {
+        const w = f.vert[(i + 1) % f.vert.length]!;
+        const k = v < w ? `${v}_${w}` : `${w}_${v}`;
+        if (inputEdge.has(k) || made.has(k)) return;
+        made.add(k);
+        const o = f.origs[i];
+        if (o != null) outOrig.set(outKey(v, w), o);
+      });
+    }
+    // The input edges themselves, where both ends survive as input vertices.
+    for (const k of inputEdge) {
+      const [a, b] = k.split("_").map(Number) as [number, number];
+      if (remap.has(a) && remap.has(b) && usedEdges.has(outKey(a, b))) outOrig.set(outKey(a, b), k);
+    }
+  }
   for (const name of ["creases", "seams", "sharp"] as const) {
     const src = data[name];
     if (!src) continue;
     if (src instanceof Map) {
       const m = new Map<string, number>();
-      for (const [k, x] of src) {
-        const nk = keep(k);
-        if (nk) m.set(nk, x);
+      for (const [outKey, orig] of outOrig) {
+        const x = src.get(orig);
+        if (x !== undefined) m.set(outKey, x);
       }
       (out as Record<string, unknown>)[name] = m;
     } else {
-      const s = new Set<string>();
-      for (const k of src) {
-        const nk = keep(k);
-        if (nk) s.add(nk);
-      }
-      (out as Record<string, unknown>)[name] = s;
+      const set = new Set<string>();
+      for (const [outKey, orig] of outOrig) if (src.has(orig)) set.add(outKey);
+      (out as Record<string, unknown>)[name] = set;
     }
   }
   return out;
@@ -909,6 +955,7 @@ function booleanTrimesh(
     face: p.face,
     ids: [p.ids[0]!, p.ids[2]!, p.ids[1]!],
     kinds: [p.kinds[2]!, p.kinds[1]!, p.kinds[0]!],
+    origs: [p.origs[2]!, p.origs[1]!, p.origs[0]!],
   });
   if (!isPwn(tris, arr.topo)) {
     const rc = new Raycaster(tris, coD, shapeOf, nshapes);

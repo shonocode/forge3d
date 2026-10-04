@@ -158,7 +158,12 @@ interface Seg {
   a: Q2;
   b: Q2;
   kind: number;
+  /** The input edge this lies along (`min_max` of its vertices) when `kind` has ORIG: Blender's `edge_orig`. */
+  orig?: string;
 }
+
+/** The key of an input edge, ends ordered. */
+const origKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
 
 /**
  * The planar arrangement of `segs`: every point, and every edge once each
@@ -168,7 +173,7 @@ interface Seg {
 function arrangement(
   segs: Seg[],
   extraPoints: Q2[],
-): { edges: { u: string; v: string; kind: number }[]; points: Map<string, Q2> } {
+): { edges: { u: string; v: string; kind: number; orig?: string }[]; points: Map<string, Q2> } {
   const points = new Map<string, Q2>();
   const addPoint = (p: Q2): void => {
     const k = key2(p);
@@ -186,7 +191,7 @@ function arrangement(
     }
 
   // Split every segment at every point on it; merge duplicates.
-  const edges = new Map<string, { u: string; v: string; kind: number }>();
+  const edges = new Map<string, { u: string; v: string; kind: number; orig?: string }>();
   const all = [...points.values()];
   for (const s of segs) {
     const on = all.filter((p) => onSegment(p, s.a, s.b));
@@ -197,8 +202,11 @@ function arrangement(
       if (u === v) continue;
       const k = u < v ? `${u}|${v}` : `${v}|${u}`;
       const e = edges.get(k);
-      if (e) e.kind |= s.kind;
-      else edges.set(k, { u, v, kind: s.kind });
+      if (e) {
+        e.kind |= s.kind;
+        // `get_cdt_edge_orig`: the first face edge to lie along it names its original.
+        if (e.orig === undefined && s.orig !== undefined) e.orig = s.orig;
+      } else edges.set(k, { u, v, kind: s.kind, ...(s.orig !== undefined ? { orig: s.orig } : {}) });
     }
   }
   return { edges: [...edges.values()], points };
@@ -477,7 +485,13 @@ export function subdivide(
     const flip = orient2d(tv[0], tv[1], tv[2]) < 0;
 
     const segs: Seg[] = [];
-    for (let e = 0; e < 3; e++) segs.push({ a: tv[e]!, b: tv[(e + 1) % 3]!, kind: T.edgeKind[e]! });
+    for (let e = 0; e < 3; e++)
+      segs.push({
+        a: tv[e]!,
+        b: tv[(e + 1) % 3]!,
+        kind: T.edgeKind[e]!,
+        ...(T.edgeKind[e]! & ORIG ? { orig: origKey(T.ids[e]!, T.ids[(e + 1) % 3]!) } : {}),
+      });
     for (const [a, b] of c.segs) segs.push({ a: p2(a), b: p2(b), kind: CUT });
     // Coplanar partners: their edges, clipped to this triangle, cut it too.
     // In Blender they are face edges of the cluster's CDT, so they carry the
@@ -490,7 +504,14 @@ export function subdivide(
       for (let e = 0; e < 3; e++) {
         const clipped = clipToTriangle(o[e]!, o[(e + 1) % 3]!, tv, flip);
         const kind = tris[j]!.edgeKind[e] === DIAG ? DIAG : ORIG;
-        if (clipped) segs.push({ a: clipped[0], b: clipped[1], kind });
+        const pj = tris[j]!;
+        if (clipped)
+          segs.push({
+            a: clipped[0],
+            b: clipped[1],
+            kind,
+            ...(kind === ORIG ? { orig: origKey(pj.ids[e]!, pj.ids[(e + 1) % 3]!) } : {}),
+          });
       }
     }
     const { edges, points } = arrangement(segs, c.pts.map(p2));
@@ -500,11 +521,16 @@ export function subdivide(
     const keys = [...outer, ...[...points.keys()].filter((k) => !outer.includes(k))];
     const index = new Map(keys.map((k, i) => [k, i]));
     const kindOf = new Map<string, number>();
+    const origOf = new Map<string, string>();
     const constraints: [number, number][] = edges.map((e) => {
       const a = index.get(e.u)!;
       const b = index.get(e.v)!;
       kindOf.set(`${a},${b}`, e.kind);
       kindOf.set(`${b},${a}`, e.kind);
+      if (e.orig !== undefined) {
+        origOf.set(`${a},${b}`, e.orig);
+        origOf.set(`${b},${a}`, e.orig);
+      }
       return [a, b];
     });
     const gid = keys.map((k) => vertexOf(known.get(k) ?? unproject(points.get(k)!, axis, n, d)));
@@ -516,6 +542,7 @@ export function subdivide(
         face: T.face,
         ids: loop.map((i) => gid[i]!),
         kinds: loop.map((i, j) => kindOf.get(`${i},${loop[(j + 1) % 3]}`) ?? 0),
+        origs: loop.map((i, j) => origOf.get(`${i},${loop[(j + 1) % 3]}`) ?? null),
       });
     }
   });
@@ -566,6 +593,8 @@ export function toMeshData(polys: number[][], verts: EVert[]): MeshData {
 export interface Merged {
   vert: number[];
   isect: boolean[];
+  /** Per edge: the input edge it lies along (`min_max` of its ends), or null — Blender's `edge_orig`. */
+  origs: (string | null)[];
 }
 
 /** …and the input face it came from. */
@@ -578,6 +607,8 @@ export interface Piece {
   ids: number[];
   /** Per edge i (ids[i] → ids[i+1]): the arrangement kind, 0 if the CDT added it. */
   kinds: number[];
+  /** Per edge: the input edge it lies along, if `kinds` says it is an original one. */
+  origs: (string | null)[];
 }
 
 /** `populate_plane(false)` for a triangle: `(v0 − v2) × (v1 − v2)`, in doubles. */
@@ -601,7 +632,8 @@ interface MergeEdge {
   lenSquared: number;
   left: number;
   right: number;
-  orig: boolean;
+  /** `edge_orig`: the input edge, or null (`NO_INDEX`). */
+  orig: string | null;
   isIntersect: boolean;
   dissolvable: boolean;
 }
@@ -623,7 +655,7 @@ interface MergeFace {
  * shortest edges that were left (`slabPin`, measured).
  */
 function mergeTrisForFace(list: Piece[], poly: readonly number[], verts: EVert[]): Merged[] {
-  if (list.length <= 1) return list.map((p) => ({ vert: p.ids, isect: p.kinds.map(isIntersectKind) }));
+  if (list.length <= 1) return list.map((p) => ({ vert: p.ids, isect: p.kinds.map(isIntersectKind), origs: [...p.origs] }));
   const n0 = triNormal(list[0]!.ids, verts);
   const n1 = triNormal(list[1]!.ids, verts);
   if (list.length === 2 && dot3(n0, n1) > 0 && poly.length === 4) {
@@ -634,7 +666,9 @@ function mergeTrisForFace(list: Piece[], poly: readonly number[], verts: EVert[]
         if (t1.ids[(i + 1) % 3] !== t2.ids[j] || t1.ids[i] !== t2.ids[(j + 1) % 3]) continue;
         if (t1.kinds[i]! & ORIG) continue;
         const tryface = [t1.ids[(i + 1) % 3]!, t1.ids[(i + 2) % 3]!, t1.ids[i]!, t2.ids[(j + 2) % 3]!];
-        if (cyclicEqual(tryface, poly)) return [{ vert: [...poly], isect: poly.map(() => false) }];
+        // The input face itself, so its own edges are the originals.
+        if (cyclicEqual(tryface, poly))
+          return [{ vert: [...poly], isect: poly.map(() => false), origs: poly.map((v, k) => origKey(v, poly[(k + 1) % poly.length]!)) }];
       }
   }
 
@@ -657,7 +691,7 @@ function mergeTrisForFace(list: Piece[], poly: readonly number[], verts: EVert[]
         if (idx === undefined) {
           const p = verts[v1]!.co;
           const q = verts[v2]!.co;
-          const orig = (kind & ORIG) !== 0;
+          const orig = tri.origs[i] ?? null;
           const isIntersect = isIntersectKind(kind);
           idx = edges.length;
           edges.push({
@@ -668,14 +702,14 @@ function mergeTrisForFace(list: Piece[], poly: readonly number[], verts: EVert[]
             right: -1,
             orig,
             isIntersect,
-            dissolvable: !orig && !isIntersect,
+            dissolvable: orig === null && !isIntersect,
           });
           edgeMap.set(`${v1},${v2}`, idx);
         }
         const me = edges[idx]!;
-        if (me.dissolvable && kind & ORIG) {
+        if (me.dissolvable && tri.origs[i] != null) {
           me.dissolvable = false;
-          me.orig = true;
+          me.orig = tri.origs[i]!;
         }
         if (me.dissolvable && isIntersectKind(kind)) {
           me.dissolvable = false;
@@ -693,7 +727,8 @@ function mergeTrisForFace(list: Piece[], poly: readonly number[], verts: EVert[]
     }
     doDissolve(faces, edges);
     for (const mf of faces)
-      if (mf.mergeTo === -1) out.push({ vert: mf.vert, isect: mf.edge.map((e) => edges[e]!.isIntersect) });
+      if (mf.mergeTo === -1)
+        out.push({ vert: mf.vert, isect: mf.edge.map((e) => edges[e]!.isIntersect), origs: mf.edge.map((e) => edges[e]!.orig) });
   }
   return out;
 }
@@ -807,7 +842,12 @@ function dissolveVerts(polys: OutFace[], verts: EVert[], inputCount: number): Ou
   return polys
     .map((f) => {
       const keep = f.vert.map((v) => !drop[v]);
-      return { face: f.face, vert: f.vert.filter((_, i) => keep[i]), isect: f.isect.filter((_, i) => keep[i]) };
+      return {
+        face: f.face,
+        vert: f.vert.filter((_, i) => keep[i]),
+        isect: f.isect.filter((_, i) => keep[i]),
+        origs: f.origs.filter((_, i) => keep[i]),
+      };
     })
     .filter((f) => f.vert.length >= 3);
 }
