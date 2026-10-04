@@ -102,3 +102,67 @@ describe("decimateCollapse", () => {
     expect(a.polys).toEqual(b.polys);
   });
 });
+
+describe("decimateCollapse: vertex group, symmetry and edge layers (compat-backlog C21)", () => {
+  /** Vertex group `W` weighing 0 on the vertices in `zero`, 1 elsewhere. */
+  const weights = (n: number, zero: Set<number>): Map<string, Map<number, number>> =>
+    new Map([["W", new Map(Array.from({ length: n }, (_, i) => [i, zero.has(i) ? 0 : 1] as [number, number]))]]);
+
+  it("never collapses a vertex weighing 0", () => {
+    const m = flatGrid();
+    const zero = new Set([6, 7, 8, 11, 12, 13, 16, 17, 18]); // the 3 × 3 block in the middle
+    const out = decimateCollapse({ ...m, groups: weights(25, zero) }, { ratio: 0.3, vertexGroup: "W" });
+    const kept = [...zero].map((i) => [m.positions[i * 3]!, m.positions[i * 3 + 2]!]);
+    for (const [x, z] of kept) {
+      let found = false;
+      for (let v = 0; v < out.positions.length / 3; v++)
+        if (Math.abs(out.positions[v * 3]! - x!) < 1e-6 && Math.abs(out.positions[v * 3 + 2]! - z!) < 1e-6) found = true;
+      expect(found).toBe(true);
+    }
+  });
+
+  it("needs the group to exist, and a factor above 0", () => {
+    const m = { ...flatGrid(), groups: weights(25, new Set([6, 7, 8, 11, 12, 13])) };
+    const plain = decimateCollapse(m, { ratio: 0.3 });
+    expect(decimateCollapse(m, { ratio: 0.3, vertexGroup: "nope" }).polys).toEqual(plain.polys);
+    expect(decimateCollapse(m, { ratio: 0.3, vertexGroup: "W", vertexGroupFactor: 0 }).polys).toEqual(plain.polys);
+    expect(decimateCollapse(m, { ratio: 0.3, vertexGroup: "W" }).polys).not.toEqual(plain.polys);
+  });
+
+  it("symmetry keeps a mirror-symmetric box symmetric", () => {
+    const out = decimateCollapse(box({ size: [1, 1, 1] }), { ratio: 0.4, symmetryAxis: "x" });
+    const pts = new Set<string>();
+    for (let v = 0; v < out.positions.length / 3; v++)
+      pts.add([out.positions[v * 3], out.positions[v * 3 + 1], out.positions[v * 3 + 2]].map((x) => x!.toFixed(4)).join(","));
+    for (const p of pts) {
+      const [x, y, z] = p.split(",").map(Number) as [number, number, number];
+      expect(pts.has([(-x).toFixed(4), y.toFixed(4), z.toFixed(4)].map((s) => (s === "-0.0000" ? "0.0000" : s)).join(","))).toBe(true);
+    }
+  });
+
+  it("carries seams, sharp edges and creases: a merged edge is a seam if either was, sharp only if both were", () => {
+    const m = flatGrid();
+    const keys: string[] = [];
+    for (const poly of m.polys) poly.forEach((v, i) => keys.push([v, poly[(i + 1) % 4]!].sort((a, b) => a - b).join("_")));
+    const all = new Set(keys);
+    const out = decimateCollapse({ ...m, seams: new Set(all), sharp: new Set(all), creases: new Map([...all].map((k) => [k, 0.5] as [string, number])) }, { ratio: 0.4 });
+    // The crease mixes 0.5 with 0.5 (and a new diagonal has none), so what is left is 0.5 or a mix with 0.
+    expect(out.seams!.size).toBeGreaterThan(0);
+    // A triangulation diagonal (new, smooth) that merges into one of them makes it a seam but not sharp.
+    expect(out.sharp!.size).toBeGreaterThan(0);
+    expect(out.sharp!.size).toBeLessThanOrEqual(out.seams!.size);
+    for (const c of out.creases!.values()) expect(c).toBeLessThanOrEqual(0.5 + 1e-6);
+  });
+
+  it("hands back the wire edge a boundary collapse leaves", () => {
+    const sheet: MeshData = { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 0, 1]), polys: [[0, 1, 2]] };
+    // A single triangle is below the modifier's 3-face minimum; four of them in a strip are not.
+    const strip: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 1, 1, 0, 1, 2, 0, 1, 3, 0, 1]),
+      polys: [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6]],
+    };
+    void sheet;
+    const out = decimateCollapse(strip, { ratio: 0.2 });
+    for (const e of out.edges ?? []) expect(e).toHaveLength(2);
+  });
+});

@@ -33,11 +33,12 @@
  *
  * ## What is not ported
  *
- * - **Symmetry** (`use_symmetry`) — a kd-tree pairing of mirrored edges.
- * - **Vertex group weights** — they scale costs per vertex.
- * - Custom normals, creases and sharp edges (compat-backlog C21). UVs,
- *   colours, vertex groups and materials are carried — see
- *   {@link decimateCollapse}.
+ * - Custom normals (compat-backlog C29). UVs, colours, vertex groups,
+ *   materials and the edge layers (creases, seams, sharp) are carried — see
+ *   {@link decimateCollapse}. Symmetry and the vertex-group weighting
+ *   (compat-backlog C21) are in; mirrored edges are paired through Blender's
+ *   own k-d tree (`kdtree3.ts`), whose walk order decides between several
+ *   edges in reach.
  */
 import type { MeshData } from "../lib/mesh";
 import {
@@ -45,6 +46,7 @@ import {
   heapInsert, heapPopMin, heapRemove, heapUpdate, type V3, type Heap, type HeapNode,
 } from "./blender-math";
 import { isQuadConvex } from "./triangulate";
+import { kdBuild, kdRangeSearch } from "./kdtree3";
 import {
   bmFromMesh, liveEdges, liveFaces, diskNext, vertInEdge, otherVert, edgeKill, vertSplice, edgeSplice,
   isBoundary, isManifold, loopPair, loopsOfVert, faceCalcNormal, faceTriangulate, facesJoin, faceKill, faceLoops,
@@ -75,6 +77,22 @@ export interface DecimateOptions {
    * only decides ties, so this matters for meshes with exact symmetries.
    */
   edgeTables?: number;
+  /**
+   * The modifier's `vertex_group`: the weight per vertex that scales the cost of collapsing it.
+   * A vertex weighing 0 is never collapsed; the higher the weights, the later an edge goes
+   * (`vertexGroupFactor` says by how much). Needs the group to exist and some vertex to carry data.
+   */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: the weights become `1 − w`. */
+  invertVertexGroup?: boolean;
+  /** `vertex_group_factor`, default 1; the weights count only when it is above 0. */
+  vertexGroupFactor?: number;
+  /**
+   * `use_symmetry` with `symmetry_axis`: edges are collapsed in mirrored pairs, across the plane
+   * through the origin normal to that axis (mirror edges found within 2e-5; an edge on the plane
+   * pairs with itself and its collapse point is put on the plane).
+   */
+  symmetryAxis?: "x" | "y" | "z";
 }
 
 // ── quadrics (BLI_quadric, double) ─────────────────────────────────────────
@@ -142,8 +160,10 @@ function quadricOptimize(q: Quadric, eps: number): number[] | null {
  * corner of the fans round its ends that still equals the corner it starts
  * from (`bm_edge_collapse_loop_customdata` — a UV seam stops it); a colour is
  * a byte and is rounded each time. The kept vertex takes the two ends' groups
- * mixed by the same factor. Custom normals, creases and sharp edges are
- * dropped (compat-backlog C21).
+ * mixed by the same factor. A boundary triangle's collapse can leave a wire edge, which comes back in `edges`. The edge layers follow BMesh's rules (compat-backlog
+ * C21): where two edges merge the kept one gets a seam if either had one, stays
+ * sharp only if both were, and its crease mixes in the other's by the collapse
+ * factor. Custom normals are dropped.
  */
 export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshData {
   const ratio = f(opts.ratio);
@@ -264,6 +284,41 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     }
   };
 
+  // ── the edge layers (BMesh keeps them on the edge: the seam and smooth flags, the crease) ──
+  interface EdgeAttr {
+    seam: boolean;
+    smooth: boolean;
+    crease: number;
+  }
+  const edgeAttr = new Map<BE, EdgeAttr>();
+  const attrOf = (e: BE): EdgeAttr => {
+    let a = edgeAttr.get(e);
+    if (!a) {
+      a = { seam: false, smooth: true, crease: 0 };
+      edgeAttr.set(e, a);
+    }
+    return a;
+  };
+  const hasCreaseLayer = data.creases !== undefined;
+  for (const e of liveEdges(bm)) {
+    const key = e.v1.index < e.v2.index ? `${e.v1.index}_${e.v2.index}` : `${e.v2.index}_${e.v1.index}`;
+    const seam = data.seams?.has(key) ?? false;
+    const sharp = data.sharp?.has(key) ?? false;
+    const crease = Math.fround(data.creases?.get(key) ?? 0);
+    if (seam || sharp || crease) edgeAttr.set(e, { seam, smooth: !sharp, crease });
+  }
+
+  // ── vertex weights (MOD_decimate.cc) ─────────────────────────────────────
+  const vgFactor = f(opts.vertexGroupFactor ?? 1);
+  let vweights: number[] | null = null;
+  if (opts.vertexGroup && vgFactor > 0 && data.groups?.has(opts.vertexGroup) && [...data.groups.values()].some((g) => g.size > 0)) {
+    const g = data.groups.get(opts.vertexGroup)!;
+    vweights = Array.from({ length: nv }, (_, i) => {
+      const w = f(g.get(i) ?? 0);
+      return opts.invertVertexGroup ? f(1 - w) : w;
+    });
+  }
+
   // ── bm_decim_triangulate_begin ──────────────────────────────────────────
   let hasCut = false;
   const facesDouble: BF[] = [];
@@ -335,7 +390,9 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   };
   const costSingle = (e: BE): void => {
     let ok = false;
-    if (isBoundary(e)) ok = e.l!.f.len === 3;
+    if (vweights && (vweights[e.v1.index] === 0 || vweights[e.v2.index] === 0)) {
+      // a vertex weighted 0 is not touched
+    } else if (isBoundary(e)) ok = e.l!.f.len === 3;
     else if (isManifold(e)) ok = e.l!.f.len === 3 && e.l!.rn!.f.len === 3;
     if (!ok) {
       if (table[e.index]) heapRemove(heap, table[e.index]!);
@@ -346,8 +403,20 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     let cost = f(quadricEvaluate(vq[e.v1.index]!, co) + quadricEvaluate(vq[e.v2.index]!, co));
     cost = Math.abs(cost);
     if (cost < TOPOLOGY_FALLBACK_EPS) {
-      const topo = f(f(Math.abs(dot(e.v1.no, e.v2.no))) / Math.min(-lenSq(sub(e.v1.co, e.v2.co)), -FLT_EPSILON));
-      cost = f(topo - cost);
+      if (!vweights) {
+        const topo = f(f(Math.abs(dot(e.v1.no, e.v2.no))) / Math.min(-lenSq(sub(e.v1.co, e.v2.co)), -FLT_EPSILON));
+        cost = f(topo - cost);
+      } else {
+        // With weights the real length is used, so they can scale it.
+        const eWeight = f(vweights[e.v1.index]! + vweights[e.v2.index]!);
+        const len = f(Math.sqrt(lenSq(sub(e.v1.co, e.v2.co))));
+        const topo = f(f(Math.abs(dot(e.v1.no, e.v2.no))) / Math.min(-len, -FLT_EPSILON));
+        cost = f(topo - cost);
+        if (eWeight) cost = f(cost * f(1 + f(eWeight * vgFactor)));
+      }
+    } else if (vweights) {
+      const eWeight = f(2 - f(vweights[e.v1.index]! + vweights[e.v2.index]!));
+      if (eWeight) cost = f(cost + f(f(Math.sqrt(lenSq(sub(e.v1.co, e.v2.co)))) * f(eWeight * vgFactor)));
     }
     const node = table[e.index];
     if (node) heapUpdate(heap, node, cost, e);
@@ -362,6 +431,44 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   };
 
   const target = Math.trunc(f(f(bm.totface) * ratio));
+
+  // ── bm_edge_symmetry_map ────────────────────────────────────────────────
+  const axis = opts.symmetryAxis ? ({ x: 0, y: 1, z: 2 } as const)[opts.symmetryAxis] : -1;
+  let symMap: Int32Array | null = null;
+  if (axis !== -1) {
+    const edges = liveEdges(bm);
+    const limit = f(0.00002);
+    const limitSq = f(limit * limit);
+    const mid = (e: BE): number[] => [0, 1, 2].map((k) => f(f(0.5) * f(e.v1.co[k]! + e.v2.co[k]!)));
+    const mids = edges.map(mid);
+    const tree = kdBuild(mids as [number, number, number][]);
+    symMap = new Int32Array(edges.length).fill(-1);
+    for (let i = 0; i < edges.length; i++) {
+      if (symMap[i] !== -1) continue;
+      const e = edges[i]!;
+      const co = [...mids[i]!];
+      co[axis] = f(-co[axis]!);
+      const v1 = [...e.v1.co];
+      const v2 = [...e.v2.co];
+      v1[axis] = f(-v1[axis]!);
+      v2[axis] = f(-v2[axis]!);
+      const dir = sub(v2 as V3, v1 as V3);
+      let found = -1;
+      // `bm_edge_symmetry_check_cb`: the first edge in the tree's walk whose ends are both within the limit.
+      kdRangeSearch(tree, co as [number, number, number], limit, (idx) => {
+        const o = edges[idx]!;
+        const od = sub(o.v2.co, o.v1.co);
+        const [x, y] = dot(od, dir) > 0 ? [o.v1, o.v2] : [o.v2, o.v1];
+        if (lenSq(sub(v1 as V3, x.co)) > limitSq || lenSq(sub(v2 as V3, y.co)) > limitSq) return true;
+        found = idx;
+        return false;
+      });
+      if (found !== -1) {
+        symMap[i] = found;
+        symMap[found] = i;
+      }
+    }
+  }
 
   // ── bm_edge_collapse_is_degenerate_topology ───────────────────────────
   const tagEnable = (e: BE, on: boolean): void => {
@@ -418,6 +525,27 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     return false;
   };
 
+  /**
+   * `BM_data_interp_from_edges(kept, cleared, kept, fac)`: the crease of the kept edge mixes in the
+   * cleared one's — nothing at `fac <= 0`, the cleared one whole at `fac >= 1`
+   * (`bm_data_interp_from_elem`) — only where the mesh has a crease layer.
+   */
+  const collapseEdgeData = (kept: BE, cleared: BE, fac: number): void => {
+    if (!hasCreaseLayer) return;
+    const k = attrOf(kept);
+    const c = attrOf(cleared);
+    if (fac <= 0) return;
+    if (fac >= 1) k.crease = c.crease;
+    else k.crease = f(f(f(0 + f(k.crease * f(1 - fac)))) + f(c.crease * fac));
+  };
+  /** `e_kept->head.hflag |= e_cleared->head.hflag`: a seam if either was, sharp only if both were. */
+  const mergeEdgeFlags = (kept: BE, cleared: BE): void => {
+    const k = attrOf(kept);
+    const c = attrOf(cleared);
+    k.seam = k.seam || c.seam;
+    k.smooth = k.smooth || c.smooth;
+  };
+
   /** `bm_edge_collapse`: kills `vClear` into the other end. */
   const edgeCollapse = (eClear: BE, vClear: BV, rOther: number[], fac: number): boolean => {
     const vOther = otherVert(eClear, vClear);
@@ -431,14 +559,22 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
       rOther[1] = b[0].index;
       // before killing, do customdata
       collapseVertData(vOther, vClear, fac);
+      collapseEdgeData(a[1], a[0], fac);
+      collapseEdgeData(b[1], b[0], fac);
       if (hasLoopData) {
         collapseLoopData(eClear.l!, vClear, fac);
         collapseLoopData(eClear.l!.rn!, vClear, fac);
       }
       edgeKill(bm, eClear);
       vertSplice(bm, vOther, vClear);
+      mergeEdgeFlags(a[1], a[0]);
+      mergeEdgeFlags(b[1], b[0]);
       edgeSplice(bm, a[1], a[0]);
       edgeSplice(bm, b[1], b[0]);
+      if (symMap) {
+        if (symMap[rOther[0]!] !== -1) symMap[symMap[rOther[0]!]!] = a[1].index;
+        if (symMap[rOther[1]!] !== -1) symMap[symMap[rOther[1]!]!] = b[1].index;
+      }
       return true;
     }
     if (isBoundary(eClear)) {
@@ -446,28 +582,36 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
       rOther[0] = a[0].index;
       rOther[1] = -1;
       collapseVertData(vOther, vClear, fac);
+      collapseEdgeData(a[1], a[0], fac);
       if (hasLoopData) collapseLoopData(eClear.l!, vClear, fac);
       edgeKill(bm, eClear);
       vertSplice(bm, vOther, vClear);
+      mergeEdgeFlags(a[1], a[0]);
       edgeSplice(bm, a[1], a[0]);
+      if (symMap && symMap[rOther[0]!] !== -1) symMap[symMap[rOther[0]!]!] = a[1].index;
       return true;
     }
     return false;
   };
 
-  const decimEdgeCollapse = (e: BE): boolean => {
+  /** `bm_decim_edge_collapse`; with `coGiven` the degenerate checks were made by the caller (the symmetric path). */
+  const decimEdgeCollapse = (e: BE, coGiven?: number[]): boolean => {
     const vOther = e.v1;
     const vOtherIndex = e.v1.index;
     const vClearIndex = e.v2.index;
     const vClearNo = [...e.v2.no];
-    if (degenerateTopology(e)) {
-      invalidate(e);
-      return false;
-    }
-    const co = targetCo(e).map(f);
-    if (degenerateFlip(e, co)) {
-      invalidate(e);
-      return false;
+    let co: number[];
+    if (coGiven) co = coGiven;
+    else {
+      if (degenerateTopology(e)) {
+        invalidate(e);
+        return false;
+      }
+      co = targetCo(e).map(f);
+      if (degenerateFlip(e, co)) {
+        invalidate(e);
+        return false;
+      }
     }
     let fac: number;
     const near = [0, 1, 2].every((k) => Math.abs(f(e.v1.co[k]! - e.v2.co[k]!)) <= FLT_EPSILON);
@@ -479,7 +623,12 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     } else fac = 0.5;
     const rOther = [-1, -1];
     if (edgeCollapse(e, e.v2, rOther, fac)) {
-      vOther.co = co;
+      if (vweights) {
+        // `interpf(w_other, w_clear, fac)`: the first argument is the one weighted by `fac`.
+        const w = f(f(fac * vweights[vOtherIndex]!) + f(f(1 - fac) * vweights[vClearIndex]!));
+        vweights[vOtherIndex] = Math.min(1, Math.max(0, w));
+      }
+      vOther.co = [co[0]!, co[1]!, co[2]!];
       for (const i of rOther)
         if (i !== -1 && table[i]) {
           heapRemove(heap, table[i]!);
@@ -506,10 +655,69 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     return false;
   };
 
-  while (bm.totface > target && heap.tree.length && heap.tree[0]!.value !== f(COST_INVALID)) {
-    const e = heapPopMin(heap);
-    table[e.index] = null;
-    decimEdgeCollapse(e);
+  if (!symMap) {
+    while (bm.totface > target && heap.tree.length && heap.tree[0]!.value !== f(COST_INVALID)) {
+      const e = heapPopMin(heap);
+      table[e.index] = null;
+      decimEdgeCollapse(e);
+    }
+  } else {
+    // The symmetric loop: an edge and its mirror collapse together. The mirror's node leaves the
+    // heap only at the last moment (collapsing `e` may remove it), and edges sharing a vertex
+    // are left alone so the pivot is not pulled to one side.
+    while (bm.totface > target && heap.tree.length && heap.tree[0]!.value !== f(COST_INVALID)) {
+      const e = heapPopMin(heap);
+      const eIndex = e.index;
+      const mirrIndex = symMap[eIndex]!;
+      let eMirr: BE | null = null;
+      let invalidateMask = 0;
+      table[eIndex] = null;
+      step: {
+        if (mirrIndex !== -1) {
+          if (mirrIndex === eIndex) {
+            // on the plane
+          } else if (table[mirrIndex]) {
+            eMirr = table[mirrIndex]!.ptr;
+            // edges with a shared vertex: ignored for good
+            if (e.v1 === eMirr.v1 || e.v1 === eMirr.v2 || e.v2 === eMirr.v1 || e.v2 === eMirr.v2) break step;
+          } else {
+            invalidateMask |= 1; // the mirror cannot be operated on
+            break step;
+          }
+        }
+        // run both before checking: they invalidate surrounding geometry
+        const okA = !degenerateTopology(e);
+        const okB = eMirr ? !degenerateTopology(eMirr) : true;
+        if (!okA || !okB) {
+          invalidateMask |= 1 | (eMirr ? 2 : 0);
+          break step;
+        }
+        const co = targetCo(e).map(f);
+        if (mirrIndex === eIndex) co[axis] = 0;
+        if (degenerateFlip(e, co)) {
+          invalidateMask |= 1 | (eMirr ? 2 : 0);
+          break step;
+        }
+        if (decimEdgeCollapse(e, co)) {
+          if (eMirr && table[mirrIndex]) {
+            heapRemove(heap, table[mirrIndex]!);
+            table[mirrIndex] = null;
+            co[axis] = f(-co[axis]!);
+            decimEdgeCollapse(eMirr, co);
+          }
+        } else if (eMirr && table[mirrIndex]) {
+          invalidateMask |= 2;
+          break step;
+        }
+        continue;
+      }
+      if (invalidateMask & 1) invalidate(e);
+      if (invalidateMask & 2) {
+        heapRemove(heap, table[mirrIndex]!);
+        table[mirrIndex] = null;
+        invalidate(eMirr!);
+      }
+    }
   }
 
   // ── bm_decim_triangulate_end ──────────────────────────────────────────
@@ -555,6 +763,30 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     positions: Float32Array.from(positions),
     polys: faces.map((x) => faceLoops(x).map((l) => remap[l.v.index]!)),
   };
+  {
+    const seams = new Set<string>();
+    const sharp = new Set<string>();
+    const creases = new Map<string, number>();
+    for (const e of liveEdges(bm)) {
+      const a = edgeAttr.get(e);
+      if (!a) continue;
+      const i = remap[e.v1.index]!;
+      const j = remap[e.v2.index]!;
+      const key = i < j ? `${i}_${j}` : `${j}_${i}`;
+      if (a.seam) seams.add(key);
+      if (!a.smooth) sharp.add(key);
+      if (a.crease) creases.set(key, a.crease);
+    }
+    if (seams.size) out.seams = seams;
+    if (sharp.size) out.sharp = sharp;
+    if (hasCreaseLayer) out.creases = creases;
+  }
+  // Collapsing a boundary triangle leaves its two other edges merged into one with no face (and a vertex
+  // that has none): Blender keeps it in the mesh as a wire edge.
+  const wires = liveEdges(bm)
+    .filter((e) => !e.l)
+    .map((e) => [remap[e.v1.index]!, remap[e.v2.index]!]);
+  if (wires.length) out.edges = wires;
   // A corner with no source (none is made here, but the default is cheap)
   // holds the layer's default: 0, or white for a colour.
   const read = (k: number): number[][][] | undefined => {
