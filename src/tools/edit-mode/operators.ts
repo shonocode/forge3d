@@ -1,3 +1,4 @@
+import { offsetEdgeLoopsPort } from "./offset-edgeloops";
 import { orphanedEdges } from "./wire";
 import { interpWeightsPoly } from "./interp";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
@@ -2231,131 +2232,34 @@ export function edgeSplitVerts(em: EditMesh, verts: ReadonlySet<number>): Set<nu
  * loop selected — 25 vertices and 16 faces become **35 and 24, of which 8 have
  * zero area**, and every x coordinate in the mesh is where it was.
  *
- * The faces on each side of the loop are re-attached to that side's copy, so
- * the original loop ends up sandwiched between the two new strips.
+ * It is a port of `bmo_offset_edgeloops.cc` ({@link offsetEdgeLoopsPort}), so
+ * it does what Blender does with a selection that is not a closed loop on a
+ * grid too: each edge leaving the selection is split at the loop's vertex, the
+ * faces round it are cut, and a vertex left with two edges is removed again.
+ * (Until 2026-10-05 this copied the loop's vertices once per side of faces and
+ * refused a selection with other than two sides; an isolated edge in a closed
+ * mesh came out with a different cap — compat-backlog C27.)
  *
- * Refuses a selection whose adjacent faces do not fall into exactly two sides —
- * a loop that does not separate what is around it has no "either side" to
- * offset into, and guessing would produce a mesh nobody asked for.
+ * `useCapEndpoint` is Blender's `use_cap_endpoint` (default false): keep the cut at the ends of a loop that does not
+ * close, instead of removing the vertices that only pass through.
  *
  * Returns the vertices it added.
  */
-export function offsetEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+export function offsetEdgeLoops(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  options: { useCapEndpoint?: boolean } = {},
+): Set<number> {
   if (selectedEdges.size === 0) return new Set();
-
-  const polys = toPolygons(em);
-
-  const loopEdges = new Set<string>();
-  const loopVerts = new Set<number>();
-  for (const heRaw of selectedEdges) {
-    if (!em.halfEdges[heRaw]) continue;
-    const a = edgeOrigin(em, heRaw);
-    const b = edgeEnd(em, heRaw);
-    loopEdges.add(seamKey(a, b));
-    loopVerts.add(a);
-    loopVerts.add(b);
+  const pairs: [number, number][] = [];
+  for (const he of selectedEdges) {
+    if (!em.halfEdges[he]) continue;
+    pairs.push([edgeOrigin(em, he), edgeEnd(em, he)]);
   }
-  if (loopEdges.size === 0) return new Set();
-
-  // Faces touching the loop through one of its edges — the ones that will be
-  // pushed onto a copy. A face merely touching a loop *vertex* is not one of
-  // them; it stays where it is.
-  const adjacent: number[] = [];
-  for (let f = 0; f < polys.length; f++) {
-    const poly = polys[f]!;
-    for (let i = 0; i < poly.length; i++) {
-      if (loopEdges.has(seamKey(poly[i]!, poly[(i + 1) % poly.length]!))) {
-        adjacent.push(f);
-        break;
-      }
-    }
-  }
-
-  // Two of those faces are on the same side when they share an edge that is
-  // not part of the loop. On a grid that walks each column; across the loop
-  // there is no such edge, which is what makes the two sides two groups.
-  const parent = new Map<number, number>(adjacent.map((f) => [f, f]));
-  const find = (x: number): number => {
-    let r = x;
-    while (parent.get(r) !== r) r = parent.get(r)!;
-    return r;
-  };
-  for (const f of adjacent) {
-    for (const g of adjacent) {
-      if (g <= f) continue;
-      const pf = polys[f]!;
-      const pg = new Set<string>();
-      const gp = polys[g]!;
-      for (let i = 0; i < gp.length; i++) pg.add(seamKey(gp[i]!, gp[(i + 1) % gp.length]!));
-      for (let i = 0; i < pf.length; i++) {
-        const key = seamKey(pf[i]!, pf[(i + 1) % pf.length]!);
-        if (loopEdges.has(key) || !pg.has(key)) continue;
-        const rf = find(f);
-        const rg = find(g);
-        if (rf !== rg) parent.set(rf, rg);
-        break;
-      }
-    }
-  }
-
-  const sides = new Map<number, number[]>();
-  for (const f of adjacent) {
-    const r = find(f);
-    const list = sides.get(r);
-    if (list) list.push(f);
-    else sides.set(r, [f]);
-  }
-  if (sides.size !== 2)
-    throw new Error(
-      `offsetEdgeLoops: the selected edges have ${sides.size} side(s) of faces on ` +
-        `them, not 2 — a loop that does not separate what is around it has no ` +
-        `"either side" to offset into.`,
-    );
-
-  const newPositions: number[] = Array.from(em.positions);
-  let nextV = em.vertices.length;
-  const added = new Set<number>();
-  const out = polys.map((p) => [...p]);
-  const strips: number[][] = [];
-  // The per-corner layers: Blender splits each side edge at factor 1 — the
-  // new vertex sits on the loop vertex and interpolates to its corner — and
-  // splits the strip off the face on that side, which copies. So a strip's
-  // corners are that face's corners at `a` and `b`, a moved face keeps its
-  // own, and a copy keeps its vertex's data.
-  const stated: Array<ExplicitFace | undefined> = polys.map(() => undefined);
-  const stripStated: ExplicitFace[] = [];
-  const origins = new Map<number, VertexOrigin>();
-
-  for (const [, faces] of sides) {
-    const copy = new Map<number, number>();
-    for (const v of loopVerts) {
-      const c = nextV++;
-      newPositions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
-      copy.set(v, c);
-      added.add(c);
-      origins.set(c, { from: [v], w: [1] });
-    }
-    for (const f of faces) {
-      out[f] = out[f]!.map((v) => copy.get(v) ?? v);
-      stated[f] = { corners: polys[f]!.map((_, i) => [[f, i, 1] as const]), material: f };
-    }
-
-    // A strip per loop edge, flat against it. Wound from the copied side so
-    // it pairs cleanly with the face that moved.
-    for (const key of loopEdges) {
-      const [a, b] = key.split("_").map(Number) as [number, number];
-      strips.push([a, b, copy.get(b)!, copy.get(a)!]);
-      const g = faces.find((x) => polys[x]!.includes(a) && polys[x]!.includes(b))!;
-      const ca: [number, number, number][] = [[g, polys[g]!.indexOf(a), 1]];
-      const cb: [number, number, number][] = [[g, polys[g]!.indexOf(b), 1]];
-      stripStated.push({ corners: [ca, cb, cb, ca], material: g });
-    }
-  }
-
-  out.push(...strips);
-  stated.push(...stripStated);
-  rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
-  return added;
+  const result = offsetEdgeLoopsPort(em.positions, toPolygons(em), pairs, options.useCapEndpoint ?? false);
+  if (!result) return new Set();
+  rebuildPolygons(em, result.positions, result.polys, { origins: result.origins, faces: result.faces });
+  return result.added;
 }
 
 // ── Duplicate / Split / degenerate cleanup ─────────────────────────────────

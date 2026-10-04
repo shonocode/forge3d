@@ -355,6 +355,12 @@ function rebuildTopology(em: EditMesh, positions: Float32Array, polys: number[][
 export interface VertexOrigin {
   from: readonly number[];
   w: readonly number[];
+  /**
+   * The data was interpolated (`BM_loop_interp_from_face`), not copied, even where one source has all the weight: a
+   * group the source holds at weight 0 is not carried (`layerInterp_mdeformvert` adds a group only where weight
+   * times factor is not zero).
+   */
+  interp?: boolean;
 }
 
 /**
@@ -727,7 +733,7 @@ function carryLayers(
         for (const [v, mix] of mixes) {
           // A plain copy (a duplicated vertex, `BM_elem_attrs_copy`) keeps
           // membership as it is, a weight of 0 included.
-          if (mix.size === 1) {
+          if (mix.size === 1 && !origins?.get(v)?.interp) {
             const [[u, w]] = [...mix] as [[number, number]];
             if (w === 1) {
               const x = g.get(u);
