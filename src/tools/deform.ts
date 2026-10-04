@@ -184,120 +184,190 @@ export interface SimpleDeformOptions {
   angle?: number;
   /** `taper` and `stretch` use this; the other two use `angle`. */
   factor?: number;
+  /**
+   * Blender's `limits`: the part of the mesh that is deformed, as fractions of its extent along the axis the mode
+   * works along (the deform axis; for `bend`, the axis it bends across). A vertex beyond a limit is
+   * deformed as if it were on it and then carried along. Default `[0, 1]`.
+   */
+  limits?: [number, number];
+  /**
+   * Blender's `lock_x` / `lock_y` / `lock_z` (`taper`, `stretch`, `twist`): a locked axis is held at the origin during
+   * the deformation — the vertex is flattened onto that plane and its distance from it added back after. Ignored for
+   * the deform axis itself and for `bend`.
+   */
+  lockX?: boolean;
+  lockY?: boolean;
+  lockZ?: boolean;
+  /**
+   * Blender's `origin` object: a 4 × 4 row-major matrix (16 numbers) — the origin object's transform seen from the
+   * mesh. The mesh is taken into the origin's space, deformed there and brought back, so the axes, the extent and the
+   * zero of the deformation are the origin's. Default none (the mesh's own).
+   */
+  origin?: readonly number[];
 }
 
+/** Invert a 4 × 4 row-major matrix (cofactors). */
+function invert4(a: readonly number[]): number[] {
+  const inv = new Array<number>(16);
+  inv[0] = a[5]! * a[10]! * a[15]! - a[5]! * a[11]! * a[14]! - a[9]! * a[6]! * a[15]! + a[9]! * a[7]! * a[14]! + a[13]! * a[6]! * a[11]! - a[13]! * a[7]! * a[10]!;
+  inv[4] = -a[4]! * a[10]! * a[15]! + a[4]! * a[11]! * a[14]! + a[8]! * a[6]! * a[15]! - a[8]! * a[7]! * a[14]! - a[12]! * a[6]! * a[11]! + a[12]! * a[7]! * a[10]!;
+  inv[8] = a[4]! * a[9]! * a[15]! - a[4]! * a[11]! * a[13]! - a[8]! * a[5]! * a[15]! + a[8]! * a[7]! * a[13]! + a[12]! * a[5]! * a[11]! - a[12]! * a[7]! * a[9]!;
+  inv[12] = -a[4]! * a[9]! * a[14]! + a[4]! * a[10]! * a[13]! + a[8]! * a[5]! * a[14]! - a[8]! * a[6]! * a[13]! - a[12]! * a[5]! * a[10]! + a[12]! * a[6]! * a[9]!;
+  inv[1] = -a[1]! * a[10]! * a[15]! + a[1]! * a[11]! * a[14]! + a[9]! * a[2]! * a[15]! - a[9]! * a[3]! * a[14]! - a[13]! * a[2]! * a[11]! + a[13]! * a[3]! * a[10]!;
+  inv[5] = a[0]! * a[10]! * a[15]! - a[0]! * a[11]! * a[14]! - a[8]! * a[2]! * a[15]! + a[8]! * a[3]! * a[14]! + a[12]! * a[2]! * a[11]! - a[12]! * a[3]! * a[10]!;
+  inv[9] = -a[0]! * a[9]! * a[15]! + a[0]! * a[11]! * a[13]! + a[8]! * a[1]! * a[15]! - a[8]! * a[3]! * a[13]! - a[12]! * a[1]! * a[11]! + a[12]! * a[3]! * a[9]!;
+  inv[13] = a[0]! * a[9]! * a[14]! - a[0]! * a[10]! * a[13]! - a[8]! * a[1]! * a[14]! + a[8]! * a[2]! * a[13]! + a[12]! * a[1]! * a[10]! - a[12]! * a[2]! * a[9]!;
+  inv[2] = a[1]! * a[6]! * a[15]! - a[1]! * a[7]! * a[14]! - a[5]! * a[2]! * a[15]! + a[5]! * a[3]! * a[14]! + a[13]! * a[2]! * a[7]! - a[13]! * a[3]! * a[6]!;
+  inv[6] = -a[0]! * a[6]! * a[15]! + a[0]! * a[7]! * a[14]! + a[4]! * a[2]! * a[15]! - a[4]! * a[3]! * a[14]! - a[12]! * a[2]! * a[7]! + a[12]! * a[3]! * a[6]!;
+  inv[10] = a[0]! * a[5]! * a[15]! - a[0]! * a[7]! * a[13]! - a[4]! * a[1]! * a[15]! + a[4]! * a[3]! * a[13]! + a[12]! * a[1]! * a[7]! - a[12]! * a[3]! * a[5]!;
+  inv[14] = -a[0]! * a[5]! * a[14]! + a[0]! * a[6]! * a[13]! + a[4]! * a[1]! * a[14]! - a[4]! * a[2]! * a[13]! - a[12]! * a[1]! * a[6]! + a[12]! * a[2]! * a[5]!;
+  inv[3] = -a[1]! * a[6]! * a[11]! + a[1]! * a[7]! * a[10]! + a[5]! * a[2]! * a[11]! - a[5]! * a[3]! * a[10]! - a[9]! * a[2]! * a[7]! + a[9]! * a[3]! * a[6]!;
+  inv[7] = a[0]! * a[6]! * a[11]! - a[0]! * a[7]! * a[10]! - a[4]! * a[2]! * a[11]! + a[4]! * a[3]! * a[10]! + a[8]! * a[2]! * a[7]! - a[8]! * a[3]! * a[6]!;
+  inv[11] = -a[0]! * a[5]! * a[11]! + a[0]! * a[7]! * a[9]! + a[4]! * a[1]! * a[11]! - a[4]! * a[3]! * a[9]! - a[8]! * a[1]! * a[7]! + a[8]! * a[3]! * a[5]!;
+  inv[15] = a[0]! * a[5]! * a[10]! - a[0]! * a[6]! * a[9]! - a[4]! * a[1]! * a[10]! + a[4]! * a[2]! * a[9]! + a[8]! * a[1]! * a[6]! - a[8]! * a[2]! * a[5]!;
+  const det = a[0]! * inv[0]! + a[1]! * inv[4]! + a[2]! * inv[8]! + a[3]! * inv[12]!;
+  if (det === 0) throw new Error("simpleDeform: the origin matrix is singular");
+  return inv.map((x) => x / det);
+}
+
+const applyMatrix4 = (m: readonly number[], x: number, y: number, z: number): [number, number, number] => [
+  m[0]! * x + m[1]! * y + m[2]! * z + m[3]!,
+  m[4]! * x + m[5]! * y + m[6]! * z + m[7]!,
+  m[8]! * x + m[9]! * y + m[10]! * z + m[11]!,
+];
+
+/** `axis_map_table`: the deformations (bend apart) are written for Z, so the others turn the axes round to it. */
+const AXIS_MAP: readonly (readonly [number, number, number])[] = [
+  [1, 2, 0],
+  [2, 0, 1],
+  [0, 1, 2],
+];
+/** `FLT_EPSILON`. */
+const FLT_EPSILON = 1.1920928955078125e-7;
+/** `BEND_EPS`. */
+const BEND_EPS = 0.000001;
+
 /**
- * Twist, bend, taper or stretch — Blender's **Simple Deform** modifier.
+ * Twist, bend, taper or stretch — Blender's **Simple Deform** modifier, ported from `MOD_simpledeform.cc`.
  *
  * Four formulas that come up constantly in hard-surface work: a twisted
  * baluster, a bent rail, a tapered leg, a stretched finial.
  *
- * ## What each one does, measured
+ * ## The rule
  *
- * Let `t` be the vertex's axis coordinate divided by the mesh's extent along
- * that axis — **measured from the origin, not from the low end**. Three strips
- * two units long settled it: z ∈ [−1, 1] gives t ∈ [−0.5, 0.5], z ∈ [0, 2]
- * gives [0, 1], z ∈ [2, 4] gives [1, 2]. A mesh centred on the origin cannot
- * tell those apart, which is why `cube` and `body` agreed while `arm` — the
- * one part that sits away from the origin — came back rotated as a whole.
+ * The modifier works on a copy of each vertex with the axes turned so that the deform axis is Z (`axis_map_table`;
+ * `bend` is the exception and keeps them). Along that axis the mesh has an extent `e = upper − lower`; `limits`
+ * pick the part `[lower + e·l0, lower + e·l1]` that is deformed, and the factor is divided by that length. Every mode is then
+ * a function of the **raw** coordinate `z` — "measured from the origin, not from the low end": z ∈ [−1, 1], [0, 2] and
+ * [2, 4] deform differently, which is why a mesh centred on the origin could not tell the readings apart (`arm` could).
  *
- * `u` and `v` are the other two axes in cyclic order (`z` gives `x`, `y`).
+ * | mode | rule (`f` = factor / limit length) |
+ * |---|---|
+ * | `twist` | rotate `(x, y)` by `z · f` |
+ * | `taper` | scale `(x, y)` by `1 + z · f`; `z` untouched |
+ * | `stretch` | scale `(x, y)` by `z² · f − f + 1`; `z` becomes `z · (1 + f)` |
+ * | `bend` | `θ = f ·` the long coordinate; the vertex lands on a circle of radius `1 / f` |
  *
- * | mode | rule | check |
- * |---|---|---|
- * | `twist` | rotate `(u, v)` by `angle · t` | 45° on a ±1 grid puts the `z = −1` corners at −22.5° |
- * | `bend` | wrap around a cylinder of radius `R = extentOfU / angle`: with `φ = u / R` and `r = R − v`, the vertex lands at `(r sin φ, R − r cos φ)` | all eight corners of a cube exact to six places |
- * | `taper` | scale `(u, v)` by `1 + factor · t`; the axis is untouched | `factor` 0.5 → the ends are 0.75 and 1.25 across |
- * | `stretch` | with `f = factor / extent`: the axis becomes `z · (1 + f)` and `(u, v)` scale by `z² · f − f + 1` | factor 0.5 → an end vertex scales by 0.0625, 0.625, 1.0, 1.9375 for extents 0.5, 1, 2, 8 |
+ * `bend` bends along the axis perpendicular to the deform axis (Z: along X, bending in X–Y; X and Y: along Z), so its extent
+ * is measured there. A `bend` with `|f| < 10⁻⁶` changes nothing.
  *
- * `stretch` was refused for four days as "six extents did not pin it down".
- * Read from `MOD_simpledeform.cc` (`simpleDeform_stretch`), the rule is the
- * one above: every mode receives `factor / extent`, but stretch squares the
- * **raw** axis coordinate rather than `t`, so the extent appears once in the
- * factor and not in `z²`. That is why the measured end-vertex scales looked
- * like a parabola whose coefficients drifted with the bounding box. The
- * measured table fits it exactly.
- *
- * `bend` is parameterised by `u`, not by the axis: the deform axis is what the
- * mesh bends **around**, so the length being bent lies across it. That is why
- * a 45° bend about Z moves every vertex of a flat grid by the same amount in
- * Y regardless of its Z.
+ * A vertex outside the limits is clamped to the limit before the formula and the clamped-off part is added back after —
+ * so a limited twist carries the rest of the mesh along rigidly. A locked axis (`taper` / `stretch` / `twist`, never the
+ * deform axis) is held at 0 the same way.
  */
 export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshData {
   const axis = opts.axis ?? "z";
-  const a = AXIS_INDEX[axis];
-  const [u, v] = perpendicular(axis);
-  const angle = opts.angle ?? 0;
-  const factor = opts.factor ?? 0;
-
+  const deformAxis = AXIS_INDEX[axis];
+  const mode = opts.mode;
   const P = data.positions;
   const count = P.length / 3;
   const out = new Float32Array(P);
   if (count === 0) return deformed(data, out);
 
-  const range = (i: number): [number, number] => {
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let k = 0; k < count; k++) {
-      const value = P[k * 3 + i]!;
-      if (value < lo) lo = value;
-      if (value > hi) hi = value;
-    }
-    return [lo, hi];
-  };
+  const lock = [opts.lockX ?? false, opts.lockY ?? false, opts.lockZ ?? false];
+  if (mode === "bend") lock.fill(false);
+  else lock[deformAxis] = false;
 
-  if (opts.mode === "bend") {
-    const [lo, hi] = range(u);
-    const extent = hi - lo;
-    if (extent < 1e-12 || Math.abs(angle) < 1e-12)
-      return deformed(data, out);
-    // The mesh wraps around a cylinder of this radius, and a vertex's own
-    // distance from the axis is `radius - v` — that second term is what the
-    // first attempt left out, and without it the arm came back inside out.
-    const radius = extent / angle;
-    for (let k = 0; k < count; k++) {
-      const phi = P[k * 3 + u]! / radius;
-      const r = radius - P[k * 3 + v]!;
-      out[k * 3 + u] = r * Math.sin(phi);
-      out[k * 3 + v] = radius - r * Math.cos(phi);
-    }
-    return deformed(data, out);
+  const l1 = opts.limits?.[1] ?? 1;
+  const l0 = Math.min(Math.min(Math.max(opts.limits?.[0] ?? 0, 0), 1), l1);
+
+  const toOrigin = opts.origin ? invert4(opts.origin) : null;
+  const fromOrigin = opts.origin ?? null;
+  const into = (i: number): [number, number, number] =>
+    toOrigin ? applyMatrix4(toOrigin, P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!) : [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!];
+
+  const limitAxis = mode === "bend" ? (deformAxis === 2 ? 0 : 2) : deformAxis;
+  let lower = Infinity;
+  let upper = -Infinity;
+  for (let i = 0; i < count; i++) {
+    const c = into(i)[limitAxis]!;
+    if (c < lower) lower = c;
+    if (c > upper) upper = c;
   }
+  const limit1 = lower + (upper - lower) * l1;
+  const limit0 = lower + (upper - lower) * l0;
+  const base = mode === "twist" || mode === "bend" ? (opts.angle ?? 0) : (opts.factor ?? 0);
+  const factor = base / Math.max(FLT_EPSILON, limit1 - limit0);
+  if (mode === "bend" && Math.abs(factor) < BEND_EPS) return deformed(data, out);
 
-  const [lo, hi] = range(a);
-  const extent = hi - lo;
-  for (let k = 0; k < count; k++) {
-    // **From the origin, not from the low end.** Measured on three strips two
-    // units long: z ∈ [−1, 1] gives t ∈ [−0.5, 0.5], z ∈ [0, 2] gives [0, 1],
-    // z ∈ [2, 4] gives [1, 2]. A mesh centred on the origin cannot tell the
-    // two readings apart, which is why `cube` and `body` agreed while `arm`
-    // — the one part that sits away from the origin — was 55 mm out with the
-    // same area and volume, a whole-body rotation.
-    const t = extent < 1e-12 ? 0 : P[k * 3 + a]! / extent;
-    if (opts.mode === "twist") {
-      const th = angle * t;
-      const c = Math.cos(th);
-      const s = Math.sin(th);
-      const pu = P[k * 3 + u]!;
-      const pv = P[k * 3 + v]!;
-      out[k * 3 + u] = pu * c - pv * s;
-      out[k * 3 + v] = pu * s + pv * c;
-    } else if (opts.mode === "stretch") {
-      // `simpleDeform_stretch`: the factor is divided by the extent, the axis
-      // coordinate is squared as it stands.
-      const f = extent < 1e-12 ? 0 : factor / extent;
-      const z = P[k * 3 + a]!;
-      const scale = z * z * f - f + 1;
-      out[k * 3 + u] = P[k * 3 + u]! * scale;
-      out[k * 3 + v] = P[k * 3 + v]! * scale;
-      out[k * 3 + a] = z * (1 + f);
+  const map = AXIS_MAP[mode === "bend" ? 2 : deformAxis]!;
+  for (let i = 0; i < count; i++) {
+    const co = into(i);
+    const dcut: [number, number, number] = [0, 0, 0];
+    const limit = (k: number, lo: number, hi: number): void => {
+      const val = Math.min(hi, Math.max(lo, co[k]!));
+      dcut[k] = co[k]! - val;
+      co[k] = val;
+    };
+    for (let k = 0; k < 3; k++) if (lock[k]) limit(k, 0, 0);
+    limit(limitAxis, limit0, limit1);
+
+    const [x, y, z] = [co[map[0]]!, co[map[1]]!, co[map[2]]!];
+    const d: [number, number, number] = [dcut[map[0]]!, dcut[map[1]]!, dcut[map[2]]!];
+    const r: [number, number, number] = [x, y, z];
+    if (mode === "twist") {
+      const theta = z * factor;
+      const sint = Math.sin(theta);
+      const cost = Math.cos(theta);
+      r[0] = x * cost - y * sint + d[0];
+      r[1] = x * sint + y * cost + d[1];
+      r[2] = z + d[2];
+    } else if (mode === "taper") {
+      const scale = z * factor;
+      r[0] = x + x * scale + d[0];
+      r[1] = y + y * scale + d[1];
+      r[2] = z + d[2];
+    } else if (mode === "stretch") {
+      const scale = z * z * factor - factor + 1;
+      r[0] = x * scale + d[0];
+      r[1] = y * scale + d[1];
+      r[2] = z * (1 + factor) + d[2];
     } else {
-      const scale = 1 + factor * t;
-      out[k * 3 + u] = P[k * 3 + u]! * scale;
-      out[k * 3 + v] = P[k * 3 + v]! * scale;
+      // bend: no remapping, the axes are written out (and `d` is not remapped either).
+      const theta = (deformAxis === 2 ? x : z) * factor;
+      const sint = Math.sin(theta);
+      const cost = Math.cos(theta);
+      if (deformAxis === 0) {
+        r[0] = x + d[0];
+        r[1] = y * cost + (1 - cost) / factor + sint * d[2];
+        r[2] = -(y - 1 / factor) * sint + cost * d[2];
+      } else if (deformAxis === 1) {
+        r[0] = x * cost + (1 - cost) / factor + sint * d[2];
+        r[1] = y + d[1];
+        r[2] = -(x - 1 / factor) * sint + cost * d[2];
+      } else {
+        r[0] = -(y - 1 / factor) * sint + cost * d[0];
+        r[1] = y * cost + (1 - cost) / factor + sint * d[0];
+        r[2] = z + d[2];
+      }
     }
+    const back: [number, number, number] = [0, 0, 0];
+    for (let k = 0; k < 3; k++) back[map[k]!] = r[k]!;
+    const world = fromOrigin ? applyMatrix4(fromOrigin, back[0], back[1], back[2]) : back;
+    out[i * 3] = world[0];
+    out[i * 3 + 1] = world[1];
+    out[i * 3 + 2] = world[2];
   }
-
   return deformed(data, out);
 }
 

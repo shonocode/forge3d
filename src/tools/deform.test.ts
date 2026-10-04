@@ -136,6 +136,61 @@ describe("simpleDeform", () => {
   });
 });
 
+describe("simpleDeform: axes, limits, locks and origin (compat-backlog C26)", () => {
+  it("holds the part beyond a limit to the limit and carries it along", () => {
+    // z ∈ [−1, 1], limits [0.5, 1] → the deformed part starts at z = 0. The bottom vertex is clamped to 0, so it
+    // is not turned at all, and its remaining −1 is added back.
+    const out = simpleDeform(strip(-1, 1), { mode: "twist", axis: "z", angle: Math.PI / 2, limits: [0.5, 1] });
+    expect(at(out, 0)).toEqual([-0.5, 0, -1]);
+    // The top is a full quarter turn: (−0.5, 0) → (0, −0.5).
+    expect(at(out, 3)[0]).toBeCloseTo(0, 6);
+    expect(at(out, 3)[1]).toBeCloseTo(-0.5, 6);
+  });
+
+  it("orders the limits: the lower one is held to the upper", () => {
+    const a = simpleDeform(strip(-1, 1), { mode: "twist", axis: "z", angle: 1, limits: [0.8, 0.3] });
+    const b = simpleDeform(strip(-1, 1), { mode: "twist", axis: "z", angle: 1, limits: [0.3, 0.3] });
+    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
+  });
+
+  it("a locked axis is held at the origin and added back", () => {
+    // Taper about Z with X locked: x is flattened to 0 for the formula and returns as it was — so x is untouched.
+    const out = simpleDeform(strip(-1, 1), { mode: "taper", axis: "z", factor: 1, lockX: true });
+    expect(at(out, 3)[0]).toBe(-0.5);
+    const free = simpleDeform(strip(-1, 1), { mode: "taper", axis: "z", factor: 1 });
+    expect(at(free, 3)[0]).not.toBe(-0.5);
+  });
+
+  it("ignores a lock on the deform axis, and every lock for a bend", () => {
+    const plain = simpleDeform(strip(-1, 1), { mode: "taper", axis: "z", factor: 1 });
+    const locked = simpleDeform(strip(-1, 1), { mode: "taper", axis: "z", factor: 1, lockZ: true });
+    expect(Array.from(locked.positions)).toEqual(Array.from(plain.positions));
+    const bend = simpleDeform(cube(), { mode: "bend", axis: "z", angle: 1 });
+    const bendLocked = simpleDeform(cube(), { mode: "bend", axis: "z", angle: 1, lockX: true, lockY: true });
+    expect(Array.from(bendLocked.positions)).toEqual(Array.from(bend.positions));
+  });
+
+  it("turns the axes round for X and Y: a twist about X leaves x alone", () => {
+    const out = simpleDeform(cube(), { mode: "twist", axis: "x", angle: 1 });
+    for (let v = 0; v < 8; v++) expect(at(out, v)[0]).toBeCloseTo(at(cube(), v)[0], 6);
+  });
+
+  it("deforms in the origin's space", () => {
+    // An origin moved by +2 in z (rotation none): the strip's z ∈ [−1, 1] is z ∈ [−3, −1] there. Twisting with
+    // the origin equals twisting the strip moved the opposite way and moving it back.
+    const shift = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 2, 0, 0, 0, 1];
+    const out = simpleDeform(strip(-1, 1), { mode: "twist", axis: "z", angle: 1, origin: shift });
+    const moved = simpleDeform(strip(-3, -1), { mode: "twist", axis: "z", angle: 1 });
+    for (let v = 0; v < 4; v++) {
+      const m = at(moved, v);
+      const o = at(out, v);
+      expect(o[0]).toBeCloseTo(m[0], 6);
+      expect(o[1]).toBeCloseTo(m[1], 6);
+      expect(o[2]).toBeCloseTo(m[2] + 2, 6);
+    }
+  });
+});
+
 /**
  * A row of `n` vertices along +X at y = z = 0, which is the shape the Blender
  * probe used for everything that is not a ring.
