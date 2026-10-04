@@ -1682,33 +1682,59 @@ export interface BisectPlaneOptions {
   clearOuter?: boolean;
   /** Drop what is on the side the normal points away from — `clear_inner`. */
   clearInner?: boolean;
+  /**
+   * Blender's `use_snap_center`: vertices on the plane (within `dist`) are moved onto it, before anything is
+   * cut. Default false.
+   */
+  snapCenter?: boolean;
+}
+
+/** What {@link bisectPlane} knows besides the mesh: the edges Blender's `geom_cut.out` holds. */
+export interface BisectReport {
+  /**
+   * The edges that lie on the plane afterwards (Blender's `ELE_CUT` edges that survive): the chords the cut
+   * made across faces, and the input edges that already had both ends on the plane — in the output's numbering,
+   * input edges first.
+   */
+  cutEdges: [number, number][];
 }
 
 /**
  * Cut a mesh with a plane, optionally throwing one side away — Blender's
  * `bmesh.ops.bisect_plane`.
  *
- * Faces the plane crosses are split along it, with the new vertices shared
- * between neighbouring faces so the result stays manifold where the input was.
+ * Edges the plane crosses get a vertex (wire edges too), shared between the
+ * faces on them. A face is then split along **chords between its vertices that
+ * lie on the plane** (`bm_face_bisect_verts`) — those it was cut at and those
+ * it already had within `dist` — even when every other vertex is on one side. A
+ * concave face the plane meets several times is cut by sorting those vertices
+ * across it and splitting between every second pair; an edge on the plane
+ * between neighbours on opposite sides is not skipped, one between neighbours
+ * on the same side is.
  *
  * **The hole is not filled.** Clearing a side leaves an open boundary, which
  * is what Blender's operator does too — the Bisect *tool* has a separate
- * "Fill" option that the operator does not. Follow with {@link solidify} for a
- * plate, or cap it yourself.
+ * "Fill" option that the operator does not: {@link bisectOperator} is the tool.
+ * Follow with {@link solidify} for a plate, or cap it yourself.
+ *
+ * Clearing kills the input vertices past the plane (past `dist`) and the faces
+ * and edges that use them — **nothing else**: a vertex no face uses stays, and
+ * so does an edge between two surviving vertices whose only face died (a
+ * border that lay on the plane), as a wire edge. `report.cutEdges` lists the
+ * edges left on the plane (Blender's `geom_cut.out`), which the tool fills.
  *
  * `clearOuter` removes the side the normal points **to**. That was measured,
  * because the two names read equally well either way round.
  *
  * Creases and seams survive, and an edge that gets split passes its sharpness
- * to both halves. Vertices left unused by a cleared side are removed and the
- * indices compacted.
+ * to both halves. The indices are compacted past the killed vertices.
  *
  * **Layers** (compat-backlog A7): all of them. A cut vertex's corners are
  * linear between its edge's two corners in each face, and its vertex groups
  * mix the edge's ends (`BM_edge_split`); the halves of a face keep its
  * corners and slot; sharp edges follow the creases (`bisect-plane-layers`).
  */
-export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData {
+export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: BisectReport): MeshData {
   const P = data.positions;
   const [cx, cy, cz] = opts.planeCo;
   let [nx, ny, nz] = opts.planeNo;
@@ -1721,15 +1747,26 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
 
   const count = P.length / 3;
   const positions: number[] = Array.from(P);
+  const signedDist = (v: number): number =>
+    (positions[v * 3]! - cx) * nx + (positions[v * 3 + 1]! - cy) * ny + (positions[v * 3 + 2]! - cz) * nz;
+  // `plane_point_test_v3`: at or past −eps is behind, at or past eps in front, between is on the plane
+  // (tested in that order, so eps 0 puts a vertex exactly on the plane behind it).
   const side = new Int8Array(count);
   for (let v = 0; v < count; v++) {
-    const d = (P[v * 3]! - cx) * nx + (P[v * 3 + 1]! - cy) * ny + (P[v * 3 + 2]! - cz) * nz;
-    side[v] = d > dist ? 1 : d < -dist ? -1 : 0;
+    const d = signedDist(v);
+    side[v] = d <= -dist ? -1 : d >= dist ? 1 : 0;
   }
-  const signedDist = (v: number): number =>
-    (positions[v * 3]! - cx) * nx +
-    (positions[v * 3 + 1]! - cy) * ny +
-    (positions[v * 3 + 2]! - cz) * nz;
+  // `use_snap_center`: `closest_to_plane_v3`.
+  if (opts.snapCenter)
+    for (let v = 0; v < count; v++)
+      if (side[v] === 0) {
+        const d = signedDist(v);
+        positions[v * 3] = positions[v * 3]! - d * nx;
+        positions[v * 3 + 1] = positions[v * 3 + 1]! - d * ny;
+        positions[v * 3 + 2] = positions[v * 3 + 2]! - d * nz;
+      }
+  /** The side a vertex is on; a cut vertex lies on the plane. */
+  const dirOf = (v: number): number => (v < count ? side[v]! : 0);
 
   /** The vertex where edge a-b meets the plane, made once and shared. */
   const cutVerts = new Map<string, number>();
@@ -1742,7 +1779,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     const t = da / (da - db);
     const index = positions.length / 3;
     for (let k = 0; k < 3; k++)
-      positions.push(positions[a * 3 + k]! + (positions[b * 3 + k]! - positions[a * 3 + k]!) * t);
+      positions.push(positions[a * 3 + k]! * (1 - t) + positions[b * 3 + k]! * t);
     cutVerts.set(key, index);
     cutAt.set(index, { a, b, t });
     return index;
@@ -1754,6 +1791,11 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     const c = cutAt.get(m)!;
     return c.a === a ? c.t : 1 - c.t;
   };
+  const crosses = (a: number, b: number): boolean => {
+    const sa = dirOf(a);
+    const sb = dirOf(b);
+    return sa !== 0 && sb !== 0 && sa !== sb;
+  };
 
   const polys: number[][] = [];
   /** Which original edge each half came from, so creases can follow. */
@@ -1762,80 +1804,232 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
   // corners, or a point along one of its edges (`BM_edge_split` interpolates
   // the face's two corners on the edge).
   type Corner = [number] | [number, number, number];
+  type Loop = { v: number; src: Corner };
   const faceSrc: { face: number; corners: Corner[] }[] = [];
+  /** The chords the cut made across faces (Blender's `l_new->e`, flagged `ELE_CUT`). */
+  const chords: [number, number][] = [];
 
-  data.polys.forEach((poly, f) => {
-    let hasPos = false;
-    let hasNeg = false;
-    for (const v of poly) {
-      if (side[v] === 1) hasPos = true;
-      else if (side[v] === -1) hasNeg = true;
+  /** The face's normal, Newell's way (`BM_face_calc_normal`). */
+  const faceNormal = (ext: Loop[]): Vec3 => {
+    let fx = 0;
+    let fy = 0;
+    let fz = 0;
+    for (let i = 0; i < ext.length; i++) {
+      const a = ext[i]!.v;
+      const b = ext[(i + 1) % ext.length]!.v;
+      const ax = positions[a * 3]!, ay = positions[a * 3 + 1]!, az = positions[a * 3 + 2]!;
+      const bx = positions[b * 3]!, by = positions[b * 3 + 1]!, bz = positions[b * 3 + 2]!;
+      fx += (ay - by) * (az + bz);
+      fy += (az - bz) * (ax + bx);
+      fz += (ax - bx) * (ay + by);
     }
+    const len = Math.hypot(fx, fy, fz);
+    return len > 0 ? [fx / len, fy / len, fz / len] : [0, 0, 0];
+  };
 
-    if (!hasPos || !hasNeg) {
-      // Entirely on one side, or lying in the plane — keep or drop whole.
-      const keep = hasPos ? !opts.clearOuter : hasNeg ? !opts.clearInner : true;
-      if (keep) {
-        polys.push([...poly]);
-        faceSrc.push({ face: f, corners: poly.map((_, i) => [i] as Corner) });
+  /**
+   * `bm_face_bisect_verts`: split a face (its cut vertices already in) along chords between the vertices that
+   * lie on the plane — whatever the other vertices do, so long as both sides are present.
+   */
+  const bisectFace = (ext: Loop[]): Loop[][] => {
+    const n = ext.length;
+    const dir = ext.map((l) => dirOf(l.v));
+    const center = dir.map((d) => d === 0);
+    const skip = new Array<boolean>(n).fill(false);
+    const onPlane: number[] = []; // positions in `ext` of the vertices on the plane
+    const useDirs = [false, false, false];
+    let hasCenterEdge = false;
+    for (let i = 0; i < n; i++) {
+      const prev = (i + n - 1) % n;
+      const next = (i + 1) % n;
+      if (center[i]) {
+        // Both neighbours on the same side (or both on the plane): do not flip "inside" at this vertex.
+        skip[i] = dir[prev] === dir[next];
+        onPlane.push(i);
+        if (!hasCenterEdge && center[prev]) hasCenterEdge = true;
       }
-      return;
+      useDirs[dir[i]! + 1] = true;
+    }
+    if (!(onPlane.length > 1 && useDirs[0] && useDirs[2])) return [ext];
+
+    const pieces: Loop[][] = [ext];
+    /** `BM_face_split`: nothing happens between loops that are adjacent. */
+    const splitAt = (j: number, va: number, vb: number): boolean => {
+      const piece = pieces[j]!;
+      const m = piece.length;
+      const ia = piece.findIndex((l) => l.v === va);
+      const ib = piece.findIndex((l) => l.v === vb);
+      if (ia < 0 || ib < 0 || (ia + 1) % m === ib || (ib + 1) % m === ia) return false;
+      const run = (from: number, to: number): Loop[] => {
+        const out: Loop[] = [];
+        for (let k = from; ; k = (k + 1) % m) {
+          out.push(piece[k]!);
+          if (k === to) break;
+        }
+        return out;
+      };
+      pieces[j] = run(ia, ib);
+      pieces.push(run(ib, ia));
+      chords.push([va, vb]);
+      return true;
+    };
+
+    if (onPlane.length === 2) {
+      splitAt(0, ext[onPlane[0]!]!.v, ext[onPlane[1]!]!.v);
+      return pieces;
     }
 
-    const above: number[] = [];
-    const below: number[] = [];
-    const aboveSrc: Corner[] = [];
-    const belowSrc: Corner[] = [];
+    // Several cuts: runs of vertices on the plane are skipped when the faces' edges on either side of the run
+    // are on the same side of it.
+    if (hasCenterEdge) {
+      let first = 0;
+      while (center[first]) first = (first + 1) % n;
+      let i = first;
+      do {
+        if (!skip[i] && center[i] && center[(i + 1) % n]) {
+          const prev = (i + n - 1) % n;
+          let next = (i + 2) % n;
+          while (center[next]) next = (next + 1) % n;
+          if (dir[prev] === dir[next]) {
+            for (let k = (prev + 1) % n; k !== next; k = (k + 1) % n) skip[k] = true;
+          }
+          i = (next + n - 1) % n;
+        }
+        i = (i + 1) % n;
+      } while (i !== first);
+    }
+
+    // The direction to sort the vertices across the face: face normal × plane normal. When they are parallel
+    // Blender looks for another direction, but its loop never breaks, so it always gives up (kept).
+    const fno = faceNormal(ext);
+    let sx = fno[1] * nz - fno[2] * ny;
+    let sy = fno[2] * nx - fno[0] * nz;
+    let sz = fno[0] * ny - fno[1] * nx;
+    const slen = Math.hypot(sx, sy, sz);
+    if (slen === 0) return pieces;
+    sx /= slen;
+    sy /= slen;
+    sz /= slen;
+    const sortVal = (v: number): number => sx * positions[v * 3]! + sy * positions[v * 3 + 1]! + sz * positions[v * 3 + 2]!;
+    const order = onPlane.map((i) => ext[i]!.v).sort((p, q) => sortVal(p) - sortVal(q));
+    const posOf = new Map(ext.map((l, i) => [l.v, i] as const));
+
+    let inside = false;
+    for (let k = 0; k + 1 < order.length; k++) {
+      const va = order[k]!;
+      const vb = order[k + 1]!;
+      const ia = posOf.get(va)!;
+      const ib = posOf.get(vb)!;
+      if (hasCenterEdge) {
+        const delta = Math.abs(ia - ib);
+        if (delta === 1 || delta === n - 1) continue;
+      }
+      if (!skip[ia]) inside = !inside;
+      if (!inside) continue;
+      for (let j = 0; j < pieces.length; j++) {
+        const piece = pieces[j]!;
+        if (piece.some((l) => l.v === va) && piece.some((l) => l.v === vb)) {
+          splitAt(j, va, vb);
+          break;
+        }
+      }
+    }
+    return pieces;
+  };
+
+  /** Every output face piece, whether it survives the clearing or not. */
+  const allPieces: { face: number; loops: Loop[] }[] = [];
+  data.polys.forEach((poly, f) => {
+    const ext: Loop[] = [];
+    let touched = false;
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i]!;
       const b = poly[(i + 1) % poly.length]!;
-      const sa = side[a]!;
-      const sb = side[b]!;
-
-      if (sa >= 0) {
-        above.push(a);
-        aboveSrc.push([i]);
-      }
-      if (sa <= 0) {
-        below.push(a);
-        belowSrc.push([i]);
-      }
-
-      if (sa !== 0 && sb !== 0 && sa !== sb) {
+      ext.push({ v: a, src: [i] });
+      if (dirOf(a) === 0) touched = true;
+      if (crosses(a, b)) {
         const m = cutOn(a, b);
-        const src: Corner = [i, (i + 1) % poly.length, along(a, m)];
-        above.push(m);
-        below.push(m);
-        aboveSrc.push(src);
-        belowSrc.push(src);
+        ext.push({ v: m, src: [i, (i + 1) % poly.length, along(a, m)] });
         splitParent.set(seamKey(a, m), seamKey(a, b));
         splitParent.set(seamKey(m, b), seamKey(a, b));
+        touched = true;
       }
     }
-
-    if (!opts.clearOuter && above.length >= 3) {
-      polys.push(above);
-      faceSrc.push({ face: f, corners: aboveSrc });
-    }
-    if (!opts.clearInner && below.length >= 3) {
-      polys.push(below);
-      faceSrc.push({ face: f, corners: belowSrc });
-    }
+    for (const loops of touched ? bisectFace(ext) : [ext]) allPieces.push({ face: f, loops });
   });
+  // Wire edges are cut too (`BM_edge_split` does not care about faces).
+  const wire: [number, number][] = [];
+  for (const e of data.edges ?? []) {
+    const a = e[0]!;
+    const b = e[1]!;
+    if (crosses(a, b)) {
+      const m = cutOn(a, b);
+      splitParent.set(seamKey(a, m), seamKey(a, b));
+      splitParent.set(seamKey(m, b), seamKey(a, b));
+      wire.push([a, m], [m, b]);
+    } else wire.push([a, b]);
+  }
 
-  // Compact: a cleared side leaves vertices nothing refers to.
-  //
-  // In index order, not in the order the faces happen to mention them, so a
-  // cut that removes nothing returns the mesh with its numbering intact. First
-  // use order would renumber an untouched mesh, which reads as a change.
-  const used = new Set<number>();
-  for (const poly of polys) for (const v of poly) used.add(v);
-  const remap = new Int32Array(positions.length / 3).fill(-1);
+  // The clearing (`BM_vert_kill` on every input vertex past the plane, with the edges and faces that use it).
+  const total = positions.length / 3;
+  const killed = new Uint8Array(total);
+  if (opts.clearOuter || opts.clearInner)
+    for (let v = 0; v < count; v++) {
+      const d = signedDist(v);
+      if ((opts.clearOuter && d - dist > 0) || (opts.clearInner && d + dist < 0)) killed[v] = 1;
+    }
+  for (const { face, loops } of allPieces) {
+    if (loops.some((l) => killed[l.v])) continue;
+    polys.push(loops.map((l) => l.v));
+    faceSrc.push({ face, corners: loops.map((l) => l.src) });
+  }
+
+  // Vertices that survive, in index order — a cut that removes nothing returns the mesh with its numbering
+  // intact. One no face uses stays (Blender kills the vertices past the plane and nothing else).
+  const remap = new Int32Array(total).fill(-1);
   const kept: number[] = [];
-  for (let v = 0; v < positions.length / 3; v++) {
-    if (!used.has(v)) continue;
+  for (let v = 0; v < total; v++) {
+    if (killed[v]) continue;
     remap[v] = kept.length / 3;
     kept.push(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+  }
+  // Edges: every edge the pieces have and every wire edge, alive while both ends are. What no surviving face
+  // uses is left as a wire edge — the border of a killed face that lay on the plane.
+  const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const faceEdges = new Set<string>();
+  for (const poly of polys) for (let i = 0; i < poly.length; i++) faceEdges.add(edgeKey(poly[i]!, poly[(i + 1) % poly.length]!));
+  const wireOut: [number, number][] = [];
+  const seenEdge = new Set<string>();
+  const consider = (a: number, b: number): void => {
+    const k = edgeKey(a, b);
+    if (seenEdge.has(k)) return;
+    seenEdge.add(k);
+    if (killed[a] || killed[b] || faceEdges.has(k)) return;
+    wireOut.push([remap[a]!, remap[b]!]);
+  };
+  for (const { loops } of allPieces)
+    for (let i = 0; i < loops.length; i++) consider(loops[i]!.v, loops[(i + 1) % loops.length]!.v);
+  for (const [a, b] of wire) consider(a, b);
+  if (report) {
+    // `geom_cut.out`: input edges with both ends on the plane (face by face, each face's closing edge first —
+    // the numbering a Mesh made from these polygons gives), then the chords in the order they were made.
+    const cut: [number, number][] = [];
+    const seen = new Set<string>();
+    const add = (a: number, b: number): void => {
+      const k = edgeKey(a, b);
+      if (seen.has(k) || killed[a] || killed[b]) return;
+      seen.add(k);
+      cut.push([remap[a]!, remap[b]!]);
+    };
+    for (const poly of data.polys)
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[(i + poly.length - 1) % poly.length]!;
+        const b = poly[i]!;
+        if (dirOf(a) === 0 && dirOf(b) === 0) add(a, b);
+      }
+    for (const e of data.edges ?? []) if (dirOf(e[0]!) === 0 && dirOf(e[1]!) === 0) add(e[0]!, e[1]!);
+    for (const [a, b] of chords) add(a, b);
+    report.cutEdges = cut;
   }
 
   const creases = new Map<string, number>();
@@ -1875,12 +2069,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions): MeshData 
     for (const [half, parent] of splitParent) if (data.sharp.has(parent)) carry(half, (m) => sharp.add(m));
     out.sharp = sharp;
   }
-  if (data.edges) {
-    const edges = data.edges
-      .filter((e) => remap[e[0]!]! >= 0 && remap[e[1]!]! >= 0)
-      .map((e) => [remap[e[0]!]!, remap[e[1]!]!]);
-    if (edges.length > 0) out.edges = edges;
-  }
+  if (wireOut.length > 0) out.edges = wireOut;
   const corner = (layer: number[][][] | undefined): number[][][] | undefined =>
     layer && layer.length === data.polys.length
       ? faceSrc.map(({ face, corners }) =>

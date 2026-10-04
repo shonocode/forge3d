@@ -843,3 +843,34 @@ export function scanfillTriangles(em: EditMesh, selected: readonly number[]): [n
   }
   return tris;
 }
+
+/**
+ * `bmesh.ops.triangle_fill` with a **given** normal (`use_beauty=False`): the edges, as vertex pairs in the order
+ * Blender walks them, are filled by the sweep line projected along `normal`. With a normal given, Blender does not
+ * work the winding out from the faces around the edges (`calc_winding` is switched off), so the triangles wind as
+ * the scanfill makes them. Returns the triangles on the vertex numbers of `P`.
+ */
+export function scanfillOnEdges(
+  P: ArrayLike<number>,
+  edges: readonly (readonly [number, number])[],
+  normal: readonly number[],
+): [number, number, number][] {
+  const co = (v: number): number[] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const sf = new ScanFill();
+  const sfVert = new Map<number, SFVert>();
+  for (const [a, b] of edges) {
+    const vs = [a, b].map((v) => {
+      let s = sfVert.get(v);
+      if (!s) {
+        s = sf.addVert(co(v), v);
+        sfVert.set(v, s);
+      }
+      return s;
+    });
+    sf.addEdge(vs[0]!, vs[1]!);
+  }
+  let n = normal.map(f);
+  if (normalizeV3(n) === 0) n = [0, 0, 1];
+  sf.calc(CALC_HOLES | CALC_POLYS | CALC_LOOSE, n);
+  return sf.faces.map(([a, b, c]) => [a.id, b.id, c.id] as [number, number, number]);
+}

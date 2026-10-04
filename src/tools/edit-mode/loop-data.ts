@@ -332,6 +332,7 @@ export function faceAttributeFill(
 export function faceAttributeFillAll(
   data: MeshData,
   faces: ReadonlySet<number> | readonly number[],
+  useNormals = false,
 ): MeshData {
   const plan = faceAttributeFillPlan(data.polys, faces);
   const out: MeshData = { ...data };
@@ -345,6 +346,40 @@ export function faceAttributeFillAll(
     // takes that face's new slot.
     for (const [g, from] of plan.faceFrom) m[g] = m[from]!;
     out.materials = m;
+  }
+  if (useNormals) {
+    // `use_normals`: a filled face that runs a shared edge the same way as the face it was filled from is
+    // flipped (`BM_face_normal_flip` reverses the loops, their data with them) — after its data was copied, and
+    // before the faces filled from it look at its winding.
+    const polys = data.polys.map((p) => [...p]);
+    const flipped = new Set<number>();
+    const runs = (f: number, a: number, b: number): boolean => {
+      const p = polys[f]!;
+      const i = p.indexOf(a);
+      if (i < 0) return false;
+      return p[(i + 1) % p.length] === b;
+    };
+    for (const [g, from] of plan.faceFrom) {
+      const p = polys[g]!;
+      let flip = false;
+      for (let i = 0; i < p.length; i++) {
+        const a = p[i]!;
+        const b = p[(i + 1) % p.length]!;
+        if (runs(from, b, a) || runs(from, a, b)) {
+          flip = runs(from, a, b);
+          break;
+        }
+      }
+      if (!flip) continue;
+      polys[g] = p.reverse();
+      flipped.add(g);
+    }
+    out.polys = polys;
+    const reverse = (l: number[][][] | undefined): number[][][] | undefined =>
+      l && l.length === polys.length ? l.map((c, f) => (flipped.has(f) ? [...c].reverse() : c)) : l;
+    if (out.uvs) out.uvs = reverse(out.uvs)!;
+    if (out.colors) out.colors = reverse(out.colors)!;
+    if (out.normals) out.normals = reverse(out.normals)!;
   }
   return out;
 }

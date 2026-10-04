@@ -139,8 +139,10 @@ export {
   type SymmetrizeOptions,
   type ConvexHullReport,
   type BisectPlaneOptions,
+  type BisectReport,
   type MaskOptions,
 } from "../tools/mesh-ops";
+export { bisectOperator, type BisectOperatorOptions } from "../tools/bisect-operator";
 /** Blender's Solidify **modifier** (Simple mode) — `solidify` above is `bmesh.ops.solidify`. */
 export { solidifyModifier, type SolidifyModifierOptions } from "../tools/solidify-modifier";
 /** Blender's Wireframe **modifier** (`BM_mesh_wireframe`) — `wireframe` above has only thickness and boundary. */

@@ -76,11 +76,11 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 
 **残っている既知の差**（2026-09-29）：
 
-- **既定値・オプションが未対応、または未測定**：Merge by Distance の Sharp Edges、
-  Bevel の残りのオプション（C35）、Weighted Normal の face influence、Displace の画像テクスチャ、
-  Decimate Collapse の対称と層、Boolean の FLOAT / MANIFOLD ソルバー、Shrinkwrap の cull、
-  Bisect の埋め、Simple Deform の origin と limits、
-  Solidify の Complex モード
+- **既定値・オプションが未対応、または未測定**：Bevel の残りのオプション（C35）、
+  Boolean の FLOAT / MANIFOLD ソルバー（やらない、C38）、Shrinkwrap の `subsurf_levels`（C39）、
+  Displace の CUSTOM_NORMAL / GLOBAL（C37）、Simple Deform の origin と limits（C26）、
+  Solidify の Complex モード（C30）。Bisect の埋めは**面の形と向きまで**一致（C25）で、
+  埋めた面の角が隣の面の何を写すか（BMesh のプール順に依る）だけが違う（C40）
 - **生成器の UV**（`primitive_*_add` の `calc_uvs`）
 - **形が違う入力が分かっているもの**：`offset_edgeloops` の、閉じたメッシュの中の孤立した辺
 - **Subdivision Surface の極限曲面**：level 4 以上・crease 付き・UV 付きのケージは拒否する
