@@ -100,8 +100,8 @@
  *
  * ## What is not offered
  *
- * * **`subsurf_levels`**, which subdivides the target first, and
- *   `use_invert_cull`, which moved nothing in any case measured.
+ * * **`subsurf_levels`** (it moves the ray origin to the vertex's Catmull-Clark limit position; compat-backlog C39).
+ *   `cull_face` and `use_invert_cull` are offered since 2026-10-05 (compat-backlog C23): see `ShrinkwrapProjectOptions`.
  */
 import type { MeshData } from "../../lib/mesh";
 import { closestPointOnTriangleBary } from "./attribute-transfer";
@@ -109,7 +109,6 @@ import {
   buildTriGrid,
   meshBounds,
   rayNearestHit,
-  smoothVertexNormals,
   type TriGrid,
 } from "../bake-common";
 import { f, sub as fsub, dot as fdot, cross as fcross, normalizeInPlace, meshVertNormals, type V3 } from "../blender-math";
@@ -134,6 +133,16 @@ export interface ShrinkwrapProjectOptions {
   positive?: boolean;
   /** Blender's `project_limit` — the longest ray. **0 is unlimited.** */
   limit?: number;
+  /**
+   * Blender's `cull_face` (compat-backlog C23): ignore the hits on the target's `"front"` or `"back"` faces — a hit is
+   * on the front when the ray runs against the triangle's normal. **Only the nearest hit along each ray is
+   * asked**: if that one is culled the ray finds nothing there, even with an acceptable face behind it
+   * (`BKE_shrinkwrap_project_normal` casts first and culls after). A ray that lies in the face's plane
+   * (dot 0) is culled either way.
+   */
+  cull?: "front" | "back";
+  /** Blender's `use_invert_cull`: the **negative** direction culls the other side (it flips the mask there only). */
+  invertCull?: boolean;
 }
 
 export interface ShrinkwrapOptions {
@@ -682,6 +691,20 @@ function project(t: Target, p: Vec3, dir: Vec3, opts: ShrinkwrapProjectOptions):
       dir[0] * sign, dir[1] * sign, dir[2] * sign,
       tMax,
     );
+    if (hit && opts.cull) {
+      // The mask is flipped for the negative pass when `use_invert_cull` is on.
+      const cull = sign === -1 && opts.invertCull ? (opts.cull === "front" ? "back" : "front") : opts.cull;
+      const k = hit.face * 3;
+      const a = t.tris[k]!;
+      const b = t.tris[k + 1]!;
+      const c = t.tris[k + 2]!;
+      const P = t.positions;
+      const at = (i: number): V3 => [f(P[i * 3]!), f(P[i * 3 + 1]!), f(P[i * 3 + 2]!)];
+      const n = fcross(fsub(at(b), at(a)), fsub(at(c), at(a)));
+      normalizeInPlace(n);
+      const d = fdot([f(dir[0] * sign), f(dir[1] * sign), f(dir[2] * sign)], n);
+      if ((cull === "front" && d <= 0) || (cull === "back" && d >= 0)) continue;
+    }
     if (hit && hit.t < bestT) {
       bestT = hit.t;
       bestHit = {
@@ -699,12 +722,17 @@ function project(t: Target, p: Vec3, dir: Vec3, opts: ShrinkwrapProjectOptions):
   return bestHit;
 }
 
-/** Per-vertex normals of the source, for `project`'s `"normal"` axis. */
+/**
+ * Per-vertex normals of the source, for `project`'s `"normal"` axis: `Mesh::vert_normals`, which weights each
+ * face by the angle it makes at the vertex (as the target's normals are, see `aboveSurface`).
+ */
 function sourceNormals(data: MeshData): Float32Array {
-  const tris: number[] = [];
-  for (const poly of data.polys)
-    for (let i = 1; i + 1 < poly.length; i++) tris.push(poly[0]!, poly[i]!, poly[i + 1]!);
-  return smoothVertexNormals(data.positions, tris, data.positions.length / 3);
+  const n = data.positions.length / 3;
+  const P: V3[] = Array.from({ length: n }, (_, i) => [f(data.positions[i * 3]!), f(data.positions[i * 3 + 1]!), f(data.positions[i * 3 + 2]!)]);
+  const vn = meshVertNormals(P, data.polys.filter((p) => p.length >= 3));
+  const out = new Float32Array(n * 3);
+  vn.forEach((v, i) => out.set([v[0]!, v[1]!, v[2]!], i * 3));
+  return out;
 }
 
 /**

@@ -364,3 +364,41 @@ describe("shrinkwrap", () => {
     ).toThrow(/no faces/);
   });
 });
+
+describe("shrinkwrap project: culling and the normal axis (compat-backlog C23)", () => {
+  /** A source above and a source below the quad. */
+  const source = (): MeshData => ({
+    positions: Float32Array.from([0, 0, 0.4, 0.1, 0.1, -0.4, 0.2, -0.1, 0.3]),
+    polys: [[0, 1, 2]],
+  });
+  const wrap = (project: Parameters<typeof shrinkwrap>[1]["project"]): Float32Array =>
+    shrinkwrap(source(), { target: quad(), method: "project", project: { axis: "z", negative: true, ...project } }).positions;
+
+  it("culls the faces the ray meets from the front, not those it meets from behind", () => {
+    // The quad's normal is +z: a ray from above runs against it (front), from below with it (back).
+    const front = wrap({ cull: "front" });
+    expect(front[2]).toBeCloseTo(0.4, 6); // above: the front hit is culled, the vertex stays
+    expect(front[5]).toBeCloseTo(0, 6); // below: the back hit is kept
+    const back = wrap({ cull: "back" });
+    expect(back[2]).toBeCloseTo(0, 6);
+    expect(back[5]).toBeCloseTo(-0.4, 6);
+  });
+
+  it("use_invert_cull flips the mask for the negative direction only", () => {
+    // Front culled, inverted: the positive pass culls front, the negative pass culls back.
+    const p = wrap({ cull: "front", invertCull: true });
+    expect(p[2]).toBeCloseTo(0, 6); // above: the -z ray meets the front face, which the negative pass keeps
+    expect(p[5]).toBeCloseTo(0, 6); // below: the +z ray meets the back face, which the positive pass keeps
+    const pos = wrap({ cull: "front", invertCull: true, negative: false });
+    expect(pos[2]).toBeCloseTo(0.4, 6); // no negative pass: nothing flips, the front is culled
+  });
+
+  it("projects along the vertex normals, angle weighted", () => {
+    // A tilted sheet as the source: each vertex's own normal, weighted by the angle at it.
+    const out = shrinkwrap(
+      { positions: Float32Array.from([0, 0, 1, 1, 0, 1, 1, 1, 1.4, 0, 1, 1.4]), polys: [[0, 1, 2, 3]] },
+      { target: quad(), method: "project", project: { axis: "normal", negative: true } },
+    );
+    for (let i = 0; i < 4; i++) expect(Number.isFinite(out.positions[i * 3 + 2]!)).toBe(true);
+  });
+});
