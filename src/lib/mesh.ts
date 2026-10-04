@@ -29,6 +29,13 @@ export interface MeshData {
   /** UV seam edges, keyed "minVertex_maxVertex". */
   seams?: Set<string>;
   /**
+   * One strength per polygon — Blender's `__mod_weightednormals_faceweight`, which the Bevel modifier's
+   * `face_strength_mode` writes and the Weighted Normal modifier's `use_face_influence` reads (weak −16384,
+   * medium 0, strong 16384; any int is accepted). **Read by {@link weightedNormal} only** — no other operator
+   * carries it (compat-backlog C18; Bevel does not write it yet, C35).
+   */
+  faceStrength?: number[];
+  /**
    * Edges marked **sharp**, keyed "minVertex_maxVertex" — Blender's
    * `use_edge_sharp`, the flag that stops a smooth shade from being carried
    * across an edge.
@@ -165,7 +172,7 @@ export function meshFromData(data: MeshData): EditMesh {
 }
 
 /** Read an editable mesh back out as plain arrays. */
-export function meshToData(em: EditMesh): Required<MeshData> {
+export function meshToData(em: EditMesh): Required<Omit<MeshData, "faceStrength">> {
   return {
     positions: new Float32Array(em.positions),
     polys: toPolygons(em),

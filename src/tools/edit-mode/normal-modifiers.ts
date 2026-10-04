@@ -167,6 +167,13 @@ export interface WeightedNormalOptions {
    * across the whole vertex, so sharp edges keep their crease.
    */
   keepSharp?: boolean;
+  /**
+   * Blender's `use_face_influence`: only the faces of the strongest strength at a vertex (or smooth group)
+   * count, read from `MeshData.faceStrength` (weak −16384, medium 0, strong 16384). A vertex's first
+   * contribution starts at weak; a stronger face discards what was gathered so far, a weaker one is ignored.
+   * Without a `faceStrength` layer the option does nothing, as in Blender, where it needs the attribute.
+   */
+  faceInfluence?: boolean;
 }
 
 export type NormalEditMode = "radial" | "directional";
@@ -255,6 +262,22 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
       for (const [i, v] of poly.entries()) itemOf[f]![i] = v;
   }
 
+  // The normal a corner has before any weighting: face normals weighted by the corner's angle, summed over
+  // its smooth group (what `normals_calc_corners` gives a smooth fan).
+  let defaults: Map<string, Vec3> | null = null;
+  const defaultNormal = (f: number, i: number): Vec3 => {
+    if (!defaults) {
+      defaults = new Map();
+      for (const group of smoothGroups(data)) {
+        let sum: Vec3 = [0, 0, 0];
+        for (const [gf, gi] of group) sum = add(sum, scale(normals[gf]!, cornerAngle(P, data.polys[gf]!, gi)));
+        const n = normalized(sum);
+        for (const [gf, gi] of group) defaults.set(`${gf}_${gi}`, n);
+      }
+    }
+    return defaults.get(`${f}_${i}`) ?? normals[f]!;
+  };
+
   // `apply_weights_vertex_normal`: every contribution, largest first (the
   // sort is stable here and `qsort` is not, but equal values land in the same
   // tier with the same divisor, so their order cannot show).
@@ -268,8 +291,25 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   const acc = new Map<number, Vec3>();
   const tierValue = new Map<number, number>();
   const tier = new Map<number, number>();
+  // `use_face_influence && face_strength`: `check_item_face_strength`. An item starts at
+  // `FACE_STRENGTH_WEAK`; a stronger face resets it, a different one is skipped.
+  const FACE_STRENGTH_WEAK = -16384;
+  const strength = options.faceInfluence ? data.faceStrength : undefined;
+  const itemStrength = new Map<number, number>();
   for (const [f, i, val] of entries) {
     const item = itemOf[f]![i]!;
+    if (strength) {
+      const s = strength[f] ?? 0;
+      let cs = itemStrength.get(item) ?? FACE_STRENGTH_WEAK;
+      if (s > cs) {
+        cs = s;
+        tierValue.delete(item);
+        tier.delete(item);
+        acc.delete(item);
+      }
+      itemStrength.set(item, cs);
+      if (s !== cs) continue;
+    }
     let cur = tierValue.get(item) ?? 0;
     if (cur === 0) cur = val;
     if (!(Math.abs(cur - val) <= thresh)) {
@@ -282,7 +322,13 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   }
 
   for (const [f, poly] of data.polys.entries())
-    for (let i = 0; i < poly.length; i++) out[f]![i] = normalized(acc.get(itemOf[f]![i]!)!);
+    for (let i = 0; i < poly.length; i++) {
+      const sum = acc.get(itemOf[f]![i]!);
+      // `normalize_v3(...) < CLNORS_VALID_VEC_LEN`: an item nothing counted for (every face of it below
+      // the strongest, or too weak) has no weighted normal, and the corner keeps the one the mesh
+      // computes by itself — the angle-weighted normal of its smooth group.
+      out[f]![i] = sum && Math.hypot(sum[0], sum[1], sum[2]) >= 1e-6 ? normalized(sum) : defaultNormal(f, i);
+    }
   return withNormals(data, out);
 }
 

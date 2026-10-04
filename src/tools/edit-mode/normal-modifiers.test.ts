@@ -215,6 +215,39 @@ describe("weightedNormal", () => {
     expect(out.polys).toEqual(before.polys);
     expect(out.normals).toHaveLength(before.polys.length);
   });
+
+  describe("faceInfluence (compat-backlog C18)", () => {
+    // The apex is shared by all five faces; give them strengths and see which ones count.
+    const apexOf = (m: MeshData): [number, number, number][] => apex(m);
+
+    it("counts only the strongest faces at a vertex", () => {
+      const m = fan();
+      const strong = weightedNormal({ ...m, faceStrength: [0, 0, 16384, 0, 0] }, { faceInfluence: true });
+      // Face 2 alone: every apex corner takes that face's normal.
+      const alone = weightedNormal({ ...m, polys: [m.polys[2]!] }, {});
+      for (const n of apexOf(strong)) expectVec(n, alone.normals![0]![0] as [number, number, number], "the one strong face");
+    });
+
+    it("does nothing without the layer, or with the option off", () => {
+      const m = fan();
+      const plain = apexOf(weightedNormal(m));
+      expect(apexOf(weightedNormal(m, { faceInfluence: true }))).toEqual(plain);
+      expect(apexOf(weightedNormal({ ...m, faceStrength: [0, 0, 16384, 0, 0] }))).toEqual(plain);
+    });
+
+    it("equal strengths change nothing", () => {
+      const m = fan();
+      expect(apexOf(weightedNormal({ ...m, faceStrength: [0, 0, 0, 0, 0] }, { faceInfluence: true }))).toEqual(
+        apexOf(weightedNormal({ ...m, faceStrength: [0, 0, 0, 0, 0] })),
+      );
+    });
+
+    it("an item whose every face is below weak keeps the normal the mesh computes by itself", () => {
+      const m = fan();
+      const out = weightedNormal({ ...m, faceStrength: m.polys.map(() => -20000) }, { faceInfluence: true });
+      for (const n of apexOf(out)) expect(Math.hypot(n[0], n[1], n[2])).toBeCloseTo(1, 5);
+    });
+  });
 });
 
 describe("normalEdit", () => {
