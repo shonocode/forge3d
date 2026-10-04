@@ -47,11 +47,12 @@
  *   nothing but a diagonal, so the normalized form scales them toward the
  *   **world origin** (1.0 → 0.309 after two passes of λ 0.8) and the other
  *   form divides by a zero ring area and returns NaN — both measured.
- * - **No vertex group.** The weight multiplies λ per vertex at the first pass
- *   and nothing else; it can come when something needs it.
+ * - **The vertex group** multiplies λ and λ_b per vertex while the matrix is built (`wpaint`) — a weight of 0 is an
+ *   identity row, not a skipped vertex — and nothing else (compat-backlog C31).
  */
 import type { MeshData } from "../../lib/mesh";
 import { bicgstab, type Row } from "./laplacian";
+import { vertexGroupWeights } from "../mesh-layers";
 
 export interface LaplacianSmoothOptions {
   /** Blender's `iterations` — passes over the same matrix. Default 1. */
@@ -68,6 +69,10 @@ export interface LaplacianSmoothOptions {
   preserveVolume?: boolean;
   /** `use_normalized`: drop the `1/(4·ring)` area factor from λ. Default true. */
   normalized?: boolean;
+  /** Blender's `vertex_group`: its weight scales λ and λ_b at each vertex. No such group, or none with a member: all 1. */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: `1 − weight`. */
+  invertVertexGroup?: boolean;
 }
 
 const f = Math.fround;
@@ -201,6 +206,8 @@ export function laplacianSmooth(data: MeshData, opts: LaplacianSmoothOptions = {
 
   // ── first pass: the diagonal and the per-vertex scale ───────────────────
   const diag = new Float64Array(n);
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   const absL = Math.abs(lambda);
   const absLB = Math.abs(lambdaBorder);
   for (let i = 0; i < n; i++) {
@@ -208,18 +215,19 @@ export function laplacianSmooth(data: MeshData, opts: LaplacianSmoothOptions = {
       diag[i] = 1;
       continue;
     }
+    const wpaint = groupWeights ? groupWeights[i]! : 1;
     if (normalized) {
       const w = vweights[i]!;
-      vweights[i] = w === 0 ? 0 : f(-absL / w);
+      vweights[i] = w === 0 ? 0 : f(f(-absL * wpaint) / w);
       const l = vlengths[i]!;
-      vlengths[i] = l === 0 ? 0 : f(f(-absLB * 2) / l);
-      diag[i] = isRing(i) ? f(1 + absL) : f(1 + f(absLB * 2));
+      vlengths[i] = l === 0 ? 0 : f(f(f(-absLB * wpaint) * 2) / l);
+      diag[i] = isRing(i) ? f(1 + f(absL * wpaint)) : f(1 + f(f(absLB * wpaint) * 2));
     } else {
       const w = f(vweights[i]! * ringAreas[i]!);
-      vweights[i] = w === 0 ? 0 : f(-absL / f(4 * w));
+      vweights[i] = w === 0 ? 0 : f(f(-absL * wpaint) / f(4 * w));
       const l = vlengths[i]!;
-      vlengths[i] = l === 0 ? 0 : f(f(-absLB * 2) / l);
-      diag[i] = isRing(i) ? f(1 + f(absL / f(4 * ringAreas[i]!))) : f(1 + f(absLB * 2));
+      vlengths[i] = l === 0 ? 0 : f(f(f(-absLB * wpaint) * 2) / l);
+      diag[i] = isRing(i) ? f(1 + f(f(absL * wpaint) / f(4 * ringAreas[i]!))) : f(1 + f(f(absLB * wpaint) * 2));
     }
   }
 

@@ -25,7 +25,7 @@
  * All distances in float32, as a `BMVert`'s coordinates are.
  */
 import type { MeshData } from "../lib/mesh";
-import { carryFaceLayers, type FaceSource } from "./mesh-layers";
+import { carryFaceLayers, vertexGroupWeights, type FaceSource } from "./mesh-layers";
 import { calcEdges } from "./bmesh-lite";
 
 const f = Math.fround;
@@ -306,6 +306,13 @@ export interface MergeByDistanceOptions {
   mode?: "all" | "connected";
   /** Blender's `loose_edges`: in `"connected"` mode, only collapse edges that belong to no face. */
   onlyLooseEdges?: boolean;
+  /**
+   * Blender's `vertex_group`: only the vertices in it (weight above 0) take part in the merge — as ones that
+   * merge and ones merged into; `invertVertexGroup` takes the others. No such group, or none with a member: all
+   * of them (`calculate_weld`).
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 /**
@@ -333,13 +340,19 @@ export function mergeByDistance(data: MeshData, dist: number, options: MergeByDi
   const P = data.positions;
   const range = f(dist);
   const rangeSq = f(range * range);
-  if (options.mode === "connected") return mergeConnected(data, rangeSq, options.onlyLooseEdges ?? false);
+  // The vertex group's selection: a member (weight above 0) unless inverted.
+  const vg = vertexGroupWeights(data, options.vertexGroup, false);
+  const invert = options.invertVertexGroup ?? false;
+  const selected = vg && !vg.empty ? Array.from(vg.weights, (w) => w > 0 !== invert) : null;
+  if (options.mode === "connected") return mergeConnected(data, rangeSq, options.onlyLooseEdges ?? false, selected);
   const dest = new Int32Array(n).fill(-1);
   for (let v = 0; v < n; v++) {
+    if (selected && !selected[v]) continue;
     if (dest[v] !== -1 && dest[v] !== v) continue;
     const co: V3 = [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
     for (let w = 0; w < n; w++) {
       if (w === v || dest[w] !== -1) continue;
+      if (selected && !selected[w]) continue;
       if (distSq([P[w * 3]!, P[w * 3 + 1]!, P[w * 3 + 2]!], co) <= rangeSq) {
         dest[w] = v;
         dest[v] = v;
@@ -362,7 +375,7 @@ export function mergeByDistance(data: MeshData, dist: number, options: MergeByDi
 }
 
 /** `mesh_merge_by_distance_connected`, then the same mixing and face pass as mode All. */
-function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean): MeshData {
+function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean, selected: boolean[] | null = null): MeshData {
   const n = data.positions.length / 3;
   const P = data.positions;
   const polys = data.polys.filter((p) => p.length >= 3);
@@ -387,6 +400,7 @@ function mergeConnected(data: MeshData, rangeSq: number, onlyLoose: boolean): Me
     while (v1 !== dest[v1]) v1 = dest[v1]!;
     while (v2 !== dest[v2]) v2 = dest[v2]!;
     if (v1 === v2) continue;
+    if (selected && (!selected[v1] || !selected[v2])) continue;
     if (v1 > v2) [v1, v2] = [v2, v1];
     const c1 = co[v1]!;
     const c2 = co[v2]!;

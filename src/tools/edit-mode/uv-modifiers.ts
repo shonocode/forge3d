@@ -88,6 +88,7 @@
  */
 import type { MeshData } from "../../lib/mesh";
 import type { WarpTransform } from "../deform";
+import { vertexGroupWeights } from "../mesh-layers";
 
 /** Which of a transform's three axes a UV coordinate rides on. */
 export type UVWarpAxis = "x" | "y" | "z";
@@ -117,6 +118,12 @@ export interface UVWarpOptions {
   axisU?: UVWarpAxis;
   /** Which axis carries v. Default `"y"`. */
   axisV?: UVWarpAxis;
+  /**
+   * Blender's `vertex_group`: each corner's warped UV is blended with its own by its vertex's weight (`1 − weight`
+   * inverted; 0 for a vertex outside the group). No such group, or none with a member: the warp in full.
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
   /**
    * Blender's `object_from` / `object_to`. The UVs are transformed by
    * `inverse(to) @ from`, so moving `to` moves them the other way.
@@ -354,8 +361,10 @@ export function uvWarp(data: MeshData, options: UVWarpOptions = {}): MeshData {
       ? multiply(invert(matrixOf(options.to)), matrixOf(options.from))
       : null;
 
-  const uvs = data.uvs.map((face) =>
-    face.map((corner) => {
+  const vg = vertexGroupWeights(data, options.vertexGroup, options.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
+  const uvs = data.uvs.map((face, f) =>
+    face.map((corner, i) => {
       // Offset first, then about the centre: rotate, then scale.
       let du = corner[0]! + ou - cu;
       let dv = corner[1]! + ov - cv;
@@ -371,7 +380,11 @@ export function uvWarp(data: MeshData, options: UVWarpOptions = {}): MeshData {
         du = q[iu];
         dv = q[iv];
       }
-      return [du + cu, dv + cv];
+      const warped: [number, number] = [du + cu, dv + cv];
+      if (!groupWeights) return warped;
+      // `interp_v2_v2v2(uv, uv, warped, weight)`.
+      const weight = groupWeights[data.polys[f]![i]!]!;
+      return [corner[0]! + (warped[0] - corner[0]!) * weight, corner[1]! + (warped[1] - corner[1]!) * weight];
     }),
   );
   return carry(data, uvs);

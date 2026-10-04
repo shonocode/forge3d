@@ -12,6 +12,7 @@
  * Pure and headless.
  */
 import { withPositions, type MeshData } from "../lib/mesh";
+import { vertexGroupWeights } from "./mesh-layers";
 import type { Vec3 } from "./generate";
 import { falloffWeight, type ProportionalFalloff } from "./edit-mode/proportional";
 import { meshVertNormals, type V3 } from "./blender-math";
@@ -63,6 +64,14 @@ export interface CastOptions {
   at?: Vec3;
   /** Which axes may move. Blender's `use_x` / `use_y` / `use_z`. Default all. */
   axes?: { x?: boolean; y?: boolean; z?: boolean };
+  /**
+   * Blender's `vertex_group`: the modifier's strength at each vertex is multiplied by its weight, and a vertex
+   * with weight 0 is left alone. No such group, or no vertex in any group, and it applies in full
+   * (`MOD_get_vgroup`).
+   */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: `1 − weight`. */
+  invertVertexGroup?: boolean;
 }
 
 /**
@@ -130,10 +139,15 @@ export function cast(data: MeshData, opts: CastOptions = {}): MeshData {
   }
 
   const out = new Float32Array(P);
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   for (let v = 0; v < count; v++) {
     const x = P[v * 3]! - cx;
     const y = P[v * 3 + 1]! - cy;
     const z = P[v * 3 + 2]! - cz;
+    const weight = groupWeights ? groupWeights[v]! : 1;
+    if (weight === 0) continue;
+    const fac = factor * weight;
 
     let ax = x;
     let ay = y;
@@ -167,9 +181,9 @@ export function cast(data: MeshData, opts: CastOptions = {}): MeshData {
       az = z * k;
     }
 
-    if (useX) out[v * 3] = cx + x + (ax - x) * factor;
-    if (useY) out[v * 3 + 1] = cy + y + (ay - y) * factor;
-    if (useZ) out[v * 3 + 2] = cz + z + (az - z) * factor;
+    if (useX) out[v * 3] = cx + x + (ax - x) * fac;
+    if (useY) out[v * 3 + 1] = cy + y + (ay - y) * fac;
+    if (useZ) out[v * 3 + 2] = cz + z + (az - z) * fac;
   }
 
   return deformed(data, out);
@@ -204,6 +218,14 @@ export interface SimpleDeformOptions {
    * zero of the deformation are the origin's. Default none (the mesh's own).
    */
   origin?: readonly number[];
+  /**
+   * Blender's `vertex_group`: the modifier's strength at each vertex is multiplied by its weight, and a vertex
+   * with weight 0 is left alone. No such group, or no vertex in any group, and it applies in full
+   * (`MOD_get_vgroup`).
+   */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: `1 − weight`. */
+  invertVertexGroup?: boolean;
 }
 
 /** Invert a 4 × 4 row-major matrix (cofactors). */
@@ -311,7 +333,11 @@ export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshDat
   if (mode === "bend" && Math.abs(factor) < BEND_EPS) return deformed(data, out);
 
   const map = AXIS_MAP[mode === "bend" ? 2 : deformAxis]!;
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   for (let i = 0; i < count; i++) {
+    const weight = groupWeights ? groupWeights[i]! : 1;
+    if (weight === 0) continue;
     const co = into(i);
     const dcut: [number, number, number] = [0, 0, 0];
     const limit = (k: number, lo: number, hi: number): void => {
@@ -364,9 +390,8 @@ export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshDat
     const back: [number, number, number] = [0, 0, 0];
     for (let k = 0; k < 3; k++) back[map[k]!] = r[k]!;
     const world = fromOrigin ? applyMatrix4(fromOrigin, back[0], back[1], back[2]) : back;
-    out[i * 3] = world[0];
-    out[i * 3 + 1] = world[1];
-    out[i * 3 + 2] = world[2];
+    // `interp_v3_v3v3(vertexCos, vertexCos, co, weight)`: the weight blends the old and the deformed position.
+    for (let k = 0; k < 3; k++) out[i * 3 + k] = weight === 1 ? world[k]! : P[i * 3 + k]! + (world[k]! - P[i * 3 + k]!) * weight;
   }
   return deformed(data, out);
 }
@@ -453,6 +478,14 @@ export interface WaveOptions {
   texture?: ProceduralTexture;
   /** Where the texture is read: `"local"` (default) or `"uv"`, as `textureDisplace`'s `coords`. */
   textureCoords?: "local" | "uv";
+  /**
+   * Blender's `vertex_group`: the modifier's strength at each vertex is multiplied by its weight, and a vertex
+   * with weight 0 is left alone. No such group, or no vertex in any group, and it applies in full
+   * (`MOD_get_vgroup`).
+   */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: `1 − weight`. */
+  invertVertexGroup?: boolean;
 }
 
 /**
@@ -537,7 +570,12 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
   // subtracts it so the ridge lands on zero there instead of stepping.
   const pedestal = Math.exp(-((width * narrowness) ** 2));
 
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   for (let k = 0; k < count; k++) {
+    // A vertex that is not in the group is not deformed at all; the rest scale the ridge.
+    const defWeight = groupWeights ? groupWeights[k]! : 1;
+    if (defWeight === 0) continue;
     const du = P[k * 3 + u]! - su;
     const dv = P[k * 3 + v]! - sv;
     const dist = along === "xy" ? Math.hypot(du, dv) : along === "x" ? du : dv;
@@ -558,7 +596,7 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
     const n = amp * narrowness;
     let ridge = Math.exp(-(n * n)) - pedestal;
     if (texCo) ridge *= textureValue(opts.texture!, texCo[k]!).intensity;
-    const push = lifefac * fac * ridge;
+    const push = lifefac * fac * defWeight * ridge;
     if (normals) {
       for (let c = 0; c < 3; c++)
         if (byNormal![c]) out[k * 3 + c] = P[k * 3 + c]! + push * normals[k]![c]!;
@@ -604,6 +642,14 @@ export interface WarpOptions {
    * measured, rather than being clamped.
    */
   strength?: number;
+  /**
+   * Blender's `vertex_group`: the modifier's strength at each vertex is multiplied by its weight, and a vertex
+   * with weight 0 is left alone. No such group, or no vertex in any group, and it applies in full
+   * (`MOD_get_vgroup`).
+   */
+  vertexGroup?: string;
+  /** `invert_vertex_group`: `1 − weight`. */
+  invertVertexGroup?: boolean;
 }
 
 /** A 3×4 affine matrix, row-major: `[m00 m01 m02 tx, m10 … ]`. */
@@ -748,6 +794,8 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
     );
   const M = compose(affineOf(opts.to), inv);
   const [fx, fy, fz] = opts.from.at ?? [0, 0, 0];
+  const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
 
   for (let k = 0; k < P.length / 3; k++) {
     const x = P[k * 3]!;
@@ -756,7 +804,10 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
     const d = Math.hypot(x - fx, y - fy, z - fz);
     if (d >= radius) continue;
 
-    const w = strength * falloffWeight(1 - d / radius, falloff);
+    // `weight = vertex weight · strength`; a vertex with none is skipped before the falloff is read.
+    const vertexWeight = groupWeights ? groupWeights[k]! : 1;
+    if (vertexWeight <= 0) continue;
+    const w = strength * vertexWeight * falloffWeight(1 - d / radius, falloff);
     if (w === 0) continue;
 
     for (let r = 0; r < 3; r++) {

@@ -103,6 +103,7 @@
  * * **`subsurf_levels`** (it moves the ray origin to the vertex's Catmull-Clark limit position; compat-backlog C39).
  *   `cull_face` and `use_invert_cull` are offered since 2026-10-05 (compat-backlog C23): see `ShrinkwrapProjectOptions`.
  */
+import { vertexGroupWeights } from "../mesh-layers";
 import type { MeshData } from "../../lib/mesh";
 import { closestPointOnTriangleBary } from "./attribute-transfer";
 import {
@@ -161,6 +162,13 @@ export interface ShrinkwrapOptions {
    * group, which this expresses as a plain set.
    */
   verts?: ReadonlySet<number>;
+  /**
+   * Blender's `vertex_group`: each vertex goes only as far toward where it would land as its weight says
+   * (`interp_v3_v3v3(co, co, hit, weight)`), and one with weight 0 is not looked at. No such group, or none with a
+   * member: all of them in full.
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 type Vec3 = [number, number, number];
@@ -770,8 +778,12 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
 
   const positions = Float32Array.from(data.positions);
   const count = positions.length / 3;
+  const vg = vertexGroupWeights(data, options.vertexGroup, options.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   for (let v = 0; v < count; v++) {
     if (options.verts && !options.verts.has(v)) continue;
+    const weight = groupWeights ? groupWeights[v]! : 1;
+    if (weight === 0) continue;
     const p: Vec3 = [positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!];
 
     let hit: Hit | null;
@@ -788,9 +800,9 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
     if (!hit) continue;
 
     const out = place(t, p, hit, mode, offset);
-    positions[v * 3] = out[0];
-    positions[v * 3 + 1] = out[1];
-    positions[v * 3 + 2] = out[2];
+    // The weight blends the start with the landing place — for the nearest-vertex method Blender scales the weight by
+    // (dist − offset) / dist, which is the same point.
+    for (let k = 0; k < 3; k++) positions[v * 3 + k] = weight === 1 ? out[k]! : p[k]! + (out[k]! - p[k]!) * weight;
   }
 
   const result: MeshData = { positions, polys: data.polys.map((poly) => [...poly]) };

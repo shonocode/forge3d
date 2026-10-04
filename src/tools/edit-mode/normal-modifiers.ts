@@ -144,6 +144,7 @@ import {
   withNormals,
   type Vec3,
 } from "./normals";
+import { vertexGroupWeights } from "../mesh-layers";
 
 export type WeightedNormalMode = "area" | "angle" | "areaAngle";
 
@@ -174,6 +175,13 @@ export interface WeightedNormalOptions {
    * Without a `faceStrength` layer the option does nothing, as in Blender, where it needs the attribute.
    */
   faceInfluence?: boolean;
+  /**
+   * Blender's `vertex_group`: only the vertices that are **members** of it (any weight, 0 included) add to the
+   * weighted normals; a corner whose vertex is not keeps the normal the mesh computes by itself.
+   * `invertVertexGroup` takes the others. No such group, or none with a member: every vertex counts.
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 export type NormalEditMode = "radial" | "directional";
@@ -200,6 +208,12 @@ export interface NormalEditOptions {
    * "the rewind" at the top of this file.
    */
   noPolynorsFix?: boolean;
+  /**
+   * Blender's `vertex_group`: the mix factor at each corner is multiplied by its vertex's weight (`1 − weight`
+   * inverted). No such group, or none with a member: the plain factor.
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -213,6 +227,34 @@ function normalized(a: Vec3): Vec3 {
 }
 
 const at = (P: Float32Array, v: number): Vec3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+
+/** `interp_dot_slerp` + `interp_v3_v3v3_slerp`: false for opposite vectors. */
+function slerp(a: Vec3, b: Vec3, t: number): Vec3 | null {
+  const cosom = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (cosom < -1 + 1.1920928955078125e-7) return null;
+  let w0 = 1 - t;
+  let w1 = t;
+  if (1 - cosom > 0.0001) {
+    const omega = Math.acos(cosom);
+    const sinom = Math.sin(omega);
+    w0 = Math.sin((1 - t) * omega) / sinom;
+    w1 = Math.sin(t * omega) / sinom;
+  }
+  return [w0 * a[0] + w1 * b[0], w0 * a[1] + w1 * b[1], w0 * a[2] + w1 * b[2]];
+}
+
+/** `interp_v3_v3v3_slerp_safe`: opposite vectors go by way of one orthogonal to `a`. */
+function slerpSafe(a: Vec3, b: Vec3, t: number): Vec3 {
+  const r = slerp(a, b, t);
+  if (r) return r;
+  // `ortho_v3_v3`, by the dominant axis.
+  const ax = Math.abs(a[0]);
+  const ay = Math.abs(a[1]);
+  const az = Math.abs(a[2]);
+  const o: Vec3 = ax >= ay && ax >= az ? [-a[1] - a[2], a[0], a[0]] : ay >= az ? [a[1], -a[0] - a[2], a[1]] : [a[2], a[2], -a[0] - a[1]];
+  const ortho = normalized(o);
+  return (t < 0.5 ? slerp(a, ortho, t * 2) : slerp(ortho, b, (t - 0.5) * 2)) ?? a;
+}
 
 /**
  * Write a weighted vertex normal into every corner — Blender's
@@ -296,8 +338,13 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   const FACE_STRENGTH_WEAK = -16384;
   const strength = options.faceInfluence ? data.faceStrength : undefined;
   const itemStrength = new Map<number, number>();
+  // `aggregate_item_normal`: a vertex outside the group (or inside it, inverted) adds nothing.
+  const wg = vertexGroupWeights(data, options.vertexGroup, false);
+  const members = wg && !wg.empty ? data.groups!.get(options.vertexGroup!)! : null;
+  const invertGroup = options.invertVertexGroup ?? false;
   for (const [f, i, val] of entries) {
     const item = itemOf[f]![i]!;
+    if (members && members.has(data.polys[f]![i]!) === invertGroup) continue;
     if (strength) {
       const s = strength[f] ?? 0;
       let cs = itemStrength.get(item) ?? FACE_STRENGTH_WEAK;
@@ -355,7 +402,7 @@ export function normalEdit(data: MeshData, options: NormalEditOptions = {}): Mes
   const target: Vec3 = [...(options.target ?? [0, 0, 0])] as Vec3;
   const centre = target;
   const mixMode = options.mixMode ?? "copy";
-  const factor = options.mixFactor ?? 1;
+  const baseFactor = options.mixFactor ?? 1;
   const P = data.positions;
 
   const shared = normalized(target);
@@ -366,8 +413,12 @@ export function normalEdit(data: MeshData, options: NormalEditOptions = {}): Mes
   };
 
   const current = currentNormals(data);
+  // `mix_normals`: with a group, the factor at each corner is its vertex's weight times `mix_factor`.
+  const vg = vertexGroupWeights(data, options.vertexGroup, options.invertVertexGroup);
+  const groupWeights = vg && !vg.empty ? vg.weights : null;
   const out = data.polys.map((poly, f) =>
     poly.map((v, i) => {
+      const factor = groupWeights ? groupWeights[v]! * baseFactor : baseFactor;
       const original = current[f]![i]!;
       const want = computed(v);
       const combined =
@@ -379,13 +430,9 @@ export function normalEdit(data: MeshData, options: NormalEditOptions = {}): Mes
               ? sub(want, original)
               : mulEach(original, want);
       const unit = normalized(combined);
-      // Blender blends in the *normalised* combination, then normalises the
-      // blend. `ADD` at factor 1 landing on `COPY` at 0.5 is what proves it.
-      return normalized([
-        original[0] + (unit[0] - original[0]) * factor,
-        original[1] + (unit[1] - original[1]) * factor,
-        original[2] + (unit[2] - original[2]) * factor,
-      ]);
+      // Blender blends in the *normalised* combination, along the arc between the two
+      // (`interp_v3_v3v3_slerp_safe`). `ADD` at factor 1 landing on `COPY` at 0.5 is what proves the order.
+      return slerpSafe(original, unit, factor);
     }),
   );
   if (options.noPolynorsFix) return withNormals(data, out);
