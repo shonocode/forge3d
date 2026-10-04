@@ -33,6 +33,7 @@
  *
  * Pure and headless.
  */
+import { vertexGroupWeights } from "./mesh-layers";
 import type { MeshData } from "../lib/mesh";
 import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
 import { faceNormalCalc, meshVertNormals, type V3 } from "./blender-math";
@@ -47,7 +48,7 @@ export type TransferMapping =
   | "faceInterpolated"
   | "faceProjected";
 
-export interface TransferWeightsOptions {
+export interface TransferWeightsOptions extends TransferMixOptions {
   /** Which groups to carry. Default every group the source has. */
   groups?: readonly string[];
   /** How a target vertex finds its source. Default `"nearest"`. */
@@ -196,6 +197,9 @@ export interface TransferEdgeDataOptions {
  * | `vertexNearest` | `VERT_NEAREST` | of the edges at its ends' nearest source vertices, the one whose far end is closest |
  * | `nearest` (default) | `NEAREST` | the source edge nearest its midpoint |
  * | `faceNearest` | `POLY_NEAREST` | the edge of the nearest source face whose midpoint is closest to its midpoint |
+ *
+ * **There is no mix here**: Blender's mix mode and factor do nothing to edge data (sharp, seam and crease are attributes
+ * with no `copyvalue`, so the source is copied whatever they say — `data-transfer-edge-mix-ignored`, compat-backlog C41).
  *
  * Every mapping here has one source per edge, so a flag is copied and a
  * crease is copied; a target edge with no source is left as it was.
@@ -531,6 +535,10 @@ export function transferWeights(
 
   const names = options.groups ?? [...(source.groups?.keys() ?? [])];
   const groups = new Map(target.groups ?? []);
+  const mixMode = options.mixMode ?? "transfer";
+  const baseFactor = options.mixFactor ?? 1;
+  const mask = vertexGroupWeights(target, options.vertexGroup, options.invertVertexGroup);
+  const maskWeights = mask && !mask.empty ? mask.weights : null;
   for (const name of names) {
     const from = source.groups?.get(name);
     if (!from) continue;
@@ -546,17 +554,80 @@ export function transferWeights(
         member = true;
         weight += w * src.weight[i]!;
       });
-      // No member source: a vertex already in the group stays in it at 0
-      // (`dw_dst->weight = weight_src`), one that was not is not added.
+      // `vgroups_datatransfer_interp`: a destination not yet in the group is left alone by REPLACE_ABOVE; otherwise the
+      // mix of its weight (0 if absent) and the sources'; no member source: a vertex already in the group takes the
+      // mix with 0 (at the default that is 0), one that was not is not added.
+      const inGroup = to.has(v);
+      if (!inGroup && mixMode === "replaceAbove") continue;
+      const factor = baseFactor * (maskWeights ? maskWeights[v]! : 1);
+      const mixed = Math.min(1, Math.max(0, mixFloat(mixMode, to.get(v) ?? 0, weight, factor)));
       if (!member) {
-        if (to.has(v)) to.set(v, 0);
+        if (inGroup) to.set(v, mixed);
         continue;
       }
-      to.set(v, Math.min(1, Math.max(0, weight)));
+      to.set(v, mixed);
     }
     groups.set(name, to);
   }
   return { ...target, groups };
+}
+
+/**
+ * Blender's Data Transfer `mix_mode` (compat-backlog C41): how a transferred value meets what the destination already
+ * holds. `transfer` (default) replaces it, `mix` averages, `add` / `sub` / `mul` combine, and the two `replace` modes
+ * replace only where the destination's value is above (below) `mixFactor` — and then fully, the factor is only the
+ * threshold.
+ */
+export type TransferMixMode = "transfer" | "replaceAbove" | "replaceBelow" | "mix" | "add" | "sub" | "mul";
+
+/** The mix options every transfer takes. */
+export interface TransferMixOptions {
+  /** `mix_mode`. Default `transfer`. */
+  mixMode?: TransferMixMode;
+  /** `mix_factor`, 0..1: how far the result goes from the destination's value toward the mixed one. Default 1. */
+  mixFactor?: number;
+  /**
+   * Blender's modifier `vertex_group` (read from the **target**, before the transfer): the factor at each element is
+   * multiplied by its vertex's weight — for a corner its vertex's, for a vertex its own. No such group, or none with a
+   * member: the plain factor.
+   */
+  vertexGroup?: string;
+  invertVertexGroup?: boolean;
+}
+
+/** `data_transfer_interp_float_do`. */
+function mixFloat(mode: TransferMixMode, dst: number, src: number, factor: number): number {
+  if ((mode === "replaceAbove" && dst < factor) || (mode === "replaceBelow" && dst > factor)) return dst;
+  if (mode === "replaceAbove" || mode === "replaceBelow") return src;
+  const ret = mode === "mix" ? (dst + src) * 0.5 : mode === "add" ? dst + src : mode === "sub" ? dst - src : mode === "mul" ? dst * src : src;
+  return factor * ret + (1 - factor) * dst;
+}
+
+/** `layerCopyValue_propcol`: the colour blend of one corner. */
+function mixColor(mode: TransferMixMode, dst: readonly number[], src: readonly number[], factor: number): number[] {
+  if (mode === "replaceAbove" || mode === "replaceBelow") {
+    const f = (dst[0]! + dst[1]! + dst[2]!) / 3;
+    if (mode === "replaceAbove" && f < factor) return [...dst];
+    if (mode === "replaceBelow" && f > factor) return [...dst];
+    return [...src];
+  }
+  let tmp: number[] = [...src];
+  if (mode !== "transfer") {
+    const a = src[3]!;
+    if (a === 0) tmp = [...dst];
+    else if (mode === "mix") {
+      const mt = 1 - a;
+      tmp = [mt * dst[0]! + src[0]!, mt * dst[1]! + src[1]!, mt * dst[2]! + src[2]!, mt * dst[3]! + a];
+    } else if (mode === "add") {
+      tmp = [dst[0]! + src[0]! * dst[3]!, dst[1]! + src[1]! * dst[3]!, dst[2]! + src[2]! * dst[3]!, dst[3]!];
+    } else if (mode === "sub") {
+      tmp = [Math.max(dst[0]! - src[0]! * dst[3]!, 0), Math.max(dst[1]! - src[1]! * dst[3]!, 0), Math.max(dst[2]! - src[2]! * dst[3]!, 0), dst[3]!];
+    } else {
+      const mt = 1 - a;
+      tmp = [mt * dst[0]! + dst[0]! * src[0]! * dst[3]!, mt * dst[1]! + dst[1]! * src[1]! * dst[3]!, mt * dst[2]! + dst[2]! * src[2]! * dst[3]!, dst[3]!];
+    }
+  }
+  return [0, 1, 2, 3].map((k) => (1 - factor) * dst[k]! + factor * tmp[k]!);
 }
 
 export type LoopTransferMapping =
@@ -567,7 +638,7 @@ export type LoopTransferMapping =
   | "faceInterpolated"
   | "faceProjected";
 
-export interface TransferLoopDataOptions {
+export interface TransferLoopDataOptions extends TransferMixOptions {
   /** Which corner layers to carry. Default both. */
   layers?: readonly ("uvs" | "colors")[];
   /** How a target corner finds its source. Default `"faceNormal"`, Blender's. */
@@ -872,7 +943,17 @@ export function transferLoopData(
     return out;
   };
 
-  /** Blend the source layer into a new target layer; corners with no source keep theirs. */
+  const mixMode = options.mixMode ?? "transfer";
+  const baseFactor = options.mixFactor ?? 1;
+  const maskVg = vertexGroupWeights(target, options.vertexGroup, options.invertVertexGroup);
+  const maskWeights = maskVg && !maskVg.empty ? maskVg.weights : null;
+
+  /**
+   * Blend the source layer into a target layer; corners with no source keep theirs. The value a corner gets is the
+   * weighted sum of its sources, then meets what the corner had by the mix: a UV is interpolated by the factor
+   * (`layerCopyValue_propfloat2` — the mode is not read), a colour by the mode (`layerCopyValue_propcol`). A target
+   * with no layer starts from zeros (white for a colour, `layerDefault_propcol`).
+   */
   const carry = (
     from: readonly (readonly (readonly number[])[])[],
     to: readonly (readonly (readonly number[])[])[] | undefined,
@@ -881,8 +962,9 @@ export function transferLoopData(
   ): number[][][] => {
     const flat = from.flat();
     let c = 0;
+    const blank = width === 4 ? 1 : 0;
     return dstPolys.map((poly, f) =>
-      poly.map((_, i) => {
+      poly.map((v, i) => {
         const s = sources[c++];
         const old = to?.[f]?.[i];
         if (!s) return old ? [...old] : new Array<number>(width).fill(0);
@@ -891,7 +973,11 @@ export function transferLoopData(
           const src = flat[k]!;
           for (let d = 0; d < width; d++) value[d] = value[d]! + src[d]! * s.weight[j]!;
         });
-        return value;
+        const factor = baseFactor * (maskWeights ? maskWeights[v]! : 1);
+        if (mixMode === "transfer" && factor === 1) return value;
+        const dst = old ? [...old] : new Array<number>(width).fill(blank);
+        if (width === 4) return mixColor(mixMode, dst, value, factor);
+        return value.map((x, d) => (1 - factor) * dst[d]! + factor * x);
       }),
     );
   };

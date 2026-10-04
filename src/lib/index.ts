@@ -530,6 +530,8 @@ export {
   transferEdgeData,
   transferLoopData,
   type TransferWeightsOptions,
+  type TransferMixMode,
+  type TransferMixOptions,
   type TransferMapping,
   type TransferEdgeDataOptions,
   type EdgeTransferMapping,
