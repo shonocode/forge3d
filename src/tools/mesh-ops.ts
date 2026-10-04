@@ -22,6 +22,8 @@ import { weldByMap } from "./remove-doubles";
 import { crtQsort } from "./edit-mode/triangle-fill";
 import type { Vec3 } from "./generate";
 import { bulletConvexHull } from "./hull/bullet-hull";
+import { meshFromData, meshToData } from "../lib/mesh";
+import { trisToQuads } from "./edit-mode/operators";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
 function remapKeys<T>(
@@ -1988,6 +1990,10 @@ export interface ConvexHullReport {
    * is no hull to build and the result is empty.
    */
   degenerate: boolean;
+  /** The input vertex each result vertex is, in result order (filled by {@link convexHull}). */
+  source?: number[];
+  /** With `useExistingFaces`: the input faces a hull triangle was left out for (they stay as they are). */
+  covered?: number[];
 }
 
 /**
@@ -2021,6 +2027,7 @@ export interface ConvexHullReport {
 export function convexHull(
   data: MeshData,
   report: ConvexHullReport = { interior: 0, degenerate: false },
+  useExistingFaces = false,
 ): MeshData {
   const P = data.positions;
   const n = P.length / 3;
@@ -2109,6 +2116,33 @@ export function convexHull(
       tris.push(t);
       for (const v of t) used.add(v);
     }
+  }
+
+  // `use_existing_faces` (`hull_remove_overlapping`): a triangle whose corners all lie on a face that has every
+  // edge on the hull is not made — the face stays. Such a triangle never exists, so it is not there to be skipped
+  // as an example face, nor to be copied from, by the triangles made after it.
+  if (useExistingFaces) {
+    const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+    const finalEdges = new Set<string>();
+    for (const t of tris) for (let i = 0; i < 3; i++) finalEdges.add(edgeKey(t[i]!, t[(i + 1) % 3]!));
+    const facesOfVert = new Map<number, number[]>();
+    data.polys.forEach((p, f) => p.forEach((v) => (facesOfVert.get(v) ?? facesOfVert.set(v, []).get(v)!).push(f)));
+    const onHull = data.polys.map((p) => p.every((v, i) => finalEdges.has(edgeKey(v, p[(i + 1) % p.length]!))));
+    const covered = new Set<number>();
+    const kept = tris.filter((t) => {
+      let skip = false;
+      for (const f of facesOfVert.get(t[0]!) ?? []) {
+        const p = data.polys[f]!;
+        if (onHull[f] && p.includes(t[1]!) && p.includes(t[2]!)) {
+          skip = true;
+          covered.add(f);
+        }
+      }
+      return !skip;
+    });
+    tris.length = 0;
+    tris.push(...kept);
+    report.covered = [...covered].sort((a, b) => a - b);
   }
 
   // Keep only the vertices the hull uses, in input order.
@@ -2216,8 +2250,139 @@ export function convexHull(
   if (vertexLayers.seams) out.seams = vertexLayers.seams;
   if (vertexLayers.sharp) out.sharp = vertexLayers.sharp;
   report.interior = n - remap.size;
-  report.degenerate = polys.length === 0;
+  report.degenerate = polys.length === 0 && !report.covered?.length;
+  report.source = source;
   return out;
+}
+
+/** Options of {@link convexHullOperator}: `bpy.ops.mesh.convex_hull`'s. */
+export interface ConvexHullOperatorOptions {
+  /**
+   * Blender's `use_existing_faces` (default **true**): a hull triangle that an existing face already covers —
+   * every edge of that face lies on the hull and the triangle's three corners are on it — is not made; the
+   * face stays as it is.
+   */
+  useExistingFaces?: boolean;
+  /**
+   * `delete_unused` (default **true**): remove the input vertices, edges and faces that ended up inside the hull.
+   * What is left is the hull's vertices, in input order, and the faces on it.
+   */
+  deleteUnused?: boolean;
+  /** `make_holes` (default **false**): delete the existing faces the hull covers that are not on a border. */
+  makeHoles?: boolean;
+  /** `join_triangles` (default **true**): join the hull's triangles back into quads. */
+  joinTriangles?: boolean;
+  /** `face_threshold`, radians. Default 0.698 (40°). */
+  faceThreshold?: number;
+  /** `shape_threshold`, radians. Default 0.698 (40°). */
+  shapeThreshold?: number;
+}
+
+/**
+ * `bpy.ops.mesh.convex_hull` over every vertex — Blender's operator, which wraps `bmesh.ops.convex_hull` and
+ * then (compat-backlog C24) removes what ended up inside the hull, optionally the covered faces, and joins the
+ * hull's triangles into quads.
+ *
+ * Unlike {@link convexHull}, which is the bmesh operator with the input's faces already taken away, this keeps
+ * the faces that already lie on the hull (`use_existing_faces`): a cube comes back as the cube, quads and all.
+ */
+export function convexHullOperator(data: MeshData, options: ConvexHullOperatorOptions = {}): MeshData {
+  const useExisting = options.useExistingFaces ?? true;
+  const deleteUnused = options.deleteUnused ?? true;
+  const makeHoles = options.makeHoles ?? false;
+  const join = options.joinTriangles ?? true;
+  const report: ConvexHullReport = { interior: 0, degenerate: false };
+  const hull = convexHull(data, report, useExisting);
+  if (report.degenerate || !report.source) return { positions: new Float32Array(), polys: [] };
+  const hullVerts = report.source;
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  // The hull's triangles on input vertex numbers (`convexHull` already left out those an existing face covers).
+  const tris = hull.polys.map((t) => t.map((v) => hullVerts[v]!));
+
+  // Input faces: how many faces each edge has (for a border).
+  const edgeFaces = new Map<string, number>();
+  data.polys.forEach((p) =>
+    p.forEach((v, i) => {
+      const k = key(v, p[(i + 1) % p.length]!);
+      edgeFaces.set(k, (edgeFaces.get(k) ?? 0) + 1);
+    }),
+  );
+  const interior = data.polys.map(() => true);
+  const hole = data.polys.map(() => false);
+  for (const f of report.covered ?? []) {
+    interior[f] = false;
+    hole[f] = true;
+  }
+  // `hull_tag_holes`: a hole face with an edge on a border is not a hole.
+  data.polys.forEach((p, f) => {
+    if (hole[f] && p.some((v, i) => edgeFaces.get(key(v, p[(i + 1) % p.length]!)) === 1)) hole[f] = false;
+  });
+  // Triangles that are already input faces: kept as that face and offered to the join.
+  const sameTri = new Map<string, number>();
+  data.polys.forEach((p, f) => {
+    if (p.length === 3) sameTri.set([...p].sort((a, b) => a - b).join(","), f);
+  });
+  const outputExisting = new Set<number>();
+  const fresh: number[] = []; // hull triangles that become new faces
+  tris.forEach((t, h) => {
+    const same = sameTri.get([...t].sort((a, b) => a - b).join(","));
+    if (same !== undefined) {
+      outputExisting.add(same);
+      interior[same] = false;
+      hole[same] = false;
+    } else fresh.push(h);
+  });
+
+  // The faces that stay: input faces not deleted (in input order), then the new triangles.
+  const keepFace = data.polys.map((_, f) => !deleteUnused || !interior[f]).map((k, f) => k && !(makeHoles && hole[f]));
+  const source = deleteUnused ? hullVerts : Array.from({ length: data.positions.length / 3 }, (_, i) => i);
+  const remap = new Map<number, number>(source.map((v, i) => [v, i]));
+  const hullIndexOf = new Map<number, number>(hullVerts.map((v, i) => [v, i]));
+  const polys: number[][] = [];
+  const origin: ({ face: number } | { hull: number })[] = [];
+  data.polys.forEach((p, f) => {
+    if (!keepFace[f]) return;
+    polys.push(p.map((v) => remap.get(v)!));
+    origin.push({ face: f });
+  });
+  for (const h of fresh) {
+    polys.push(tris[h]!.map((v) => remap.get(v)!));
+    origin.push({ hull: h });
+  }
+  const out: MeshData = {
+    positions: Float32Array.from(source.flatMap((v) => [data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!])),
+    polys,
+  };
+  // Layers: an existing face brings its own, a new triangle the hull's (`convexHull`'s corner rules).
+  const hullCorner = (h: number, v: number): number => hull.polys[h]!.indexOf(hullIndexOf.get(v)!);
+  const corners = (src: number[][][] | undefined, hullSrc: number[][][] | undefined): number[][][] | undefined => {
+    if (!src || src.length !== data.polys.length) return undefined;
+    return origin.map((o, i) =>
+      "face" in o ? src[o.face]!.map((c) => [...c]) : polys[i]!.map((_, k) => [...(hullSrc?.[o.hull]?.[hullCorner(o.hull, source[polys[i]![k]!]!)] ?? [])]),
+    );
+  };
+  const uvs = corners(data.uvs, hull.uvs);
+  if (uvs) out.uvs = uvs;
+  const colors = corners(data.colors, hull.colors);
+  if (colors) out.colors = colors;
+  if (data.materials && data.materials.length === data.polys.length)
+    out.materials = origin.map((o) => ("face" in o ? data.materials![o.face]! : (hull.materials?.[o.hull] ?? 0)));
+  const vertexLayers = carryVertexLayers({ ...data, edges: undefined }, source);
+  if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  onlyEdgesOf(vertexLayers, polys);
+  if (vertexLayers.creases) out.creases = vertexLayers.creases;
+  if (vertexLayers.seams) out.seams = vertexLayers.seams;
+  if (vertexLayers.sharp) out.sharp = vertexLayers.sharp;
+
+  if (!join) return out;
+  // `join_triangles` over the faces the hull made (and the identical input triangles).
+  const joinable = new Set<number>();
+  origin.forEach((o, i) => {
+    if ("hull" in o || outputExisting.has(o.face)) joinable.add(i);
+  });
+  const em = meshFromData(out);
+  trisToQuads(em, joinable, ((options.faceThreshold ?? 0.698) * 180) / Math.PI, ((options.shapeThreshold ?? 0.698) * 180) / Math.PI);
+  return meshToData(em);
 }
 
 export interface MaskOptions {

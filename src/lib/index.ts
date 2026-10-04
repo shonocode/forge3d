@@ -124,6 +124,7 @@ export {
   wireframe,
   symmetrize,
   convexHull,
+  convexHullOperator,
   bisectPlane,
   maskMesh,
   type TransformOptions,

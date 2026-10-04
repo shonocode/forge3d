@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { MeshData } from "../lib/mesh";
-import { symmetrize, convexHull, type ConvexHullReport } from "./mesh-ops";
+import { symmetrize, convexHull, convexHullOperator, type ConvexHullReport } from "./mesh-ops";
 
 /** Two quads, a small one at x < 0 and a big one at x > 0. */
 function lopsided(): MeshData {
@@ -162,5 +162,51 @@ describe("convexHull", () => {
     const hull = convexHull(input, report);
     expect(report.degenerate).toBe(false);
     expect(hull.polys.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("convexHullOperator (bpy.ops.mesh.convex_hull)", () => {
+  /** A unit cube's 6 quads plus a vertex inside it and a triangle on that vertex and two cube corners. */
+  function cubeWithInside(): MeshData {
+    return {
+      positions: new Float32Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0.5, 0.5, 0.5,
+      ]),
+      polys: [
+        [0, 3, 2, 1],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+        [8, 0, 1],
+      ],
+      materials: [0, 1, 2, 0, 1, 2, 2],
+    };
+  }
+
+  it("keeps the quads on the hull and drops what is inside", () => {
+    const out = convexHullOperator(cubeWithInside());
+    expect(out.positions.length / 3).toBe(8);
+    expect(out.polys).toHaveLength(6);
+    expect(out.polys.every((p) => p.length === 4)).toBe(true);
+    expect(out.materials).toEqual([0, 1, 2, 0, 1, 2]);
+  });
+
+  it("makes every triangle, even where a face is, with use_existing_faces off", () => {
+    const out = convexHullOperator(cubeWithInside(), { useExistingFaces: false, joinTriangles: false });
+    expect(out.polys).toHaveLength(12);
+    expect(out.polys.every((p) => p.length === 3)).toBe(true);
+  });
+
+  it("leaves the inside in place with delete_unused off", () => {
+    const out = convexHullOperator(cubeWithInside(), { deleteUnused: false });
+    expect(out.positions.length / 3).toBe(9);
+    expect(out.polys).toHaveLength(7);
+  });
+
+  it("deletes the covered faces with make_holes — a closed cube has no border, so all six go and none is made", () => {
+    const out = convexHullOperator(cubeWithInside(), { makeHoles: true, joinTriangles: false });
+    expect(out.polys).toHaveLength(0);
   });
 });

@@ -1524,7 +1524,10 @@ export function trisToQuads(
     if (used.has(c.f1) || used.has(c.f2)) continue;
     used.add(c.f1);
     used.add(c.f2);
-    merged.push(c.quad);
+    // `BM_faces_join_pair(l_a, l_b)` starts from the edge's first loop — the newest face on it, the one
+    // with the higher index — and the joined face copies the attributes (the slot) of the first face
+    // it is given. The quad is `[b, x, a, y]` with `b → x` on `f1`: start from `a` to put `f2` first.
+    merged.push(c.f2 > c.f1 ? [c.quad[2]!, c.quad[3]!, c.quad[0]!, c.quad[1]!] : c.quad);
   }
   if (merged.length === 0) return new Set();
 
