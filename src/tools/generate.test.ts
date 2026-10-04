@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { box, plane, cylinder, sphere, circle, circleProfile, torus, revolve, sweep, icosphere } from "./generate";
+import { createMonkey } from "./monkey";
 import { meshFromData, type MeshData } from "../lib/mesh";
 import { facePolyNormal } from "./edit-mode/half-edge";
 
@@ -452,5 +453,95 @@ describe("icosphere", () => {
       expect(fractions.some((f) => Math.abs(f - want) < 1e-5)).toBe(true);
     // And explicitly not the equal-angle spacing.
     expect(fractions.some((f) => Math.abs(f - 0.25) < 1e-5)).toBe(false);
+  });
+});
+
+describe("generator UVs (compat-backlog C20)", () => {
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
+
+  it("are off unless asked for, and one UV per corner when on", () => {
+    expect(box().uvs).toBeUndefined();
+    for (const m of [box({ uvs: true }), plane({ uvs: true }), cylinder({ uvs: true, uSegments: 8 }), sphere({ uvs: true, uSegments: 8, vSegments: 4 }), circle({ uvs: true, segments: 8 }), icosphere({ uvs: true, subdivisions: 2 }), createMonkey({ uvs: true })]) {
+      expect(m.uvs).toHaveLength(m.polys.length);
+      m.polys.forEach((p, f) => expect(m.uvs![f]).toHaveLength(p.length));
+    }
+  });
+
+  it("a box is the cross layout: every UV on the quarter grid, inside the square", () => {
+    const m = box({ uvs: true });
+    for (const face of m.uvs!)
+      for (const [u, v] of face) {
+        expect(u! >= 0 && u! <= 1 && v! >= 0 && v! <= 1).toBe(true);
+        expect(near(u! * 8, Math.round(u! * 8)) && near(v! * 4, Math.round(v! * 4))).toBe(true);
+      }
+    // The first face of Blender's cube starts at (0.375, 0).
+    expect(m.uvs!.flat().some(([u, v]) => near(u!, 0.375) && near(v!, 0))).toBe(true);
+  });
+
+  it("a grid's corners are their index over the segment count", () => {
+    const m = plane({ segments: [4, 2], uvs: true });
+    const corners = new Set(m.uvs!.flat().map(([u, v]) => `${u},${v}`));
+    expect(corners.size).toBe(5 * 3);
+    expect(corners.has("0.75,0.5")).toBe(true);
+  });
+
+  it("a circle's UVs are the unit disc on the square", () => {
+    const m = circle({ radius: 0.2, segments: 8, uvs: true });
+    for (const [u, v] of m.uvs![0]!) expect(near(Math.hypot(u! - 0.5, v! - 0.5), 0.5)).toBe(true);
+  });
+
+  it("a cylinder's side strip is 1/segments wide and its caps are discs in the other half", () => {
+    const m = cylinder({ radius1: 0.2, radius2: 0.2, depth: 0.5, uSegments: 8, uvs: true });
+    const side = m.uvs!.filter((face) => face.length === 4);
+    expect(side).toHaveLength(8);
+    for (const face of side) {
+      const us = face.map((c) => c[0]!);
+      expect(near(Math.max(...us) - Math.min(...us), 1 / 8)).toBe(true);
+    }
+    const caps = m.uvs!.filter((face) => face.length === 8);
+    expect(caps).toHaveLength(2);
+    expect(caps.map((face) => face[0]![0]! > 0.5).sort()).toEqual([false, true]);
+  });
+
+  it("a sphere's u spans 0 to 1 and its poles sit at v 0 and 1", () => {
+    const m = sphere({ uSegments: 8, vSegments: 4, uvs: true });
+    const all = m.uvs!.flat();
+    expect(near(Math.min(...all.map((c) => c[0]!)), 0)).toBe(true);
+    expect(near(Math.max(...all.map((c) => c[1]!)), 1)).toBe(true);
+    expect(near(Math.min(...all.map((c) => c[1]!)), 0)).toBe(true);
+  });
+
+  it("refuses the shapes its layout is not defined for", () => {
+    expect(() => box({ segments: [2, 1, 1], uvs: true })).toThrow();
+    expect(() => plane({ facing: "+z", uvs: true })).toThrow();
+    expect(() => cylinder({ vSegments: 2, uvs: true })).toThrow();
+  });
+
+  it("an icosphere carries its UVs through the split: children average their parent's corners", () => {
+    const one = icosphere({ subdivisions: 1, uvs: true });
+    const two = icosphere({ subdivisions: 2, uvs: true });
+    expect(one.uvs).toHaveLength(20);
+    expect(two.uvs).toHaveLength(80);
+    // Every child corner lies inside the bounding box of the parent layout.
+    const us = one.uvs!.flat().map((c) => c[0]!);
+    for (const [u] of two.uvs!.flat()) expect(u! >= Math.min(...us) - 1e-6 && u! <= Math.max(...us) + 1e-6).toBe(true);
+  });
+});
+
+describe("triangle-fan caps (compat-backlog C20)", () => {
+  it("a cylinder's fan caps are one triangle per ring edge round a centre vertex", () => {
+    const m = cylinder({ uSegments: 8, caps: "fan" });
+    expect(m.polys.filter((p) => p.length === 3)).toHaveLength(16);
+    expect(m.polys.filter((p) => p.length === 4)).toHaveLength(8);
+    expect(m.positions.length / 3).toBe(18);
+    expect(signedVolume(m)).toBeGreaterThan(0);
+  });
+
+  it("a circle's fan has a hub, and a cone has no cap at its point", () => {
+    const c = circle({ segments: 6, caps: "fan" });
+    expect(c.polys).toHaveLength(6);
+    expect(c.positions.length / 3).toBe(7);
+    const cone = cylinder({ radius2: 0, uSegments: 8, caps: "fan" });
+    expect(cone.polys.filter((p) => p.length === 3)).toHaveLength(16); // 8 sides collapse to triangles + 8 bottom fan
   });
 });

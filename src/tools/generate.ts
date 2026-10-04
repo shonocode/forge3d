@@ -22,6 +22,7 @@
  * Pure and headless — Vitest-pinned.
  */
 import type { MeshData } from "../lib/mesh";
+import { boxUVs, circleUVs, cylinderUVs, icoCornerUVs, planeUVs, sphereUVs } from "./generate-uvs";
 
 export type Vec2 = readonly [number, number];
 export type Vec3 = readonly [number, number, number];
@@ -112,6 +113,11 @@ export interface BoxOptions {
    * floor — most of a room, in practice.
    */
   pivot?: "center" | "base";
+  /**
+   * Lay down Blender's UVs (`calc_uvs`, on in `bpy.ops.mesh.primitive_*_add`; compat-backlog C20), the cross layout of `create_cube` — only for one quad per side (`segments` [1, 1, 1]).
+   * Off by default so existing callers do not gain a layer. See `generate-uvs.ts`.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -142,7 +148,10 @@ export function box(opts: BoxOptions = {}): MeshData {
   gridFace(b, [x0, y0, z0], [sx, 0, 0], [0, 0, sz], nx, nz); // -Y
   gridFace(b, [x0, y0, z1], [sx, 0, 0], [0, sy, 0], nx, ny); // +Z
   gridFace(b, [x0, y0, z0], [0, sy, 0], [sx, 0, 0], ny, nx); // -Z
-  return b.build();
+  const data = b.build();
+  if (!opts.uvs) return data;
+  if (nx !== 1 || ny !== 1 || nz !== 1) throw new Error("box: uvs are defined for one quad per side (segments [1, 1, 1])");
+  return { ...data, uvs: boxUVs(data) };
 }
 
 export interface PlaneOptions {
@@ -154,6 +163,11 @@ export interface PlaneOptions {
   facing?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
   /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
+  /**
+   * Lay down Blender's UVs (`calc_uvs`, on in `bpy.ops.mesh.primitive_*_add`; compat-backlog C20), the grid's `ix / x_segments` — for `facing` "+y" only (u along x, v toward −z, as Blender's grid turned Y-up).
+   * Off by default so existing callers do not gain a layer. See `generate-uvs.ts`.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -184,7 +198,10 @@ export function plane(opts: PlaneOptions = {}): MeshData {
 
   const b = new Builder();
   gridFace(b, [o[0] + ax, o[1] + ay, o[2] + az], u, v, su, sv);
-  return b.build();
+  const data = b.build();
+  if (!opts.uvs) return data;
+  if (facing !== "+y") throw new Error('plane: uvs are defined for facing "+y"');
+  return { ...data, uvs: planeUVs(data, [sa, sb], [na, nb], [ax, ay, az]) };
 }
 
 export interface CylinderOptions {
@@ -205,16 +222,21 @@ export interface CylinderOptions {
    */
   vSegments?: number;
   /**
-   * `"ngon"` closes each end with one polygon, `"none"` leaves it open.
+   * `"ngon"` closes each end with one polygon, `"fan"` with a fan of triangles round a centre vertex,
+   * `"none"` leaves it open.
    *
-   * Blender spells this `cap_ends` / `cap_tris`: `"ngon"` is
-   * `cap_ends=True, cap_tris=False`, `"none"` is `cap_ends=False`. A triangle
-   * fan cap (`cap_tris=True`) is not implemented.
+   * Blender spells this `cap_ends` / `cap_tris`: `"ngon"` is `cap_ends=True, cap_tris=False`, `"fan"` is
+   * `cap_ends=True, cap_tris=True` (compat-backlog C20), `"none"` is `cap_ends=False`.
    */
-  caps?: "ngon" | "none";
+  caps?: "ngon" | "fan" | "none";
   /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
   pivot?: "center" | "base";
+  /**
+   * Lay down Blender's UVs (`calc_uvs`, on in `bpy.ops.mesh.primitive_*_add`; compat-backlog C20), `create_cone`'s: a strip for the sides, discs for the caps — one ring tall only (`vSegments` 1).
+   * Off by default so existing callers do not gain a layer. See `generate-uvs.ts`.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -255,11 +277,33 @@ export function cylinder(opts: CylinderOptions = {}): MeshData {
       b.face(loops[j]![i]!, loops[j + 1]![i]!, loops[j + 1]![n]!, loops[j]![n]!);
     }
 
-  if ((opts.caps ?? "ngon") === "ngon") {
+  const caps = opts.caps ?? "ngon";
+  if (caps === "ngon") {
     if (r1 > 0) b.face(...[...loops[rings]!].reverse());
     if (r0 > 0) b.face(...loops[0]!);
+  } else if (caps === "fan") {
+    // Each end: a centre vertex and a triangle per ring edge, wound as the n-gon is.
+    const top = b.vert(ax, yBase + h, az);
+    const bottom = b.vert(ax, yBase, az);
+    for (let i = 0; i < radial; i++) {
+      const n = (i + 1) % radial;
+      if (r1 > 0) b.face(top, loops[rings]![n]!, loops[rings]![i]!);
+      if (r0 > 0) b.face(bottom, loops[0]![i]!, loops[0]![n]!);
+    }
   }
-  return b.build();
+  const data = b.build();
+  if (!opts.uvs) return data;
+  if (rings !== 1) throw new Error("cylinder: uvs are defined for one ring (vSegments 1)");
+  return {
+    ...data,
+    uvs: cylinderUVs(data, {
+      radius1: r0,
+      radius2: r1,
+      segments: radial,
+      capped: caps !== "none",
+      center: [ax, yBase + h / 2, az],
+    }),
+  };
 }
 
 export interface SphereOptions {
@@ -270,6 +314,11 @@ export interface SphereOptions {
   vSegments?: number;
   /** Where to put it. Blender does this with `matrix`. */
   at?: Vec3;
+  /**
+   * Lay down Blender's UVs (`calc_uvs`, on in `bpy.ops.mesh.primitive_*_add`; compat-backlog C20), `create_uvsphere`'s equirectangular map.
+   * Off by default so existing callers do not gain a layer. See `generate-uvs.ts`.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -303,7 +352,8 @@ export function sphere(opts: SphereOptions = {}): MeshData {
       const n = (i + 1) % seg;
       b.face(loops[j]![i]!, loops[j]![n]!, loops[j + 1]![n]!, loops[j + 1]![i]!);
     }
-  return b.build();
+  const data = b.build();
+  return opts.uvs ? { ...data, uvs: sphereUVs(data, [ax, ay, az]) } : data;
 }
 
 export interface RevolveOptions {
@@ -537,12 +587,19 @@ export interface CircleOptions {
    * what you do with it is `sweep` it along a path or `revolve` it. That is
    * the case the matrix filed under "要らなさそう" until the brazier's chain
    * needed a ring and wrote one out point by point.
+   *
+   * `"fan"` is `cap_tris=True`: a centre vertex and one triangle per edge of the ring (compat-backlog C20).
    */
-  caps?: "ngon" | "none";
+  caps?: "ngon" | "fan" | "none";
   /** Which way the disc faces. Default `"+y"` — flat on the floor, like `plane`. */
   facing?: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
   /** Where to put it. */
   at?: Vec3;
+  /**
+   * Lay down Blender's UVs (`calc_uvs`, on in `bpy.ops.mesh.primitive_*_add`; compat-backlog C20), `create_circle`'s unit disc on the square, in the disc's own axes (needs `caps` "ngon").
+   * Off by default so existing callers do not gain a layer. See `generate-uvs.ts`.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -586,11 +643,15 @@ export function circle(opts: CircleOptions = {}): MeshData {
     const s = Math.sin(a) * r;
     ring.push(b.vert(ax + u[0] * c + v[0] * s, ay + u[1] * c + v[1] * s, az + u[2] * c + v[2] * s));
   }
-  b.face(...ring);
+  if (opts.caps === "fan") {
+    const centre = b.vert(ax, ay, az);
+    for (let i = 0; i < seg; i++) b.face(centre, ring[i]!, ring[(i + 1) % seg]!);
+  } else b.face(...ring);
   const data = b.build();
   // `caps: "none"` keeps the ring as geometry without claiming it is a
   // surface. An empty `polys` would lose the vertices entirely.
-  return opts.caps === "none" ? { positions: data.positions, polys: [] } : data;
+  if (opts.caps === "none") return { positions: data.positions, polys: [] };
+  return opts.uvs ? { ...data, uvs: circleUVs(data, r, [u, v], [ax, ay, az]) } : data;
 }
 
 /** The same ring as a 2D profile, for `sweep` and `revolve`. */
@@ -724,6 +785,12 @@ export interface IcosphereOptions {
   subdivisions?: number;
   /** Where to put it. */
   at?: Vec3;
+  /**
+   * Lay down Blender's UVs (`calc_uvs`; compat-backlog C20): the `icouvs` table on the icosahedron's faces, carried
+   * through each split by averaging a face's corners (a corner on an edge shared by two faces has a UV per face).
+   * Off by default.
+   */
+  uvs?: boolean;
 }
 
 /**
@@ -801,6 +868,8 @@ export function icosphere(opts: IcosphereOptions = {}): MeshData {
   // instead moves the point the next level's midpoint is taken between, and
   // the two answers part company from the second split onwards: measured, a
   // vertex 4.6 mm out at `subdivisions` 3.
+  // Per-corner UVs, kept beside `tris` through every split.
+  let triUV: number[][][] | null = opts.uvs ? icoCornerUVs(verts, tris) : null;
   for (let level = 1; level < levels; level++) {
     const mid = new Map<string, number>();
     const midpoint = (a: number, b: number): number => {
@@ -815,13 +884,23 @@ export function icosphere(opts: IcosphereOptions = {}): MeshData {
       return made;
     };
     const next: Array<[number, number, number]> = [];
-    for (const [a, b, c] of tris) {
+    const nextUV: number[][][] = [];
+    tris.forEach(([a, b, c], t) => {
       const ab = midpoint(a, b);
       const bc = midpoint(b, c);
       const ca = midpoint(c, a);
       next.push([a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]);
-    }
+      if (triUV) {
+        const [ua, ub, uc] = triUV[t]! as [number[], number[], number[]];
+        const avg = (p: number[], q: number[]): number[] => [Math.fround(Math.fround(p[0]! + q[0]!) / 2), Math.fround(Math.fround(p[1]! + q[1]!) / 2)];
+        const uab = avg(ua, ub);
+        const ubc = avg(ub, uc);
+        const uca = avg(uc, ua);
+        nextUV.push([ua, uab, uca], [uab, ub, ubc], [uca, ubc, uc], [uab, ubc, uca]);
+      }
+    });
     tris = next;
+    if (triUV) triUV = nextUV;
   }
 
   // `Builder` welds by position, which would fuse nothing here but also costs
@@ -834,5 +913,5 @@ export function icosphere(opts: IcosphereOptions = {}): MeshData {
     positions[i * 3 + 1] = ay + (y / len) * r;
     positions[i * 3 + 2] = az + (z / len) * r;
   }
-  return { positions, polys: tris.map((t) => [...t]) };
+  return { positions, polys: tris.map((t) => [...t]), ...(triUV ? { uvs: triUV } : {}) };
 }

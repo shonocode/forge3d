@@ -19,10 +19,13 @@
  */
 import type { MeshData } from "../lib/mesh";
 import { MONKEY_F, MONKEY_V } from "./monkey-data";
+import { monkeyUVs } from "./generate-uvs";
 
 export interface MonkeyOptions {
   /** Uniform scale. Default 1 — Blender's size. */
   size?: number;
+  /** Blender's `calc_uvs` (compat-backlog C20): the `monkeyuvs` table, one pair per corner. Default off. */
+  uvs?: boolean;
 }
 
 export function createMonkey(opts: MonkeyOptions = {}): MeshData {
@@ -55,5 +58,5 @@ export function createMonkey(opts: MonkeyOptions = {}): MeshData {
         : [tv[nv + f[2]!]!, tv[nv + f[1]!]!, tv[nv + f[0]!]!],
     );
   }
-  return { positions: Float32Array.from(positions), polys };
+  return { positions: Float32Array.from(positions), polys, ...(opts.uvs ? { uvs: monkeyUVs(polys) } : {}) };
 }
