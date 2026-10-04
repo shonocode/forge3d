@@ -77,7 +77,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 **残っている既知の差**（2026-09-29）：
 
 - **既定値・オプションが未対応、または未測定**：Merge by Distance の Sharp Edges、
-  Bevel の残りのオプション、Weighted Normal の face influence、Displace の画像テクスチャ、
+  Bevel の残りのオプション（C35）、Weighted Normal の face influence、Displace の画像テクスチャ、
   Decimate Collapse の対称と層、Boolean の FLOAT / MANIFOLD ソルバー、Shrinkwrap の cull、
   Convex Hull（bpy の既定）、Bisect の埋め、Simple Deform の origin と limits、
   Solidify の Complex モード

@@ -123,3 +123,64 @@ describe("vertex bevel (affect VERTICES, compat-backlog C1)", () => {
     for (const d of near) expect(d).toBeCloseTo(0.1, 6);
   });
 });
+
+describe("edge layers and material (compat-backlog C17)", () => {
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  /** The cube's edges, each once. */
+  const cubeEdges = (c: MeshData): string[] => {
+    const out = new Set<string>();
+    for (const poly of c.polys) poly.forEach((v, i) => out.add(key(v, poly[(i + 1) % poly.length]!)));
+    return [...out];
+  };
+
+  it("keeps a sharp edge the bevel never touched, and copies a beveled one's onto the edges that replace it", () => {
+    const c = unitCube();
+    const [a, b] = cubeEdges(c)[0]!.split("_").map(Number) as [number, number];
+    const { mesh } = bevelMesh({ ...c, sharp: new Set([key(a, b)]) }, { offset: 0.1, edges: [[a, b]], clampOverlap: false });
+    // The beveled edge is gone; its two sides and both ends of the chamfer carry the flag on.
+    expect(mesh.sharp?.size ?? 0).toBeGreaterThan(0);
+    // A sharp edge elsewhere on the cube survives under its new number.
+    const far = cubeEdges(c).find((k) => k.split("_").every((x) => Number(x) !== a && Number(x) !== b))!;
+    const { mesh: m2 } = bevelMesh({ ...c, sharp: new Set([far]) }, { offset: 0.1, edges: [[a, b]], clampOverlap: false });
+    expect(m2.sharp?.size).toBe(1);
+  });
+
+  it("carries creases and seams the same way, and a crease of 0 is not an entry", () => {
+    const c = unitCube();
+    const edges = cubeEdges(c);
+    const { mesh } = bevelMesh(
+      { ...c, creases: new Map(edges.map((k) => [k, 0.5])), seams: new Set(edges) },
+      { offset: 0.1, edges: "all" },
+    );
+    expect(mesh.creases && mesh.creases.size).toBeGreaterThan(12);
+    expect(mesh.seams && mesh.seams.size).toBeGreaterThan(12);
+    const bare = bevelMesh(unitCube(), { offset: 0.1, edges: "all" }).mesh;
+    expect(bare.creases).toBeUndefined();
+    expect(bare.seams).toBeUndefined();
+    expect(bare.sharp).toBeUndefined();
+  });
+
+  it("mark_seam paints the corner's outer ring when a beveled seam has unmarked beveled neighbours", () => {
+    const c = unitCube();
+    // Two of the three edges at vertex 0: the run between them has an unmarked beveled edge in it.
+    const one = new Set(cubeEdges(c).filter((k) => k.split("_").includes("0")).slice(0, 2));
+    const off = bevelMesh({ ...c, seams: one }, { offset: 0.1, segments: 2, edges: "all" }).mesh.seams?.size ?? 0;
+    const on = bevelMesh({ ...c, seams: one }, { offset: 0.1, segments: 2, edges: "all", markSeam: true }).mesh.seams?.size ?? 0;
+    expect(on).toBeGreaterThan(off);
+  });
+
+  it("material: the faces the bevel makes take the slot, the rebuilt ones keep theirs", () => {
+    const c = unitCube();
+    const { mesh, faceKind } = bevelMesh(
+      { ...c, materials: c.polys.map((_, i) => i % 2) },
+      { offset: 0.1, edges: "all", material: 3 },
+    );
+    faceKind.forEach((k, f) => {
+      if (k === "recon") expect([0, 1]).toContain(mesh.materials![f]);
+      else expect(mesh.materials![f]).toBe(3);
+    });
+    // Without slots on the input, the option still makes the layer.
+    const bare = bevelMesh(unitCube(), { offset: 0.1, edges: "all", material: 2 }).mesh;
+    expect(bare.materials!.filter((m) => m === 2).length).toBe(20);
+  });
+});

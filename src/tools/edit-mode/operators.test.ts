@@ -286,7 +286,8 @@ describe("bevelEdges", () => {
   it("keeps seams and creases away from the bevel, under the new vertex numbers", () => {
     // Beveling edge 2-3 removes vertices 2 and 3; 4-5 (bottom-front) is far
     // from it and must come back marked, renumbered. 2-6 touched a beveled
-    // vertex and is rebuilt, so its flag goes (compat-backlog C17).
+    // vertex and is rebuilt: the edge that replaces it (new vertex 4-7) copies its
+    // flags, as Blender's `bev_rebuild_polygon` does (compat-backlog C17).
     const em = meshFromData({
       positions: new Float32Array([
         -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
@@ -304,8 +305,12 @@ describe("bevelEdges", () => {
     });
     bevelEdges(em, new Set([target]), { offset: 20 });
     // 0, 1, 4..7 survive as 0, 1, 2..5.
-    expect([...em.seams]).toEqual(["2_3"]);
-    expect([...em.creases]).toEqual([["2_3", 1]]);
+    expect([...em.seams].sort()).toEqual(["2_3", "4_7"]);
+    // A crease has no continuity rule, so it also lands on the corner segment the
+    // rebuilt face runs along (the seam, which has one, does not).
+    expect(em.creases.size).toBe(3);
+    expect(em.creases.get("2_3")).toBe(1);
+    expect(em.creases.get("4_7")).toBe(1);
   });
 
   it("carries UVs, colours, vertex groups and materials (compat-backlog A8)", () => {

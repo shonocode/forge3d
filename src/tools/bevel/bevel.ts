@@ -32,7 +32,8 @@
  *
  * Refused with a named error rather than approximated: the Arc and Patch
  * miters and the Cutoff vertex mesh. Not offered at all (no option to pass):
- * custom profiles and vertex-only bevels (compat-backlog C17 / C1).
+ * custom profiles, `harden_normals`, face strength and `spread`
+ * (compat-backlog C35).
  *
  * UVs, colours, vertex groups and materials are carried as Blender carries
  * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
@@ -40,8 +41,12 @@
  * across a seam, each new vertex takes its groups from the same mix (the last
  * face made at it decides), and the corners that meet at one UV vertex take
  * their mean at the end (`bevel_merge_uvs`). A "seam" here is where the UV
- * or colour breaks across an edge, read from the data. Custom normals and the
- * edge layers (creases, seams, sharp) are dropped (compat-backlog C17).
+ * or colour breaks across an edge, read from the data. The edge layers
+ * (creases, seams, sharp) are carried as BMesh carries them (compat-backlog
+ * C17): an edge that survives keeps its own, the edges of a rebuilt face and
+ * the ends of each chamfer strip copy from the edge they replace, and
+ * `markSeam` / `markSharp` extend the marks round the corners. Custom normals
+ * are dropped.
  *
  * ## Precision
  *
@@ -189,6 +194,20 @@ export interface BevelMeshOptions {
    * Default **true**, the modifier's (`loop_slide`); the operator's is false.
    */
   loopSlide?: boolean;
+  /**
+   * `material`: the slot every face the bevel makes takes (the chamfer strips and the corner patches;
+   * the rebuilt original faces keep their own). Omit for the neighbours' (Blender's -1).
+   * Taken as given: the BEVEL modifier clamps the slot to the object's slot count (and ignores it on an
+   * object with none); this library has no slot count, so pass a slot the mesh has.
+   */
+  material?: number;
+  /**
+   * `mark_seam`: carry a UV seam across the bevel — where a beveled edge has one, the edges the bevel
+   * adds along the outer ring of each corner are marked up to the next beveled seam.
+   */
+  markSeam?: boolean;
+  /** `mark_sharp`: the same for sharp edges. */
+  markSharp?: boolean;
   /** `miter_outer`. Only `"SHARP"` (the default) is implemented. */
   miterOuter?: "SHARP" | "PATCH" | "ARC";
   /** `miter_inner`. Only `"SHARP"` (the default) is implemented. */
@@ -299,6 +318,9 @@ interface BoundVert {
   visited: boolean;
   isArcStart: boolean;
   isPatchStart: boolean;
+  /** `seam_len` / `sharp_len`: how many edges after this one need the seam / sharp mark (`mark_seam` / `mark_sharp`). */
+  seamLen: number;
+  sharpLen: number;
 }
 
 interface VMesh {
@@ -351,12 +373,45 @@ interface Params {
   weightOf: ((e: BE) => number) | null;
   /** The corner layers and vertex groups, as `BM_mesh_bevel` carries them. */
   layers: LayerState;
+  /** The edge flags and crease of every edge that is not at its default, as BMesh keeps them on the edge. */
+  edgeAttr: Map<BE, EdgeAttr>;
+  /** `mat_nr`: the material every face made through `bev_create_ngon` takes, or -1 to take the neighbours'. */
+  matNr: number;
+  markSeam: boolean;
+  markSharp: boolean;
   /** `affect_type == BEVEL_AFFECT_VERTICES`. */
   affectVertices: boolean;
   /** `affect_vertices_odd`: vertices, with an odd segment count. */
   affectVerticesOdd: boolean;
   /** With a vertex group on a vertex bevel: its raw weight scales each vertex's offset. */
   vertexOffsetWeight: ((v: BV) => number) | null;
+}
+
+/**
+ * What BMesh keeps on an edge besides its ends: `BM_ELEM_SEAM`, `BM_ELEM_SMOOTH`
+ * (its absence is "sharp") and the crease layer. A new edge is smooth, no seam,
+ * crease 0 (`BM_edge_create`).
+ */
+interface EdgeAttr {
+  seam: boolean;
+  smooth: boolean;
+  crease: number;
+}
+
+/** The attributes of `e`, made at the default on first ask. */
+function edgeAttrOf(p: Params, e: BE): EdgeAttr {
+  let a = p.edgeAttr.get(e);
+  if (!a) {
+    a = { seam: false, smooth: true, crease: 0 };
+    p.edgeAttr.set(e, a);
+  }
+  return a;
+}
+
+/** `BM_elem_attrs_copy` on edges: `dst` takes `src`'s flags and crease. */
+function copyEdgeAttr(p: Params, src: BE, dst: BE): void {
+  const a = edgeAttrOf(p, src);
+  p.edgeAttr.set(dst, { seam: a.seam, smooth: a.smooth, crease: a.crease });
 }
 
 /** One corner's values: its UV and its colour (0..1, held to bytes), where the mesh has them. */
@@ -431,6 +486,8 @@ function addNewBoundVert(vm: VMesh, co: V3): BoundVert {
     visited: false,
     isArcStart: false,
     isPatchStart: false,
+    seamLen: 0,
+    sharpLen: 0,
   } as unknown as BoundVert;
   if (!vm.boundstart) {
     ans.index = 0;
@@ -778,6 +835,8 @@ function bevCreateNgon(
     });
   }
   f.tag = true;
+  // `mat_nr`: the rebuilt faces pass -1 (they keep their own), every other face takes it.
+  if (p.matNr >= 0 && kind !== FKind.RECON) p.faceMat.set(f, p.matNr);
   if (kind !== FKind.ORIG) p.faceKind.set(f, kind);
   // `register_uv_face` + `update_uv_vert_map`.
   const attached = faceArr && faceArr[0] ? faceArr[0] : facerep;
@@ -1519,8 +1578,81 @@ function calculateVmProfiles(p: Params, bv: BevVert, vm: VMesh): void {
 
 // ── the boundary ───────────────────────────────────────────────────────────
 
-/** `set_bound_vert_seams`, for `any_seam` alone — nothing here marks seams. */
-function setBoundVertSeams(bv: BevVert): void {
+/**
+ * `check_edge_data_seam_sharp_edges`: for each beveled edge that has the mark,
+ * how many edges follow it round the vertex without — the count
+ * `bevel_extend_edge_data` later paints along the outer ring. `flag` is the
+ * mark: a seam, or sharp (the absence of `BM_ELEM_SMOOTH`).
+ */
+function checkEdgeDataSeamSharpEdges(p: Params, bv: BevVert, flag: "seam" | "sharp"): void {
+  const hasNot = (eh: EdgeHalf): boolean => {
+    const a = edgeAttrOf(p, eh.e);
+    return flag === "seam" ? !a.seam : a.smooth;
+  };
+  let e = bv.edges[0]!;
+  const efirst0 = e;
+  while (hasNot(e)) {
+    e = e.next;
+    if (e === efirst0) break;
+  }
+  if (hasNot(e)) return;
+  const efirst = e;
+  do {
+    let flagCount = 0;
+    let ne = e.next;
+    while (hasNot(ne) && ne !== efirst) {
+      if (ne.isBev) flagCount++;
+      ne = ne.next;
+    }
+    if (ne === e || (ne === efirst && hasNot(efirst))) break;
+    if (flag === "seam") e.rightv!.seamLen = flagCount;
+    else e.rightv!.sharpLen = flagCount;
+    e = ne;
+  } while (e !== efirst);
+}
+
+/** `bevel_extend_edge_data_ex`: paint the mark along the outermost ring of the patch. */
+function bevelExtendEdgeDataEx(p: Params, bv: BevVert, flag: "seam" | "sharp"): void {
+  const vm = bv.vmesh;
+  let bcur = vm.boundstart!;
+  let start = bcur;
+  do {
+    const extendLen = flag === "seam" ? bcur.seamLen : bcur.sharpLen;
+    if (extendLen) {
+      // The C tests `seam_len` for both flags — kept (a sharp-only run keeps `start`).
+      if (!vm.boundstart!.seamLen && start === vm.boundstart) start = bcur;
+      const idxEnd = bcur.index + extendLen;
+      const mark = (a: BV, b: BV): void => {
+        const e = edgeExists(a, b);
+        if (!e) throw new Error("bevelMesh: no edge on the corner ring to mark (bevel_extend_edge_data)");
+        const at = edgeAttrOf(p, e);
+        if (flag === "seam") at.seam = true;
+        else at.smooth = false;
+      };
+      for (let i = bcur.index; i < idxEnd; i++) {
+        let v1 = meshVert(vm, i % vm.count, 0, 0).v!;
+        for (let k = 1; k < vm.seg; k++) {
+          const v2 = meshVert(vm, i % vm.count, 0, k).v!;
+          mark(v1, v2);
+          v1 = v2;
+        }
+        const v3 = meshVert(vm, (i + 1) % vm.count, 0, 0).v!;
+        mark(v1, v3);
+        bcur = bcur.next;
+      }
+    } else bcur = bcur.next;
+  } while (bcur !== start);
+}
+
+/** `bevel_extend_edge_data`. */
+function bevelExtendEdgeData(p: Params, bv: BevVert): void {
+  if (bv.vmesh.kind === MeshKind.TRI_FAN || bv.selcount < 2) return;
+  bevelExtendEdgeDataEx(p, bv, "seam");
+  bevelExtendEdgeDataEx(p, bv, "sharp");
+}
+
+/** `set_bound_vert_seams`: `any_seam`, and with `mark_seam` / `mark_sharp` the lengths to extend. */
+function setBoundVertSeams(p: Params, bv: BevVert): void {
   bv.anySeam = false;
   let v = bv.vmesh.boundstart!;
   do {
@@ -1531,6 +1663,8 @@ function setBoundVertSeams(bv: BevVert): void {
     }
     bv.anySeam ||= any;
   } while ((v = v.next) !== bv.vmesh.boundstart);
+  if (p.markSeam) checkEdgeDataSeamSharpEdges(p, bv, "seam");
+  if (p.markSharp) checkEdgeDataSeamSharpEdges(p, bv, "sharp");
 }
 
 /** `build_boundary_vertex_only`: one boundary point on each edge, `offset_l` along it. */
@@ -1547,7 +1681,7 @@ function buildBoundaryVertexOnly(p: Params, bv: BevVert, construct: boolean): vo
     } else e.leftv!.nv.co = copy(co);
   } while ((e = e.next) !== efirst);
   if (construct) {
-    setBoundVertSeams(bv);
+    setBoundVertSeams(p, bv);
     // Odd segments: a seam at the vertex itself counts too.
     if (p.affectVerticesOdd && !bv.anySeam && !contigAroundVert(p, bv.v)) bv.anySeam = true;
     if (vm.count === 2) vm.kind = MeshKind.NONE;
@@ -1606,7 +1740,7 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
       const bndv = addNewBoundVert(vm, co);
       bndv.efirst = bndv.elast = e.next;
       e.next.leftv = e.next.rightv = bndv;
-      setBoundVertSeams(bv);
+      setBoundVertSeams(p, bv);
     } else e.next.leftv!.nv.co = copy(co);
   } else {
     const legSlide = p.offsetType === "PERCENT" || p.offsetType === "ABSOLUTE";
@@ -1644,7 +1778,7 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
     moveProfilePlane(bndv, bv.v);
   }
   if (construct) {
-    setBoundVertSeams(bv);
+    setBoundVertSeams(p, bv);
     if (vm.count === 2 && bv.edgecount === 3) vm.kind = MeshKind.NONE;
     else if (vm.count === 3) vm.kind = MeshKind.TRI_FAN;
     else vm.kind = MeshKind.POLY;
@@ -1717,7 +1851,7 @@ function buildBoundary(p: Params, bv: BevVert, construct: boolean): void {
   } while (e !== efirst);
 
   if (construct) {
-    setBoundVertSeams(bv);
+    setBoundVertSeams(p, bv);
     if (vm.count === 2) vm.kind = MeshKind.NONE;
     else if (efirst.seg === 1) vm.kind = MeshKind.POLY;
     else vm.kind = MeshKind.ADJ;
@@ -2798,7 +2932,7 @@ function bevelVertTwoEdges(p: Params, bv: BevVert): void {
     for (let k = 0; k < ns; k++) {
       v1 = meshVert(vm, 0, 0, k).v!;
       v2 = meshVert(vm, 0, 0, k + 1).v!;
-      if (!edgeExists(v1, v2)) edgeCreate(p.bm, v1, v2);
+      if (!edgeExists(v1, v2)) copyEdgeAttr(p, bv.edges[0]!.e, edgeCreate(p.bm, v1, v2));
     }
   }
 }
@@ -3153,6 +3287,7 @@ function bevelVertConstruct(p: Params, v: BV): BevVert | null {
 function bevRebuildPolygon(p: Params, f: BF): boolean {
   let doRebuild = false;
   const vv: BV[] = [];
+  const ee: BE[] = [];
   const nvBvMap = new Map<BV, BV>();
   const addMap = (a: BV, b: BV): void => void (nvBvMap.has(a) || nvBvMap.set(a, b));
   for (const l of faceLoops(f)) {
@@ -3161,6 +3296,7 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
       const bv = p.vertHash.get(l.v)!;
       const vm = bv.vmesh;
       const e = findEdgeHalf(bv, l.e!)!;
+      const bme = e.e;
       const eprev = findEdgeHalf(bv, lprev.e!)!;
       let goCcw: boolean;
       if (e.prev === eprev) {
@@ -3189,6 +3325,7 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
       let v = vstart;
       if (!onProfileStart) {
         vv.push(v.nv.v!);
+        ee.push(bme);
         addMap(v.nv.v!, l.v);
       }
       while (v !== vend) {
@@ -3204,6 +3341,7 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
             const bmv = meshVert(vm, i, 0, k).v;
             if (bmv) {
               vv.push(bmv);
+              ee.push(bme);
               addMap(bmv, l.v);
             }
           }
@@ -3220,6 +3358,7 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
             const bmv = meshVert(vm, i, 0, k).v;
             if (bmv) {
               vv.push(bmv);
+              ee.push(bme);
               addMap(bmv, l.v);
             }
           }
@@ -3229,11 +3368,27 @@ function bevRebuildPolygon(p: Params, f: BF): boolean {
       doRebuild = true;
     } else {
       vv.push(l.v);
+      ee.push(l.e!);
       addMap(l.v, l.v);
     }
   }
   if (doRebuild) {
     const fNew = bevCreateNgon(p, vv, null, f, FKind.RECON, null, null, nvBvMap);
+    // Copy attributes from old edges. A seam is undone for the corner segments
+    // where it is not contiguous round the face, and "sharp" is made so.
+    const n = vv.length;
+    let bmePrev = ee[n - 1]!;
+    for (let k = 0; k < n; k++) {
+      const bmeNew = edgeExists(vv[k]!, vv[(k + 1) % n]!);
+      if (!bmeNew) continue;
+      if (ee[k] !== bmeNew) {
+        copyEdgeAttr(p, ee[k]!, bmeNew);
+        if (k < n - 1 && ee[k] === ee[k + 1]) {
+          if (edgeAttrOf(p, ee[k]!).seam && !edgeAttrOf(p, bmePrev).seam) edgeAttrOf(p, bmeNew).seam = false;
+          if (!edgeAttrOf(p, ee[k]!).smooth && edgeAttrOf(p, bmePrev).smooth) edgeAttrOf(p, bmeNew).smooth = true;
+        } else bmePrev = ee[k]!;
+      }
+    }
     if (fNew) fNew.tag = false;
   }
   return doRebuild;
@@ -3274,7 +3429,8 @@ function bevelReattachWires(p: Params, v: BV): void {
         }
       }
     } while ((bndv = bndv.next) !== bv.vmesh.boundstart);
-    if (vclosest && votherclosest && !edgeExists(vclosest, votherclosest)) edgeCreate(p.bm, vclosest, votherclosest);
+    if (vclosest && votherclosest && !edgeExists(vclosest, votherclosest))
+      copyEdgeAttr(p, e, edgeCreate(p.bm, vclosest, votherclosest));
   }
 }
 
@@ -3287,7 +3443,9 @@ function bevelBuildEdgePolygons(p: Params, bme: BE): void {
   const e2 = findEdgeHalf(bv2, bme)!;
   const nseg = e1.seg;
   const bmv1 = e1.leftv!.nv.v!;
+  const bmv4 = e1.rightv!.nv.v!;
   const bmv2 = e2.rightv!.nv.v!;
+  const bmv3 = e2.leftv!.nv.v!;
   const f1 = e1.fprev;
   const f2 = e1.fnext;
   const i1 = e1.leftv!.index;
@@ -3338,6 +3496,48 @@ function bevelBuildEdgePolygons(p: Params, bme: BE): void {
     }
     verts[0] = verts[3]!;
     verts[1] = verts[2]!;
+  }
+  // Copy edge data to the first and last edge, and across a weld cross.
+  const bme1 = edgeExists(bmv1, bmv2);
+  const bme2 = edgeExists(bmv3, bmv4);
+  if (bme1) copyEdgeAttr(p, bme, bme1);
+  if (bme2) copyEdgeAttr(p, bme, bme2);
+  if (bevvertIsWeldCross(bv1)) weldCrossAttrsCopy(p, bv1, bv1.vmesh, i1, e1);
+  if (bevvertIsWeldCross(bv2)) weldCrossAttrsCopy(p, bv2, bv2.vmesh, i2, e2);
+}
+
+/** `bevvert_is_weld_cross`: four edges, two beveled and opposite. */
+function bevvertIsWeldCross(bv: BevVert): boolean {
+  return (
+    bv.edgecount === 4 &&
+    bv.selcount === 2 &&
+    ((bv.edges[0]!.isBev && bv.edges[2]!.isBev) || (bv.edges[1]!.isBev && bv.edges[3]!.isBev))
+  );
+}
+
+/** `weld_cross_attrs_copy`: the unbeveled edges of a cross weld lend their attributes to the new edges between them. */
+function weldCrossAttrsCopy(p: Params, bv: BevVert, vm: VMesh, vmindex: number, e: EdgeHalf): void {
+  let bmePrev: BE | null = null;
+  let bmeNext: BE | null = null;
+  for (let i = 0; i < 4; i++)
+    if (bv.edges[i] === e) {
+      bmePrev = bv.edges[(i + 3) % 4]!.e;
+      bmeNext = bv.edges[(i + 1) % 4]!.e;
+      break;
+    }
+  if (!bmePrev || !bmeNext) return;
+  const a = edgeAttrOf(p, bmePrev);
+  const b = edgeAttrOf(p, bmeNext);
+  // Seams and sharp edges cross only if they are that way on both sides.
+  const disableSeam = a.seam !== b.seam;
+  const enableSmooth = a.smooth !== b.smooth;
+  for (let i = 0; i < e.seg; i++) {
+    const bme = edgeExists(meshVert(vm, vmindex, 0, i).v!, meshVert(vm, vmindex, 0, i + 1).v!);
+    if (!bme) continue;
+    copyEdgeAttr(p, bmePrev, bme);
+    const at = edgeAttrOf(p, bme);
+    if (disableSeam) at.seam = false;
+    if (enableSmooth) at.smooth = true;
   }
 }
 
@@ -3667,8 +3867,7 @@ function bevelLimitOffset(p: Params, verts: BV[]): void {
  *
  * **Layers** (compat-backlog A8): UVs, colours, vertex groups, materials and
  * wire edges are carried as Blender's bevel carries them — see the file's
- * header. Custom normals, creases, seams and sharp edges are dropped whole
- * (compat-backlog C17).
+ * header. Custom normals are dropped whole (compat-backlog C17).
  */
 export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   if (opts.miterOuter && opts.miterOuter !== "SHARP")
@@ -3742,10 +3941,21 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       uvFaces: new Map(),
       uvVertMap: hasUv ? new Map() : null,
     },
+    edgeAttr: new Map(),
+    matNr: opts.material ?? -1,
+    markSeam: opts.markSeam ?? false,
+    markSharp: opts.markSharp ?? false,
     affectVertices: opts.affect === "VERTICES",
     affectVerticesOdd: opts.affect === "VERTICES" && segments % 2 === 1,
     vertexOffsetWeight: null,
   };
+  for (const e of liveEdges(bm)) {
+    const a = e.v1.index < e.v2.index ? `${e.v1.index}_${e.v2.index}` : `${e.v2.index}_${e.v1.index}`;
+    const seam = data.seams?.has(a) ?? false;
+    const sharp = data.sharp?.has(a) ?? false;
+    const crease = data.creases?.get(a) ?? 0;
+    if (seam || sharp || crease) p.edgeAttr.set(e, { seam, smooth: !sharp, crease });
+  }
   p.offsetAdjust = !p.affectVertices && p.offsetType !== "PERCENT" && p.offsetType !== "ABSOLUTE";
   if (profile >= 0.95) p.proSuperR = PRO_SQUARE_R;
   else if (Math.abs(p.proSuperR - PRO_CIRCLE_R) < 1e-4) p.proSuperR = PRO_CIRCLE_R;
@@ -3826,7 +4036,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const live = bm.faces.items.filter((f): f is BF => !!f);
     const names: BevelFaceKind[] = ["orig", "vert", "edge", "recon"];
     const faceKind = live.map((f) => names[p.faceKind.get(f) ?? FKind.ORIG]!);
-    if (data.materials) mesh.materials = live.map((f) => faceMat.get(f) ?? 0);
+    if (data.materials || p.matNr >= 0) mesh.materials = live.map((f) => faceMat.get(f) ?? 0);
     const C = p.layers.corners;
     if (hasUv) mesh.uvs = live.map((f) => faceLoops(f).map((l) => [...(C[l.src]?.uv ?? [0, 0])]));
     // A corner nothing was interpolated into holds the default: white.
@@ -3842,6 +4052,26 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       }
       mesh.groups = out;
     }
+    // The edge layers, by the output vertex numbers `bmToMesh` gave.
+    const at = new Map<BV, number>();
+    let nv = 0;
+    for (const v of bm.verts) if (v) at.set(v, nv++);
+    const seams = new Set<string>();
+    const sharp = new Set<string>();
+    const creases = new Map<string, number>();
+    for (const e of liveEdges(bm)) {
+      const a = p.edgeAttr.get(e);
+      if (!a) continue;
+      const i = at.get(e.v1)!;
+      const j = at.get(e.v2)!;
+      const key = i < j ? `${i}_${j}` : `${j}_${i}`;
+      if (a.seam) seams.add(key);
+      if (!a.smooth) sharp.add(key);
+      if (a.crease) creases.set(key, a.crease);
+    }
+    if (seams.size) mesh.seams = seams;
+    if (sharp.size) mesh.sharp = sharp;
+    if (creases.size) mesh.creases = creases;
     const n0 = data.positions.length / 3;
     const origVert = bm.verts.filter((v): v is BV => !!v).map((v) => (v.index < n0 ? v.index : -1));
     return { mesh, faceKind, offset: p.offset, origVert };
@@ -3880,6 +4110,11 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     if (bv) buildVmesh(p, bv);
   }
   if (!p.affectVertices) for (const e of edges) if (p.selected.has(e)) bevelBuildEdgePolygons(p, e);
+  for (const v of verts) {
+    if (!p.tagged.has(v)) continue;
+    const bv = p.vertHash.get(v);
+    if (bv) bevelExtendEdgeData(p, bv);
+  }
 
   const rebuilt = new Set<BF>();
   for (const v of verts) {

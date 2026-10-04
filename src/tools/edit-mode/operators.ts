@@ -434,9 +434,9 @@ export interface BevelOptions {
  * alone and counted in `outInfo.skipped`. Throws when that is every edge.
  *
  * The vertices are renumbered (the beveled ones go, as in Blender). Creases,
- * seams and sharp edges between vertices the bevel left alone are renumbered
- * with them; on the edges it rebuilt they are dropped, and so are custom
- * normals (compat-backlog C17 has Blender's rules for those).
+ * seams and sharp edges are carried as `bmesh_bevel.cc` carries them: kept on
+ * an edge it left alone, copied onto the edges it made along an old one
+ * (compat-backlog C17). Custom normals are dropped.
  *
  * @returns The new chamfer faces, by face index.
  */
@@ -481,7 +481,10 @@ export function bevelEdges(
   if (em.faceMaterials?.length) data.materials = em.faceMaterials;
   if (em.vertexGroups?.size) data.groups = em.vertexGroups;
   if (em.wireEdges?.length) data.edges = em.wireEdges;
-  const { mesh: out, faceKind, origVert } = bevelMesh(data, {
+  if (em.seams.size) data.seams = em.seams;
+  if (em.creases.size) data.creases = em.creases;
+  if (em.sharpEdges?.size) data.sharp = em.sharpEdges;
+  const { mesh: out, faceKind } = bevelMesh(data, {
     offset: opts.offset,
     offsetType,
     segments,
@@ -504,36 +507,12 @@ export function bevelEdges(
   if (out.materials) em.faceMaterials = out.materials;
   if (out.groups) em.vertexGroups = out.groups;
   em.wireEdges = (out.edges ?? []).map((e) => [...e]);
-  // The edge flags are keyed by vertex pairs: carry the ones whose two
-  // vertices survive, under their new numbers (found by review — clearing
-  // them all lost every seam and crease on the mesh to a bevel elsewhere).
-  const newOf = new Map<number, number>();
-  origVert.forEach((o, n) => o >= 0 && newOf.set(o, n));
-  const rekey = (k: string): string | null => {
-    const [a, b] = k.split("_").map(Number);
-    const x = newOf.get(a!);
-    const y = newOf.get(b!);
-    return x === undefined || y === undefined ? null : seamKey(x, y);
-  };
-  const seams = new Set<string>();
-  for (const k of em.seams) {
-    const n = rekey(k);
-    if (n) seams.add(n);
-  }
-  em.seams = seams;
-  const creases = new Map<string, number>();
-  for (const [k, w] of em.creases) {
-    const n = rekey(k);
-    if (n) creases.set(n, w);
-  }
-  em.creases = creases;
-  if (sharp) {
-    em.sharpEdges = new Set();
-    for (const k of sharp) {
-      const n = rekey(k);
-      if (n) em.sharpEdges.add(n);
-    }
-  }
+  // The edge layers come back keyed by the new vertex numbers: `bevelMesh`
+  // carries them as BMesh does (compat-backlog C17), so what the bevel left
+  // alone keeps its flags and what it made takes them from the edge it replaced.
+  em.seams = new Set(out.seams ?? []);
+  em.creases = new Map(out.creases ?? []);
+  if (sharp || out.sharp) em.sharpEdges = new Set(out.sharp ?? []);
 
   const chamfer = new Set<number>();
   faceKind.forEach((k, f) => k === "edge" && chamfer.add(f));
