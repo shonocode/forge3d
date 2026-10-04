@@ -21,7 +21,9 @@ licences, and where the ported code lives:
   `mesh_boolean.cc`), the Remesh modifier's dual contouring
   (`intern/dualcon/`, Tao Ju's algorithm as Blender ships it), and the legacy
   procedural textures (`render/intern/texture_procedural.cc`,
-  `blenlib/intern/noise_c.cc`). Each ported function names its source file in
+  `blenlib/intern/noise_c.cc`), the image texture (`render/intern/texture_image.cc`)
+  and the colour ramp (`blenkernel/intern/colorband.cc`, `key.cc`,
+  `blenlib/intern/math_color.cc`). Each ported function names its source file in
   its JSDoc.
 
 ## Bullet Physics — `btConvexHullComputer`

@@ -370,7 +370,7 @@ export {
 } from "../tools/displace";
 
 // ── Procedural textures ────────────────────────────────────────────────────
-// Blender's legacy textures (Clouds, Wood, Marble, Magic, Blend, Stucci,
+// Blender's legacy textures (Clouds, Wood, Marble, Magic, Blend, Stucci, Image (C19),
 // Musgrave, Voronoi, Distorted Noise), read at a point. What Displace and Wave
 // sample; usable on its own for anything that wants Blender's noise.
 export {
@@ -379,6 +379,14 @@ export {
   type ProceduralTexture,
   type TextureResult,
   type TextureValue,
+  type ImageTextureSettings,
+  type TextureImage,
+  type ImageExtension,
+  type ColorRamp,
+  type RampElement,
+  type RampInterpolation,
+  type RampColorMode,
+  type RampHueInterpolation,
   type TextureCommon,
   type CloudsTexture,
   type WoodTexture,

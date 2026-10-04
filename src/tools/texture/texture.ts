@@ -26,10 +26,8 @@
  *   `RE_texture_rng_init` and advanced by every call. Its output depends on
  *   wall-clock time, thread and call history, so there is nothing
  *   reproducible to port.
- * - **`IMAGE`** and node textures (`use_nodes`).
- * - **Colour ramp** (`use_color_ramp`): when set, `multitex` replaces the
- *   result by `BKE_colorband_evaluate(coba, tin)` and marks it RGB. Not
- *   ported; a ramp-less texture is what is evaluated here.
+ * - Node textures (`use_nodes`). (`IMAGE` lives in `image-texture.ts`, compat-backlog C19.)
+ * - **Colour ramp** (`use_color_ramp`): ported in `colorband.ts` (compat-backlog C19); `colorRamp` on any texture.
  * - `nabla` only matters for bump-mapping normals, which this does not compute.
  *
  * ## Faithful oddities (these are Blender's behaviour, not bugs here)
@@ -49,6 +47,10 @@
  * Pure and headless.
  */
 
+import { evaluateColorRamp, type ColorRamp } from "./colorband";
+import { sampleImage, type ImageTextureSettings } from "./image-texture";
+export type { ColorRamp, RampElement, RampInterpolation, RampColorMode, RampHueInterpolation } from "./colorband";
+export type { ImageTextureSettings, TextureImage, ImageExtension } from "./image-texture";
 import {
   DISTANCE_METRIC,
   NOISE_BASIS,
@@ -86,6 +88,11 @@ export interface TextureCommon {
   factorBlue?: number;
   /** RNA `use_clamp` (inverse of `TEX_NO_CLAMP`). Default **false**. */
   useClamp?: boolean;
+  /**
+   * RNA `use_color_ramp` with its `color_ramp`: the intensity is replaced by the ramp's colour and alpha, and
+   * the result counts as colour (`multitex`: `BKE_colorband_evaluate(coba, tin)`). Absent means off.
+   */
+  colorRamp?: ColorRamp;
 }
 
 /** RNA `noise_type`. */
@@ -243,8 +250,12 @@ export interface DistortedNoiseTexture extends TextureCommon {
   noiseDistortion?: NoiseBasis;
 }
 
-/** A procedural texture, discriminated by RNA `type`. (`NOISE` and `IMAGE` are not supported.) */
+/**
+ * A texture a modifier can read, discriminated by RNA `type`: the procedural ones and `IMAGE` (see
+ * `image-texture.ts`). `NOISE` is not supported.
+ */
 export type ProceduralTexture =
+  | ImageTextureSettings
   | CloudsTexture
   | WoodTexture
   | MarbleTexture
@@ -705,6 +716,18 @@ export function evaluateTexture(
   tex: ProceduralTexture,
   co: readonly [number, number, number] | [number, number, number],
 ): TextureResult {
+  const r = evaluateByType(tex, co);
+  if (tex.colorRamp) {
+    const col = evaluateColorRamp(tex.colorRamp, r.intensity);
+    if (col) return { intensity: r.intensity, color: [col[0], col[1], col[2]], alpha: col[3], hasColor: true };
+  }
+  return r;
+}
+
+function evaluateByType(
+  tex: ProceduralTexture,
+  co: readonly [number, number, number] | [number, number, number],
+): TextureResult {
   const v: [number, number, number] = [f(co[0]), f(co[1]), f(co[2])];
   switch (tex.type) {
     case "BLEND":
@@ -725,6 +748,8 @@ export function evaluateTexture(
       return evalVoronoi(tex, v);
     case "DISTORTED_NOISE":
       return evalDistortedNoise(tex, v);
+    case "IMAGE":
+      return evalImage(tex, v);
     default: {
       const t = (tex as { type: unknown }).type;
       throw new Error(
@@ -733,6 +758,14 @@ export function evaluateTexture(
       );
     }
   }
+}
+
+/** `imagewrap` with `BRICONTRGB`; always a colour result (`TEX_RGB`), whatever the sample. */
+function evalImage(t: ImageTextureSettings, v: [number, number, number]): TextureResult {
+  const s = sampleImage(t, v);
+  if (!s) return withColor(0, [0, 0, 0]);
+  const rgb = bricontRgb(s.color, common(t));
+  return { intensity: s.tin, color: rgb, alpha: s.alpha, hasColor: true };
 }
 
 /** What `BKE_texture_get_value` hands a modifier: `tin`, and the colour when there is one. */
