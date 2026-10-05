@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { box, plane, sphere } from "./generate";
-import { displace, valueNoise, hashNoise } from "./displace";
+import { displace, valueNoise, hashNoise, textureDisplace } from "./displace";
 import { weldMesh } from "./mesh-ops";
 import type { MeshData } from "../lib/mesh";
 
@@ -118,5 +118,22 @@ describe("displace", () => {
         5,
       );
     }
+  });
+});
+
+describe("textureDisplace: space (compat-backlog C37)", () => {
+  const tri = (): MeshData => ({ positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]), polys: [[0, 1, 2]] });
+  // The object turned 90° about Z: its local axes are (0,1,0), (−1,0,0), (0,0,1) in the world.
+  const turned = [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+  it("global X is the world's X as the mesh sees it — row 0 of the object's matrix", () => {
+    const out = textureDisplace(tri(), { direction: "x", space: "global", objectMatrix: turned, strength: 1, midLevel: 0 });
+    // delta 1 along world X = local (0, −1, 0)
+    expect(Array.from(out.positions.slice(0, 3))).toEqual([0, -1, 0]);
+  });
+
+  it("local space leaves the object's matrix out of it", () => {
+    const out = textureDisplace(tri(), { direction: "x", objectMatrix: turned, strength: 1, midLevel: 0 });
+    expect(Array.from(out.positions.slice(0, 3))).toEqual([1, 0, 0]);
   });
 });

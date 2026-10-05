@@ -196,7 +196,17 @@ export interface TextureDisplaceOptions {
    * Blender does with no UV map). `GLOBAL` / `OBJECT` need an object's
    * matrix, which a `MeshData` does not have — transform the mesh instead.
    */
-  coords?: "local" | "uv";
+  coords?: "local" | "uv" | "global";
+  /**
+   * Blender's `space`: for the directions `x` / `y` / `z` / `rgbToXyz`, `"local"` (default) moves along the mesh's own axes,
+   * `"global"` along the **world's** — through `objectMatrix`, the object's transform (compat-backlog C37).
+   */
+  space?: "local" | "global";
+  /**
+   * The object's transform, `object_to_world`, 16 numbers row-major. Read for `space: "global"` and `coords: "global"`.
+   * Default the identity (a mesh at the origin, unrotated and unscaled).
+   */
+  objectMatrix?: readonly number[];
   /**
    * `vertex_group` / `invert_vertex_group`: each vertex's strength is
    * scaled by its weight, and a vertex at weight 0 does not move. A group no
@@ -232,7 +242,17 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
   const strength = f(opts.strength ?? 1);
   const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
   if (vg?.empty) return withPositions(data, Float32Array.from(data.positions));
-  const coords = textureCoords(data, P, opts.coords ?? "local");
+  const M = opts.objectMatrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  // `TEXMAP_GLOBAL`: the texture is read at the vertex's world position (`mul_m4_v3(object_to_world)`).
+  const coords =
+    opts.coords === "global"
+      ? P.map((p): [number, number, number] => [
+          f(f(f(M[0]! * p[0]!) + f(M[1]! * p[1]!)) + f(f(M[2]! * p[2]!) + M[3]!)),
+          f(f(f(M[4]! * p[0]!) + f(M[5]! * p[1]!)) + f(f(M[6]! * p[2]!) + M[7]!)),
+          f(f(f(M[8]! * p[0]!) + f(M[9]! * p[1]!)) + f(f(M[10]! * p[2]!) + M[11]!)),
+        ])
+      : textureCoords(data, P, opts.coords ?? "local");
+  const globalSpace = opts.space === "global";
   const normals = direction === "normal" ? meshVertNormals(P, data.polys) : null;
   const out = new Float32Array(data.positions.length);
   for (let v = 0; v < count; v++) {
@@ -249,7 +269,12 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
     const value = opts.texture ? textureValue(opts.texture, coords[v]!) : null;
     if (direction === "rgbToXyz") {
       const rgb = value ? value.color : [1, 1, 1];
-      for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(f(rgb[k]! - mid) * s));
+      const d = [0, 1, 2].map((k) => f(rgb[k]! - mid));
+      // Global: `mul_transposed_mat3_m4_v3` — the world-space offset taken back into the mesh's space (Mᵀ·d).
+      const local = globalSpace
+        ? [0, 1, 2].map((k) => f(f(f(M[k]! * d[0]!) + f(M[4 + k]! * d[1]!)) + f(M[8 + k]! * d[2]!)))
+        : d;
+      for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(local[k]! * s));
       continue;
     }
     let delta = f((value ? value.intensity : 1) - mid);
@@ -258,7 +283,9 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
     if (normals) for (let k = 0; k < 3; k++) out[v * 3 + k] = f(p[k]! + f(normals[v]![k]! * delta));
     else {
       const k = direction === "x" ? 0 : direction === "y" ? 1 : 2;
-      out[v * 3 + k] = f(p[k]! + delta);
+      // Global: the world axis `k` as seen from the mesh — row `k` of the object's 3 × 3 (`local_mat[i][k]`).
+      if (globalSpace) for (let c = 0; c < 3; c++) out[v * 3 + c] = f(p[c]! + f(delta * M[k * 4 + c]!));
+      else out[v * 3 + k] = f(p[k]! + delta);
     }
   }
   return withPositions(data, out);
