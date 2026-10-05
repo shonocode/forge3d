@@ -455,6 +455,8 @@ export { bridgeLoops, type BridgeLoopsOptions } from "../tools/bridge-loops";
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp
 // creases are how a box becomes a fillet with one parameter.
 export { catmullClark, type SubdivResult, type CatmullClarkOptions } from "../tools/edit-mode/subdivide";
+/** Blender's Subdivision Surface modifier on a mesh with its layers: creases in Blender's 0..1, edge flags, materials, groups, UVs. */
+export { subsurfModifier, type SubsurfModifierOptions } from "../tools/subsurf-modifier";
 /** Blender's Subdivision Surface with `subdivision_type = SIMPLE` (`subdiv-simple` rows). */
 export { simpleSubdivide } from "../tools/modifier-core";
 

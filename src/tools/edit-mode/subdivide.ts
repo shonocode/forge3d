@@ -51,6 +51,8 @@ export interface SubdivResult {
    * output face `f`, the same shape `MeshData.uvs` has.
    */
   uvs?: number[][][];
+  /** One step's edge points: the vertex made at each parent edge ("min_max"), for carrying edge and vertex layers. */
+  edgePoints?: Map<string, number>;
 }
 
 /**
@@ -245,6 +247,12 @@ function subdivideUVOnce(
 
 const SHARP = Infinity;
 
+/** Blender's `crease_edge` (0..1) as OpenSubdiv's sharpness: `10 · crease²`, and 10 and up is infinite (`Crease::IsInfinite`). */
+const osdSharpness = (c: number): number => {
+  const s = Math.fround(Math.fround(Math.fround(c) * Math.fround(c)) * 10);
+  return s >= 10 ? Infinity : s;
+};
+
 function edgeKey(a: number, b: number): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
@@ -255,7 +263,7 @@ function parseKey(k: string): [number, number] {
 }
 
 /** One Catmull-Clark step. `creases` maps edge keys to sharpness (σ ≥ 0). */
-function subdivideOnce(
+export function subdivideOnce(
   positions: Float32Array,
   polys: number[][],
   creases: Map<string, number>,
@@ -380,16 +388,30 @@ function subdivideOnce(
     }
 
     // Crease / boundary handling: collect the vertex's sharp edges.
+    // OpenSubdiv's vertex rule (`Scheme::ComputeVertexVertexMask`): the rule is Smooth / Dart / Crease / Corner by the number of
+    // sharp edges (0 / 1 / 2 / more), for the parent's sharpness and for the child's (σ − 1, ≤ 0 ⇒ 0, ∞ stays). When the two
+    // differ the position is the mix of the parent's rule and the child's, weighted by the mean parent sharpness of the edges
+    // that decay to 0 (`ComputeFractionalWeightAtVertex`, clamped to 1).
+    const decay = (s: number): number => (s === Infinity ? s : s > 1 ? s - 1 : 0);
     let creaseCount = 0;
-    let sharpnessSum = 0;
-    const creaseNbrs: Array<{ nbr: number; s: number }> = [];
+    let childCount = 0;
+    let transitionSum = 0;
+    let transitionCount = 0;
+    const creaseNbrs: number[] = [];
+    const childCreaseNbrs: number[] = [];
     for (const k of edges) {
       const s = sharpnessOf(k, edgeFaces.get(k)!);
-      if (s > 0) {
-        creaseCount++;
-        sharpnessSum += Math.min(s, 1);
-        const [a, b] = parseKey(k);
-        creaseNbrs.push({ nbr: a === v ? b : a, s });
+      if (s <= 0) continue;
+      const [a, b] = parseKey(k);
+      const nbr = a === v ? b : a;
+      creaseCount++;
+      creaseNbrs.push(nbr);
+      if (decay(s) > 0) {
+        childCount++;
+        childCreaseNbrs.push(nbr);
+      } else {
+        transitionSum += s;
+        transitionCount++;
       }
     }
 
@@ -410,27 +432,21 @@ function subdivideOnce(
       continue;
     }
 
-    // Crease position by number of incident sharp edges.
-    let sharpX: number, sharpY: number, sharpZ: number;
-    if (creaseCount <= 1) {
-      // Dart — a lone crease doesn't pin the vertex.
-      sharpX = smoothX; sharpY = smoothY; sharpZ = smoothZ;
-    } else if (creaseCount === 2) {
-      // (6P + n1 + n2) / 8 using the two sharpest crease neighbors.
-      creaseNbrs.sort((p, q) => q.s - p.s);
-      const n1 = creaseNbrs[0]!.nbr, n2 = creaseNbrs[1]!.nbr;
-      sharpX = (6 * Px + positions[n1 * 3]! + positions[n2 * 3]!) / 8;
-      sharpY = (6 * Py + positions[n1 * 3 + 1]! + positions[n2 * 3 + 1]!) / 8;
-      sharpZ = (6 * Pz + positions[n1 * 3 + 2]! + positions[n2 * 3 + 2]!) / 8;
-    } else {
-      // Corner — pinned.
-      sharpX = Px; sharpY = Py; sharpZ = Pz;
+    // The position a rule gives: Smooth / Dart → the smooth mask; Crease → (6P + n1 + n2) / 8; Corner → P.
+    const ruleAt = (count: number, nbrs: number[], k: number): number => {
+      if (count <= 1) return k === 0 ? smoothX : k === 1 ? smoothY : smoothZ;
+      const p = k === 0 ? Px : k === 1 ? Py : Pz;
+      if (count === 2) return (6 * p + positions[nbrs[0]! * 3 + k]! + positions[nbrs[1]! * 3 + k]!) / 8;
+      return p;
+    };
+    const ruleOf = (count: number): number => (count > 2 ? 3 : count);
+    const same = ruleOf(creaseCount) === ruleOf(childCount);
+    const weight = same || transitionCount === 0 ? 0 : Math.min(1, transitionSum / transitionCount);
+    for (let k = 0; k < 3; k++) {
+      const parent = ruleAt(creaseCount, creaseNbrs, k);
+      const child = same ? parent : ruleAt(childCount, childCreaseNbrs, k);
+      newPos[v * 3 + k] = weight * parent + (1 - weight) * child;
     }
-
-    const blend = Math.min(1, sharpnessSum / creaseCount);
-    newPos[v * 3] = smoothX + (sharpX - smoothX) * blend;
-    newPos[v * 3 + 1] = smoothY + (sharpY - smoothY) * blend;
-    newPos[v * 3 + 2] = smoothZ + (sharpZ - smoothZ) * blend;
   }
 
   // ── New faces: n quads per original face ─────────────────────────────────
@@ -452,10 +468,10 @@ function subdivideOnce(
   // ── Propagate finite creases to child edges (σ − 1). ─────────────────────
   const newCreases = new Map<string, number>();
   for (const [k, s] of creases) {
-    if (!Number.isFinite(s) || s <= 0) continue;
+    if (!(s > 0)) continue;
     const faces = edgeFaces.get(k);
     if (!faces || faces.length !== 2) continue; // stale key or boundary
-    const childS = s - 1;
+    const childS = s === Infinity ? s : s - 1;
     if (childS <= 0) continue;
     const [a, b] = parseKey(k);
     const ep = edgePointIndex.get(k)!;
@@ -463,7 +479,7 @@ function subdivideOnce(
     newCreases.set(edgeKey(ep, b), childS);
   }
 
-  return { positions: Float32Array.from(newPos), polys: newPolys, creases: newCreases };
+  return { positions: Float32Array.from(newPos), polys: newPolys, creases: newCreases, edgePoints: edgePointIndex };
 }
 
 /** Blender's Subdivision Surface settings beyond the level (compat-backlog B1). */
@@ -488,6 +504,12 @@ export interface CatmullClarkOptions {
   limitSurface?: boolean;
   /** `quality` — the adaptive refinement level of Blender's evaluator, default 3. */
   quality?: number;
+  /**
+   * `creases` are Blender's `crease_edge` (0..1), as every operator here that writes a crease writes it: the Subdivision Surface
+   * modifier hands OpenSubdiv a sharpness of `10 · crease²` (`crease_to_sharpness`). Off (default), `creases` is read as the
+   * sharpness itself — what the editor's Subdivide keeps and propagates level by level.
+   */
+  blenderCreases?: boolean;
   /**
    * `boundary_smooth`: `"ALL"` (default) smooths every boundary vertex;
    * `"PRESERVE_CORNERS"` keeps a vertex with one face where it is.
@@ -543,7 +565,9 @@ export function catmullClark(
   let result: SubdivResult = {
     positions: Float32Array.from(positions),
     polys: polys.map((p) => p.slice()),
-    creases: new Map(creases ?? []),
+    creases: new Map(
+      [...(creases ?? [])].map(([k, c]): [string, number] => [k, options.blenderCreases ? osdSharpness(c) : c]),
+    ),
     ...(uvs ? { uvs: uvs.map((f) => f.map((c) => [...c])) } : {}),
   };
   for (let l = 0; l < level; l++) {
