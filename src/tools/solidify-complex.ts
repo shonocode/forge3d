@@ -49,7 +49,10 @@ export interface SolidifyComplexOptions {
   vertexGroupFactor?: number;
   /** `use_flat_faces`: with a vertex group, the faces (not the vertices) take the weight, to stay flat. */
   flatFaces?: boolean;
-  /** `shell_vertex_group` / `rim_vertex_group`: groups the new shell / rim vertices go into at 1. */
+  /**
+   * `shell_vertex_group` / `rim_vertex_group`: groups the new shell / rim vertices go into at 1. Blender writes them only when the
+   * object already has a group of that name; here the group is made when it is missing.
+   */
   shellVertexGroup?: string;
   rimVertexGroup?: string;
   /** `material_offset` / `material_offset_rim` (clamped to the highest slot a face uses). */
@@ -195,18 +198,18 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
   for (const p of polys)
     if (new Set(p).size !== p.length) throw new Error("solidifyComplex: a face repeats a vertex");
 
-  const thickness = opts.thickness ?? 0.01;
-  const offsetFac = opts.offset ?? -1;
+  const thickness = f(opts.thickness ?? 0.01);
+  const offsetFac = f(opts.offset ?? -1);
   const doRim = opts.rim ?? true;
   const doShell = !(doRim && opts.rimOnly);
   const doFlip = !!opts.flip === (thickness > 0);
-  const offsetClamp = opts.thicknessClamp ?? 0;
+  const offsetClamp = f(opts.thicknessClamp ?? 0);
   const doClamp = offsetClamp !== 0;
   const doAngleClamp = !!opts.angleClamp;
   const offsetMode = opts.thicknessMode ?? "CONSTRAINTS";
   const boundaryMode = opts.boundaryMode ?? "NONE";
-  const mergeTolerance = opts.mergeThreshold ?? 0.0001;
-  const offsetFacVg = opts.vertexGroupFactor ?? 0;
+  const mergeTolerance = f(opts.mergeThreshold ?? 0.0001);
+  const offsetFacVg = f(opts.vertexGroupFactor ?? 0);
   const offsetFacVgInv = 1 - offsetFacVg;
 
   const matMax = data.materials && data.materials.length ? Math.max(0, ...data.materials) : 0;
@@ -310,7 +313,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
 
     // Edge lengths, and the merge of vertices closer than the tolerance.
     {
-      const mergeTolSqr = mergeTolerance * mergeTolerance;
+      const mergeTolSqr = f(mergeTolerance * mergeTolerance);
       const combinedVerts = new Array<number>(vertsNum).fill(0);
       for (let i = 0; i < edgesNum; i++) {
         const edge = origEdges[i]!;
@@ -319,8 +322,9 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
           let v2 = vm[edge[1]]!;
           if (v1 === v2) continue;
           if (v2 < v1) [v1, v2] = [v2, v1];
-          edgedir = sub(mvertCo[v2]!, mvertCo[v1]!);
-          origEdgeLengths[i] = lenSq(edgedir);
+          // `len_squared_v3` in float, a step at a time: a merge threshold that equals an edge's length is decided by this rounding.
+          edgedir = sub(mvertCo[v2]!, mvertCo[v1]!).map(f) as V3;
+          origEdgeLengths[i] = f(f(f(edgedir[0]! * edgedir[0]!) + f(edgedir[1]! * edgedir[1]!)) + f(edgedir[2]! * edgedir[2]!));
           if (origEdgeLengths[i]! <= mergeTolSqr) {
             // Merge verts, unless that would make a face with fewer than three distinct corners.
             let canMerge = true;
@@ -355,8 +359,8 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
               vertAdjEdgesLen[v2]!++;
               continue;
             }
-            edgedir = mulFl(edgedir, (combinedVerts[v2]! + 1) / (combinedVerts[v1]! + combinedVerts[v2]! + 2));
-            mvertCo[v1] = add(mvertCo[v1]!, edgedir);
+            edgedir = mulFl(edgedir, f((combinedVerts[v2]! + 1) / (combinedVerts[v1]! + combinedVerts[v2]! + 2))).map(f) as V3;
+            mvertCo[v1] = add(mvertCo[v1]!, edgedir).map(f) as V3;
             for (let j = v2; j < vertsNum; j++) if (vm[j] === v2) vm[j] = v1;
             vertAdjEdgesLen[v1] = vertAdjEdgesLen[v1]! + vertAdjEdgesLen[v2]!;
             vertAdjEdgesLen[v2] = 0;
@@ -364,7 +368,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
             edgeAdjFacesLen[i] = 0;
             edgeAdjFaces[i] = null;
           } else {
-            origEdgeLengths[i] = Math.sqrt(origEdgeLengths[i]!);
+            origEdgeLengths[i] = f(Math.sqrt(origEdgeLengths[i]!));
             vertAdjEdgesLen[v1]!++;
             vertAdjEdgesLen[v2]!++;
           }
@@ -820,8 +824,9 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
                 if (!g.isOrigClosed) {
                   // Two slots round the split groups (one before, one after), or one after `g` when it was not split.
                   if (priorSplits !== splits) {
-                    edgeGroups.splice(j + priorIndex + 1, 0, g);
-                    edgeGroups.splice(j + addIndex + 2, 0, g);
+                    // `memmove` copies what is there: the first split piece goes one slot up, the last one after the pieces.
+                    edgeGroups.splice(j + priorIndex + 1, 0, edgeGroups[j + priorIndex]!);
+                    edgeGroups.splice(j + addIndex + 2, 0, edgeGroups[j + addIndex + 1]!);
                     addIndex++;
                   } else edgeGroups.splice(j + addIndex + 1, 0, g);
                   edgeGroups[j + priorIndex] = newGroup(g.edges.slice(0, firstSplit), {

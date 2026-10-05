@@ -1069,9 +1069,14 @@ function edgesAngleKind(e1: EdgeHalf, e2: EdgeHalf, v: BV): AngleKind {
   const dir1 = normalized(sub(v.co, otherVert(e1.e, v).co));
   const dir2 = normalized(sub(v.co, otherVert(e2.e, v).co));
   if (nearlyParallelNormalized(dir1, dir2)) return AngleKind.STRAIGHT;
-  const c = normalized(cross(dir1, dir2));
+  // In float, as Blender computes it: with an unbeveled edge between the two, the normal is perpendicular to the cross
+  // product and the dot is 0 in exact arithmetic, so the side it lands on is decided by the rounding (`edges_angle_kind`).
+  const r = Math.fround;
+  const d1 = dir1.map(r);
+  const d2 = dir2.map(r);
+  const c = normalized([r(r(d1[1]! * d2[2]!) - r(d1[2]! * d2[1]!)), r(r(d1[2]! * d2[0]!) - r(d1[0]! * d2[2]!)), r(r(d1[0]! * d2[1]!) - r(d1[1]! * d2[0]!))]).map(r);
   const no = e1.fnext ? e1.fnext.no : e2.fprev ? e2.fprev.no : v.no;
-  if (dot(c, no) < 0) return AngleKind.LARGER;
+  if (r(r(r(c[0]! * no[0]!) + r(c[1]! * no[1]!)) + r(c[2]! * no[2]!)) < 0) return AngleKind.LARGER;
   return AngleKind.SMALLER;
 }
 
@@ -1095,7 +1100,13 @@ function edgeEdgeAngleLessThan180(e1: BE, e2: BE, f: BF): boolean {
   else if (e1.v2 === e2.v1) [v, v1, v2] = [e1.v2, e1.v1, e2.v2];
   else if (e1.v2 === e2.v2) [v, v1, v2] = [e1.v2, e1.v1, e2.v1];
   else return false;
-  return dot(cross(sub(v1.co, v.co), sub(v2.co, v.co)), f.no) > 0;
+  // In float, as Blender computes it: two edges lying in the face's plane make the dot exactly 0 in exact arithmetic,
+  // and which side of 0 the rounding lands on decides whether a percent / absolute offset has legs to slide along.
+  const r = Math.fround;
+  const a = sub(v1.co, v.co).map(r);
+  const b = sub(v2.co, v.co).map(r);
+  const c = [r(r(a[1]! * b[2]!) - r(a[2]! * b[1]!)), r(r(a[2]! * b[0]!) - r(a[0]! * b[2]!)), r(r(a[0]! * b[1]!) - r(a[1]! * b[0]!))];
+  return r(r(r(c[0]! * f.no[0]!) + r(c[1]! * f.no[1]!)) + r(c[2]! * f.no[2]!)) > 0;
 }
 
 /** `offset_meet_lines_percent_or_absolute`. */
@@ -2686,7 +2697,24 @@ function squareOutAdjVmesh(p: Params, bv: BevVert): VMesh {
     const e2 = bndv.elast;
     let angKind: AngleKind = AngleKind.STRAIGHT;
     if (e1 && e2) angKind = edgesAngleKind(e1, e2, bv.v);
-    if (angKind === AngleKind.SMALLER) {
+    if (bndv.isPatchStart) {
+      // A patch miter: the two boundary segments across it are centred between their ends; the third boundvert is skipped too.
+      centerline[i]![0] = mid(bndv.nv.co, bndv.next.nv.co);
+      cset[i] = true;
+      bndv = bndv.next;
+      i++;
+      centerline[i]![0] = mid(bndv.nv.co, bndv.next.nv.co);
+      cset[i] = true;
+      bndv = bndv.next;
+      i++;
+      // Leave cset[i] where it was — probably false, unless i == n - 1.
+    } else if (bndv.isArcStart) {
+      // An arc miter: the centre of the arc is the profile's middle.
+      centerline[i]![0] = copy(bndv.profile.middle);
+      bndv = bndv.next;
+      cset[i] = true;
+      i++;
+    } else if (angKind === AngleKind.SMALLER) {
       const dir1 = sub(e1!.e.v1.co, e1!.e.v2.co);
       const dir2 = sub(e2!.e.v1.co, e2!.e.v2.co);
       const co1 = add(bndco, dir1);
