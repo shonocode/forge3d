@@ -103,6 +103,7 @@
  * * **`subsurf_levels`** (it moves the ray origin to the vertex's Catmull-Clark limit position; compat-backlog C39).
  *   `cull_face` and `use_invert_cull` are offered since 2026-10-05 (compat-backlog C23): see `ShrinkwrapProjectOptions`.
  */
+import { catmullClark } from "./subdivide";
 import { vertexGroupWeights } from "../mesh-layers";
 import type { MeshData } from "../../lib/mesh";
 import { closestPointOnTriangleBary } from "./attribute-transfer";
@@ -119,6 +120,13 @@ export type ShrinkwrapMethod = "nearestSurface" | "nearestVertex" | "project" | 
 export type ShrinkwrapMode = "onSurface" | "inside" | "outside" | "outsideSurface" | "aboveSurface";
 
 export interface ShrinkwrapProjectOptions {
+  /**
+   * Blender's `subsurf_levels` (compat-backlog C39): rays along the vertex normal start from the vertex "as if a
+   * subdivision surface was applied" — its position after that many Catmull-Clark levels
+   * (`shrinkwrap_calc_subdivided_positions`) — while the normal stays the mesh's own and the vertex still ends up
+   * between where it was and where the ray lands. Only the normal axis reads it, as in Blender. Default 0.
+   */
+  subsurfLevels?: number;
   /**
    * Which way the ray goes. `"normal"` — Blender's "no axis selected" — uses
    * the vertex's own normal. Default `"normal"`.
@@ -780,11 +788,16 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   const count = positions.length / 3;
   const vg = vertexGroupWeights(data, options.vertexGroup, options.invertVertexGroup);
   const groupWeights = vg && !vg.empty ? vg.weights : null;
+  // `shrinkwrap_calc_subdivided_positions`: where each vertex sits after the subdivision, used as the ray's origin.
+  const subLevels = method === "project" && axes.length === 0 ? (projectOpts.subsurfLevels ?? 0) : 0;
+  const subPositions = subLevels > 0 ? catmullClark(data.positions, data.polys, subLevels, data.creases).positions : null;
   for (let v = 0; v < count; v++) {
     if (options.verts && !options.verts.has(v)) continue;
     const weight = groupWeights ? groupWeights[v]! : 1;
     if (weight === 0) continue;
     const p: Vec3 = [positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!];
+    /** Where the query starts: the vertex, or its subdivided position. */
+    const o: Vec3 = subPositions ? [subPositions[v * 3]!, subPositions[v * 3 + 1]!, subPositions[v * 3 + 2]!] : p;
 
     let hit: Hit | null;
     if (method === "nearestVertex") hit = nearestVertex(t, p);
@@ -793,13 +806,13 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
       const dir: Vec3 = normals
         ? [normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!]
         : axisDir;
-      hit = project(t, p, normalized(dir), projectOpts);
+      hit = project(t, o, normalized(dir), projectOpts);
     } else hit = nearestSurface(t, p);
 
     // A ray that misses leaves its vertex exactly where it was — measured.
     if (!hit) continue;
 
-    const out = place(t, p, hit, mode, offset);
+    const out = place(t, o, hit, mode, offset);
     // The weight blends the start with the landing place — for the nearest-vertex method Blender scales the weight by
     // (dist − offset) / dist, which is the same point.
     for (let k = 0; k < 3; k++) positions[v * 3 + k] = weight === 1 ? out[k]! : p[k]! + (out[k]! - p[k]!) * weight;

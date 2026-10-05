@@ -141,3 +141,24 @@ describe("modifier vertex groups", () => {
     expect(at(out, 2)[2]).toBeCloseTo(-0.5, 6);
   });
 });
+
+describe("shrinkwrap: subsurf_levels (compat-backlog C39)", () => {
+  it("rays along the normal start from the vertex's subdivided position", () => {
+    // A cube above a plane at z = −2, projected along the normals: each corner's ray starts from where one Catmull-Clark level
+    // puts it (nearer the middle), so the landing point is not straight below the corner.
+    const h = 0.5;
+    const cube: MeshData = {
+      positions: Float32Array.from([-h, -h, -h, h, -h, -h, h, h, -h, -h, h, -h, -h, -h, h, h, -h, h, h, h, h, -h, h, h]),
+      polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+    };
+    const target: MeshData = { positions: Float32Array.from([-9, -9, -9, 9, -9, -9, 9, 9, -9, -9, 9, -9]), polys: [[0, 1, 2, 3]] };
+    // An asymmetric box: on a symmetric one the subdivided position lies on the same diagonal as the corner.
+    for (let i = 0; i < 8; i++) {
+      cube.positions[i * 3] = cube.positions[i * 3]! * 1.7 + cube.positions[i * 3 + 2]! * 0.3;
+      cube.positions[i * 3 + 1] = cube.positions[i * 3 + 1]! * 0.8;
+    }
+    const plain = shrinkwrap(cube, { target, method: "project", mode: "onSurface", project: { axis: "normal" } });
+    const sub = shrinkwrap(cube, { target, method: "project", mode: "onSurface", project: { axis: "normal", subsurfLevels: 1 } });
+    expect(Array.from(sub.positions)).not.toEqual(Array.from(plain.positions));
+  });
+});
