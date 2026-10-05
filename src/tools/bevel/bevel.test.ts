@@ -262,3 +262,29 @@ describe("bevelMesh: miters (compat-backlog C35)", () => {
     expect(Array.from(mitered.positions)).toEqual(Array.from(plain.positions));
   });
 });
+
+describe("bevelMesh: custom profile (compat-backlog C35)", () => {
+  it("a cornice profile at 6 segments on a cube: 296 vertices and 294 faces (parity row bevel-mod-custom-cornice)", () => {
+    const { mesh } = bevelMesh(unitCube(), {
+      offset: 0.03,
+      segments: 6,
+      edges: "all",
+      profileType: "CUSTOM",
+      customProfile: { preset: "CORNICE" },
+    });
+    expect(mesh.positions.length / 3).toBe(296);
+    expect(mesh.polys.length).toBe(294);
+  });
+
+  it("the profile's shape reaches the surface: a crown and a cornice are different bevels", () => {
+    const a = bevelMesh(unitCube(), { offset: 0.03, segments: 4, edges: "all", profileType: "CUSTOM", customProfile: { preset: "CROWN" } }).mesh;
+    const b = bevelMesh(unitCube(), { offset: 0.03, segments: 4, edges: "all", profileType: "CUSTOM", customProfile: { preset: "CORNICE" } }).mesh;
+    expect(Array.from(a.positions)).not.toEqual(Array.from(b.positions));
+  });
+
+  it("with one segment there is no profile to read, so the custom profile changes nothing", () => {
+    const plain = bevelMesh(unitCube(), { offset: 0.03, segments: 1, edges: "all" }).mesh;
+    const custom = bevelMesh(unitCube(), { offset: 0.03, segments: 1, edges: "all", profileType: "CUSTOM", customProfile: { preset: "CORNICE" } }).mesh;
+    expect(Array.from(custom.positions)).toEqual(Array.from(plain.positions));
+  });
+});

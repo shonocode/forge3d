@@ -506,6 +506,16 @@ export {
   type BevelFaceKind,
   type BevelResult,
 } from "../tools/bevel/bevel";
+// The Bevel modifier's custom profile — a Blender curve profile (`curveprofile.cc`): control points with auto / vector handles, sampled
+// into `segments + 1` points. `curveProfilePresetPoints` gives the five presets' points.
+export {
+  curveProfileSegments,
+  curveProfilePresetPoints,
+  type CurveProfileInput,
+  type CurveProfilePointInput,
+  type CurveProfilePreset,
+  type CurveProfileHandle,
+} from "../tools/bevel/curve-profile";
 
 // ── Remesh ─────────────────────────────────────────────────────────────────
 // Blender's Remesh modifier in its dual-contouring modes (Blocks / Smooth /

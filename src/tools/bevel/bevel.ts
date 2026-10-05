@@ -32,8 +32,9 @@
  *
  * - the outer miters (Patch, Arc) and the inner one (Arc, with `spread`)
  *
- * Not offered at all (no option to pass): custom profiles and `harden_normals`
- * (compat-backlog C35).
+ * - a custom profile (`profileType: "CUSTOM"` and a Blender curve profile — see `curve-profile.ts`)
+ *
+ * Not offered at all (no option to pass): `harden_normals` (compat-backlog C35).
  *
  * UVs, colours, vertex groups and materials are carried as Blender carries
  * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
@@ -82,6 +83,7 @@ import {
   loopPair,
 } from "../bmesh-lite";
 import { meshVertNormals } from "../blender-math";
+import { curveProfileSegments, type CurveProfileInput } from "./curve-profile";
 import { vertexGroupWeights } from "../mesh-layers";
 import { axisRows, project as projectRows } from "../triangulate";
 import { interpWeightsPoly2 } from "../edit-mode/interp";
@@ -115,6 +117,7 @@ import {
   planeFromPointNormal,
   closestToPlaneNormalized,
   closestToPlane,
+  distSqToPlane,
   bilinearQuad,
   mulM4V3,
   invertM4,
@@ -153,6 +156,14 @@ export interface BevelMeshOptions {
    * superellipse this selects.
    */
   profile?: number;
+  /**
+   * `profile_type`: `"SUPERELLIPSE"` (default, `profile` picks the shape) or `"CUSTOM"` — the shape is `customProfile`, a Blender curve
+   * profile (compat-backlog C35). The custom profile's samples are Blender's (`curve-profile.ts`); the vertex mesh at a corner
+   * copies its shape instead of snapping to a superellipse, and the profiles of a chain of beveled edges are turned to run the same way.
+   */
+  profileType?: "SUPERELLIPSE" | "CUSTOM";
+  /** The curve profile for `profileType: "CUSTOM"`. Default the line preset. */
+  customProfile?: CurveProfileInput;
   /**
    * Which edges. Default `{ angle: 30° }` — the modifier's default
    * `limit_method = 'ANGLE'`: every manifold edge whose faces meet more sharply
@@ -259,6 +270,7 @@ const BEVEL_EPSILON_BIG = 1e-4;
 const DEG = Math.PI / 180;
 const BEVEL_EPSILON_ANG = 2 * DEG;
 const BEVEL_SMALL_ANG = 10 * DEG;
+const BEVEL_SMALL_ANG_DOT = 1 - Math.cos(BEVEL_SMALL_ANG);
 const BEVEL_EPSILON_ANG_DOT = 1 - Math.cos(BEVEL_EPSILON_ANG);
 const BEVEL_MATCH_SPEC_WEIGHT = 0.2;
 const BEVEL_GOOD_ANGLE = 0.1;
@@ -292,6 +304,8 @@ interface EdgeHalf {
   leftv: BoundVert | null;
   rightv: BoundVert | null;
   profileIndex: number;
+  /** `visited_rpo`, for `regularize_profile_orientation`. */
+  visitedRpo?: boolean;
   seg: number;
   offsetL: number;
   offsetR: number;
@@ -332,6 +346,8 @@ interface BoundVert {
   visited: boolean;
   isArcStart: boolean;
   isPatchStart: boolean;
+  /** `is_profile_start`: this BoundVert is on the side the (asymmetric) custom profile starts from. */
+  isProfileStart?: boolean;
   /** `seam_len` / `sharp_len`: how many edges after this one need the seam / sharp mark (`mark_seam` / `mark_sharp`). */
   seamLen: number;
   sharpLen: number;
@@ -359,6 +375,7 @@ interface BevVert {
 }
 
 interface ProfileSpacing {
+  /** The 2D profile points: `xvals` / `yvals` at `seg` segments and `xvals2` / `yvals2` at the next power of two. */
   xvals: number[] | null;
   yvals: number[] | null;
   xvals2: number[] | null;
@@ -377,6 +394,10 @@ interface Params {
   selected: Set<BE>;
   tagged: Set<BV>;
   proSpacing: ProfileSpacing;
+  /** `pro_spacing_miter`: the superellipse samples the miter profiles use when the main profile is custom. */
+  proSpacingMiter: ProfileSpacing;
+  /** `profile_type == BEVEL_PROFILE_CUSTOM`, and the profile. */
+  customProfile: CurveProfileInput | null;
   offset: number;
   offsetType: BevelOffsetType;
   seg: number;
@@ -1527,16 +1548,17 @@ function calculateProfileSegments(
 }
 
 /** `calculate_profile`. */
-function calculateProfile(p: Params, bndv: BoundVert, reversed: boolean): void {
+function calculateProfile(p: Params, bndv: BoundVert, reversed: boolean, miter = false): void {
   const pro = bndv.profile;
-  const sp = p.proSpacing;
+  // A miter profile of a custom bevel takes the superellipse samples; `seg2` is always the main profile's.
+  const sp = miter ? p.proSpacingMiter : p.proSpacing;
   if (p.seg === 1) return;
-  const need2 = p.seg !== sp.seg2;
-  const map = pro.superR === PRO_LINE_R ? null : makeUnitSquareMap(pro.start, pro.middle, pro.end);
+  const need2 = p.seg !== p.proSpacing.seg2;
+  const map = !p.customProfile && pro.superR === PRO_LINE_R ? null : makeUnitSquareMap(pro.start, pro.middle, pro.end);
   // The cut-off faces hang their corner below the profile by its height: the unit square's diagonal, taken through the map.
   if (p.vmeshCutoff && map) pro.height = dist(mulM4V3(map, [0, 0, 0]), mulM4V3(map, [1, 1, 0]));
   pro.profCo = calculateProfileSegments(pro, map, reversed, p.seg, sp.xvals!, sp.yvals!);
-  pro.profCo2 = need2 ? calculateProfileSegments(pro, map, reversed, sp.seg2, sp.xvals2!, sp.yvals2!) : pro.profCo;
+  pro.profCo2 = need2 ? calculateProfileSegments(pro, map, reversed, p.proSpacing.seg2, sp.xvals2!, sp.yvals2!) : pro.profCo;
 }
 
 /** `snap_to_superellipsoid`. */
@@ -1610,7 +1632,14 @@ function calculateVmProfiles(p: Params, bv: BevVert, vm: VMesh): void {
   let bndv = vm.boundstart!;
   do {
     if (!bndv.profile.specialParams) setProfileParams(p, bv, bndv);
-    calculateProfile(p, bndv, false);
+    let miterProfile = false;
+    let reverseProfile = false;
+    if (p.customProfile) {
+      // The miter profile uses the superellipse samples, and is not turned round.
+      miterProfile = bndv.isArcStart || bndv.isPatchStart;
+      reverseProfile = !bndv.isProfileStart && !miterProfile;
+    }
+    calculateProfile(p, bndv, reverseProfile, miterProfile);
   } while ((bndv = bndv.next) !== vm.boundstart);
 }
 
@@ -1800,7 +1829,7 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
       e.prev.rightv = bndv;
     } else e.leftv!.nv.co = copy(co);
     let d = efirst.offsetLSpec;
-    if (p.profile < 0.25) d *= Math.SQRT2;
+    if (p.customProfile || p.profile < 0.25) d *= Math.SQRT2;
     for (e = e.next; e.next !== efirst; e = e.next) {
       co = slideDist(e, bv.v, d);
       if (construct) {
@@ -1818,8 +1847,17 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
   if (construct) {
     setBoundVertSeams(p, bv);
     if (vm.count === 2 && bv.edgecount === 3) vm.kind = MeshKind.NONE;
-    else if (vm.count === 3) vm.kind = MeshKind.TRI_FAN;
-    else vm.kind = MeshKind.POLY;
+    else if (vm.count === 3) {
+      let useTriFan = true;
+      if (p.customProfile) {
+        // Prevent overhanging edges: a polygon when the extra point is planar with the profile.
+        const pro = efirst.leftv!.profile;
+        const plane = planeFromPointNormal(pro.planeCo, pro.planeNo);
+        const extra = efirst.rightv!.next;
+        if (distSqToPlane(extra.nv.co, plane) < BEVEL_EPSILON_BIG) useTriFan = false;
+      }
+      vm.kind = useTriFan ? MeshKind.TRI_FAN : MeshKind.POLY;
+    } else vm.kind = MeshKind.POLY;
   }
 }
 
@@ -2334,10 +2372,13 @@ function cubicSubdiv(p: Params, vmIn: VMesh): VMesh {
     meshVert(vmOut, i, 0, 0).co = copy(meshVert(vmIn, i, 0, 0).co);
     for (let k = 1; k < nsIn; k++) {
       let co = copy(meshVert(vmIn, i, 0, k).co);
-      const co1 = meshVert(vmIn, i, 0, k - 1).co;
-      const co2 = meshVert(vmIn, i, 0, k + 1).co;
-      const acc = madd(add(co1, co2), co, -2);
-      co = madd(co, acc, -1 / 6);
+      // Smooth boundary rule; a custom profile is not smoothed.
+      if (!p.customProfile) {
+        const co1 = meshVert(vmIn, i, 0, k - 1).co;
+        const co2 = meshVert(vmIn, i, 0, k + 1).co;
+        const acc = madd(add(co1, co2), co, -2);
+        co = madd(co, acc, -1 / 6);
+      }
       meshVertCanon(vmOut, i, 0, 2 * k).co = co;
     }
   }
@@ -2345,10 +2386,12 @@ function cubicSubdiv(p: Params, vmIn: VMesh): VMesh {
   for (let i = 0; i < nBoundary; i++) {
     for (let k = 1; k < nsOut; k += 2) {
       let co = getProfilePoint(p, bndv.profile, k, nsOut);
-      const co1 = meshVertCanon(vmOut, i, 0, k - 1).co;
-      const co2 = meshVertCanon(vmOut, i, 0, k + 1).co;
-      const acc = madd(add(co1, co2), co, -2);
-      co = madd(co, acc, -1 / 6);
+      if (!p.customProfile) {
+        const co1 = meshVertCanon(vmOut, i, 0, k - 1).co;
+        const co2 = meshVertCanon(vmOut, i, 0, k + 1).co;
+        const acc = madd(add(co1, co2), co, -2);
+        co = madd(co, acc, -1 / 6);
+      }
       meshVertCanon(vmOut, i, 0, k).co = co;
     }
     bndv = bndv.next;
@@ -2488,8 +2531,10 @@ function makeCubeCornerSquareIn(nseg: number): VMesh {
 function makeCubeCornerAdjVmesh(p: Params): VMesh {
   const nseg = p.seg;
   const r = p.proSuperR;
-  if (r === PRO_SQUARE_R) return makeCubeCornerSquare(nseg);
-  if (r === PRO_SQUARE_IN_R) return makeCubeCornerSquareIn(nseg);
+  if (!p.customProfile) {
+    if (r === PRO_SQUARE_R) return makeCubeCornerSquare(nseg);
+    if (r === PRO_SQUARE_IN_R) return makeCubeCornerSquareIn(nseg);
+  }
   const vm0 = newAdjVmesh(3, 2, null);
   vm0.count = 0;
   for (let i = 0; i < 3; i++) {
@@ -2561,7 +2606,8 @@ function edgeFaceAngleSigned(e: BE, fallback: number): number {
 
 /** `tri_corner_test`: −1 no, 0 maybe, 1 yes. */
 function triCornerTest(p: Params, bv: BevVert): number {
-  if (p.affectVertices) return -1;
+  // The superellipse snapping of this case is no help with a custom profile.
+  if (p.affectVertices || p.customProfile) return -1;
   if (bv.vmesh.count !== 3) return 0;
   const offset = bv.edges[0]!.offsetL;
   let totang = 0;
@@ -2618,10 +2664,16 @@ function adjVmesh(p: Params, bv: BevVert): VMesh {
   }
   center = scale(center, 1 / nBndv);
   const original = copy(bv.v.co);
-  const fullness = p.proSpacing.fullness;
+  // The reflection of the original vertex across the boundary points' centre; a custom profile's fullness runs from there.
+  const negativeFullest = add(sub(center, original), center);
+  let fullness = p.proSpacing.fullness;
   const dir = sub(original, center);
-  if (lenSq(dir) > BEVEL_EPSILON_SQ) meshVert(vm0, 0, 1, 1).co = madd(center, dir, fullness);
-  else meshVert(vm0, 0, 1, 1).co = copy(center);
+  if (lenSq(dir) > BEVEL_EPSILON_SQ) {
+    if (p.customProfile) {
+      fullness *= 2;
+      meshVert(vm0, 0, 1, 1).co = madd(negativeFullest, dir, fullness);
+    } else meshVert(vm0, 0, 1, 1).co = madd(center, dir, fullness);
+  } else meshVert(vm0, 0, 1, 1).co = copy(center);
   vmeshCopyEquivVerts(vm0);
   let vm1 = vm0;
   do vm1 = cubicSubdiv(p, vm1);
@@ -2665,6 +2717,33 @@ function pipeAdjVmesh(p: Params, bv: BevVert, vpipe: BoundVert): VMesh {
     for (let j = 1; j <= halfNs; j++)
       for (let k = 0; k <= halfNs; k++) {
         if (!isCanon(vm, i, j, k)) continue;
+        if (p.customProfile) {
+          // Just copy the shape of the profile at each ring: interpolate between the two profile points that belong to this one.
+          let pp1: V3;
+          let pp2: V3;
+          let fac: number;
+          if (i === ipipe1 || i === ipipe2) {
+            if (nBndv === 3 && i === ipipe1) {
+              // The triangular corner between the two pipe profiles.
+              const ring = Math.max(j, k);
+              pp2 = meshVert(vm, i, 0, ring).co;
+              pp1 = meshVert(vm, i, ring, 0).co;
+              fac = (k < j ? Math.min(j, k) : 2 * ring - j) / (2 * ring);
+            } else {
+              // Part of either pipe profile's boundvert area in a 4-way intersection.
+              pp1 = meshVert(vm, i, 0, k).co;
+              pp2 = meshVert(vm, i === ipipe1 ? ipipe2 : ipipe1, 0, ns - k).co;
+              fac = j / ns;
+            }
+          } else {
+            // The profile points are at both ends of each side profile's ring.
+            pp1 = meshVert(vm, i, j, 0).co;
+            pp2 = meshVert(vm, i, j, ns).co;
+            fac = k / ns;
+          }
+          meshVert(vm, i, j, k).co = lerp(pp1, pp2, fac);
+          continue;
+        }
         const even = ns % 2 === 0;
         const midline = even && k === halfNs && ((i === 0 && j === halfNs) || i === ipipe1 || i === ipipe2);
         const nv = meshVert(vm, i, j, k);
@@ -2857,11 +2936,11 @@ function bevelBuildRings(p: Params, bv: BevVert, vpipe: BoundVert | null): void 
   const ns2 = Math.floor(ns / 2);
   const odd = ns % 2;
   let vm1: VMesh;
-  if (p.proSuperR === PRO_SQUARE_R && bv.selcount >= 3 && !odd) vm1 = squareOutAdjVmesh(p, bv);
+  if (p.proSuperR === PRO_SQUARE_R && bv.selcount >= 3 && !odd && !p.customProfile) vm1 = squareOutAdjVmesh(p, bv);
   else if (vpipe) vm1 = pipeAdjVmesh(p, bv, vpipe);
   else if (triCornerTest(p, bv) === 1) {
     vm1 = triCornerAdjVmesh(p, bv);
-    if (p.proSuperR === PRO_SQUARE_IN_R) {
+    if (p.proSuperR === PRO_SQUARE_IN_R && !p.customProfile) {
       buildSquareInVmesh(p, bv, vm1);
       return;
     }
@@ -3226,7 +3305,8 @@ function buildVmesh(p: Params, bv: BevVert): void {
       const vw1 = meshVert(vm, weld1!.index, 0, k).co;
       const vw2 = meshVert(vm, weld2!.index, 0, ns - k).co;
       let co: V3;
-      if (weld1!.profile.superR === PRO_LINE_R && weld2!.profile.superR !== PRO_LINE_R) co = copy(vw2);
+      if (p.customProfile) co = mid(vw1, vw2);
+      else if (weld1!.profile.superR === PRO_LINE_R && weld2!.profile.superR !== PRO_LINE_R) co = copy(vw2);
       else if (weld2!.profile.superR === PRO_LINE_R && weld1!.profile.superR !== PRO_LINE_R) co = copy(vw1);
       else co = mid(vw1, vw2);
       meshVert(vm, weld1!.index, 0, k).co = co;
@@ -3376,6 +3456,86 @@ function findBevelEdgeOrder(bv: BevVert, firstBme: BE, tagged: Set<BE>): void {
 function edgeFaceAngle(e: EdgeHalf): number {
   if (e.fprev && e.fnext) return Math.PI - angleNormalized(e.fprev.no, e.fnext.no);
   return 0;
+}
+
+/**
+ * `next_edgehalf_bev`: the next beveled EdgeHalf along a path — the other end of the same edge when going away from the vertex, or
+ * across the vertex to the beveled edge most parallel to this one (only if clearly the most parallel).
+ */
+function nextEdgehalfBev(p: Params, startEdge: EdgeHalf, towardBv: boolean, state: { bv: BevVert }): EdgeHalf | null {
+  if (!towardBv) {
+    const { eh, bv } = findOtherEndEdgeHalf(p, startEdge);
+    if (bv) state.bv = bv;
+    return eh;
+  }
+  const bv = state.bv;
+  if (bv.selcount === 1) return null;
+  if (bv.selcount === 2) {
+    let ne = startEdge;
+    do ne = ne.next;
+    while (!ne.isBev);
+    return ne;
+  }
+  // The directions are float32 here: on a symmetric corner several edges are exactly as parallel as each other, and which one comes
+  // out best is then the rounding's decision.
+  const r = Math.fround;
+  const fdir = (a: readonly number[], b: readonly number[]): V3 => {
+    const d: V3 = [r(a[0]! - b[0]!), r(a[1]! - b[1]!), r(a[2]! - b[2]!)];
+    const len = r(Math.sqrt(r(r(r(d[0] * d[0]) + r(d[1] * d[1])) + r(d[2] * d[2]))));
+    if (!(len > 0)) return [0, 0, 0];
+    const inv = r(1 / len);
+    return [r(d[0] * inv), r(d[1] * inv), r(d[2] * inv)];
+  };
+  const fdot = (a: V3, b: V3): number => r(r(r(a[0] * b[0]) + r(a[1] * b[1])) + r(a[2] * b[2]));
+  const dirStart = startEdge.e.v1 === bv.v ? fdir(startEdge.e.v1.co, startEdge.e.v2.co) : fdir(startEdge.e.v2.co, startEdge.e.v1.co);
+  let ne = startEdge.next;
+  let secondBest = 0;
+  let best = 0;
+  let next: EdgeHalf | null = null;
+  while (ne !== startEdge) {
+    if (!ne.isBev) {
+      ne = ne.next;
+      continue;
+    }
+    const dirNew = ne.e.v2 === bv.v ? fdir(ne.e.v1.co, ne.e.v2.co) : fdir(ne.e.v2.co, ne.e.v1.co);
+    const d = fdot(dirNew, dirStart);
+    if (d > best) {
+      secondBest = best;
+      best = d;
+      next = ne;
+    } else if (d > secondBest) secondBest = d;
+    ne = ne.next;
+  }
+  if (next && compareFF(best, secondBest, BEVEL_SMALL_ANG_DOT)) return null;
+  return next;
+}
+
+/**
+ * `regularize_profile_orientation`: along a chain or cycle of beveled edges, mark which side each (asymmetric) custom profile
+ * starts from so that they all run the same way. The first edge starts from its highest-Z side.
+ */
+function regularizeProfileOrientation(p: Params, bme: BE): void {
+  const startBv = p.vertHash.get(bme.v1);
+  if (!startBv) return;
+  const startEdgehalf = findEdgeHalf(startBv, bme);
+  if (!startEdgehalf || !startEdgehalf.isBev || startEdgehalf.visitedRpo) return;
+  // The two boundary points of an edge running along X are at the same height, and the side then comes out of the rounding noise
+  // (float32 in Blender, which this cannot match): inputs for the parity rows avoid such edges.
+  const rightHighest = startEdgehalf.leftv!.nv.co[2]! < startEdgehalf.rightv!.nv.co[2]!;
+  startEdgehalf.leftv!.isProfileStart = rightHighest;
+  startEdgehalf.visitedRpo = true;
+  for (let i = 0; i < 2; i++) {
+    const state = { bv: startBv };
+    let edgehalf: EdgeHalf | null = startEdgehalf;
+    let towardBv = i === 0;
+    edgehalf = nextEdgehalfBev(p, edgehalf, towardBv, state);
+    while (edgehalf && !edgehalf.visitedRpo) {
+      edgehalf.leftv!.isProfileStart = i === 0 ? towardBv !== rightHighest : !towardBv !== rightHighest;
+      towardBv = !towardBv;
+      edgehalf.visitedRpo = true;
+      edgehalf = nextEdgehalfBev(p, edgehalf, towardBv, state);
+    }
+  }
 }
 
 /** `bevel_vert_construct`: the BevVert, its ordered edge halves, and their offset specs. */
@@ -3928,29 +4088,46 @@ function findEvenSuperellipseChords(n: number, r: number): { x: number[]; y: num
 function findProfileFullness(p: Params): number {
   const nseg = p.seg;
   const circleFullness = [0.0, 0.559, 0.642, 0.551, 0.646, 0.624, 0.646, 0.619, 0.647, 0.639, 0.647];
+  if (p.customProfile) {
+    // The average "height" of the profile's sampled points (the end points left out).
+    let full = 0;
+    for (let i = 0; i < nseg; i++) full += Math.fround((p.proSpacing.xvals![i]! + p.proSpacing.yvals![i]!) / (2 * nseg));
+    return full;
+  }
   if (p.proSuperR === PRO_LINE_R) return 0;
   if (p.proSuperR === PRO_CIRCLE_R && nseg > 0 && nseg <= 11) return circleFullness[nseg - 1]!;
   if (nseg % 2 === 0) return 2.4506 * p.profile - 0.000003 * nseg - 0.6266;
   return 2.3635 * p.profile + 0.000152 * nseg - 0.606;
 }
 
-/** `set_profile_spacing`. */
-function setProfileSpacing(p: Params): void {
+/**
+ * `set_profile_spacing`: the 2D profile points at `seg` and at the power of two above it, from the superellipse (the chords of
+ * equal length) or, for `custom`, from the curve profile — whose `x` and `y` Blender swaps (`segments[i].y` is the x value).
+ */
+function setProfileSpacing(p: Params, sp: ProfileSpacing, custom: boolean): void {
   const seg = p.seg;
-  const sp = p.proSpacing;
   if (seg <= 1) return;
   let seg2 = 1;
   while (seg2 < seg) seg2 *= 2;
   seg2 = Math.max(seg2, 4);
-  sp.seg2 = seg2;
+  // Blender writes `seg_2` into the main spacing in both calls.
+  p.proSpacing.seg2 = seg2;
+  const fromProfile = (n: number): { x: number[]; y: number[] } => {
+    const pts = curveProfileSegments(p.customProfile!, n);
+    return { x: pts.map((q) => q[1]), y: pts.map((q) => q[0]) };
+  };
   if (seg2 !== seg) {
-    const c2 = findEvenSuperellipseChords(seg2, p.proSuperR);
+    const c2 = custom ? fromProfile(seg2) : findEvenSuperellipseChords(seg2, p.proSuperR);
     sp.xvals2 = c2.x;
     sp.yvals2 = c2.y;
   }
-  const c = findEvenSuperellipseChords(seg, p.proSuperR);
+  const c = custom ? fromProfile(seg) : findEvenSuperellipseChords(seg, p.proSuperR);
   sp.xvals = c.x;
   sp.yvals = c.y;
+  if (seg2 === seg) {
+    sp.xvals2 = sp.xvals;
+    sp.yvals2 = sp.yvals;
+  }
 }
 
 // ── clamp overlap ──────────────────────────────────────────────────────────
@@ -4164,6 +4341,8 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     selected: new Set(),
     tagged: new Set(),
     proSpacing: { xvals: null, yvals: null, xvals2: null, yvals2: null, seg2: 0, fullness: 0 },
+    proSpacingMiter: { xvals: null, yvals: null, xvals2: null, yvals2: null, seg2: 0, fullness: 0 },
+    customProfile: opts.profileType === "CUSTOM" ? opts.customProfile ?? { preset: "LINE" } : null,
     offset: opts.offset,
     offsetType: opts.offsetType ?? "OFFSET",
     seg: segments,
@@ -4339,8 +4518,10 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   };
   if (p.offset <= 0 || (p.affectVertices ? p.tagged.size === 0 : p.selected.size === 0)) return result();
 
-  setProfileSpacing(p);
+  setProfileSpacing(p, p.proSpacing, !!p.customProfile);
   if (p.seg > 1) p.proSpacing.fullness = findProfileFullness(p);
+  // A custom profile with miters: the miter profiles still use the superellipse.
+  if (p.customProfile && (p.miterInner !== "SHARP" || p.miterOuter !== "SHARP")) setProfileSpacing(p, p.proSpacingMiter, false);
   if (hasUv && p.seg % 2 === 1) p.layers.faceComponent = uvFaceComponents(p, origFaces);
 
   const verts = bm.verts.filter((v): v is BV => !!v);
@@ -4364,6 +4545,8 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     }
   }
   if (p.offsetAdjust) adjustOffsets(p, verts);
+  // Maintain consistent orientations for the asymmetric custom profiles.
+  if (p.customProfile) for (const e of edges) if (p.selected.has(e)) regularizeProfileOrientation(p, e);
 
   for (const v of verts) {
     if (!p.tagged.has(v)) continue;
