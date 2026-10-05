@@ -78,7 +78,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 
 - **既定値・オプションが未対応、または未測定**：Bevel の残りのオプション（C35）、
   Boolean の FLOAT / MANIFOLD ソルバー（やらない、C38）、Shrinkwrap の `subsurf_levels`（C39）、
-  Displace の CUSTOM_NORMAL（C37、GLOBAL と OBJECT は済み）、Solidify の Complex モード（C30）。Bisect の埋めは**面の形と向きまで**一致（C25）で、
+  Displace の CUSTOM_NORMAL（C37、GLOBAL と OBJECT は済み）。Bisect の埋めは**面の形と向きまで**一致（C25）で、
   埋めた面の角が隣の面の何を写すか（BMesh のプール順に依る）だけが違う（C40）
 - **Subdivision Surface の極限曲面**：level 4 以上・crease 付き・UV 付きのケージは拒否する
 - **カスタム法線の持ち方**：Blender は角の法線空間に対する2つの角度で保存する。値を補間したり、

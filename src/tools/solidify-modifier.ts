@@ -15,7 +15,7 @@
  * corners' angle-weighted `1 / cos` and cut down near short edges by
  * `thicknessClamp`.
  *
- * Complex mode (`MOD_solidify_nonmanifold.cc`) is compat-backlog C30. Custom
+ * Complex mode is {@link solidifyComplex} (`solidify-complex.ts`, compat-backlog C30). Custom
  * normals are dropped: Blender keeps the copies' two angles and reads them in
  * the turned faces' normal spaces (C29).
  */
