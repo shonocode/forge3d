@@ -135,6 +135,12 @@ import {
 export type BevelOffsetType = "OFFSET" | "WIDTH" | "DEPTH" | "PERCENT" | "ABSOLUTE";
 
 export interface BevelMeshOptions {
+  /**
+   * Blender's `face_strength_mode` (compat-backlog C35): set the weighted-normal face strength (`faceStrength`) of the
+   * faces by kind, for a Weighted Normal modifier with `faceInfluence` to read. `new`: the new vertex faces weak and
+   * edge faces medium; `affected`: and the rebuilt faces strong; `all`: and the untouched ones strong. Default `none`.
+   */
+  faceStrengthMode?: "none" | "new" | "affected" | "all";
   /** Blender's `width` (modifier) / `offset` (operator), in the units `offsetType` names. */
   offset: number;
   /** Default `OFFSET`, the modifier's default. */
@@ -358,6 +364,8 @@ interface Params {
   vertHash: Map<BV, BevVert>;
   faceKind: Map<BF, FKind>;
   faceMat: Map<BF, number>;
+  /** The input face each face descends from (it is the example the new ones copy their attributes from). */
+  faceOrig: Map<BF, number>;
   selected: Set<BE>;
   tagged: Set<BV>;
   proSpacing: ProfileSpacing;
@@ -827,6 +835,8 @@ function bevCreateNgon(
   const f = faceCreateVerts(p.bm, verts, null);
   if (rep) {
     p.faceMat.set(f, p.faceMat.get(rep) ?? 0);
+    const orig = p.faceOrig.get(rep);
+    if (orig !== undefined) p.faceOrig.set(f, orig);
     faceLoops(f).forEach((l, i) => {
       const interpF = faceArr ? faceArr[i] ?? null : facerep;
       if (!interpF) return;
@@ -2887,6 +2897,8 @@ function bevelBuildTrifan(p: Params, bv: BevVert): void {
     if (!fNew) break;
     p.faceKind.set(fNew, FKind.VERT);
     p.faceMat.set(fNew, p.faceMat.get(f) ?? 0);
+    const origF = p.faceOrig.get(f);
+    if (origF !== undefined) p.faceOrig.set(fNew, origF);
     // `BM_face_split`'s `r_l`: the new face's loop at the first split vertex,
     // which the kernel links straight into the second one.
     const lNew = faceLoops(fNew).find((l) => l.next === lV2)!;
@@ -3885,9 +3897,11 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
   const polys = data.polys.filter((poly) => poly.length >= 3);
   const bm = bmFromMesh({ positions: data.positions, polys, edges: data.edges }, { vertNormals: meshVertNormals(P, polys) });
   const faceMat = new Map<BF, number>();
+  const faceOrig = new Map<BF, number>();
   const origFaces = bm.faces.items.filter((f): f is BF => !!f);
   const kept = data.polys.map((poly, i) => (poly.length >= 3 ? i : -1)).filter((i) => i >= 0);
   if (data.materials) origFaces.forEach((f, i) => faceMat.set(f, data.materials![kept[i]!] ?? 0));
+  origFaces.forEach((f, i) => faceOrig.set(f, kept[i]!));
 
   // The layers: corners by `src` (bmFromMesh numbers the kept polys' corners
   // in order), groups by vertex.
@@ -3920,6 +3934,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     vertHash: new Map(),
     faceKind: new Map(),
     faceMat,
+    faceOrig,
     selected: new Set(),
     tagged: new Set(),
     proSpacing: { xvals: null, yvals: null, xvals2: null, yvals2: null, seg2: 0, fullness: 0 },
@@ -4037,6 +4052,21 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const names: BevelFaceKind[] = ["orig", "vert", "edge", "recon"];
     const faceKind = live.map((f) => names[p.faceKind.get(f) ?? FKind.ORIG]!);
     if (data.materials || p.matNr >= 0) mesh.materials = live.map((f) => faceMat.get(f) ?? 0);
+    // `bevel_set_weighted_normal_face_strength`: with the mode on, the weighted-normal strength layer is set by the face's
+    // kind — new vertex faces weak, new edge faces medium (modes new and up), rebuilt faces strong (affected and up),
+    // untouched ones strong (all). A face it does not set keeps what the face it came from had (0 where there was no layer).
+    const strengthMode = opts.faceStrengthMode ?? "none";
+    if (strengthMode !== "none" && p.offset > 0) {
+      const level = { none: 0, new: 1, affected: 2, all: 3 }[strengthMode];
+      mesh.faceStrength = live.map((f, i) => {
+        const o = p.faceOrig.get(f);
+        const kind = faceKind[i]!;
+        if (kind === "vert") return level >= 1 ? -16384 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
+        if (kind === "edge") return level >= 1 ? 0 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
+        if (kind === "recon") return level >= 2 ? 16384 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
+        return level === 3 ? 16384 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
+      });
+    }
     const C = p.layers.corners;
     if (hasUv) mesh.uvs = live.map((f) => faceLoops(f).map((l) => [...(C[l.src]?.uv ?? [0, 0])]));
     // A corner nothing was interpolated into holds the default: white.

@@ -47,6 +47,22 @@ describe("bevelMesh", () => {
     expect(faceKind.filter((k) => k === "recon")).toHaveLength(6);
   });
 
+  it("face_strength_mode sets the weighted-normal strength by face kind (compat-backlog C35)", () => {
+    const strengths = (mode: "new" | "affected" | "all"): Record<string, number[]> => {
+      const { mesh, faceKind } = bevelMesh(unitCube(), { offset: 0.1, edges: "all", faceStrengthMode: mode });
+      const out: Record<string, number[]> = { vert: [], edge: [], recon: [], orig: [] };
+      mesh.faceStrength!.forEach((s, f) => out[faceKind[f]!]!.push(s));
+      return out;
+    };
+    const none = bevelMesh(unitCube(), { offset: 0.1, edges: "all" });
+    expect(none.mesh.faceStrength).toBeUndefined();
+    const n = strengths("new");
+    expect(new Set(n.vert)).toEqual(new Set([-16384])); // weak
+    expect(new Set(n.edge)).toEqual(new Set([0])); // medium
+    expect(new Set(n.recon)).toEqual(new Set([0])); // not set below "affected": the source face had none
+    expect(new Set(strengths("affected").recon)).toEqual(new Set([16384]));
+  });
+
   it("closes a two-segment corner with the patch Blender builds (56 verts, 54 faces)", () => {
     const { mesh } = bevelMesh(unitCube(), { offset: 0.03, segments: 2, edges: "all" });
     expect(mesh.positions.length / 3).toBe(56);
