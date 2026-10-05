@@ -137,3 +137,38 @@ describe("textureDisplace: space (compat-backlog C37)", () => {
     expect(Array.from(out.positions.slice(0, 3))).toEqual([1, 0, 0]);
   });
 });
+
+describe("textureDisplace: texture_coords OBJECT (compat-backlog C37)", () => {
+  const tri = (): MeshData => ({ positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]), polys: [[0, 1, 2]] });
+  // A ramp along X, so each vertex's value says where the texture was read.
+  const ramp = { type: "BLEND", progression: "LINEAR", flipXY: false } as unknown as Parameters<typeof textureDisplace>[1]["texture"];
+  const moved = [1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]; // the map object, 5 along X
+
+  it("the texture is read in the other object's space: the mesh looks 5 further back along X", () => {
+    const local = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0, coords: "local" });
+    const obj = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0, coords: "object", mapObjectMatrix: moved });
+    expect(Array.from(obj.positions)).not.toEqual(Array.from(local.positions));
+  });
+
+  it("a map object at the identity reads the same as local", () => {
+    const I = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const local = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0 });
+    const obj = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0, coords: "object", mapObjectMatrix: I });
+    expect(Array.from(obj.positions)).toEqual(Array.from(local.positions));
+  });
+
+  it("with no map object Blender reads local", () => {
+    const local = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0 });
+    const obj = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0, coords: "object" });
+    expect(Array.from(obj.positions)).toEqual(Array.from(local.positions));
+  });
+
+  it("the mesh's own matrix goes first: the world position is taken into the map object's space", () => {
+    // Mesh moved 5 along X and the map object moved the same 5: they cancel, so the read is the local one.
+    const same = textureDisplace(tri(), {
+      texture: ramp, direction: "z", strength: 1, midLevel: 0, coords: "object", objectMatrix: moved, mapObjectMatrix: moved,
+    });
+    const local = textureDisplace(tri(), { texture: ramp, direction: "z", strength: 1, midLevel: 0 });
+    for (let i = 0; i < 9; i++) expect(same.positions[i]).toBeCloseTo(local.positions[i]!, 6);
+  });
+});

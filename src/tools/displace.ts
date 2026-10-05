@@ -34,7 +34,7 @@
 import { withPositions, type MeshData } from "../lib/mesh";
 import { vertexGroupWeights } from "./mesh-layers";
 import type { Vec3 } from "./generate";
-import { f, meshVertNormals, type V3 } from "./blender-math";
+import { f, invert4, meshVertNormals, type V3 } from "./blender-math";
 import { textureValue, type ProceduralTexture } from "./texture/texture";
 
 /**
@@ -193,10 +193,11 @@ export interface TextureDisplaceOptions {
    * Blender's `texture_coords`. `"local"` (default) reads the texture at the
    * vertex; `"uv"` at `(2u − 1, 2v − 1, 0)` from the first face corner that
    * uses the vertex (`uvs` must be present, else it falls back to local, as
-   * Blender does with no UV map). `GLOBAL` / `OBJECT` need an object's
-   * matrix, which a `MeshData` does not have — transform the mesh instead.
+   * Blender does with no UV map). `"global"` reads it at the world position
+   * (`objectMatrix`), `"object"` at the position in another object's space
+   * (`mapObjectMatrix`; with none given Blender falls back to local).
    */
-  coords?: "local" | "uv" | "global";
+  coords?: "local" | "uv" | "global" | "object";
   /**
    * Blender's `space`: for the directions `x` / `y` / `z` / `rgbToXyz`, `"local"` (default) moves along the mesh's own axes,
    * `"global"` along the **world's** — through `objectMatrix`, the object's transform (compat-backlog C37).
@@ -207,6 +208,11 @@ export interface TextureDisplaceOptions {
    * Default the identity (a mesh at the origin, unrotated and unscaled).
    */
   objectMatrix?: readonly number[];
+  /**
+   * `texture_coords = OBJECT`: the **other** object's `object_to_world` (`texture_coords_object`), 16 numbers row-major.
+   * The texture is read at the vertex taken to the world by `objectMatrix` and back into that object's space.
+   */
+  mapObjectMatrix?: readonly number[];
   /**
    * `vertex_group` / `invert_vertex_group`: each vertex's strength is
    * scaled by its weight, and a vertex at weight 0 does not move. A group no
@@ -243,15 +249,21 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
   const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
   if (vg?.empty) return withPositions(data, Float32Array.from(data.positions));
   const M = opts.objectMatrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  // `TEXMAP_GLOBAL`: the texture is read at the vertex's world position (`mul_m4_v3(object_to_world)`).
+  // `TEXMAP_GLOBAL`: the texture is read at the vertex's world position (`mul_m4_v3(object_to_world)`);
+  // `TEXMAP_OBJECT` then takes that into the map object's space (`mul_m4_v3(mapref_imat)`).
+  const toSpace = (m: readonly number[], p: readonly number[]): [number, number, number] => [
+    f(f(f(m[0]! * p[0]!) + f(m[1]! * p[1]!)) + f(f(m[2]! * p[2]!) + m[3]!)),
+    f(f(f(m[4]! * p[0]!) + f(m[5]! * p[1]!)) + f(f(m[6]! * p[2]!) + m[7]!)),
+    f(f(f(m[8]! * p[0]!) + f(m[9]! * p[1]!)) + f(f(m[10]! * p[2]!) + m[11]!)),
+  ];
+  const mapInverse = opts.coords === "object" && opts.mapObjectMatrix ? invert4(opts.mapObjectMatrix).map(f) : null;
   const coords =
-    opts.coords === "global"
-      ? P.map((p): [number, number, number] => [
-          f(f(f(M[0]! * p[0]!) + f(M[1]! * p[1]!)) + f(f(M[2]! * p[2]!) + M[3]!)),
-          f(f(f(M[4]! * p[0]!) + f(M[5]! * p[1]!)) + f(f(M[6]! * p[2]!) + M[7]!)),
-          f(f(f(M[8]! * p[0]!) + f(M[9]! * p[1]!)) + f(f(M[10]! * p[2]!) + M[11]!)),
-        ])
-      : textureCoords(data, P, opts.coords ?? "local");
+    opts.coords === "global" || mapInverse
+      ? P.map((p) => {
+          const world = toSpace(M, p);
+          return mapInverse ? toSpace(mapInverse, world) : world;
+        })
+      : textureCoords(data, P, opts.coords === "uv" ? "uv" : "local");
   const globalSpace = opts.space === "global";
   const normals = direction === "normal" ? meshVertNormals(P, data.polys) : null;
   const out = new Float32Array(data.positions.length);
