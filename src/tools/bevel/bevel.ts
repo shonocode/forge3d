@@ -25,15 +25,14 @@
  *   square-inward (0) special cases
  * - `clampOverlap` (`bevel_limit_offset`) and `loopSlide`, with the width
  *   adjustment least-squares pass (`adjust_offsets`) they imply
- * - every vertex-mesh kind the default Grid Fill method can build: POLY,
- *   TRI_FAN, ADJ (with the cube-corner, tri-corner, pipe, square-out and
- *   square-in special cases), and the two-edge weld
+ * - every vertex-mesh kind: POLY, TRI_FAN, ADJ (Grid Fill, with the cube-corner,
+ *   tri-corner, pipe, square-out and square-in special cases), CUTOFF (a face
+ *   under each profile), and the two-edge weld
  * - wire edges reattached, and a material slot per face carried through
  *
  * Refused with a named error rather than approximated: the Arc and Patch
- * miters and the Cutoff vertex mesh. Not offered at all (no option to pass):
- * custom profiles, `harden_normals`, face strength and `spread`
- * (compat-backlog C35).
+ * miters. Not offered at all (no option to pass): custom profiles and
+ * `harden_normals` (compat-backlog C35).
  *
  * UVs, colours, vertex groups and materials are carried as Blender carries
  * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
@@ -218,8 +217,10 @@ export interface BevelMeshOptions {
   miterOuter?: "SHARP" | "PATCH" | "ARC";
   /** `miter_inner`. Only `"SHARP"` (the default) is implemented. */
   miterInner?: "SHARP" | "ARC";
-  /** `vmesh_method`. Only `"ADJ"` (Grid Fill, the default) is implemented. */
+  /** `vmesh_method`: `"ADJ"` (Grid Fill, the default) or `"CUTOFF"` (a face closing off each profile). */
   vmeshMethod?: "ADJ" | "CUTOFF";
+  /** `spread`: how far apart the inner miter's two corners are placed (`miterInner: "ARC"`). Default 0.1. */
+  spread?: number;
 }
 
 /** What each output face is, in `bevel`'s own words. */
@@ -263,7 +264,7 @@ const PRO_SQUARE_IN_R = 0.0;
 
 // Plain objects, not enums: forge3d is read by Node's type stripping, which
 // cannot erase an enum (`erasableSyntaxOnly` in its tsconfig).
-const MeshKind = { NONE: 0, POLY: 1, ADJ: 2, TRI_FAN: 3 } as const;
+const MeshKind = { NONE: 0, POLY: 1, ADJ: 2, TRI_FAN: 3, CUTOFF: 4 } as const;
 type MeshKind = (typeof MeshKind)[keyof typeof MeshKind];
 const FKind = { ORIG: 0, VERT: 1, EDGE: 2, RECON: 3 } as const;
 type FKind = (typeof FKind)[keyof typeof FKind];
@@ -307,6 +308,8 @@ interface Profile {
   profCo: V3[] | null;
   profCo2: V3[] | null;
   specialParams: boolean;
+  /** `profile.height`: the distance across the unit square's diagonal, mapped into 3D (`vmesh_method` CUTOFF). */
+  height: number;
 }
 
 interface BoundVert {
@@ -387,6 +390,8 @@ interface Params {
   matNr: number;
   markSeam: boolean;
   markSharp: boolean;
+  /** `vmesh_method == BEVEL_VMESH_CUTOFF`. */
+  vmeshCutoff: boolean;
   /** `affect_type == BEVEL_AFFECT_VERTICES`. */
   affectVertices: boolean;
   /** `affect_vertices_odd`: vertices, with an odd segment count. */
@@ -476,6 +481,7 @@ function emptyProfile(): Profile {
     profCo: null,
     profCo2: null,
     specialParams: false,
+    height: 0,
   };
 }
 
@@ -1507,6 +1513,8 @@ function calculateProfile(p: Params, bndv: BoundVert, reversed: boolean): void {
   if (p.seg === 1) return;
   const need2 = p.seg !== sp.seg2;
   const map = pro.superR === PRO_LINE_R ? null : makeUnitSquareMap(pro.start, pro.middle, pro.end);
+  // The cut-off faces hang their corner below the profile by its height: the unit square's diagonal, taken through the map.
+  if (p.vmeshCutoff && map) pro.height = dist(mulM4V3(map, [0, 0, 0]), mulM4V3(map, [1, 1, 0]));
   pro.profCo = calculateProfileSegments(pro, map, reversed, p.seg, sp.xvals!, sp.yvals!);
   pro.profCo2 = need2 ? calculateProfileSegments(pro, map, reversed, sp.seg2, sp.xvals2!, sp.yvals2!) : pro.profCo;
 }
@@ -1864,7 +1872,7 @@ function buildBoundary(p: Params, bv: BevVert, construct: boolean): void {
     setBoundVertSeams(p, bv);
     if (vm.count === 2) vm.kind = MeshKind.NONE;
     else if (efirst.seg === 1) vm.kind = MeshKind.POLY;
-    else vm.kind = MeshKind.ADJ;
+    else vm.kind = p.vmeshCutoff ? MeshKind.CUTOFF : MeshKind.ADJ;
   }
 }
 
@@ -2848,6 +2856,63 @@ function snapEdgesForVmeshVert(
   return out;
 }
 
+/**
+ * `bevel_build_cutoff`: the corner closed by a face under each incoming edge's profile, and one face joining their
+ * bottoms. The bottom corners lie "down" along the intersection of two neighbouring profile planes, by the mean of the
+ * two profiles' heights over √2; they fall together on a 3-way corner whose profiles meet, which leaves no centre face.
+ */
+function bevelBuildCutoff(p: Params, bv: BevVert): void {
+  const vm = bv.vmesh;
+  const nBndv = vm.count;
+  const ns = p.seg;
+  const SQRT2 = Math.SQRT2;
+  let bndv = vm.boundstart!;
+  do {
+    const i = bndv.index;
+    let down = cross(bndv.profile.planeNo, bndv.prev.profile.planeNo);
+    if (dot(down, bv.v.no) > 0) down = [-down[0], -down[1], -down[2]];
+    const length = (bndv.profile.height / SQRT2 + bndv.prev.profile.height / SQRT2) / 2;
+    const corner: V3 = [bndv.nv.co[0] + down[0] * length, bndv.nv.co[1] + down[1] * length, bndv.nv.co[2] + down[2] * length];
+    meshVert(vm, i, 1, 0).co = copy(corner);
+    meshVert(vm, bndv.prev.index, 1, 1).co = copy(corner);
+  } while ((bndv = bndv.next) !== vm.boundstart);
+
+  // Only a 3-way corner collapses.
+  let buildCenterFace = true;
+  if (nBndv === 3) {
+    const sq = (a: V3, b: V3): number => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+    const c0 = meshVert(vm, 0, 1, 0).co;
+    const c1 = meshVert(vm, 1, 1, 0).co;
+    const c2 = meshVert(vm, 2, 1, 0).co;
+    buildCenterFace = sq(c0, c1) > BEVEL_EPSILON && sq(c0, c2) > BEVEL_EPSILON && sq(c1, c2) > BEVEL_EPSILON;
+  }
+
+  if (buildCenterFace) {
+    do {
+      const i = bndv.index;
+      createMeshBMVert(p, vm, i, 1, 0, bv.v);
+      meshVert(vm, bndv.prev.index, 1, 1).v = meshVert(vm, i, 1, 0).v;
+    } while ((bndv = bndv.next) !== vm.boundstart);
+  } else {
+    createMeshBMVert(p, vm, 0, 1, 0, bv.v);
+    for (let i = 1; i < nBndv; i++) meshVert(vm, i, 1, 0).v = meshVert(vm, 0, 1, 0).v;
+  }
+
+  do {
+    const i = bndv.index;
+    const verts: BV[] = [meshVert(vm, i, 1, 0).v!];
+    for (let k = 0; k < ns + 1; k++) verts.push(meshVert(vm, i, 0, k).v!);
+    if (buildCenterFace) verts.push(meshVert(vm, i, 1, 1).v!);
+    bevCreateNgon(p, verts, null, null, FKind.ORIG, null, bv.v);
+  } while ((bndv = bndv.next) !== vm.boundstart);
+
+  if (buildCenterFace) {
+    const verts: BV[] = [];
+    for (let i = 0; i < nBndv; i++) verts.push(meshVert(vm, i, 1, 0).v!);
+    bevCreateNgon(p, verts, null, null, FKind.ORIG, null, bv.v);
+  }
+}
+
 /** `bevel_build_poly`: the corner closed by one polygon (a single segment). */
 function bevelBuildPoly(p: Params, bv: BevVert): BF | null {
   const vm = bv.vmesh;
@@ -3024,6 +3089,9 @@ function buildVmesh(p: Params, bv: BevVert): void {
       break;
     case MeshKind.TRI_FAN:
       bevelBuildTrifan(p, bv);
+      break;
+    case MeshKind.CUTOFF:
+      bevelBuildCutoff(p, bv);
       break;
   }
 }
@@ -3886,8 +3954,6 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     throw new Error(`bevelMesh: miterOuter '${opts.miterOuter}' is not ported — only SHARP.`);
   if (opts.miterInner && opts.miterInner !== "SHARP")
     throw new Error(`bevelMesh: miterInner '${opts.miterInner}' is not ported — only SHARP.`);
-  if (opts.vmeshMethod && opts.vmeshMethod !== "ADJ")
-    throw new Error(`bevelMesh: vmeshMethod '${opts.vmeshMethod}' is not ported — only ADJ (Grid Fill).`);
 
   const P = Array.from({ length: data.positions.length / 3 }, (_, i) => [
     data.positions[i * 3]!,
@@ -3960,6 +4026,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     matNr: opts.material ?? -1,
     markSeam: opts.markSeam ?? false,
     markSharp: opts.markSharp ?? false,
+    vmeshCutoff: opts.vmeshMethod === "CUTOFF",
     affectVertices: opts.affect === "VERTICES",
     affectVerticesOdd: opts.affect === "VERTICES" && segments % 2 === 1,
     vertexOffsetWeight: null,

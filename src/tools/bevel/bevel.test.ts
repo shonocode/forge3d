@@ -103,7 +103,6 @@ describe("bevelMesh", () => {
 
   it("names what it has not ported instead of approximating it", () => {
     expect(() => bevelMesh(unitCube(), { offset: 0.1, miterOuter: "ARC" })).toThrow(/not ported/);
-    expect(() => bevelMesh(unitCube(), { offset: 0.1, vmeshMethod: "CUTOFF" })).toThrow(/not ported/);
   });
 });
 
@@ -198,5 +197,29 @@ describe("edge layers and material (compat-backlog C17)", () => {
     // Without slots on the input, the option still makes the layer.
     const bare = bevelMesh(unitCube(), { offset: 0.1, edges: "all", material: 2 }).mesh;
     expect(bare.materials!.filter((m) => m === 2).length).toBe(20);
+  });
+});
+
+describe("bevelMesh: vmeshMethod CUTOFF (compat-backlog C35)", () => {
+  it("closes each corner with a face under every profile and one joining their bottoms", () => {
+    // parity row `bevel-mod-cutoff`: a cube, 3 segments — 80 vertices, 66 faces.
+    const { mesh } = bevelMesh(unitCube(), { offset: 0.05, segments: 3, edges: "all", vmeshMethod: "CUTOFF" });
+    expect(mesh.positions.length / 3).toBe(80);
+    expect(mesh.polys.length).toBe(66);
+    // Each corner: 3 profile faces (quads over 3 segments: 5 vertices) + the 3-gon bottom.
+    expect(mesh.polys.filter((p) => p.length === 5).length).toBe(24);
+  });
+
+  it("is the same polygon corner as Grid Fill at one segment", () => {
+    const a = bevelMesh(unitCube(), { offset: 0.05, segments: 1, edges: "all", vmeshMethod: "CUTOFF" }).mesh;
+    const b = bevelMesh(unitCube(), { offset: 0.05, segments: 1, edges: "all" }).mesh;
+    expect(a.polys.length).toBe(b.polys.length);
+    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
+  });
+
+  it("differs from Grid Fill with more than one", () => {
+    const cut = bevelMesh(unitCube(), { offset: 0.05, segments: 3, edges: "all", vmeshMethod: "CUTOFF" }).mesh;
+    const adj = bevelMesh(unitCube(), { offset: 0.05, segments: 3, edges: "all" }).mesh;
+    expect(cut.polys.length).not.toBe(adj.polys.length);
   });
 });
