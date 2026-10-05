@@ -101,9 +101,6 @@ describe("bevelMesh", () => {
     expect(r.faceKind.every((k) => k === "orig")).toBe(true);
   });
 
-  it("names what it has not ported instead of approximating it", () => {
-    expect(() => bevelMesh(unitCube(), { offset: 0.1, miterOuter: "ARC" })).toThrow(/not ported/);
-  });
 });
 
 describe("vertex bevel (affect VERTICES, compat-backlog C1)", () => {
@@ -221,5 +218,47 @@ describe("bevelMesh: vmeshMethod CUTOFF (compat-backlog C35)", () => {
     const cut = bevelMesh(unitCube(), { offset: 0.05, segments: 3, edges: "all", vmeshMethod: "CUTOFF" }).mesh;
     const adj = bevelMesh(unitCube(), { offset: 0.05, segments: 3, edges: "all" }).mesh;
     expect(cut.polys.length).not.toBe(adj.polys.length);
+  });
+});
+
+describe("bevelMesh: miters (compat-backlog C35)", () => {
+  // An L-shaped prism: its inside corner is a reflex angle, where an outer miter goes (parity rows `bevel-mod-miter-*`).
+  const lPrism = (): MeshData => {
+    const pts: [number, number][] = [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]];
+    const positions: number[] = [];
+    for (const z of [0, 1]) for (const [x, y] of pts) positions.push(x, y, z);
+    const n = pts.length;
+    const polys: number[][] = [[...pts.keys()].reverse(), [...pts.keys()].map((i) => i + n)];
+    for (let i = 0; i < n; i++) polys.push([i, (i + 1) % n, ((i + 1) % n) + n, i + n]);
+    return { positions: Float32Array.from(positions), polys };
+  };
+  const base = { offset: 0.1, segments: 3, edges: "all" as const };
+
+  it("an outer miter changes only the reflex corner: arc and patch differ from sharp and from each other", () => {
+    const sharp = bevelMesh(lPrism(), base).mesh;
+    const arc = bevelMesh(lPrism(), { ...base, miterOuter: "ARC" }).mesh;
+    const patch = bevelMesh(lPrism(), { ...base, miterOuter: "PATCH" }).mesh;
+    expect(arc.positions.length).not.toBe(sharp.positions.length);
+    expect(patch.positions.length).not.toBe(arc.positions.length);
+  });
+
+  it("a mesh with no reflex corner is untouched by the outer miters", () => {
+    const sharp = bevelMesh(unitCube(), { ...base, offset: 0.05 }).mesh;
+    const arc = bevelMesh(unitCube(), { ...base, offset: 0.05, miterOuter: "ARC" }).mesh;
+    expect(Array.from(arc.positions)).toEqual(Array.from(sharp.positions));
+  });
+
+  it("the inner miter splits each sharp turn in two, spread apart", () => {
+    const sharp = bevelMesh(unitCube(), { ...base, offset: 0.05 }).mesh;
+    const near = bevelMesh(unitCube(), { ...base, offset: 0.05, miterInner: "ARC", spread: 0.02 }).mesh;
+    const far = bevelMesh(unitCube(), { ...base, offset: 0.05, miterInner: "ARC", spread: 0.06 }).mesh;
+    expect(near.positions.length).toBeGreaterThan(sharp.positions.length);
+    expect(Array.from(far.positions)).not.toEqual(Array.from(near.positions));
+  });
+
+  it("a cut-off vertex mesh turns the miters off", () => {
+    const plain = bevelMesh(lPrism(), { ...base, vmeshMethod: "CUTOFF" }).mesh;
+    const mitered = bevelMesh(lPrism(), { ...base, vmeshMethod: "CUTOFF", miterOuter: "ARC", miterInner: "ARC" }).mesh;
+    expect(Array.from(mitered.positions)).toEqual(Array.from(plain.positions));
   });
 });

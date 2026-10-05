@@ -30,9 +30,10 @@
  *   under each profile), and the two-edge weld
  * - wire edges reattached, and a material slot per face carried through
  *
- * Refused with a named error rather than approximated: the Arc and Patch
- * miters. Not offered at all (no option to pass): custom profiles and
- * `harden_normals` (compat-backlog C35).
+ * - the outer miters (Patch, Arc) and the inner one (Arc, with `spread`)
+ *
+ * Not offered at all (no option to pass): custom profiles and `harden_normals`
+ * (compat-backlog C35).
  *
  * UVs, colours, vertex groups and materials are carried as Blender carries
  * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
@@ -213,9 +214,13 @@ export interface BevelMeshOptions {
   markSeam?: boolean;
   /** `mark_sharp`: the same for sharp edges. */
   markSharp?: boolean;
-  /** `miter_outer`. Only `"SHARP"` (the default) is implemented. */
+  /**
+   * `miter_outer`: what a reflex corner (the beveled edges turn the wrong way round the vertex) gets instead of a
+   * sharp point — a flat `"PATCH"` or a rounded `"ARC"`. Only with three or more beveled edges at the vertex.
+   * Default `"SHARP"`. Has no effect with `vmeshMethod: "CUTOFF"`.
+   */
   miterOuter?: "SHARP" | "PATCH" | "ARC";
-  /** `miter_inner`. Only `"SHARP"` (the default) is implemented. */
+  /** `miter_inner`: the same for an inside corner, `"ARC"` only; `spread` sets how far apart its two ends go. */
   miterInner?: "SHARP" | "ARC";
   /** `vmesh_method`: `"ADJ"` (Grid Fill, the default) or `"CUTOFF"` (a face closing off each profile). */
   vmeshMethod?: "ADJ" | "CUTOFF";
@@ -392,6 +397,10 @@ interface Params {
   markSharp: boolean;
   /** `vmesh_method == BEVEL_VMESH_CUTOFF`. */
   vmeshCutoff: boolean;
+  /** `miter_outer` / `miter_inner` as the bevel sees them (a cut-off vertex mesh turns both off), and `spread`. */
+  miterOuter: "SHARP" | "PATCH" | "ARC";
+  miterInner: "SHARP" | "ARC";
+  spread: number;
   /** `affect_type == BEVEL_AFFECT_VERTICES`. */
   affectVertices: boolean;
   /** `affect_vertices_odd`: vertices, with an odd segment count. */
@@ -1803,6 +1812,60 @@ function buildBoundaryTerminalEdge(p: Params, bv: BevVert, efirst: EdgeHalf, con
   }
 }
 
+/** `adjust_miter_coords`: put an outer miter's boundary points on the planes of the beveled edges beside it. */
+function adjustMiterCoords(p: Params, bv: BevVert, emiter: EdgeHalf): void {
+  const v1 = emiter.rightv!;
+  let v2: BoundVert | null = null;
+  let v3: BoundVert;
+  if (p.miterOuter === "PATCH") {
+    v2 = v1.next;
+    v3 = v2.next;
+  } else v3 = v1.next;
+  const v1prev = v1.prev;
+  const v3next = v3.next;
+  const co2 = copy(v1.nv.co);
+  if (v1.isArcStart) v1.profile.middle = copy(co2);
+
+  // co1 is the intersection of the line through co2 along emiter's edge with the plane normal to that edge through v1prev.
+  const other = (e: EdgeHalf): V3 => copy(e.e.v1 === bv.v ? e.e.v2.co : e.e.v1.co);
+  let edgeDir = normalized(sub(bv.v.co, other(emiter)));
+  const d = p.offset / (p.seg / 2);
+  let linePoint = add(co2, scale(edgeDir, d));
+  const co1 = isectLinePlane(co2, linePoint, v1prev.nv.co, edgeDir) ?? linePoint;
+  v1.nv.co = copy(co1);
+
+  // co3 is similar, but the plane is through v3next and the line is along the other side of the miter edge.
+  const emiterOther = v3.elast!;
+  edgeDir = normalized(sub(bv.v.co, other(emiterOther)));
+  linePoint = add(co2, scale(edgeDir, d));
+  // Blender writes the fallback into co1 and reads an uninitialised co3; the line point is the sensible value.
+  const co3 = isectLinePlane(co2, linePoint, v3next.nv.co, edgeDir) ?? linePoint;
+  v3.nv.co = copy(co3);
+}
+
+/** `adjust_miter_inner_coords`: pull an inner miter's two points apart along their edges by `spread`. */
+function adjustMiterInnerCoords(p: Params, bv: BevVert, emiter: EdgeHalf | null): void {
+  const vstart = bv.vmesh.boundstart!;
+  let v = vstart;
+  do {
+    if (v.isArcStart) {
+      const v3 = v.next;
+      let e = v.efirst!;
+      if (e !== emiter) {
+        const co = copy(v.nv.co);
+        let vother = e.e.v1 === bv.v ? e.e.v2 : e.e.v1;
+        let edgeDir = normalized(sub(vother.co, bv.v.co));
+        v.nv.co = add(co, scale(edgeDir, p.spread));
+        e = v3.elast!;
+        vother = e.e.v1 === bv.v ? e.e.v2 : e.e.v1;
+        edgeDir = normalized(sub(vother.co, bv.v.co));
+        v3.nv.co = add(co, scale(edgeDir, p.spread));
+      }
+      v = v3.next;
+    } else v = v.next;
+  } while (v !== vstart);
+}
+
 /**
  * `build_boundary`: the cycle of BoundVerts round `bv`, one per gap between
  * beveled edges. With `construct` false, only moves them (the width pass).
@@ -1819,6 +1882,11 @@ function buildBoundary(p: Params, bv: BevVert, construct: boolean): void {
     buildBoundaryTerminalEdge(p, bv, efirst, construct);
     return;
   }
+  // Special miters outside only for 3 or more beveled edges.
+  const miterOuter = bv.selcount >= 3 ? p.miterOuter : "SHARP";
+  const miterInner = p.miterInner;
+  // The first beveled edge of an outside miter (there can be at most one per vertex).
+  let emiter: EdgeHalf | null = null;
   let e = efirst;
   do {
     let eon: EdgeHalf | null = null;
@@ -1864,9 +1932,77 @@ function buildBoundary(p: Params, bv: BevVert, construct: boolean): void {
       e.rightv = v;
       e2.leftv = v;
       for (let e3 = e.next; e3 !== e2; e3 = e3.next) e3.leftv = e3.rightv = v;
-    } else e.rightv!.nv.co = copy(co);
+      // Special mitering: an outer miter on a reflex angle (the first only), an inner one on a sharp turn. The extra
+      // BoundVerts all start at the same place.
+      const angKind = edgesAngleKind(e, e2, bv.v);
+      if ((miterOuter !== "SHARP" && !emiter && angKind === AngleKind.LARGER) || (miterInner !== "SHARP" && angKind === AngleKind.SMALLER)) {
+        const patch = angKind === AngleKind.LARGER && miterOuter === "PATCH";
+        if (angKind === AngleKind.LARGER) emiter = e;
+        const v1 = v;
+        v1.ebev = null;
+        const v2 = patch ? addNewBoundVert(vm, co) : null;
+        const v3 = addNewBoundVert(vm, co);
+        v3.ebev = e2;
+        v3.efirst = e2;
+        v3.elast = e2;
+        v3.eon = null;
+        e2.leftv = v3;
+        if (patch) {
+          v1.isPatchStart = true;
+          v2!.eon = v1.eon;
+          v2!.sinratio = v1.sinratio;
+          v2!.ebev = null;
+          v1.eon = null;
+          v1.sinratio = 1;
+          v1.elast = e;
+          if (e.next === e2) {
+            v2!.efirst = null;
+            v2!.elast = null;
+          } else {
+            v2!.efirst = e.next;
+            for (let e3 = e.next; e3 !== e2; e3 = e3.next) {
+              e3.leftv = e3.rightv = v2!;
+              v2!.elast = e3;
+            }
+          }
+        } else {
+          v1.isArcStart = true;
+          v1.profile.middle = copy(co);
+          if (e.next === e2) v1.elast = v1.efirst;
+          else {
+            const between = inPlane + notInPlane;
+            const bet2 = Math.floor(between / 2);
+            const betOdd = between % 2 === 1;
+            let i = 0;
+            // The first half of the in-between edges go at index 0, the second half at index seg; an odd one out in the middle.
+            for (let e3 = e.next; e3 !== e2; e3 = e3.next) {
+              v1.elast = e3;
+              if (i < bet2) e3.profileIndex = 0;
+              else if (betOdd && i === bet2) e3.profileIndex = Math.floor(p.seg / 2);
+              else e3.profileIndex = p.seg;
+              i++;
+            }
+          }
+        }
+      }
+    } else {
+      const angKind = edgesAngleKind(e, e2, bv.v);
+      if ((miterOuter !== "SHARP" && !emiter && angKind === AngleKind.LARGER) || (miterInner !== "SHARP" && angKind === AngleKind.SMALLER)) {
+        if (angKind === AngleKind.LARGER) emiter = e;
+        const v1 = e.rightv!;
+        const patch = angKind === AngleKind.LARGER && miterOuter === "PATCH";
+        const v2 = patch ? v1.next : null;
+        const v3 = patch ? v2!.next : v1.next;
+        v1.nv.co = copy(co);
+        if (v2) v2.nv.co = copy(co);
+        v3.nv.co = copy(co);
+      } else e.rightv!.nv.co = copy(co);
+    }
     e = e2;
   } while (e !== efirst);
+
+  if (miterInner !== "SHARP") adjustMiterInnerCoords(p, bv, emiter);
+  if (emiter) adjustMiterCoords(p, bv, emiter);
 
   if (construct) {
     setBoundVertSeams(p, bv);
@@ -3950,10 +4086,6 @@ function bevelLimitOffset(p: Params, verts: BV[]): void {
  * header. Custom normals are dropped whole (compat-backlog C17).
  */
 export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
-  if (opts.miterOuter && opts.miterOuter !== "SHARP")
-    throw new Error(`bevelMesh: miterOuter '${opts.miterOuter}' is not ported — only SHARP.`);
-  if (opts.miterInner && opts.miterInner !== "SHARP")
-    throw new Error(`bevelMesh: miterInner '${opts.miterInner}' is not ported — only SHARP.`);
 
   const P = Array.from({ length: data.positions.length / 3 }, (_, i) => [
     data.positions[i * 3]!,
@@ -4027,6 +4159,10 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     markSeam: opts.markSeam ?? false,
     markSharp: opts.markSharp ?? false,
     vmeshCutoff: opts.vmeshMethod === "CUTOFF",
+    // A cut-off vertex mesh disables the miters (Blender: the combination is not useful anyway).
+    miterOuter: opts.vmeshMethod === "CUTOFF" ? "SHARP" : opts.miterOuter ?? "SHARP",
+    miterInner: opts.vmeshMethod === "CUTOFF" ? "SHARP" : opts.miterInner ?? "SHARP",
+    spread: opts.spread ?? 0.1,
     affectVertices: opts.affect === "VERTICES",
     affectVerticesOdd: opts.affect === "VERTICES" && segments % 2 === 1,
     vertexOffsetWeight: null,
