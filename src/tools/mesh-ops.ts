@@ -221,9 +221,9 @@ export interface MirrorOptions {
   /** Keep the source alongside the reflection. Default true. */
   keepOriginal?: boolean;
   /**
-   * Weld reflected vertices back onto the originals within this distance,
-   * fusing the two halves into one surface across the mirror plane. 0 leaves
-   * them as separate shells. Default 0.
+   * Blender's `merge_dist`: an original vertex within this distance of the plane (`|co − offset| <= dist`) is welded to **its own
+   * reflection** — nothing else is welded, however close (compat-backlog C70). With 0 only a vertex exactly on the plane joins its
+   * image. Absent, the two halves stay separate shells.
    */
   weld?: number;
   /** Position of the mirror plane on `axis`. Default 0. */
@@ -248,7 +248,13 @@ export function mirrorMesh(data: MeshData, axis: "x" | "y" | "z", opts: MirrorOp
   if (opts.keepOriginal === false) return reflected;
 
   const merged = mergeMeshes([data, reflected]);
-  return opts.weld ? weldMesh(merged, opts.weld) : merged;
+  if (opts.weld === undefined) return merged;
+  // `bmo_mirror_exec`: each original vertex on the plane maps its reflection (n + v) onto itself, and `weld_verts` does the rest.
+  const n = data.positions.length / 3;
+  const dist = opts.weld;
+  const target = new Int32Array(2 * n).map((_, v) => v);
+  for (let v = 0; v < n; v++) if (Math.abs(data.positions[v * 3 + k]! - offset) <= dist) target[n + v] = v;
+  return weldByMap(merged, (v) => target[v]!);
 }
 
 /** Per-axis switches for {@link MirrorModifierOptions}. */
@@ -2177,14 +2183,19 @@ export function symmetrize(data: MeshData, opts: SymmetrizeOptions): MeshData {
 
   // `clearOuter` drops the side the normal points to, so keeping the negative
   // half means clearing the outer one.
+  // `bmo_symmetrize_exec` hands the bisect `dist` and `use_snap_center = true`: a vertex within `dist` of the plane is put on it and kept,
+  // and the welding afterwards only joins a vertex on the plane to its own image (compat-backlog C71).
+  const dist = opts.dist ?? 1e-4;
   const half = bisectPlane(data, {
     planeCo: [0, 0, 0],
     planeNo,
+    dist,
+    snapCenter: true,
     clearOuter: negative,
     clearInner: !negative,
   });
 
-  return mirrorMesh(half, letter, { weld: opts.dist ?? 1e-4 });
+  return mirrorMesh(half, letter, { weld: dist });
 }
 
 // ── Convex hull ────────────────────────────────────────────────────────────

@@ -557,3 +557,28 @@ describe("mirrorModifier (Blender's Mirror modifier, compat-backlog B2)", () => 
     expect(imageOf1).toBeDefined();
   });
 });
+
+describe("mirrorMesh weld (parity row mirror-weld, backlog C70)", () => {
+  /** Two triangles on the +x side whose corners are 0.01 apart, and one vertex 0.02 from the plane. */
+  const near = () => ({
+    positions: new Float32Array([0.02, 0, 0, 1, 0, 0, 1, 1, 0, 1.01, 0, 0, 2, 0, 0, 2, 1, 0]),
+    polys: [[0, 1, 2], [3, 4, 5]],
+  });
+
+  it("welds a vertex within merge_dist of the plane to its own image, and nothing else", () => {
+    const out = mirrorMesh(near(), "x", { weld: 0.05 });
+    // 12 vertices, one welded: 0.02 from the plane joins its reflection (−0.02) — |co| ≤ 0.05; vertices 1 and 3 are 0.01 apart but
+    // not on the plane's side of the threshold and are different vertices, so they stay.
+    expect(out.positions.length / 3).toBe(11);
+  });
+
+  it("with merge_dist 0 only a vertex exactly on the plane joins its image", () => {
+    expect(mirrorMesh(near(), "x", { weld: 0 }).positions.length / 3).toBe(12);
+    const onPlane = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0]), polys: [[0, 1, 2]] };
+    expect(mirrorMesh(onPlane, "x", { weld: 0 }).positions.length / 3).toBe(5);
+  });
+
+  it("without weld the halves are separate shells", () => {
+    expect(mirrorMesh(near(), "x").positions.length / 3).toBe(12);
+  });
+});
