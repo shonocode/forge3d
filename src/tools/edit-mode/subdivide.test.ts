@@ -324,8 +324,26 @@ describe("catmullClark options (Blender's Subdivision Surface settings, compat-b
     expect(at(kept.positions, 0)).toEqual([0, 0, 0]);
   });
 
+  it("above `quality`, evaluates Gregory patches round an extraordinary vertex — off the limit inside them", () => {
+    // Every level-1 face of the cube has a valence-3 corner, so at quality 1 the
+    // whole surface is Gregory patches: the input vertices (patch corners) stay
+    // on the limit, the vertices inside the patches do not (C28, measured
+    // against Blender in `subdiv-limit-gregory`).
+    const gregory = catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true, quality: 1 });
+    const limit = catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true, quality: 2 });
+    for (let v = 0; v < 8; v++)
+      at(gregory.positions, v).forEach((x, k) => expect(x).toBeCloseTo(at(limit.positions, v)[k]!, 6));
+    let moved = 0;
+    for (let v = 8; v < gregory.positions.length / 3; v++)
+      if (Math.hypot(...at(gregory.positions, v).map((x, k) => x - at(limit.positions, v)[k]!)) > 1e-4) moved++;
+    expect(moved).toBeGreaterThan(0);
+    expect(gregory.polys).toEqual(limit.polys);
+  });
+
   it("refuses the limit where it would not be Blender's", () => {
-    expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 4, undefined, undefined, { limitSurface: true })).toThrow(/quality/);
+    expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true, quality: 0 })).toThrow(
+      /quality/,
+    );
     expect(() =>
       catmullClark(CUBE_POS, CUBE_QUADS, 1, new Map([["0_1", 1]]), undefined, { limitSurface: true }),
     ).toThrow(/creases/);

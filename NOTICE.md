@@ -55,12 +55,27 @@ subject to the following restrictions:
   that Blender's dual contouring calls). The source of these functions is
   available in this repository under the MPL-2.0 as well as the GPL.
 
+## OpenSubdiv — patch evaluation
+
+- **Copyright** 2013 Pixar, 2018 DreamWorks Animation LLC
+- **Licence** Tomorrow Open Source Technology License 1.0
+  (<https://opensubdiv.org/license>) — the Apache License 2.0 with a different
+  section 6 (trademarks), and like it compatible with the GPL-3.0
+- **Source** <https://github.com/PixarAnimationStudios/OpenSubdiv>, tag
+  `v3_7_0` (the version Blender 5.1.1 builds)
+- **Ported into** `src/tools/edit-mode/subdiv-patches.ts`: the limit tangent
+  weights and the Gregory patch points (`far/catmarkPatchBuilder.cpp`,
+  `CatmarkLimits` and `GregoryConverter`), the B-spline and Gregory basis
+  (`far/patchBasis.cpp`) and the regular-patch test (`far/patchBuilder.cpp`).
+  The port is an altered version: translated to TypeScript, computing the
+  patch points directly instead of as a sparse matrix, without creases or
+  face-varying data.
+
 ## Referenced, not copied
 
-- **OpenSubdiv** (Pixar, Tomorrow Open Source Technology License 1.0): the UV
-  rule of Blender's Subdivision Surface ("Keep Boundaries",
-  `FVAR_LINEAR_BOUNDARIES`) is reproduced from its documented behaviour in
-  `src/tools/edit-mode/subdivide.ts`; no OpenSubdiv code is included.
+- **OpenSubdiv** (as above): the UV rule of Blender's Subdivision Surface
+  ("Keep Boundaries", `FVAR_LINEAR_BOUNDARIES`) is reproduced from its
+  documented behaviour in `src/tools/edit-mode/subdivide.ts`.
 
 ## Dependencies
 

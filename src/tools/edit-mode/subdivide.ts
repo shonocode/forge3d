@@ -40,6 +40,7 @@
  * Non-manifold edges (>2 faces) are treated as boundaries for the edge point
  * (midpoint) — a safe degeneration that keeps the operator total.
  */
+import { evaluatePatches, type PatchParam } from "./subdiv-patches";
 
 export interface SubdivResult {
   positions: Float32Array;
@@ -491,15 +492,19 @@ export interface CatmullClarkOptions {
    * the Catmull-Clark limit mask, (n²V + 4ΣE + ΣF) / (n(n + 5)) inside and
    * (P + 4V + Q) / 6 on a boundary (measured exact, `probe-subsurf-limit.py`).
    *
-   * One exception, read from OpenSubdiv's Gregory end caps: under
+   * One exception, read from OpenSubdiv's patch builder: under
    * `boundarySmooth: "ALL"` a boundary vertex with one face is a smooth
-   * corner, and Blender puts it where `quality` rounds of refinement put it
-   * — not on the limit, which it only approaches as `quality` grows.
+   * corner, which OpenSubdiv sharpens, and Blender puts it where `quality`
+   * rounds of refinement put it — not on the limit, which it only
+   * approaches as `quality` grows.
    *
-   * Refused rather than approximated: `level > quality` (those vertices
-   * fall inside Gregory patches, whose surface is not the limit near an
-   * extraordinary vertex), creases (not measured), and UVs (the face-varying
-   * limit is not ported).
+   * Above `quality` the vertices fall inside the patches of the
+   * level-`quality` mesh — B-splines on its regular faces, Gregory patches on
+   * the faces at an extraordinary vertex, which are not the limit there —
+   * and are evaluated on them as Blender does (`subdiv-patches.ts`, C28).
+   *
+   * Refused rather than approximated: creases (not measured) and UVs (the
+   * face-varying limit is not ported).
    */
   limitSurface?: boolean;
   /** `quality` — the adaptive refinement level of Blender's evaluator, default 3. */
@@ -553,11 +558,7 @@ export function catmullClark(
   const preserveCorners = options.boundarySmooth === "PRESERVE_CORNERS";
   const quality = options.quality ?? 3;
   if (options.limitSurface && level > 0) {
-    if (level > quality)
-      throw new Error(
-        `catmullClark: limitSurface at level ${level} > quality ${quality} is not ported — ` +
-          `Blender evaluates those vertices inside Gregory patches.`,
-      );
+    if (quality < 1) throw new Error(`catmullClark: quality ${quality} — Blender's is 1 to 10.`);
     if (creases && [...creases.values()].some((s) => s > 0))
       throw new Error("catmullClark: limitSurface with creases is not measured, so it is refused.");
     if (uvs) throw new Error("catmullClark: limitSurface with UVs (the face-varying limit) is not ported.");
@@ -570,14 +571,53 @@ export function catmullClark(
     ),
     ...(uvs ? { uvs: uvs.map((f) => f.map((c) => [...c])) } : {}),
   };
+  // Above `quality`, each face remembers the face of the `quality` mesh it lies in and its corners' (u, v) there.
+  const deep = options.limitSurface && level > quality;
+  let isolated: { positions: Float32Array; polys: number[][] } | undefined;
+  let ancestor: number[] = [];
+  let cornerUV: [number, number][][] = [];
   for (let l = 0; l < level; l++) {
     const nextUV = result.uvs
       ? subdivideUVOnce(result.polys, result.uvs, options.uvSmooth ?? "PRESERVE_BOUNDARIES", preserveCorners)
       : undefined;
+    const parentPolys = result.polys;
     result = subdivideOnce(result.positions, result.polys, result.creases, preserveCorners);
     if (nextUV) result.uvs = nextUV;
+    if (!deep) continue;
+    if (l + 1 === quality) {
+      isolated = { positions: result.positions, polys: result.polys };
+      ancestor = result.polys.map((_, f) => f);
+      cornerUV = result.polys.map(() => [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    } else if (l + 1 > quality) {
+      const mid = (a: [number, number], b: [number, number]): [number, number] => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const nextAncestor: number[] = [];
+      const nextUVs: [number, number][][] = [];
+      parentPolys.forEach((p, f) => {
+        const c = cornerUV[f]!;
+        const centre: [number, number] = [(c[0]![0] + c[1]![0] + c[2]![0] + c[3]![0]) / 4, (c[0]![1] + c[1]![1] + c[2]![1] + c[3]![1]) / 4];
+        for (let i = 0; i < p.length; i++) {
+          nextAncestor.push(ancestor[f]!);
+          nextUVs.push([c[i]!, mid(c[i]!, c[(i + 1) % 4]!), centre, mid(c[(i + 3) % 4]!, c[i]!)]);
+        }
+      });
+      ancestor = nextAncestor;
+      cornerUV = nextUVs;
+    }
   }
-  if (options.limitSurface && level > 0)
+  if (deep && isolated) {
+    const params: PatchParam[] = new Array(result.positions.length / 3);
+    result.polys.forEach((p, f) =>
+      p.forEach((v, i) => {
+        params[v] ??= { face: ancestor[f]!, u: cornerUV[f]![i]![0], v: cornerUV[f]![i]![1] };
+      }),
+    );
+    const out = evaluatePatches(isolated.positions, isolated.polys, params.map((p) => p ?? { face: -1, u: 0, v: 0 }));
+    // A vertex no face uses keeps its refined position.
+    params.forEach((p, v) => {
+      if (!p) out.set(result.positions.subarray(v * 3, v * 3 + 3), v * 3);
+    });
+    result.positions = out;
+  } else if (options.limitSurface && level > 0)
     result.positions = limitPositions(positions, polys, result.positions, result.polys, preserveCorners, quality);
   return result;
 }
