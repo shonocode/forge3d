@@ -527,11 +527,70 @@ export function connectVertsConcave(
  *
  * Creases and seams are remapped across the compaction; one that named a
  * vertex which is going away is dropped with it.
+ *
+ * The three kinds are Blender's `use_faces` / `use_edges` / `use_verts` (`edbm_delete_loose_exec`, in that order, with everything
+ * selected), and the defaults are Blender's too:
+ *
+ * - **faces** (off): a face whose every edge belongs to it alone. It goes with the edges and vertices nothing else uses
+ *   (`DEL_FACES`) — a vertex a remaining face or wire edge still reaches stays.
+ * - **edges** (on): every wire edge, whether or not its ends are used by faces. Its ends go with it unless a face uses them
+ *   (`DEL_EDGES`) — so `edges` alone also removes the vertices of a wire chain.
+ * - **verts** (on): a vertex with no edge at all — no face and no wire edge left. With `edges` off a vertex on a wire edge is not
+ *   loose; with it on the wire edge goes first and its ends then are.
  */
-export function deleteLoose(data: MeshData): MeshData {
-  const used = new Set<number>();
-  for (const poly of data.polys) for (const v of poly) used.add(v);
-  return compactMesh(data, used);
+export interface DeleteLooseOptions {
+  verts?: boolean;
+  edges?: boolean;
+  faces?: boolean;
+}
+
+export function deleteLoose(data: MeshData, options: DeleteLooseOptions = {}): MeshData {
+  const useVerts = options.verts ?? true;
+  const useEdges = options.edges ?? true;
+  const useFaces = options.faces ?? false;
+  const count = data.positions.length / 3;
+  const keep = new Set<number>();
+  for (let v = 0; v < count; v++) keep.add(v);
+
+  let polys = data.polys;
+  let wire = data.edges ?? [];
+  const usedBy = (ps: readonly (readonly number[])[], es: readonly (readonly number[])[]): Set<number> => {
+    const used = new Set<number>();
+    for (const p of ps) for (const v of p) used.add(v);
+    for (const e of es) for (const v of e) used.add(v);
+    return used;
+  };
+
+  if (useFaces) {
+    const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+    const uses = new Map<string, number>();
+    for (const p of polys)
+      for (let i = 0; i < p.length; i++) {
+        const k = key(p[i]!, p[(i + 1) % p.length]!);
+        uses.set(k, (uses.get(k) ?? 0) + 1);
+      }
+    const loose = polys.map((p) => p.every((v, i) => uses.get(key(v, p[(i + 1) % p.length]!)) === 1));
+    const remaining = polys.filter((_, f) => !loose[f]);
+    const still = usedBy(remaining, wire);
+    polys.forEach((p, f) => {
+      if (loose[f]) for (const v of p) if (!still.has(v)) keep.delete(v);
+    });
+    polys = remaining;
+  }
+  if (useEdges) {
+    // `DEL_EDGES` takes the vertices only those edges used with them — measured: `use_edges` alone still removes a wire edge's ends.
+    const still = usedBy(polys, []);
+    for (const e of wire) for (const v of e) if (!still.has(v)) keep.delete(v);
+    wire = [];
+  }
+  if (useVerts) {
+    const used = usedBy(polys, wire);
+    for (let v = 0; v < count; v++) if (!used.has(v)) keep.delete(v);
+  }
+
+  const { edges: _edges, ...rest } = data;
+  void _edges;
+  return compactMesh({ ...rest, polys, ...(wire.length ? { edges: wire } : {}) }, keep);
 }
 
 /**
@@ -720,6 +779,6 @@ export function separateLoose(data: MeshData): MeshData[] {
   }
 
   return order.map((r) =>
-    deleteLoose({ ...data, polys: byRoot.get(r)!.map((p) => [...p]) }),
+    deleteLoose({ ...data, polys: byRoot.get(r)!.map((p) => [...p]) }, { edges: false }),
   );
 }

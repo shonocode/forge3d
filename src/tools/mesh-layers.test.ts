@@ -98,7 +98,8 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["connectVertsConcave", () => L.connectVertsConcave(cube())],
   ["triangulate", () => L.triangulate(cube(), { quadMethod: "fixed" })],
   ["triangulate (beauty)", () => L.triangulate(cube())],
-  ["deleteLoose", () => L.deleteLoose(cube())],
+  // `edges: false`: by default Blender also deletes wire edges, which is the one layer this table would then not find.
+  ["deleteLoose", () => L.deleteLoose(cube(), { edges: false })],
   ["compactMesh", () => L.compactMesh(cube(), new Set([0, 1, 2, 3, 4, 5, 6, 7]))],
   ["uvWarp", () => L.uvWarp(cube())],
   ["shrinkwrap", () => L.shrinkwrap(cube(), { target: cube() } as never)],

@@ -302,6 +302,26 @@ describe("deleteLoose / separateLoose", () => {
     polys: [[0, 1, 2, 3]],
   });
 
+  it("takes the three kinds as Blender does (parity rows delete-loose-*)", () => {
+    // Two quads sharing an edge (0-5); a triangle of its own (6-8); a triangle touching them only at vertex 0 (0, 9, 10) — every edge of
+    // both triangles is its own, so both are loose faces; a wire edge across the quads (0-5, both ends used) and a free one (11-12);
+    // a vertex on nothing (13).
+    const bits = (): MeshData => ({
+      positions: new Float32Array(14 * 3),
+      polys: [[0, 1, 2, 3], [1, 4, 5, 2], [6, 7, 8], [0, 9, 10]],
+      edges: [[0, 5], [11, 12]],
+    });
+    const count = (m: MeshData): [number, number, number] => [m.positions.length / 3, m.polys.length, m.edges?.length ?? 0];
+    // Defaults: vertices and edges. Both wire edges go, with the free one's ends; the loose vertex goes; faces stay.
+    expect(count(deleteLoose(bits()))).toEqual([11, 4, 0]);
+    // Vertices only: a wire edge's ends are not loose.
+    expect(count(deleteLoose(bits(), { edges: false }))).toEqual([13, 4, 2]);
+    // Edges only: the ends of the free edge go with it, the loose vertex stays.
+    expect(count(deleteLoose(bits(), { verts: false }))).toEqual([12, 4, 0]);
+    // Faces only: both triangles go, and so do their vertices — except 0, still on a quad.
+    expect(count(deleteLoose(bits(), { verts: false, edges: false, faces: true }))).toEqual([9, 2, 2]);
+  });
+
   it("drops a vertex no polygon uses and renumbers the rest", () => {
     const out = deleteLoose(withOrphan());
     expect(out.positions.length / 3).toBe(4);

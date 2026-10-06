@@ -118,7 +118,7 @@ describe("wire edges through the rest of the library", () => {
     // The wire vertices go, and the edge goes with them.
     const out = deleteLoose(extrudeVertIndiv(quad(), [0]));
     expect(out.positions.length / 3).toBe(4);
-    expect(out.edges).toEqual([]);
+    expect(out.edges ?? []).toEqual([]);
   });
 });
 
