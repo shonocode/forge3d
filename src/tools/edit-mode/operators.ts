@@ -3,6 +3,7 @@ import { orphanedEdges } from "./wire";
 import { interpWeightsPoly } from "./interp";
 import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
+import { doublesByDistance } from "../remove-doubles";
 import { selectEdgeRing } from "./edge-walk";
 import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine";
 import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
@@ -2479,7 +2480,7 @@ export function splitFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Se
 
 /**
  * Which vertices sit on top of which — Blender's
- * `bmesh.ops.find_doubles(verts=, dist=)`.
+ * `bmesh.ops.find_doubles(verts=, keep_verts=, dist=)`.
  *
  * **Reports; does not weld.** That is the whole difference from `weldMesh`
  * (which is `remove_doubles`): this hands back the targetmap and lets the
@@ -2487,30 +2488,17 @@ export function splitFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Se
  * Splitting the two halves is what lets a pipeline look at what would be
  * merged before merging it.
  *
- * Each vertex is mapped to the **lowest-numbered** vertex within `dist` of it;
- * a vertex that is itself the lowest of its cluster is left out of the map.
- *
- * Every pair is compared, so the cost grows with the square of the vertex
- * count — fine for a cage, and the wrong tool for a scanned mesh. `weldMesh`
- * is the one that buckets by distance and scales, at the price of deciding the
- * merge for you.
+ * It is `bmesh_find_doubles_by_distance_impl` (`doublesByDistance`, a KD tree): the vertices within `dist` of each other form a
+ * cluster, and the one every other merges into is the **vertex nearest the cluster's centre** (the lower index on a tie) — not the
+ * lowest-numbered (compat-backlog C72). A vertex in `keep` never merges and is offered as a target first.
+ * A vertex that is itself the target is left out of the map.
  */
-export function findDoubles(em: EditMesh, dist: number): Map<number, number> {
+export function findDoubles(em: EditMesh, dist: number, keep?: ReadonlySet<number>): Map<number, number> {
+  const target = doublesByDistance(Float32Array.from(em.positions), dist, keep ? (i) => keep.has(i) : undefined);
   const out = new Map<number, number>();
-  const P = em.positions;
-  const n = em.vertices.length;
-  const d2 = dist * dist;
-  for (let v = 0; v < n; v++) {
-    for (let u = 0; u < v; u++) {
-      if (out.has(u)) continue; // already claimed — keep the cluster's lowest
-      const dx = P[v * 3]! - P[u * 3]!;
-      const dy = P[v * 3 + 1]! - P[u * 3 + 1]!;
-      const dz = P[v * 3 + 2]! - P[u * 3 + 2]!;
-      if (dx * dx + dy * dy + dz * dz <= d2) {
-        out.set(v, u);
-        break;
-      }
-    }
+  for (let v = 0; v < target.length; v++) {
+    const t = target[v]!;
+    if (t >= 0 && t !== v) out.set(v, t);
   }
   return out;
 }

@@ -795,7 +795,7 @@ describe("delete variants", () => {
 
 // ── F-M8 batch 1: edgeSlide / merge / bridge ──
 
-import { edgeSlide, mergeAtCenter, collapseEdges, weldVerts, bridgeEdgeLoops, dissolveDegenerate } from "./operators";
+import { edgeSlide, mergeAtCenter, collapseEdges, weldVerts, bridgeEdgeLoops, dissolveDegenerate, findDoubles } from "./operators";
 import { edgeEnd, edgeOrigin, type EditMesh } from "./half-edge";
 import { cylinder } from "../generate";
 
@@ -1307,5 +1307,29 @@ describe("dissolveDegenerate", () => {
 
   it("collapses only the edges it is given", () => {
     expect(dissolveDegenerate(strip([0, 0.01, 0.03]), 0.5, new Set()).size).toBe(0);
+  });
+});
+
+describe("findDoubles target (parity row find-doubles-triple)", () => {
+  it("merges a cluster into the vertex nearest its centre, not the lowest-numbered", () => {
+    // Three vertices 0.00004 apart along x, `dist` 0.0001: all within reach of each other. The centre is the middle one.
+    const em = meshFromData({
+      positions: Float32Array.from([0, 0, 0, 0.00004, 0, 0, 0.00008, 0, 0, 1, 0, 0, 1, 1, 0]),
+      polys: [[0, 3, 4], [1, 3, 4], [2, 3, 4]],
+    });
+    const map = findDoubles(em, 0.0001);
+    expect(map.get(0)).toBe(1);
+    expect(map.get(2)).toBe(1);
+    expect(map.has(1)).toBe(false);
+  });
+
+  it("never merges a vertex in keep, and offers it as a target first", () => {
+    const em = meshFromData({
+      positions: Float32Array.from([0, 0, 0, 0.00004, 0, 0, 1, 0, 0, 1, 1, 0]),
+      polys: [[0, 2, 3], [1, 2, 3]],
+    });
+    const map = findDoubles(em, 0.0001, new Set([1]));
+    expect(map.get(0)).toBe(1);
+    expect(map.has(1)).toBe(false);
   });
 });
