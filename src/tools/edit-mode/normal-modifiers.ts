@@ -184,14 +184,73 @@ export interface WeightedNormalOptions {
   invertVertexGroup?: boolean;
 }
 
+/**
+ * `normalEditModifier_do_radial`: the normal of the ellipsoid through each vertex whose axes are in the ratio of `size`, centred on the
+ * target (or on `-offset` with no target) — `(x/a², y/b², z/c²)` with the three squares solved from `m = b/a`, `n = c/a`, in float32.
+ * A vertex on the centre has no direction and gets a zero normal.
+ */
+function radialNormals(P: Float32Array, options: NormalEditOptions): (v: number) => Vec3 {
+  const f = Math.fround;
+  const n = P.length / 3;
+  let size: number[];
+  let diff: number[];
+  if (options.target) {
+    size = (options.targetScale ?? [1, 1, 1]).map((s) => f(Math.abs(s)));
+    diff = options.target.map((t) => f(-t));
+  } else {
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < n; v++)
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k]!, P[v * 3 + k]!);
+        hi[k] = Math.max(hi[k]!, P[v * 3 + k]!);
+      }
+    size = [0, 1, 2].map((k) => f(hi[k]! - lo[k]!));
+    diff = (options.offset ?? [0, 0, 0]).map((o) => f(-o));
+  }
+  // `is_zero_v3(size)` -> 1; otherwise each at least FLT_EPSILON.
+  if (size.every((s) => s === 0)) size = [1, 1, 1];
+  else size = size.map((s) => Math.max(s, f(1.1920929e-7)));
+  const [a, b, c] = size as [number, number, number];
+  const m2 = f(f(b * b) / f(a * a));
+  const n2 = f(f(c * c) / f(a * a));
+  return (v: number): Vec3 => {
+    const x = f(f(P[v * 3]!) + diff[0]!);
+    const y = f(f(P[v * 3 + 1]!) + diff[1]!);
+    const z = f(f(P[v * 3 + 2]!) + diff[2]!);
+    const x2 = f(x * x);
+    const y2 = f(y * y);
+    const z2 = f(z * z);
+    const a2 = f(f(x2 + f(y2 / m2)) + f(z2 / n2));
+    const b2 = f(f(f(m2 * x2) + y2) + f(f(m2 * z2) / n2));
+    const c2 = f(f(f(n2 * x2) + f(f(n2 * y2) / m2)) + z2);
+    const co: Vec3 = [f(x / a2), f(y / b2), f(z / c2)];
+    const d = f(f(f(co[0] * co[0]) + f(co[1] * co[1])) + f(co[2] * co[2]));
+    if (!(d > f(1.0e-35))) return [0, 0, 0];
+    const inv = f(1 / f(Math.sqrt(d)));
+    return [f(co[0] * inv), f(co[1] * inv), f(co[2] * inv)];
+  };
+}
+
 export type NormalEditMode = "radial" | "directional";
 export type NormalMixMode = "copy" | "add" | "sub" | "mul";
 
 export interface NormalEditOptions {
   /** Blender's `mode`. Default `radial`, as Blender's is. */
   mode?: NormalEditMode;
-  /** The target's location, in mesh space. Default the origin. */
+  /**
+   * The target's location, in mesh space. With none, `radial` is Blender's no-target ellipsoid (compat-backlog C57): the mesh's bounding
+   * box gives the ellipsoid's size and `offset` its centre. `directional` needs a target — with none it aims at the origin here (Blender
+   * disables the modifier).
+   */
   target?: readonly [number, number, number];
+  /**
+   * The target object's scale, whose absolute value is the ellipsoid's size for `radial` (an empty scaled (1, 2, 3) gives an ellipsoid
+   * twice as long in y as in x). Default (1, 1, 1): a sphere. Only with a `target`.
+   */
+  targetScale?: readonly [number, number, number];
+  /** Blender's `offset`: the ellipsoid's centre when there is no target. Default the origin. */
+  offset?: readonly [number, number, number];
   /**
    * Blender's `use_direction_parallel` — one shared direction for every
    * corner. `directional` only; **default off**, which is Blender's default
@@ -384,7 +443,7 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
  * `NORMAL_EDIT` modifier.
  *
  * ```ts
- * normalEdit(mesh);                                        // radial from the origin
+ * normalEdit(mesh);                                        // radial on the bounding-box ellipsoid, as Blender's default
  * normalEdit(mesh, { target: [0, 0.5, 0] });               // from somewhere else
  * normalEdit(mesh, { mode: "directional", target: [0, 1, 0] });
  * normalEdit(mesh, { mixMode: "add", mixFactor: 0.5 });
@@ -400,14 +459,14 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
 export function normalEdit(data: MeshData, options: NormalEditOptions = {}): MeshData {
   const mode = options.mode ?? "radial";
   const target: Vec3 = [...(options.target ?? [0, 0, 0])] as Vec3;
-  const centre = target;
   const mixMode = options.mixMode ?? "copy";
   const baseFactor = options.mixFactor ?? 1;
   const P = data.positions;
 
   const shared = normalized(target);
+  const radial = radialNormals(P, options);
   const computed = (v: number): Vec3 => {
-    if (mode === "radial") return normalized(sub(at(P, v), centre));
+    if (mode === "radial") return radial(v);
     if (options.parallel) return shared;
     return normalized(add(target, sub(target, at(P, v))));
   };

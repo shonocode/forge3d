@@ -251,6 +251,25 @@ describe("weightedNormal", () => {
 });
 
 describe("normalEdit", () => {
+  it("with no target the radial normal is the bounding box's ellipsoid, not a sphere (parity row normal-edit-no-target)", () => {
+    // A box 2 × 1 × 1 about the origin: the ellipsoid through the corner (1, .5, .5) has the normal (1/3, 2/3, 2/3); a sphere would
+    // give (2, 1, 1) / √6.
+    const hx = 1, hy = 0.5, hz = 0.5;
+    const positions = new Float32Array([-hx, -hy, -hz, hx, -hy, -hz, hx, hy, -hz, -hx, hy, -hz, -hx, -hy, hz, hx, -hy, hz, hx, hy, hz, -hx, hy, hz]);
+    const polys = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [1, 2, 6, 5], [0, 4, 7, 3]];
+    const out = normalEdit({ positions, polys });
+    const f = polys.findIndex((p) => p.includes(6));
+    const n = out.normals![f]![polys[f]!.indexOf(6)]!;
+    expect(n[0]!).toBeCloseTo(1 / 3, 5);
+    expect(n[1]!).toBeCloseTo(2 / 3, 5);
+    expect(n[2]!).toBeCloseTo(2 / 3, 5);
+    // A target whose empty is scaled the same way gives the same thing; an unscaled one, the sphere.
+    const scaled = normalEdit({ positions, polys }, { target: [0, 0, 0], targetScale: [2, 1, 1] });
+    expect(scaled.normals![f]![polys[f]!.indexOf(6)]![1]!).toBeCloseTo(2 / 3, 5);
+    const sphere = normalEdit({ positions, polys }, { target: [0, 0, 0] });
+    expect(sphere.normals![f]![polys[f]!.indexOf(6)]![0]!).toBeCloseTo(2 / Math.sqrt(6), 5);
+  });
+
   it("points radially away from the target", () => {
     // Measured with three targets. The apex sits at (0, 0.06, 0), so a target
     // above it flips its normal — which is how the sign was pinned.
