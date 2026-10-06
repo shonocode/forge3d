@@ -20,7 +20,7 @@
  */
 import { scanfillTriangles } from "./triangle-fill";
 import { meshVertNormals } from "../blender-math";
-import { calcEdges } from "../bmesh-lite";
+import { bmFromMesh, calcEdges, diskEdges, liveEdges, otherVert, type BE, type BV } from "../bmesh-lite";
 import { rngSrandom } from "../blender-rng";
 import { genericTurbulence } from "../texture/noise";
 import { interpWeightsPoly } from "./interp";
@@ -1271,7 +1271,7 @@ function loopsFromEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): numbe
 
 /**
  * Close each named loop with **one** face — Blender's
- * `bmesh.ops.edgeloop_fill(edges=)`.
+ * `bmesh.ops.edgeloop_fill(edges=)` (`bmo_edgeloop_fill_exec`, ported).
  *
  * The difference from {@link holesFill} is the selection: that one finds every
  * open loop in the mesh and closes them all, this one closes the loops you
@@ -1279,20 +1279,95 @@ function loopsFromEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): numbe
  * four edges gives one quad back and leaves the sheet's own rim open —
  * measured, 15 faces become 16 and the area goes from 0.9375 to 1.0.
  *
- * **Interior edges in the selection are ignored rather than refused**: an edge
- * with a face on both sides is not part of any hole, so there is nothing for
- * it to close. A selection made only of those fills nothing and returns an
- * empty set — read the return value rather than assuming.
+ * **Any edges will do, not only a hole's border** (compat-backlog C56): every edge of the
+ * selection must have both ends on exactly two selected edges, and each closed loop they
+ * make becomes a face — so a ring of interior edges round a cube's waist gets a face inside
+ * the cube. The loop is walked from the first vertex (the ends of the edges in mesh order),
+ * along the first selected edge in each vertex's disk order that is not the one just taken;
+ * that decides the face's winding, which is **not** matched to the neighbours. A selection that is not
+ * made of closed loops (a vertex on one or three edges, an edge listed twice) fills nothing, as
+ * Blender's does. A face that already exists on the same vertices is not made again.
+ *
+ * The edges are taken in the mesh's edge order — what `bmesh.ops` sees when it is handed
+ * `bm.edges` filtered.
  *
  * Returns the new faces.
  */
 export function edgeloopFill(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
-  const loops = loopsFromEdges(em, selectedEdges);
-  if (loops.length === 0) return new Set();
+  const polys = toPolygons(em);
+  const bm = bmFromMesh({ positions: em.positions, polys });
+  const marked = new Set<BE>();
+  for (const heRaw of selectedEdges) {
+    const h = em.halfEdges[heRaw];
+    if (!h) continue;
+    const a = h.v;
+    const b = em.halfEdges[h.next]!.v;
+    const e = liveEdges(bm).find((x) => (x.v1.index === a && x.v2.index === b) || (x.v1.index === b && x.v2.index === a));
+    if (e) marked.add(e);
+  }
+  const edges = [...marked].sort((x, y) => x.index - y.index);
+  const tote = edges.length;
+  if (tote === 0) return new Set();
 
-  const out = toPolygons(em);
+  // `verts`: the ends of the edges in the order they come up, once each.
+  const verts: BV[] = [];
+  const used = new Set<BV>();
+  for (const e of edges)
+    for (const v of [e.v1, e.v2])
+      if (!used.has(v)) {
+        if (verts.length === tote) return new Set();
+        used.add(v);
+        verts.push(v);
+      }
+  if (verts.length !== tote) return new Set();
+  for (const v of verts) if (diskEdges(v).filter((e) => marked.has(e)).length !== 2) return new Set();
+
+  const loops: BV[][] = [];
+  let ePrev: BE | null = null;
+  let eNext: BE | null = null;
+  let usedCount = 0;
+  while (usedCount < tote) {
+    let v = verts.find((x) => used.has(x))!;
+    const loop: BV[] = [];
+    do {
+      for (const e of diskEdges(v))
+        if (marked.has(e) && e !== ePrev) {
+          eNext = e;
+          break;
+        }
+      loop.push(v);
+      used.delete(v);
+      usedCount++;
+      v = otherVert(eNext!, v);
+      ePrev = eNext;
+    } while (v !== loop[0]);
+    loops.push(loop);
+  }
+
+  const out = polys.map((p) => [...p]);
   const start = out.length;
-  for (const loop of loops) out.push(loop);
+  const have = new Set(out.map((p) => [...p].sort((x, y) => x - y).join(",")));
+  for (const loop of loops) {
+    // `BM_face_create_ngon_verts(calc_winding)`: the edges that already have a face vote — each one the new face would run the way its
+    // first face does counts for reversing it, each the other way against — and the loop is turned round when the first outnumber.
+    let same = 0;
+    let opposite = 0;
+    loop.forEach((v, i) => {
+      const prev = loop[(i + loop.length - 1) % loop.length]!;
+      const e = prev.e ? diskEdges(prev).find((x) => otherVert(x, prev) === v) : undefined;
+      if (e?.l) {
+        if (prev === e.l.v) same++;
+        else opposite++;
+      }
+    });
+    const ordered = opposite < same ? [...loop].reverse() : loop;
+    const p = ordered.map((v) => v.index);
+    const key = [...p].sort((x, y) => x - y).join(",");
+    if (have.has(key)) continue;
+    have.add(key);
+    out.push(p);
+  }
+  if (out.length === start) return new Set();
   // `edgeloop_fill` makes the face with no example: its corners are 0.
   addFaces(em, em.positions, out, start, false);
 
