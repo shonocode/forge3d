@@ -9,6 +9,7 @@ import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine"
 import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
 import { bevelMesh } from "../bevel/bevel";
 import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
+import { triangulate } from "../triangulate";
 import { insetRegionMesh } from "../inset";
 
 /**
@@ -1888,8 +1889,8 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
  *
  * **Not Blender's Triangulate Faces.** Ctrl+T defaults to BEAUTY for quads
  * and n-gons; a fan matches it only for quads with `quad_method=FIXED`. For
- * Blender's answer use `triangulate` (`BM_face_triangulate`, every quad
- * and n-gon method). Returns the new triangle face ids (∅ when nothing had to
+ * Blender's answer use {@link triangulateEditFaces} (the editor's Ctrl+T) or
+ * `triangulate` (`BM_face_triangulate`, every quad and n-gon method). Returns the new triangle face ids (∅ when nothing had to
  * be triangulated).
  */
 export function quadsToTris(em: EditMesh, selectedFaces: ReadonlySet<number> | null): Set<number> {
@@ -1914,6 +1915,27 @@ export function quadsToTris(em: EditMesh, selectedFaces: ReadonlySet<number> | n
   const out = new Set<number>();
   for (let f = triStart; f < newPolys.length; f++) out.add(f);
   return out;
+}
+
+/**
+ * Blender's **Triangulate Faces** (Ctrl+T, `bpy.ops.mesh.quads_convert_to_tris`) on an edit mesh: quads on the better diagonal (`BEAUTY`),
+ * n-gons by beauty, a triangle that would duplicate one already there dropped (the operator kills the doubles `bmesh.ops.triangulate`
+ * only reports) — {@link triangulate} with `dropDuplicates`, not the corner-0 fan of {@link quadsToTris} (compat-backlog C76).
+ * `selectedFaces` limits it (all faces when null). Returns the new triangles' face indices (∅ when nothing had to be cut).
+ */
+export function triangulateEditFaces(em: EditMesh, selectedFaces: ReadonlySet<number> | null): Set<number> {
+  const before = toPolygons(em);
+  if (!before.some((p, f) => p.length > 3 && (!selectedFaces || selectedFaces.has(f)))) return new Set();
+  const key = (p: readonly number[]): string => [...p].sort((a, b) => a - b).join(",");
+  const had = new Set(before.filter((p) => p.length === 3).map(key));
+  const out = triangulate(meshToData(em), { ...(selectedFaces ? { faces: selectedFaces } : {}), dropDuplicates: true });
+  const source = em.source;
+  Object.assign(em, meshFromData(out), { source });
+  const made = new Set<number>();
+  out.polys.forEach((p, f) => {
+    if (p.length === 3 && !had.has(key(p))) made.add(f);
+  });
+  return made;
 }
 
 /** Options for {@link insetRegion}, named as `bmesh.ops.inset_region` names them. */

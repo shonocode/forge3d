@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, quadsToTris, subdivideCatmullClark, trisToQuads, vertexSlide } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -708,7 +708,7 @@ export function quadsToTrisSelection(): void {
       ? new Set(state.editSelection.indices)
       : null;
   applyTopologyOp("Quads to Tris", () => {
-    const result = quadsToTris(em, sel);
+    const result = triangulateEditFaces(em, sel);
     if (result.size === 0) {
       status("⚠ Quads to Tris: 三角形化する多角形面がない");
       return new Set<number>();

@@ -3,7 +3,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
 import { canonicalEdge, faceVertices, faceVerts, forEachEdge, toPolygons } from "./half-edge";
 import { meshFromData, meshToData } from "../../lib/mesh";
-import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads, reverseFaces, extrudeDiscreteFaces, connectVertPair, splitEdges, offsetEdgeLoops } from "./operators";
+import { bevelEdges, triangulateEditFaces, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads, reverseFaces, extrudeDiscreteFaces, connectVertPair, splitEdges, offsetEdgeLoops } from "./operators";
 
 /** Same stub mesh as half-edge.test.ts — just the surface we touch. */
 function makeStubMesh(positions: number[], indices: number[]): Mesh {
@@ -1331,5 +1331,29 @@ describe("findDoubles target (parity row find-doubles-triple)", () => {
     const map = findDoubles(em, 0.0001, new Set([1]));
     expect(map.get(0)).toBe(1);
     expect(map.has(1)).toBe(false);
+  });
+});
+
+describe("triangulateEditFaces (parity row triangulate-bpy, backlog C76)", () => {
+  /** A rhombus (long diagonal 0-2) and a triangle on 1-2-3, which the beauty cut along 1-3 would make a second time. */
+  const rhombus = () =>
+    meshFromData({
+      positions: Float32Array.from([-0.2, 0, 0, 0, 0, 0.1, 0.2, 0, 0, 0, 0, -0.1]),
+      polys: [[0, 1, 2, 3], [1, 2, 3]],
+    });
+
+  it("cuts a quad on its shorter diagonal and drops a triangle that would be there twice", () => {
+    const em = rhombus();
+    const made = triangulateEditFaces(em, null);
+    const polys = toPolygons(em);
+    expect(polys).toHaveLength(2);
+    expect(made.size).toBe(1);
+    // The new triangle is the one that was not there: 0-1-3 (the short diagonal 1-3 splits the rhombus into 0-1-3 and 1-2-3).
+    expect([...polys[[...made][0]!]!].sort()).toEqual([0, 1, 3]);
+  });
+
+  it("leaves a mesh of triangles alone", () => {
+    const em = meshFromData({ positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]), polys: [[0, 1, 2]] });
+    expect(triangulateEditFaces(em, null).size).toBe(0);
   });
 });
