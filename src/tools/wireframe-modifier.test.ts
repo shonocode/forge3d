@@ -23,6 +23,17 @@ describe("wireframeModifier (Blender's Wireframe modifier — compat-backlog B4)
     expect(out.polys).toHaveLength(6 + 24 * 2);
   });
 
+  it("wires a face subset and leaves the rest (parity rows wireframe-faces*)", () => {
+    // Blender's numbers for the cube's top face alone (face 1): 20 vertices and 14 faces — the four top corners' bars, with every
+    // original vertex kept because each is shared with a side face that was not wired.
+    const out = wireframeModifier(cube(), { faces: new Set([1]) });
+    expect(out.positions.length / 3).toBe(20);
+    expect(out.polys).toHaveLength(14);
+    // With boundary bars the rim of the subset is a boundary (the neighbouring faces are not wired): Blender's 24 and 22.
+    const rim = wireframeModifier(cube(), { faces: new Set([1]), boundary: true });
+    expect([rim.positions.length / 3, rim.polys.length]).toEqual([24, 22]);
+  });
+
   it("even thickness pushes a right-angled corner's point further in than plain", () => {
     // The first corner point is the 17th vertex (after the 8 × 2 side points).
     const corner = (m: MeshData): number[] => [m.positions[16 * 3]!, m.positions[16 * 3 + 1]!, m.positions[16 * 3 + 2]!];

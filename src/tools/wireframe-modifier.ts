@@ -15,6 +15,10 @@
  * thickness), each open edge's end one point off the rim with `boundary`;
  * each face side then gets two quads, a boundary side two more.
  *
+ * `faces` is `bmesh.ops.wireframe`'s face subset (`use_tag`): only those faces get bars. An edge is a boundary when no *other* subset
+ * face has it, the vertex normals still come from every face, and `replace` removes a vertex only if every face on it was made into
+ * wire — a face with a vertex shared with an untouched face keeps all its own (compat-backlog C50).
+ *
  * Custom normals are dropped (compat-backlog C29).
  */
 import type { MeshData } from "../lib/mesh";
@@ -24,6 +28,8 @@ import { vertexGroupWeights } from "./mesh-layers";
 
 /** Blender's Wireframe modifier settings, with its defaults. */
 export interface WireframeModifierOptions {
+  /** `bmesh.ops.wireframe`'s `faces`: indices into `data.polys` of the faces to turn into bars; the rest stay. Default all. */
+  faces?: ReadonlySet<number>;
   /** `thickness`. Default 0.02. */
   thickness?: number;
   /** `offset`, −1 … 1: where the bar sits against the surface. Default 0. */
@@ -112,12 +118,17 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   const keptFace = data.polys.map((p, i) => (p.length >= 3 ? i : -1)).filter((i) => i >= 0);
   const faceNo = polys.map((p) => faceNormalCalc(Pv, p));
   const vertNo = meshVertNormals(Pv, polys);
+  // The faces that become bars (`use_tag`); all of them for the modifier.
+  const inSet = keptFace.map((i) => !opts.faces || opts.faces.has(i));
 
-  // Edge face counts, and every edge at a vertex (for the relative offset).
+  // Edge face counts over the subset (`bm_loop_is_radial_boundary`), and every edge at a vertex (for the relative offset).
   const faceCount = new Map<string, number>();
-  for (const p of polys) p.forEach((v, i) => {
-    const k = seamKey(v, p[(i + 1) % p.length]!);
-    faceCount.set(k, (faceCount.get(k) ?? 0) + 1);
+  polys.forEach((p, fi) => {
+    if (!inSet[fi]) return;
+    p.forEach((v, i) => {
+      const k = seamKey(v, p[(i + 1) % p.length]!);
+      faceCount.set(k, (faceCount.get(k) ?? 0) + 1);
+    });
   });
   const isBoundary = (a: number, b: number): boolean => faceCount.get(seamKey(a, b)) === 1;
   const vertEdges: number[][] = Array.from({ length: V }, () => []);
@@ -133,7 +144,22 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   for (const e of data.edges ?? []) if (e.length === 2) addEdge(e[0]!, e[1]!);
 
   const tagged = new Uint8Array(V);
-  for (const p of polys) for (const v of p) tagged[v] = 1;
+  polys.forEach((p, fi) => {
+    if (inSet[fi]) for (const v of p) tagged[v] = 1;
+  });
+
+  // Which of the input's vertices go (`use_replace`). The modifier takes them all; with a subset a vertex goes only when every face on it
+  // was made into wire — a face that mixes a wired vertex with an unwired one keeps all of its vertices — and a face on a vertex that
+  // goes goes with it (`BM_vert_kill`). The untouched faces whose every vertex is wired go too.
+  const dupe = Uint8Array.from(tagged);
+  if (opts.faces)
+    for (const p of polys) {
+      const some = p.some((v) => tagged[v]);
+      const all = p.every((v) => tagged[v]);
+      if (some && !all) for (const v of p) dupe[v] = 0;
+    }
+  const origGone = (v: number): boolean => useReplace && (opts.faces ? dupe[v] === 1 : true);
+  const origFaceSurvives = (p: readonly number[]): boolean => p.every((v) => !origGone(v));
 
   const out: number[] = [];
   const srcOf: number[] = [];
@@ -194,6 +220,10 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   const boundaryVert = new Array<number>(V).fill(-1);
   polys.forEach((p, fi) => {
     const n = p.length;
+    if (!inSet[fi]) {
+      loopVert.push([]);
+      return;
+    }
     loopVert.push(
       p.map((v, i) => {
         const prev = Pv[p[(i + n - 1) % n]!]!;
@@ -233,6 +263,7 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
     const be = vertEdges[v]!.filter((w) => isBoundary(v, w));
     const faceOf = (a: number, b: number): { fi: number; from: number; to: number } => {
       for (let fi = 0; fi < polys.length; fi++) {
+        if (!inSet[fi]) continue;
         const p = polys[fi]!;
         const i = p.indexOf(a);
         if (i < 0) continue;
@@ -286,8 +317,10 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
     return o ? Math.max(0, Math.min(matMax, m + o)) : m;
   };
   const creases = new Map<string, number>();
-  if (!useReplace) {
+  const origSurvive = !useReplace || !!opts.faces;
+  if (origSurvive) {
     polys.forEach((p, fi) => {
+      if (!origFaceSurvives(p)) return;
       outPolys.push([...p]);
       src.push({ face: fi, corners: p.map((_, k) => k) });
       mats.push(data.materials?.[keptFace[fi]!] ?? 0);
@@ -295,6 +328,7 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
     for (const [k, w] of data.creases ?? []) creases.set(k, w);
   }
   polys.forEach((p, fi) => {
+    if (!inSet[fi]) return;
     const n = p.length;
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
@@ -327,7 +361,7 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   // `replace`: the input's vertices go; renumber.
   const keep = new Int32Array(srcOf.length).fill(-1);
   let n = 0;
-  for (let v = 0; v < srcOf.length; v++) if (!(useReplace && v < V)) keep[v] = n++;
+  for (let v = 0; v < srcOf.length; v++) if (v >= V || !origGone(v)) keep[v] = n++;
   const positions = new Float32Array(n * 3);
   for (let v = 0; v < srcOf.length; v++) if (keep[v]! >= 0) positions.set(out.slice(v * 3, v * 3 + 3), keep[v]! * 3);
   const result: MeshData = { positions, polys: outPolys.map((p) => p.map((v) => keep[v]!)) };
@@ -363,10 +397,23 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
     if (r) cr.set(r, w);
   }
   if (cr.size) result.creases = cr;
-  if (!useReplace) {
-    if (data.seams) result.seams = new Set(data.seams);
-    if (data.sharp) result.sharp = new Set(data.sharp);
-    if (data.edges?.length) result.edges = data.edges.map((e) => [...e]);
+  if (origSurvive) {
+    // The input's own edges keep their ends' new numbers; an edge with an end that went goes.
+    const rekeySet = (s: ReadonlySet<string> | undefined): Set<string> | undefined => {
+      if (!s) return undefined;
+      const out = new Set<string>();
+      for (const k of s) {
+        const r = rekey(k);
+        if (r) out.add(r);
+      }
+      return out;
+    };
+    const seams = rekeySet(data.seams);
+    if (seams) result.seams = seams;
+    const sharp = rekeySet(data.sharp);
+    if (sharp) result.sharp = sharp;
+    const wire = (data.edges ?? []).filter((e) => e.every((v) => keep[v]! >= 0)).map((e) => e.map((v) => keep[v]!));
+    if (wire.length) result.edges = wire;
   }
   return result;
 }
