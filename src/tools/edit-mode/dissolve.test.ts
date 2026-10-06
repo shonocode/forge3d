@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { forEachEdge, edgeOrigin, edgeEnd } from "./half-edge";
-import { dissolveFaces, dissolveEdges, dissolveLimit, connectVerts } from "./dissolve";
+import { dissolveFaces, dissolveEdges, dissolveLimit, connectVerts, dissolveVerts } from "./dissolve";
 import { toPolygons } from "./half-edge";
 
 /** `nx` by `ny` quads in the z=0 plane, one unit each. */
@@ -239,5 +239,19 @@ describe("connectVerts", () => {
 
   it("does nothing when every selected corner is next to another", () => {
     expect(connectVerts(hexagon(), new Set([0, 1])).size).toBe(0);
+  });
+});
+
+describe("dissolveVerts on a vertex with two edges (parity row dissolve-verts-pair)", () => {
+  it("takes a sheet's corner out of its quad, which becomes a triangle", () => {
+    const em = meshFromData({
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+    });
+    dissolveVerts(em, new Set([0]));
+    const polys = toPolygons(em);
+    expect(polys).toHaveLength(1);
+    expect(polys[0]).toHaveLength(3);
+    expect(polys[0]!.includes(0)).toBe(false);
   });
 });

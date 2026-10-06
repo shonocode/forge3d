@@ -423,6 +423,18 @@ export function dissolveVerts(
   // touching two selected vertices bridges their groups, which is what makes
   // dissolving a run of vertices produce one face rather than several.
   let any = false;
+  // A selected vertex with exactly two edges is an edge pair (`BM_vert_is_edge_pair`): no face is joined across it, but the final cleanup
+  // merges its two edges, which takes the vertex out of every face on it — a grid corner turns a quad into a triangle (compat-backlog C73).
+  {
+    const neighbours = new Map<number, Set<number>>();
+    for (const poly of polys)
+      poly.forEach((v, i) => {
+        if (!neighbours.has(v)) neighbours.set(v, new Set());
+        neighbours.get(v)!.add(poly[(i + 1) % poly.length]!);
+        neighbours.get(v)!.add(poly[(i + poly.length - 1) % poly.length]!);
+      });
+    for (const v of selectedVerts) if (neighbours.get(v)?.size === 2) any = true;
+  }
   for (let f = 0; f < polys.length; f++) {
     const poly = polys[f]!;
     let anchor = -1;
