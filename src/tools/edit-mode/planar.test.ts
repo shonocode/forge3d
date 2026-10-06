@@ -149,3 +149,23 @@ describe("planarFaces", () => {
     expect(() => planarFaces(lifted(), [3])).toThrow(/no face 3/);
   });
 });
+
+describe("planarFaces: what bmo_planar_faces_exec skips (compat-backlog C69)", () => {
+  /** A bent quad 0-1-2-3, and a triangle 0-4-5 sharing its corner 0. */
+  const bent = (): MeshData => ({
+    positions: Float32Array.from([0, 0, 0.2, 1, 0, 0, 1, 1, 0.2, 0, 1, 0, -1, 0, 0.5, -1, -1, 0.5]),
+    polys: [[0, 1, 2, 3], [0, 4, 5]],
+  });
+
+  it("does not count a triangle among the faces a vertex averages over", () => {
+    const quadOnly = planarFaces({ ...bent(), polys: [[0, 1, 2, 3]] }, [0]);
+    const withTriangle = planarFaces(bent(), [0, 1]);
+    // The triangle is flat already and is left out: corner 0 goes where the quad alone sends it.
+    expect(at(withTriangle, 0)).toEqual(at(quadOnly, 0));
+  });
+
+  it("leaves a vertex within 1e-5 of its target where it is", () => {
+    const m: MeshData = { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 1, 1e-6, 0, 1, 0]), polys: [[0, 1, 2, 3]] };
+    expect(Array.from(planarFaces(m, [0]).positions)).toEqual(Array.from(m.positions));
+  });
+});

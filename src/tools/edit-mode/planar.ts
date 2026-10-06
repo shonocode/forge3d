@@ -99,17 +99,34 @@ export function planarFaces(
   // to speak of.
   const planes: (Float64Array | null)[] = chosen.map((f) => {
     const poly = data.polys[f]!;
-    if (poly.length < 3) return null;
+    // A triangle is already flat and `bmo_planar_faces_exec` skips it (`f->len == 3`): it neither pulls its vertices nor counts in
+    // their average (compat-backlog C69).
+    if (poly.length <= 3) return null;
 
-    let cx = 0, cy = 0, cz = 0;
-    for (const v of poly) {
-      cx += P[v * 3]!;
-      cy += P[v * 3 + 1]!;
-      cz += P[v * 3 + 2]!;
+    // `BM_face_calc_center_median_weighted`: each corner weighted by the lengths of the two edges on it.
+    let cx = 0, cy = 0, cz = 0, totw = 0;
+    {
+      const edge = (i: number): number => {
+        const a = poly[i]! * 3;
+        const b = poly[(i + 1) % poly.length]! * 3;
+        return Math.hypot(P[a]! - P[b]!, P[a + 1]! - P[b + 1]!, P[a + 2]! - P[b + 2]!);
+      };
+      let wPrev = edge(poly.length - 1);
+      for (let i = 0; i < poly.length; i++) {
+        const wCurr = edge(i);
+        const w = wCurr + wPrev;
+        cx += P[poly[i]! * 3]! * w;
+        cy += P[poly[i]! * 3 + 1]! * w;
+        cz += P[poly[i]! * 3 + 2]! * w;
+        totw += w;
+        wPrev = wCurr;
+      }
+      if (totw !== 0) {
+        cx /= totw;
+        cy /= totw;
+        cz /= totw;
+      }
     }
-    cx /= poly.length;
-    cy /= poly.length;
-    cz /= poly.length;
 
     // The Newell normal — the plane an n-gon most nearly lies in, and the one
     // Blender's own polygon normal uses. For a quad it is half the cross
@@ -157,10 +174,14 @@ export function planarFaces(
     for (let v = 0; v < count; v++) {
       const n = hits[v]!;
       if (n === 0) continue;
-      for (let k = 0; k < 3; k++) {
-        const want = sum[v * 3 + k]! / n;
-        P[v * 3 + k] = P[v * 3 + k]! + (want - P[v * 3 + k]!) * factor;
-      }
+      // A vertex within 1e-5 of where the faces want it is left alone (`len_squared_v3v3 > eps_sq`).
+      const dx = sum[v * 3]! / n - P[v * 3]!;
+      const dy = sum[v * 3 + 1]! / n - P[v * 3 + 1]!;
+      const dz = sum[v * 3 + 2]! / n - P[v * 3 + 2]!;
+      if (!(dx * dx + dy * dy + dz * dz > 1e-10)) continue;
+      P[v * 3] = P[v * 3]! + dx * factor;
+      P[v * 3 + 1] = P[v * 3 + 1]! + dy * factor;
+      P[v * 3 + 2] = P[v * 3 + 2]! + dz * factor;
     }
   }
 
