@@ -136,8 +136,8 @@ describe("edgeFaceAdd", () => {
     expect(meshToData(em).edges).toEqual([[0, 8]]);
   });
 
-  it("still refuses a single vertex", () => {
-    expect(() => run(grid(), [3])).toThrow(/two to make an edge/);
+  it("refuses an empty selection", () => {
+    expect(() => run(grid(), [])).toThrow(/no vertices/);
   });
 
   it("refuses a collinear selection", () => {
@@ -157,5 +157,53 @@ describe("ringOf", () => {
     const ring = ringOf(L, new Set([0, 1, 2, 3, 4, 5]));
     expect(ring).toHaveLength(6);
     expect([...ring].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+});
+
+describe("edgeFaceAdd on a selection Blender extends (compat-backlog C77, parity rows edge-face-add-vertex / -edge)", () => {
+  /** `openCube` here has its +Z face missing: the rim is 4-5-6-7. */
+  const chain = (): MeshData => ({
+    positions: Float32Array.from([0, 0, 0, 0.2, 0, 0, 0.3, 0, 0.15, 0.2, 0, 0.3, 0, 0, 0.3, -0.1, 0, 0.15]),
+    polys: [],
+    edges: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]],
+  });
+
+  it("makes a triangle across a rim corner from the corner alone", () => {
+    const { data, face } = run(openCube(), [4]);
+    expect(face).toBe(5);
+    expect([...data.polys[5]!].sort()).toEqual([4, 5, 7]);
+  });
+
+  it("makes the lid from one rim edge", () => {
+    const { data } = run(openCube(), [4, 5]);
+    expect(data.polys).toHaveLength(6);
+    expect([...data.polys[5]!].sort()).toEqual([4, 5, 6, 7]);
+  });
+
+  it("does nothing for a vertex whose two boundary edges are in one face, or that has none", () => {
+    expect(run(grid(), [0]).data.polys).toHaveLength(4);
+    expect(run(openCube(), [0]).data.polys).toHaveLength(5);
+    // An edge whose end has a boundary edge in the same face.
+    expect(run(grid(), [0, 1]).data.polys).toHaveLength(4);
+  });
+
+  it("makes a triangle from the middle vertex of a wire chain and uses up the wire edges it runs along", () => {
+    const { data } = run(chain(), [2]);
+    expect(data.polys).toHaveLength(1);
+    expect([...data.polys[0]!].sort()).toEqual([1, 2, 3]);
+    expect(data.edges).toEqual([[0, 1], [3, 4], [4, 5]]);
+  });
+
+  it("makes a quad from an inner edge of the chain, and a chain end does nothing", () => {
+    const { data } = run(chain(), [1, 2]);
+    expect([...data.polys[0]!].sort()).toEqual([0, 1, 2, 3]);
+    expect(run(chain(), [0]).data.polys).toHaveLength(0);
+  });
+
+  it("takes the way round from how the loose edges are stored", () => {
+    // Measured against Blender: the same chain with edge 2-1 written the other way turns the triangle over.
+    const flipped = { ...chain(), edges: [[0, 1], [2, 1], [2, 3], [3, 4], [4, 5]] };
+    expect(cycle(run(chain(), [2]).data.polys[0]!)).toEqual([1, 2, 3]);
+    expect(cycle(run(flipped, [2]).data.polys[0]!)).toEqual([1, 3, 2]);
   });
 });

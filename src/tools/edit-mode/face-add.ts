@@ -225,6 +225,216 @@ export function ringOf(positions: Float32Array, verts: ReadonlySet<number>): num
 }
 
 
+interface Extension {
+  /** The vertices round the loop the selection grows to, in order. */
+  ring: number[];
+  /** The loop's edges that already exist and have no face, as `[a, b]` as the wire list holds them. */
+  loose: number[][];
+}
+
+/**
+ * `edbm_add_edge_face_exec__tricky_extend_sel`: the loop the selection grows to, or null when it does not apply.
+ * Applies to one selected vertex, and to two joined by an edge (which is then the one selected edge).
+ */
+function extendSelection(polys: number[][], wire: number[][], verts: ReadonlySet<number>): Extension | null {
+  if (verts.size > 2) return null;
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const faces = new Map<string, number[]>();
+  const at = new Map<number, string[]>();
+  const ends = new Map<string, [number, number]>();
+  const note = (a: number, b: number, f: number): void => {
+    const k = key(a, b);
+    if (!faces.has(k)) {
+      faces.set(k, []);
+      ends.set(k, [a, b]);
+      for (const v of [a, b]) {
+        if (!at.has(v)) at.set(v, []);
+        at.get(v)!.push(k);
+      }
+    }
+    if (f >= 0) faces.get(k)!.push(f);
+  };
+  polys.forEach((poly, f) => poly.forEach((a, i) => note(a, poly[(i + 1) % poly.length]!, f)));
+  for (const [a, b] of wire) note(a!, b!, -1);
+
+  const isWire = (k: string): boolean => faces.get(k)!.length === 0;
+  const isBoundary = (k: string): boolean => faces.get(k)!.length === 1;
+  const shareFace = (x: string, y: string): boolean => faces.get(x)!.some((f) => faces.get(y)!.includes(f));
+  const other = (k: string, v: number): number => (ends.get(k)![0] === v ? ends.get(k)![1] : ends.get(k)![0]);
+  /** `vert_edge_lookup`: the edges at `v` but `skip` that pass `test`. */
+  const lookup = (v: number, skip: string | null, test: (k: string) => boolean): string[] =>
+    (at.get(v) ?? []).filter((k) => k !== skip && test(k));
+  const loose = (keys: string[]): number[][] =>
+    keys.filter(isWire).map((k) => wire.find(([a, b]) => key(a!, b!) === k)!.slice());
+
+  if (verts.size === 1) {
+    const v = [...verts][0]!;
+    const wires = lookup(v, null, isWire);
+    const bounds = lookup(v, null, isBoundary);
+    const pair =
+      wires.length === 2 && !shareFace(wires[0]!, wires[1]!)
+        ? wires
+        : bounds.length === 2 && !shareFace(bounds[0]!, bounds[1]!)
+          ? bounds
+          : null;
+    if (!pair) return null;
+    const [a, b] = [other(pair[0]!, v), other(pair[1]!, v)];
+    const closing = faces.has(key(a, b)) ? [key(a, b)] : [];
+    return { ring: [a, v, b], loose: loose([...pair, ...closing]) };
+  }
+
+  const [a, b] = [...verts] as [number, number];
+  const e = key(a, b);
+  if (!faces.has(e)) return null; // two vertices with no edge between them make that edge, not a face
+  // The two ends try (wire, wire), (wire, boundary), (boundary, wire), (boundary, boundary), in that order.
+  for (const [t1, t2] of [
+    [isWire, isWire],
+    [isWire, isBoundary],
+    [isBoundary, isWire],
+    [isBoundary, isBoundary],
+  ] as const) {
+    const p1 = lookup(a, e, t1);
+    const p2 = lookup(b, e, t2);
+    if (p1.length === 1 && p2.length === 1 && !shareFace(e, p1[0]!) && !shareFace(e, p2[0]!)) {
+      const [a2, b2] = [other(p1[0]!, a), other(p2[0]!, b)];
+      const closing = a2 !== b2 && faces.has(key(a2, b2)) ? [key(a2, b2)] : [];
+      return { ring: a2 === b2 ? [a, b, a2] : [a2, a, b, b2], loose: loose([e, p1[0]!, p2[0]!, ...closing]) };
+    }
+  }
+  return null;
+}
+
+/**
+ * The order `BM_mesh_edgenet` gives a face made only of loose edges (`edgenet_fill`; compat-backlog C77): which way round, and from which
+ * vertex. `selected` are those edges as the wire list holds them — the order of Blender's edge array, and each edge's two ends as it
+ * stores them. `edgenet_prepare` first closes an open path with one more edge, from the far end of the first edge to the far end of the last.
+ * The walk then starts at the first edge, both ends at once, ends where the two sides meet, and reads the face off the `prev` links.
+ *
+ * Null when the walk is not the plain one (a loop that is not a single cycle, or a vertex with edges besides the loop's, which Blender
+ * searches level by level and may price differently).
+ */
+function edgenetOrder(selected: number[][], wire: number[][], polys: number[][]): number[] | null {
+  if (selected.length < 2) return null;
+  // Mesh order: the wire list's.
+  const order = (e: number[]): number => wire.findIndex((w) => (w[0] === e[0] && w[1] === e[1]) || (w[0] === e[1] && w[1] === e[0]));
+  const edges = selected.map((e) => [e[0]!, e[1]!]).sort((x, y) => order(x) - order(y));
+
+  const degree = new Map<number, number>();
+  for (const [a, b] of edges) for (const v of [a!, b!]) degree.set(v, (degree.get(v) ?? 0) + 1);
+  // `edgenet_prepare`: close a path with one more edge, (far end of the first, far end of the last), walked from the first end found.
+  const ends = [...degree].filter(([, d]) => d === 1).map(([v]) => v);
+  if (ends.length === 2) {
+    const first = edges.find((e) => degree.get(e[0]!) === 1 || degree.get(e[1]!) === 1)!;
+    const walk: number[][] = [first];
+    const seen = new Set([first]);
+    let cur = first;
+    for (;;) {
+      let next: number[] | undefined;
+      for (const v of [cur[0]!, cur[1]!]) {
+        next = edges.find((e) => !seen.has(e) && (e[0] === v || e[1] === v));
+        if (next) break;
+      }
+      if (!next) break;
+      seen.add(next);
+      walk.push(next);
+      cur = next;
+    }
+    if (walk.length !== edges.length || walk.length < 2) return null;
+    const farOf = (e: number[], neighbour: number[]): number => (neighbour.includes(e[0]!) ? e[1]! : e[0]!);
+    edges.push([farOf(walk[0]!, walk[1]!), farOf(walk[walk.length - 1]!, walk[walk.length - 2]!)]);
+  } else if (ends.length !== 0) return null;
+  for (const d of new Set(edges.flat())) if ((degree.get(d) ?? 0) > 2) return null;
+
+  // How many edges meet at each vertex of the mesh — the walk's shortcut asks.
+  const meshEdges = new Set<string>();
+  for (const poly of polys) poly.forEach((a, i) => meshEdges.add(`${Math.min(a, poly[(i + 1) % poly.length]!)}_${Math.max(a, poly[(i + 1) % poly.length]!)}`));
+  for (const [a, b] of wire) meshEdges.add(`${Math.min(a!, b!)}_${Math.max(a!, b!)}`);
+  const total = new Map<number, number>();
+  for (const k of meshEdges) for (const v of k.split("_").map(Number)) total.set(v, (total.get(v) ?? 0) + 1);
+  const made = edges.length - selected.length;
+  if (made) for (const v of edges[edges.length - 1]!) total.set(v!, (total.get(v!) ?? 0) + 1);
+
+  // `bm_edgenet_path_calc` from the first edge: v1 on one side (pass 1), v2 on the other (pass -1), v2 popped first.
+  interface Info { pass: number; prev: number }
+  const info = new Map<number, Info>();
+  const vn = (v: number): Info => {
+    let i = info.get(v);
+    if (!i) info.set(v, (i = { pass: 0, prev: -1 }));
+    return i;
+  };
+  const [v1, v2] = edges[0]!;
+  Object.assign(vn(v1!), { pass: 1, prev: v2! });
+  Object.assign(vn(v2!), { pass: -1, prev: v1! });
+  interface Node { v: number; next: Node | null }
+  let lsPrev: Node | null = { v: v2!, next: { v: v1!, next: null } };
+  let lsNext: Node | null = null;
+  const at = (v: number): number[][] => edges.filter((e) => e[0] === v || e[1] === v);
+
+  /** `bm_edgenet_path_step`, with its walk along a single way on. */
+  const step = (start: number): number[] | null => {
+    let cur = start;
+    for (;;) {
+      const here = vn(cur);
+      let tot = 0;
+      let added = 0;
+      for (const e of at(cur)) {
+        const next = e[0] === cur ? e[1]! : e[0]!;
+        if (next === here.prev) continue;
+        const there = vn(next);
+        if (here.pass !== there.pass) {
+          if (here.pass === -there.pass) return e;
+          there.pass = here.pass;
+          there.prev = cur;
+          lsNext = { v: next, next: lsNext };
+          added++;
+        }
+        tot++;
+      }
+      // The edges of the mesh the loop does not use count too.
+      tot += (total.get(cur) ?? 0) - 1 - at(cur).filter((e) => (e[0] === cur ? e[1] : e[0]) !== here.prev).length;
+      if (added === 1 && tot === 1) {
+        cur = lsNext!.v;
+        lsNext = lsNext!.next;
+        continue;
+      }
+      return null;
+    }
+  };
+
+  let foundEdge: number[] | null = null;
+  let cost = 0;
+  for (let again = true; again && !foundEdge; ) {
+    again = false;
+    while (lsPrev && !foundEdge) {
+      const v: number = lsPrev.v;
+      lsPrev = lsPrev.next;
+      const before: Node | null = lsNext;
+      foundEdge = step(v);
+      if (!foundEdge && lsNext !== before) again = true;
+    }
+    if (foundEdge) break;
+    cost++;
+    lsPrev = lsNext;
+    lsNext = null;
+  }
+  // A path that took more than the first level is searched again from every edge for a shorter one — not ported.
+  if (!foundEdge || cost > 0) return null;
+  // `path_from_pass(e_found->v1)` reversed, then `path_from_pass(e_found->v2)` on the front of it.
+  const half = (v: number): number[] => {
+    const out: number[] = [];
+    const p = vn(v).pass;
+    let cur = v;
+    do {
+      out.unshift(cur);
+      cur = vn(cur).prev;
+    } while (cur >= 0 && vn(cur).pass === p);
+    return out;
+  };
+  const path = half(foundEdge[0]!).reverse();
+  for (const v of half(foundEdge[1]!).reverse()) path.unshift(v);
+  return path;
+}
+
 /**
  * Make one face from a set of vertices — Blender's F key.
  *
@@ -241,20 +451,32 @@ export function ringOf(positions: Float32Array, verts: ReadonlySet<number>): num
  * no face was made. It refuses when those two already have an edge between
  * them, measured: Blender returns `CANCELLED` and changes nothing.
  *
- * Throws on fewer than two vertices and on a collinear selection of three or
- * more.
+ * **One vertex, or two joined by an edge, can make a face too** — the selection is extended first
+ * (`edbm_add_edge_face_exec__tricky_extend_sel`, compat-backlog C77). One vertex with exactly two
+ * boundary edges (or exactly two wire edges), which share no face, is joined with the far ends of
+ * both: a triangle. One edge whose two ends each have exactly one other wire or boundary edge —
+ * none of them sharing a face with it — is joined with the far ends of those: a quad (a triangle
+ * when the far ends are the same vertex). Anything else with one vertex does nothing, and with two
+ * joined vertices is refused as before. The face runs round those edges in order, not by the
+ * angle sort a loose vertex set gets. Blender also votes the new face's smooth flag from the
+ * selected edges' faces; this mesh does not carry per-face shading, so that is not modelled.
+ *
+ * Throws on an empty selection and on a collinear selection of three or more.
  *
  * The winding follows the faces the new one touches, and with none it is the
  * ring's own order — see the module note.
  */
 export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | null {
-  if (verts.size < 2)
-    throw new Error(
-      `edgeFaceAdd: ${verts.size} vertices. Blender needs two to make an edge ` +
-        `and three to make a face.`,
-    );
+  if (verts.size < 1)
+    throw new Error("edgeFaceAdd: no vertices. Blender needs two to make an edge and three to make a face.");
 
   const polys = toPolygons(em);
+
+  // `tricky_extend_sel`: the selection grows to the edges around it, and what the face is made from is then that
+  // closed edge loop — `edgenet_prepare` adds the one edge that is missing — not a bare vertex cloud.
+  const extended = extendSelection(polys, em.wireEdges ?? [], verts);
+  if (extended) verts = new Set(extended.ring);
+  else if (verts.size === 1) return null; // `contextual_create` with a lone vertex: nothing, cancelled
 
   // Two vertices make a wire edge, and **only when there is not already an
   // edge between them** — measured: two adjacent corners of a grid come back
@@ -275,7 +497,7 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
   for (const poly of polys)
     if (poly.length === verts.size && poly.every((v) => verts.has(v))) return null;
 
-  const ring = ringOf(em.positions, verts);
+  const ring = extended ? extended.ring : ringOf(em.positions, verts);
 
   // `BM_face_create_ngon_verts(calc_winding)`: each ring edge that already has
   // a face votes by the direction of its **newest** face (`e->l` — the radial
@@ -300,10 +522,12 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
   }
   // The face starts where `BM_face_create_ngon` is handed it: at the ring's
   // last vertex then its first, or reversed, at its first then its last.
-  const face =
+  let face =
     keep < flip
       ? [ring[0]!, ...ring.slice(1).reverse()]
       : [ring[ring.length - 1]!, ...ring.slice(0, -1)];
+  // No neighbour to go by: `edgenet_fill` takes the face as `BM_mesh_edgenet`'s walk over the loose edges gave it.
+  if (extended && keep === 0 && flip === 0) face = edgenetOrder(extended.loose, em.wireEdges ?? [], polys) ?? face;
 
   // The layers follow the path F takes in `contextual_create`. When the
   // ring's edges are all there it is `edgenet_fill`, whose face copies from
@@ -334,9 +558,16 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
     const b = face[(i + 1) % n]!;
     return a < b ? `${a}_${b}` : `${b}_${a}`;
   };
-  const closed = face.every((_, i) => edges.has(keyOf(i)));
+  const closed = extended !== null || face.every((_, i) => edges.has(keyOf(i)));
 
   polys.push(face);
+  // A wire edge the face now runs along is an ordinary edge from here on.
+  if (em.wireEdges?.length) {
+    const used = new Set<string>();
+    for (let i = 0; i < n; i++) used.add(keyOf(i));
+    const rest = em.wireEdges.filter(([a, b]) => !used.has(a! < b! ? `${a}_${b}` : `${b}_${a}`));
+    if (rest.length !== em.wireEdges.length) em.wireEdges = rest;
+  }
   if (closed) {
     addFaces(em, em.positions, polys, polys.length - 1, true);
     return polys.length - 1;
