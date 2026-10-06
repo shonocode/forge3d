@@ -266,7 +266,11 @@ export interface RegionExtendOptions {
 
 /**
  * Grow or shrink a face selection by one step — Blender's
- * `bmesh.ops.region_extend`, the Select ▸ Grow/Shrink of the UI.
+ * `bmesh.ops.region_extend`, which Select ▸ More / Less (`select_more` / `select_less`) call.
+ *
+ * **The UI's `use_face_step` is on, the operator's default is off** — and this follows the operator: `faceStep` defaults to false.
+ * Ask for `{ faceStep: true }` to get what the tool does in face mode (8 neighbours of a grid face, not 4;
+ * compat-backlog C75).
  *
  * ```ts
  * const top = selectFaces(mesh, facing([0, 1, 0]));
