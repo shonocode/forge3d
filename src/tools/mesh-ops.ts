@@ -1687,6 +1687,12 @@ export interface BisectPlaneOptions {
    * cut. Default false.
    */
   snapCenter?: boolean;
+  /**
+   * `bmesh.ops.bisect_plane`'s `geom`, given as faces: indices into `data.polys`. Those faces, their edges and their vertices are the
+   * input — only they are cut or cleared, an edge they share with another face is split there too (that face is not cut, so it gains a
+   * vertex), and wire edges are not input. Default everything.
+   */
+  faces?: ReadonlySet<number>;
 }
 
 /** What {@link bisectPlane} knows besides the mesh: the edges Blender's `geom_cut.out` holds. */
@@ -1746,6 +1752,19 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   const dist = opts.dist ?? 1e-6;
 
   const count = P.length / 3;
+  // The input (`geom`): with a subset, the faces, their edges and their vertices.
+  const geomVert = new Uint8Array(count).fill(opts.faces ? 0 : 1);
+  const geomEdge = new Set<string>();
+  if (opts.faces)
+    for (const f of opts.faces) {
+      const p = data.polys[f];
+      if (!p) continue;
+      p.forEach((v, i) => {
+        geomVert[v] = 1;
+        geomEdge.add(seamKey(v, p[(i + 1) % p.length]!));
+      });
+    }
+  const inGeomEdge = (a: number, b: number): boolean => !opts.faces || geomEdge.has(seamKey(a, b));
   const positions: number[] = Array.from(P);
   const signedDist = (v: number): number =>
     (positions[v * 3]! - cx) * nx + (positions[v * 3 + 1]! - cy) * ny + (positions[v * 3 + 2]! - cz) * nz;
@@ -1759,7 +1778,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   // `use_snap_center`: `closest_to_plane_v3`.
   if (opts.snapCenter)
     for (let v = 0; v < count; v++)
-      if (side[v] === 0) {
+      if (side[v] === 0 && geomVert[v]) {
         const d = signedDist(v);
         positions[v * 3] = positions[v * 3]! - d * nx;
         positions[v * 3 + 1] = positions[v * 3 + 1]! - d * ny;
@@ -1794,7 +1813,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   const crosses = (a: number, b: number): boolean => {
     const sa = dirOf(a);
     const sb = dirOf(b);
-    return sa !== 0 && sb !== 0 && sa !== sb;
+    return sa !== 0 && sb !== 0 && sa !== sb && inGeomEdge(a, b);
   };
 
   const polys: number[][] = [];
@@ -1946,7 +1965,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
       const a = poly[i]!;
       const b = poly[(i + 1) % poly.length]!;
       ext.push({ v: a, src: [i] });
-      if (dirOf(a) === 0) touched = true;
+      if (dirOf(a) === 0 && geomVert[a]) touched = true;
       if (crosses(a, b)) {
         const m = cutOn(a, b);
         ext.push({ v: m, src: [i, (i + 1) % poly.length, along(a, m)] });
@@ -1955,14 +1974,14 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
         touched = true;
       }
     }
-    for (const loops of touched ? bisectFace(ext) : [ext]) allPieces.push({ face: f, loops });
+    for (const loops of touched && (!opts.faces || opts.faces.has(f)) ? bisectFace(ext) : [ext]) allPieces.push({ face: f, loops });
   });
   // Wire edges are cut too (`BM_edge_split` does not care about faces).
   const wire: [number, number][] = [];
   for (const e of data.edges ?? []) {
     const a = e[0]!;
     const b = e[1]!;
-    if (crosses(a, b)) {
+    if (!opts.faces && crosses(a, b)) {
       const m = cutOn(a, b);
       splitParent.set(seamKey(a, m), seamKey(a, b));
       splitParent.set(seamKey(m, b), seamKey(a, b));
@@ -1976,7 +1995,7 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   if (opts.clearOuter || opts.clearInner)
     for (let v = 0; v < count; v++) {
       const d = signedDist(v);
-      if ((opts.clearOuter && d - dist > 0) || (opts.clearInner && d + dist < 0)) killed[v] = 1;
+      if (geomVert[v] && ((opts.clearOuter && d - dist > 0) || (opts.clearInner && d + dist < 0))) killed[v] = 1;
     }
   for (const { face, loops } of allPieces) {
     if (loops.some((l) => killed[l.v])) continue;

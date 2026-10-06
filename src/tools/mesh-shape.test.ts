@@ -123,6 +123,17 @@ describe("solidify", () => {
 });
 
 describe("bisectPlane", () => {
+  it("cuts only the faces of a subset; a face between two of them gains the vertices on its shared edges and is not cut (probe-bisect-subset.py)", () => {
+    // A strip of three quads along x, the plane y = 0.5, the end quads the input: Blender gives 12 vertices and 5 faces, one of them
+    // six-sided.
+    const positions: number[] = [];
+    for (const y of [0, 1]) for (let x = 0; x < 4; x++) positions.push(x, y, 0);
+    const strip: MeshData = { positions: Float32Array.from(positions), polys: [[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6]] };
+    const out = bisectPlane(strip, { planeCo: [0, 0.5, 0], planeNo: [0, 1, 0], faces: new Set([0, 2]) });
+    expect(out.positions.length / 3).toBe(12);
+    expect(out.polys.map((p) => p.length).sort()).toEqual([4, 4, 4, 4, 6]);
+  });
+
   const PLANE = { planeCo: [0, 0, 0] as [number, number, number], planeNo: [0, 0, 1] as [number, number, number] };
 
   it("splits the crossing faces and shares the new vertices", () => {
