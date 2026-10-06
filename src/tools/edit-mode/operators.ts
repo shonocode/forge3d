@@ -394,6 +394,11 @@ export interface BevelOptions {
    */
   offsetType?: "PERCENT" | "OFFSET" | "WIDTH" | "DEPTH";
   /**
+   * `loop_slide`: prefer sliding along an unbeveled edge to keeping the width exact. **Default false**, as `bmesh.ops.bevel`'s; the
+   * Edit Mode Bevel tool (`bpy.ops.mesh.bevel`) has it on, and the editor's Bevel passes `true` (compat-backlog C78).
+   */
+  loopSlide?: boolean;
+  /**
    * How many faces across the chamfer. Blender's `segments`, default 1.
    *
    * Each beveled vertex splits into `segments + 1` rail vertices and the
@@ -420,8 +425,7 @@ export interface BevelOptions {
 }
 
 /**
- * Bevel the selected edges — `bmesh.ops.bevel` with `clamp_overlap` and
- * `loop_slide` off, through the port of `bmesh_bevel.cc` ({@link bevelMesh}).
+ * Bevel the selected edges — `bmesh.ops.bevel` with `clamp_overlap` off and `loop_slide` as asked (off by default), through the port of `bmesh_bevel.cc` ({@link bevelMesh}).
  *
  * Until 2026-09-26 this was its own implementation, built by measurement and
  * exact on what it accepted: at most two beveled edges at a vertex, PERCENT
@@ -493,7 +497,7 @@ export function bevelEdges(
     profile,
     edges: pairs,
     clampOverlap: false,
-    loopSlide: false,
+    loopSlide: opts.loopSlide ?? false,
   });
 
   const sharp = em.sharpEdges;

@@ -787,7 +787,8 @@ export function bevelSelection(): void {
   // immediately see and tweak the resulting chamfer with the standard gizmo.
   applyTopologyOp("Bevel", () => {
     const info = { skipped: 0 };
-    const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset }, info);
+    // `bpy.ops.mesh.bevel` slides along unbeveled edges (`loop_slide` on), which the bmesh operator does not.
+    const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset, loopSlide: true }, info);
     if (newFaces.size === 0) {
       status("⚠ Bevel: nothing was beveled");
       return new Set();
