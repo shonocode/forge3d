@@ -2517,7 +2517,7 @@ export function findDoubles(em: EditMesh, dist: number): Map<number, number> {
 
 /**
  * Collapse edges shorter than `dist` — Blender's
- * `bmesh.ops.dissolve_degenerate(dist=, edges=)`.
+ * `bmesh.ops.dissolve_degenerate(dist=, edges=)`, its first phase (compat-backlog C59).
  *
  * The cleanup for geometry that came out of an operator with a zero-width
  * feature in it: a bevel clamped to nothing, an inset that met itself, two
@@ -2525,47 +2525,35 @@ export function findDoubles(em: EditMesh, dist: number): Map<number, number> {
  * moved onto its neighbour — 9 vertices become 8 and two of the quads come
  * back as triangles, with the area unchanged.
  *
+ * An edge is collapsed when its **squared length is strictly below `dist²`** (float32), so an edge exactly `dist` long stays, and the
+ * edges collapse the way {@link collapseEdges} does: a connected run becomes one vertex at the **mean of the edges' midpoints**, not
+ * the centroid of the vertices. `edges` limits it to those edges (half-edge indices), all by default.
+ *
  * Unlike `weldMesh` this is not a distance weld over the whole mesh: only
  * vertices joined by a **short edge** merge, so two surfaces lying against
  * each other are left alone.
+ *
+ * **Not ported: the second phase** (compat-backlog C84) — Blender then clips degenerate "ears", corners whose two edges lie almost on
+ * top of each other (a folded-back spike, a zero-area triangle with no short edge), by splitting the longer edge and collapsing the
+ * cut. Those are left as they are.
  */
-export function dissolveDegenerate(em: EditMesh, dist: number): Set<number> {
+export function dissolveDegenerate(em: EditMesh, dist: number, edges?: ReadonlySet<number>): Set<number> {
+  const f = Math.fround;
   const P = em.positions;
-  const parent = new Map<number, number>();
-  const find = (x: number): number => {
-    let r = x;
-    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
-    return r;
-  };
-
-  let any = false;
-  forEachEdge(em, (he) => {
+  const distSq = f(f(dist) * f(dist));
+  const short = new Set<number>();
+  const candidates: number[] = edges ? [...edges] : [];
+  if (!edges) forEachEdge(em, (he) => candidates.push(he));
+  for (const he of candidates) {
     const a = edgeOrigin(em, he);
     const b = edgeEnd(em, he);
-    const dx = P[a * 3]! - P[b * 3]!;
-    const dy = P[a * 3 + 1]! - P[b * 3 + 1]!;
-    const dz = P[a * 3 + 2]! - P[b * 3 + 2]!;
-    if (Math.hypot(dx, dy, dz) > dist) return;
-    if (!parent.has(a)) parent.set(a, a);
-    if (!parent.has(b)) parent.set(b, b);
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
-    any = true;
-  });
-  if (!any) return new Set();
-
-  const byRoot = new Map<number, number[]>();
-  for (const v of parent.keys()) {
-    const r = find(v);
-    const list = byRoot.get(r);
-    if (list) list.push(v);
-    else byRoot.set(r, [v]);
+    const dx = f(f(P[a * 3]!) - f(P[b * 3]!));
+    const dy = f(f(P[a * 3 + 1]!) - f(P[b * 3 + 1]!));
+    const dz = f(f(P[a * 3 + 2]!) - f(P[b * 3 + 2]!));
+    if (f(f(f(dx * dx) + f(dy * dy)) + f(dz * dz)) < distSq) short.add(he);
   }
-  const clusters: number[][] = [];
-  for (const list of byRoot.values()) if (list.length > 1) clusters.push(list);
-  if (clusters.length === 0) return new Set();
-  return mergeClusters(em, clusters);
+  if (short.size === 0) return new Set();
+  return collapseEdges(em, short);
 }
 
 /**

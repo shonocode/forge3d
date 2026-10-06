@@ -1281,3 +1281,31 @@ describe("reverseFaces / extrudeDiscreteFaces / connectVertPair / splitEdges / o
     }
   });
 });
+
+describe("dissolveDegenerate", () => {
+  /** Two quads side by side; the bottom row's vertices are at the given x, the top row far apart. */
+  const strip = (x: [number, number, number]) =>
+    meshFromData({
+      positions: Float32Array.from([x[0], 0, 0, x[1], 0, 0, x[2], 0, 0, 0, 1, 0, 1, 1, 0, 2, 1, 0]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+
+  it("collapses a run of short edges to the mean of their midpoints, not the vertex centroid (parity row dissolve-degenerate-chain)", () => {
+    // Bottom row at 0, 0.01, 0.03: midpoints 0.005 and 0.02, whose mean is 0.0125 (the centroid would be 0.01333).
+    const em = strip([0, 0.01, 0.03]);
+    expect(dissolveDegenerate(em, 0.05).size).toBeGreaterThan(0);
+    const used = new Set(toPolygons(em).flat());
+    const bottom = [...used].filter((v) => em.positions[v * 3 + 1] === 0).map((v) => em.positions[v * 3]!);
+    expect(bottom).toHaveLength(1);
+    expect(bottom[0]!).toBeCloseTo(0.0125, 6);
+  });
+
+  it("keeps an edge exactly dist long: the test is len² < dist²", () => {
+    expect(dissolveDegenerate(strip([0, 0.015625, 0.03125]), 0.015625).size).toBe(0);
+    expect(dissolveDegenerate(strip([0, 0.015625, 0.03125]), 0.0156251).size).toBeGreaterThan(0);
+  });
+
+  it("collapses only the edges it is given", () => {
+    expect(dissolveDegenerate(strip([0, 0.01, 0.03]), 0.5, new Set()).size).toBe(0);
+  });
+});
