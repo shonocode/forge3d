@@ -11,6 +11,7 @@ import { bevelMesh } from "../bevel/bevel";
 import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
 import { triangulate } from "../triangulate";
 import { joinTrianglePairs } from "./join-order";
+import { clipDegenerateEars } from "./degenerate-ears";
 import { insetRegionMesh } from "../inset";
 
 /**
@@ -1175,6 +1176,21 @@ function mergeClusters(
     stated.push({ corners: corners.map((i) => [[g, i, 1] as const]), material: g });
   });
 
+  // `weld_verts` keeps every edge it merges the ends of: one whose faces all vanished (a sliver folded onto a line) stays as a wire
+  // edge between the survivors — the same for the wire edges that were there (compat-backlog C84).
+  const faceEdges = new Set<string>();
+  for (const poly of keptPolys) poly.forEach((a, i) => faceEdges.add(seamKey(a, poly[(i + 1) % poly.length]!)));
+  const wire: [number, number][] = [];
+  const keep = (a: number, b: number): void => {
+    const x = mapped(a);
+    const y = mapped(b);
+    if (x === y || faceEdges.has(seamKey(x, y))) return;
+    faceEdges.add(seamKey(x, y));
+    wire.push([x, y]);
+  };
+  for (const poly of polys) poly.forEach((a, i) => keep(a, poly[(i + 1) % poly.length]!));
+  for (const [a, b] of em.wireEdges ?? []) keep(a!, b!);
+
   // Compact the vertex buffer to referenced verts only.
   const oldToNew = new Map<number, number>();
   const newPositions: number[] = [];
@@ -1188,6 +1204,7 @@ function mergeClusters(
     return nv;
   };
   const newPolys = keptPolys.map((poly) => poly.map(idxOf));
+  const newWire = wire.map(([a, b]) => [idxOf(a), idxOf(b)]);
 
   // Seams, creases and sharp edges follow the merge + compaction; edges
   // collapsed to a point vanish.
@@ -1222,6 +1239,7 @@ function mergeClusters(
   em.seams = newSeams;
   em.creases = newCreases;
   if (newSharp) em.sharpEdges = newSharp;
+  if (newWire.length > 0 || em.wireEdges?.length) em.wireEdges = newWire;
 
   const out = new Set<number>();
   for (const tgt of targets) {
@@ -2426,9 +2444,10 @@ export function findDoubles(em: EditMesh, dist: number, keep?: ReadonlySet<numbe
  * vertices joined by a **short edge** merge, so two surfaces lying against
  * each other are left alone.
  *
- * **Not ported: the second phase** (compat-backlog C84) — Blender then clips degenerate "ears", corners whose two edges lie almost on
- * top of each other (a folded-back spike, a zero-area triangle with no short edge), by splitting the longer edge and collapsing the
- * cut. Those are left as they are.
+ * **The second phase** (compat-backlog C84, {@link clipDegenerateEars}) clips degenerate "ears" — corners whose two edges lie almost on
+ * top of each other (a folded-back spike, a zero-area triangle with no short edge) — by splitting the longer edge and collapsing the
+ * cut. It runs on the mesh the first phase left. With `edges`, it runs only when the first phase collapsed nothing (the marks cannot be
+ * followed through the merge); the face layers are not carried through a clipped ear.
  */
 export function dissolveDegenerate(em: EditMesh, dist: number, edges?: ReadonlySet<number>): Set<number> {
   const f = Math.fround;
@@ -2445,8 +2464,23 @@ export function dissolveDegenerate(em: EditMesh, dist: number, edges?: ReadonlyS
     const dz = f(f(P[a * 3 + 2]!) - f(P[b * 3 + 2]!));
     if (f(f(f(dx * dx) + f(dy * dy)) + f(dz * dz)) < distSq) short.add(he);
   }
-  if (short.size === 0) return new Set();
-  return collapseEdges(em, short);
+  let merged = short.size === 0 ? new Set<number>() : collapseEdges(em, short);
+
+  if (!edges || short.size === 0) {
+    const pair = (a: number, b: number): string => `${Math.min(a, b)}_${Math.max(a, b)}`;
+    const marked = edges ? new Set([...edges].map((he) => pair(edgeOrigin(em, he), edgeEnd(em, he)))) : null;
+    const clip = clipDegenerateEars(Float32Array.from(em.positions), toPolygons(em), dist, marked);
+    if (clip) {
+      rebuildPolygons(em, clip.positions, clip.polys);
+      const flagged = new Set(clip.collapse.map(([a, b]) => pair(a, b)));
+      const he = new Set<number>();
+      forEachEdge(em, (e) => {
+        if (flagged.has(pair(edgeOrigin(em, e), edgeEnd(em, e)))) he.add(e);
+      });
+      if (he.size > 0) merged = collapseEdges(em, he);
+    }
+  }
+  return merged;
 }
 
 /**

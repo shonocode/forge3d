@@ -1301,8 +1301,20 @@ describe("dissolveDegenerate", () => {
   });
 
   it("keeps an edge exactly dist long: the test is len² < dist²", () => {
-    expect(dissolveDegenerate(strip([0, 0.015625, 0.03125]), 0.015625).size).toBe(0);
-    expect(dissolveDegenerate(strip([0, 0.015625, 0.03125]), 0.0156251).size).toBeGreaterThan(0);
+    // Only edge 0-1 is given: the ear test (second phase) needs two marked edges at a corner, so it has nothing to do here, and
+    // at dist 1/64 it would otherwise fire on the strip's ordinary corners.
+    const only01 = (em: ReturnType<typeof strip>): Set<number> => {
+      const out = new Set<number>();
+      forEachEdge(em, (he) => {
+        const c = canonicalEdge(em, he);
+        if ([edgeOrigin(em, c), edgeEnd(em, c)].sort().join() === "0,1") out.add(c);
+      });
+      return out;
+    };
+    const a = strip([0, 0.015625, 0.03125]);
+    expect(dissolveDegenerate(a, 0.015625, only01(a)).size).toBe(0);
+    const b = strip([0, 0.015625, 0.03125]);
+    expect(dissolveDegenerate(b, 0.0156251, only01(b)).size).toBeGreaterThan(0);
   });
 
   it("collapses only the edges it is given", () => {
