@@ -199,6 +199,8 @@ interface Skeleton {
   radius: [number, number][];
   root: boolean[];
   edges: [number, number][];
+  /** Per vertex, the group weights by name (`MDeformVert`); absent when the input has no groups. */
+  dv?: Map<string, number>[];
 }
 
 /**
@@ -215,6 +217,7 @@ function subdivide(sk: Skeleton): Skeleton {
   const positions = sk.positions.map((p) => p.map(f32) as Vec3);
   const radius = sk.radius.map((r) => r.map(f32) as [number, number]);
   const root = [...sk.root];
+  const dv = sk.dv ? sk.dv.map((m) => new Map(m)) : undefined;
   const edges: [number, number][] = [];
   for (const [a, b] of sk.edges) {
     const branchA = degree[a]! > 2;
@@ -235,13 +238,25 @@ function subdivide(sk: Skeleton): Skeleton {
       positions.push(lerp(positions[a]!, positions[b]!, t) as Vec3);
       radius.push(lerp(radius[a]!, radius[b]!, t) as [number, number]);
       root.push(false);
+      if (dv) {
+        // Only the groups used by both ends; `interpf(w2, w1, t)` is `(1 - t) * w1 + t * w2` in float.
+        const m = new Map<string, number>();
+        const s = f32(1 - t);
+        for (const [g, w1] of dv[a]!) {
+          const w2 = dv[b]!.get(g);
+          if (w2 === undefined) continue;
+          const w = f32(f32(s * w1) + f32(t * w2));
+          if (w > 0) m.set(g, w);
+        }
+        dv.push(m);
+      }
       const v = positions.length - 1;
       edges.push([u, v]);
       u = v;
     }
     edges.push([u, b]);
   }
-  return { positions, radius, root, edges };
+  return { positions, radius, root, edges, ...(dv ? { dv } : {}) };
 }
 
 interface EMat {
@@ -718,7 +733,7 @@ function fixHullTopology(bm: MiniBMesh, nodes: readonly Node[]): void {
       const coincident =
         target !== null && !fr.insideHull.some(Boolean) && bm.faceVerts(target).some((v) => fr.verts.includes(v));
       // `skin_hole_detach_partially_attached_frame`
-      for (let j = 0; j < 4; j++) if (!fr.insideHull[j]) fr.verts[j] = bm.vertCreate(fr.verts[j]!.co);
+      for (let j = 0; j < 4; j++) if (!fr.insideHull[j]) fr.verts[j] = bm.vertCreate(fr.verts[j]!.co, fr.verts[j]!);
       if (target && !coincident && bridgeFaceToFrame(bm, fr, target)) continue;
       bm.faceCreateVerts(fr.verts);
     }
@@ -735,6 +750,10 @@ function fixHullTopology(bm: MiniBMesh, nodes: readonly Node[]): void {
  *
  * Vertices with three or more edges are hulled. The result can carry loose
  * `edges` where Blender's does — only when frames at a branch overlap.
+ *
+ * **Vertex groups** (`data.groups`) are carried the way `MOD_skin.cc` does (compat-backlog C63): each vertex added along an edge gets the
+ * groups **both** ends have, interpolated at the same fraction as its position (a weight that comes out 0 is not added), and every corner
+ * of a frame copies the groups of the skeleton vertex it wraps. A corner detached from the hull copies the one it came from.
  */
 export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
   if (data.polys.length > 0)
@@ -772,7 +791,15 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
     for (let v = 0; v < count; v++) if (find(v) === v) root[v] = true;
   }
 
-  const sk = subdivide({ positions, radius, root, edges });
+  const groupNames = data.groups ? [...data.groups.keys()] : [];
+  const dv = data.groups
+    ? positions.map((_, v) => {
+        const m = new Map<string, number>();
+        for (const [name, g] of data.groups!) if (g.has(v)) m.set(name, f32(g.get(v)!));
+        return m;
+      })
+    : undefined;
+  const sk = subdivide({ positions, radius, root, edges, ...(dv ? { dv } : {}) });
   const emap: number[][] = sk.positions.map(() => []);
   sk.edges.forEach(([a, b], e) => {
     emap[a]!.push(e);
@@ -786,9 +813,14 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
   const bm = new MiniBMesh();
   for (let v = 0; v < nodes.length; v++) if (isBranch(v)) mergeFrameCorners(hullFrames(v, nodes, emap, sk.edges));
   // `output_frames`: one vertex per corner, in node order, merged corners skipped.
-  for (const node of nodes)
+  nodes.forEach((node, v) => {
     for (const fr of node.frames)
-      for (let j = 0; j < 4; j++) if (!fr.merge[j]!.frame) fr.verts[j] = bm.vertCreate(fr.co[j]!);
+      for (let j = 0; j < 4; j++)
+        if (!fr.merge[j]!.frame) {
+          const vert = (fr.verts[j] = bm.vertCreate(fr.co[j]!));
+          if (sk.dv) vert.dv = new Map(sk.dv[v]!);
+        }
+  });
   // `skin_update_merged_vertices`
   for (const node of nodes)
     for (const fr of node.frames)
@@ -858,5 +890,5 @@ export function skin(data: MeshData, options: SkinOptions = {}): MeshData {
   });
   mergeTriangles(bm, axes);
 
-  return bm.toMeshData();
+  return bm.toMeshData(groupNames);
 }

@@ -25,6 +25,8 @@ export interface BVert {
   /** Edges using this vertex (membership only; the disk order is not needed). */
   edges: BEdge[];
   tag: boolean;
+  /** `MDeformVert`: the vertex-group weights, by group name (compat-backlog C63). Absent = in no group. */
+  dv?: Map<string, number>;
 }
 
 export interface BEdge {
@@ -84,8 +86,11 @@ export class MiniBMesh {
   readonly edges = new Pool<BEdge>();
   readonly faces = new Pool<BFace>();
 
-  vertCreate(co: readonly number[]): BVert {
-    return this.verts.add({ co: [f(co[0]!), f(co[1]!), f(co[2]!)], slot: -1, edges: [], tag: false });
+  /** `BM_vert_create`; with an `example` the new vertex copies its custom data (the groups), as `BM_elem_attrs_copy` does. */
+  vertCreate(co: readonly number[], example?: BVert): BVert {
+    const v = this.verts.add({ co: [f(co[0]!), f(co[1]!), f(co[2]!)], slot: -1, edges: [], tag: false });
+    if (example?.dv) v.dv = new Map(example.dv);
+    return v;
   }
 
   edgeExists(a: BVert, b: BVert): BEdge | null {
@@ -233,7 +238,7 @@ export class MiniBMesh {
    */
   extrudeDiscreteFace(face: BFace): BFace {
     const org = this.faceVerts(face);
-    const copyVerts = org.map((v) => this.vertCreate(v.co));
+    const copyVerts = org.map((v) => this.vertCreate(v.co, v));
     // `BM_face_copy`: each new edge copies its original's flags — the tag too.
     const orgEdges = this.faceEdges(face);
     copyVerts.forEach((v, i) => (this.edgeCreate(v, copyVerts[(i + 1) % copyVerts.length]!).tag = orgEdges[i]!.tag));
@@ -263,6 +268,13 @@ export class MiniBMesh {
       } while (l !== e.l);
     }
     const m = this.vertCreate(co);
+    // `BM_edge_split` interpolates the new vertex's data from the two ends at the split fraction — here the midpoint:
+    // `layerInterp_mdeformvert` adds each source's weight times its share, so a group on one end only comes out at half.
+    if (v1.dv || v2.dv) {
+      m.dv = new Map();
+      for (const src of [v1, v2])
+        for (const [g, w] of src.dv ?? []) m.dv.set(g, f((m.dv.get(g) ?? 0) + f(w * 0.5)));
+    }
     v2.edges.splice(v2.edges.indexOf(e), 1);
     e.v2 = m;
     m.edges.push(e);
@@ -501,10 +513,17 @@ export class MiniBMesh {
   }
 
   /** Vertices, faces, and the edges no face uses — each in slot order. */
-  toMeshData(): { positions: Float32Array; polys: number[][]; edges?: number[][] } {
+  toMeshData(groupNames: readonly string[] = []): {
+    positions: Float32Array;
+    polys: number[][];
+    edges?: number[][];
+    groups?: Map<string, Map<number, number>>;
+  } {
     const index = new Map<BVert, number>();
     const positions: number[] = [];
+    const groups = new Map<string, Map<number, number>>(groupNames.map((g) => [g, new Map()]));
     for (const v of this.verts) {
+      for (const [g, w] of v.dv ?? []) groups.get(g)?.set(index.size, w);
       index.set(v, index.size);
       positions.push(...v.co);
     }
@@ -512,7 +531,12 @@ export class MiniBMesh {
     for (const face of this.faces) polys.push(this.faceVerts(face).map((v) => index.get(v)!));
     const edges: number[][] = [];
     for (const e of this.edges) if (!e.l) edges.push([index.get(e.v1)!, index.get(e.v2)!]);
-    return { positions: Float32Array.from(positions), polys, ...(edges.length > 0 ? { edges } : {}) };
+    return {
+      positions: Float32Array.from(positions),
+      polys,
+      ...(edges.length > 0 ? { edges } : {}),
+      ...(groups.size > 0 ? { groups } : {}),
+    };
   }
 }
 

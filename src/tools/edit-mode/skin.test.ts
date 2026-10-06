@@ -217,3 +217,42 @@ describe("skin at branch nodes", () => {
     expect(out.edges).toHaveLength(1);
   });
 });
+
+describe("skin vertex groups (compat-backlog C63, parity rows skin-groups*)", () => {
+  const withGroups = (): MeshData => ({
+    ...skeleton([[0, 0, 0], [0, 0, 1]], [[0, 1]]),
+    groups: new Map([
+      ["A", new Map([[0, 0.9], [1, 0.3]])],
+      ["B", new Map([[0, 0.5]])],
+    ]),
+  });
+
+  it("copies a skeleton vertex's groups to the four corners of its frame", () => {
+    const out = skin(withGroups());
+    const a = out.groups!.get("A")!;
+    const b = out.groups!.get("B")!;
+    // Corners 0..3 wrap vertex 0 (z = 0), 4..7 wrap vertex 1 (z = 1).
+    for (let i = 0; i < 4; i++) {
+      expect(a.get(i)).toBeCloseTo(0.9, 6);
+      expect(b.get(i)).toBeCloseTo(0.5, 6);
+      expect(a.get(4 + i)).toBeCloseTo(0.3, 6);
+      expect(b.has(4 + i)).toBe(false);
+    }
+  });
+
+  it("gives a ring along the edge the groups both ends have, interpolated like its position", () => {
+    const out = skin(withGroups());
+    const a = out.groups!.get("A")!;
+    const b = out.groups!.get("B")!;
+    // Rings at z = 1/3 (corners 8..11) and 2/3 (12..15): 0.9·(1 − t) + 0.3·t.
+    for (let i = 0; i < 4; i++) {
+      expect(a.get(8 + i)).toBeCloseTo(0.9 - 0.6 / 3, 5);
+      expect(a.get(12 + i)).toBeCloseTo(0.9 - 1.2 / 3, 5);
+      expect(b.has(8 + i)).toBe(false); // only one end is in B
+    }
+  });
+
+  it("leaves groups out when the input has none", () => {
+    expect(skin(skeleton([[0, 0, 0], [0, 0, 1]], [[0, 1]])).groups).toBeUndefined();
+  });
+});
