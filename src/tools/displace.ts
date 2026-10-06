@@ -248,6 +248,9 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
   const strength = f(opts.strength ?? 1);
   const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
   if (vg?.empty) return withPositions(data, Float32Array.from(data.positions));
+  // `MOD_displace.cc`: no texture and `RGB_TO_XYZ` (nothing to read the colour from), or a strength of 0, return the mesh as it is
+  // (compat-backlog C67).
+  if ((!opts.texture && direction === "rgbToXyz") || strength === 0) return withPositions(data, Float32Array.from(data.positions));
   const M = opts.objectMatrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   // `TEXMAP_GLOBAL`: the texture is read at the vertex's world position (`mul_m4_v3(object_to_world)`);
   // `TEXMAP_OBJECT` then takes that into the map object's space (`mul_m4_v3(mapref_imat)`).

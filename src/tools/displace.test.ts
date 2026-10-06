@@ -172,3 +172,11 @@ describe("textureDisplace: texture_coords OBJECT (compat-backlog C37)", () => {
     for (let i = 0; i < 9; i++) expect(same.positions[i]).toBeCloseTo(local.positions[i]!, 6);
   });
 });
+
+describe("textureDisplace with nothing to read (parity row displace-mod-rgb)", () => {
+  it("leaves the mesh alone for RGB_TO_XYZ without a texture, and for a strength of 0", () => {
+    const b = box({ size: [1, 1, 1] });
+    expect(Array.from(textureDisplace(b, { direction: "rgbToXyz", strength: 0.3 }).positions)).toEqual(Array.from(b.positions));
+    expect(Array.from(textureDisplace(b, { strength: 0 }).positions)).toEqual(Array.from(b.positions));
+  });
+});
