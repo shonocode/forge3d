@@ -190,3 +190,51 @@ export function selectMirror(
   if (mirrored > 0) sel.flush(mode);
   return sel.result();
 }
+
+/**
+ * Blender's Select ▸ Select All by Trait ▸ Faces by Sides (`mesh.select_face_by_sides`): faces whose number of corners compares as asked with
+ * `number` (default 4, `equal`). `extend` (default **true**, unlike most) keeps what was selected.
+ */
+export function selectFaceBySides(
+  mesh: MeshData,
+  mode: SelectMode,
+  seed: SelectionSeed,
+  options: { number?: number; type?: "less" | "equal" | "greater" | "notequal"; extend?: boolean } = {},
+): MeshSelection {
+  const sel = new Selection(mesh, seed, mode);
+  const number = options.number ?? 4;
+  const type = options.type ?? "equal";
+  if (!(options.extend ?? true)) sel.clear();
+  for (const face of liveFaces(sel.bm)) {
+    const n = face.len;
+    const match = type === "less" ? n < number : type === "equal" ? n === number : type === "greater" ? n > number : n !== number;
+    if (match) sel.face(face);
+  }
+  sel.flush(mode);
+  return sel.result();
+}
+
+/**
+ * Blender's Select ▸ Select All by Trait ▸ Sharp Edges (`mesh.edges_select_sharp`): the edges with exactly two faces whose normals differ by more
+ * than `sharpness` radians (default 30°). In vertex or edge mode the mode's flush follows; in face mode the faces touching a picked edge are
+ * selected. Adds to the selection.
+ */
+export function selectSharpEdges(mesh: MeshData, mode: SelectMode, seed: SelectionSeed, options: { sharpness?: number } = {}): MeshSelection {
+  const sel = new Selection(mesh, seed, mode);
+  const limit = f32(Math.cos(f32(options.sharpness ?? f32(30 * f32(Math.PI / 180)))));
+  for (const e of liveEdges(sel.bm)) {
+    // `BM_edge_loop_pair`: exactly two faces.
+    const la = e.l;
+    if (!la || la.rn === la || la.rn!.rn !== la) continue;
+    const a = la.f.no;
+    const b = la.rn!.f.no;
+    const c = f32(f32(f32(a[0]! * b[0]!) + f32(a[1]! * b[1]!)) + f32(a[2]! * b[2]!));
+    if (c < limit) sel.edge(e);
+  }
+  if (mode === "face") {
+    // `EDBM_selectmode_convert(edge -> face)`: every face with a selected edge.
+    const picked = new Set(sel.se);
+    for (const face of liveFaces(sel.bm)) if (faceLoops(face).some((l) => picked.has(l.e!))) sel.face(face);
+  } else sel.flush(mode);
+  return sel.result();
+}

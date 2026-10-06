@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { MeshData } from "../../lib/mesh";
-import { selectAxis, selectByPoleCount, selectMirror, selectRandom } from "./select-sets";
+import { selectAxis, selectByPoleCount, selectFaceBySides, selectMirror, selectRandom, selectSharpEdges } from "./select-sets";
 
 /** Parity rows are in `compare-select.ts` (compat-backlog C81). */
 const grid = (): MeshData => {
@@ -47,5 +47,22 @@ describe("selectMirror", () => {
     const m = selectMirror(grid(), "vertex", { verts: [0] }, { axes: ["x"] });
     expect(m.verts).toEqual([4]);
     expect(selectMirror(grid(), "vertex", { verts: [0] }, { axes: ["x"], extend: true }).verts).toEqual([0, 4]);
+  });
+});
+
+describe("selectFaceBySides / selectSharpEdges (compat-backlog C83)", () => {
+  it("compares the number of corners, and extends by default", () => {
+    const tri: MeshData = { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]), polys: [[0, 1, 2], [1, 3, 2]] };
+    expect(selectFaceBySides(tri, "face", {}, { number: 3 }).faces).toEqual([0, 1]);
+    expect(selectFaceBySides(grid(), "face", { faces: [0] }, { number: 3 }).faces).toEqual([0]);
+    expect(selectFaceBySides(grid(), "face", { faces: [0] }, { number: 3, extend: false }).faces).toEqual([]);
+    expect(selectFaceBySides(grid(), "face", {}, { number: 4, type: "greater" }).faces).toEqual([]);
+  });
+
+  it("picks the edges whose faces differ by more than the angle, and nothing on a flat sheet", () => {
+    expect(selectSharpEdges(grid(), "edge", {}).edges).toEqual([]);
+    const folded: MeshData = { positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]), polys: [[0, 1, 2], [0, 3, 1]] };
+    expect(selectSharpEdges(folded, "edge", {}).edges).toEqual([[0, 1]]);
+    expect(selectSharpEdges(folded, "edge", {}, { sharpness: 2 }).edges).toEqual([]);
   });
 });
