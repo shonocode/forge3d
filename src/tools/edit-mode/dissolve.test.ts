@@ -8,7 +8,8 @@
 import { describe, it, expect } from "vitest";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { forEachEdge, edgeOrigin, edgeEnd } from "./half-edge";
-import { dissolveFaces, dissolveEdges, dissolveLimit } from "./dissolve";
+import { dissolveFaces, dissolveEdges, dissolveLimit, connectVerts } from "./dissolve";
+import { toPolygons } from "./half-edge";
 
 /** `nx` by `ny` quads in the z=0 plane, one unit each. */
 function grid(nx: number, ny: number) {
@@ -208,5 +209,35 @@ describe("dissolveLimit", () => {
     dissolveLimit(em, { angleLimit: 0.05 });
     const out = meshToData(em);
     expect(out.polys).toHaveLength(2); // three flat quads merged, the fold kept
+  });
+});
+
+describe("connectVerts", () => {
+  /** A hexagon 0..5 round the unit circle. */
+  const hexagon = () =>
+    meshFromData({
+      positions: Float32Array.from([1, 0, 0, 0.5, 0, 0.87, -0.5, 0, 0.87, -1, 0, 0, -0.5, 0, -0.87, 0.5, 0, -0.87]),
+      polys: [[0, 1, 2, 3, 4, 5]],
+    });
+
+  it("leaves the middle of a run of three alone: the ends join (parity row connect-verts-run)", () => {
+    // 0, 1, 2 in a row and 4: the run's ends 0 and 2 and the single 4 are the corners cut between — a triangle 0-1-2 comes off.
+    const em = hexagon();
+    expect(connectVerts(em, new Set([0, 1, 2, 4])).size).toBeGreaterThan(1);
+    const sizes = toPolygons(em).map((p) => p.length).sort();
+    expect(toPolygons(em).some((p) => p.length === 3 && [0, 1, 2].every((v) => p.includes(v)))).toBe(true);
+    expect(sizes).toHaveLength(4); // the corners 0, 2, 4 give three cuts (0-2, 2-4, 4-0): four faces
+    expect(sizes.reduce((a, b) => a + b, 0)).toBe(6 + 3 * 2); // every cut adds two corners
+  });
+
+  it("joins non-adjacent corners in order, the last back to the first", () => {
+    const em = hexagon();
+    connectVerts(em, new Set([0, 2, 4]));
+    // The triangle 0-2-4 in the middle and one corner triangle at each of 1, 3, 5.
+    expect(toPolygons(em).map((p) => p.length).sort()).toEqual([3, 3, 3, 3]);
+  });
+
+  it("does nothing when every selected corner is next to another", () => {
+    expect(connectVerts(hexagon(), new Set([0, 1])).size).toBe(0);
   });
 });

@@ -14,6 +14,8 @@
  */
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
 import { meshFromData, meshToData } from "../../lib/mesh";
+import { connectVertsPolys } from "./connect-pair";
+import type { V3 } from "../blender-math";
 import { dissolveLimitMesh, type DissolveDelimit } from "../dissolve-limit";
 
 /** Shared by the three: what came out, for callers that want to assert on it. */
@@ -507,65 +509,24 @@ export function dissolveVerts(
 
 /**
  * Cut faces apart by joining the selected vertices inside them — Blender's
- * `bmesh.ops.connect_verts(verts=)`.
+ * `bmesh.ops.connect_verts(verts=)` (`bmo_connect_verts_exec`, ported in {@link connectVertsPolys}).
  *
- * The many-vertex form of {@link connectVertPair}. Within one face, the
- * selected corners are joined in the order they appear around it, so two
- * corners give two pieces and three give three pieces plus the triangle
- * between them.
- *
- * Corners that are already neighbours in the face are skipped — the edge
- * joining them exists, and cutting there would ask for a face with no width.
- * Faces with fewer than two selected corners are left alone.
+ * In each face of more than three corners the selected corners are taken in the order they come, **except the ones inside a run**:
+ * a corner whose two neighbours are both selected is skipped, so three in a row join their two ends and the middle one is left
+ * (compat-backlog C55). Consecutive corners are cut between unless they are neighbours already or the cut was made by an earlier face
+ * (`EDGE_OUT`), and the last is joined back to the first. `checkDegenerate` (Blender's slot, default false as `bmesh.ops` leaves it)
+ * asks `BM_face_splits_check_legal` of each cut instead of the angle test that picks the face a cut belongs to.
  *
  * Returns the faces it produced.
  */
-export function connectVerts(em: EditMesh, selectedVerts: ReadonlySet<number>): Set<number> {
+export function connectVerts(em: EditMesh, selectedVerts: ReadonlySet<number>, options: { checkDegenerate?: boolean } = {}): Set<number> {
   if (selectedVerts.size < 2) return new Set();
-
-  const polys = toPolygons(em);
-  const out: number[][] = [];
-  const made = new Set<number>();
-
-  for (const poly of polys) {
-    const at: number[] = [];
-    for (let i = 0; i < poly.length; i++) if (selectedVerts.has(poly[i]!)) at.push(i);
-
-    if (at.length < 2) {
-      out.push(poly);
-      continue;
-    }
-
-    // Arcs between consecutive selected corners, walking the face's own
-    // direction so every piece keeps the parent's winding.
-    const pieces: number[][] = [];
-    for (let k = 0; k < at.length; k++) {
-      const from = at[k]!;
-      const to = at[(k + 1) % at.length]!;
-      const arc: number[] = [];
-      for (let i = from; ; i = (i + 1) % poly.length) {
-        arc.push(poly[i]!);
-        if (i === to) break;
-      }
-      // Two corners long means they were already neighbours: no face there.
-      if (arc.length >= 3) pieces.push(arc);
-    }
-    // Three or more corners also leave a face in the middle, bounded by the
-    // new edges themselves. Two corners do not — the arcs are the whole face.
-    if (at.length >= 3) pieces.push(at.map((i) => poly[i]!));
-
-    if (pieces.length < 2) {
-      out.push(poly);
-      continue;
-    }
-    for (const piece of pieces) {
-      made.add(out.length);
-      out.push(piece);
-    }
-  }
-
+  const polys = toPolygons(em).map((p) => [...p]);
+  const P: V3[] = [];
+  for (let i = 0; i < em.positions.length / 3; i++) P.push([em.positions[i * 3]!, em.positions[i * 3 + 1]!, em.positions[i * 3 + 2]!]);
+  const { made } = connectVertsPolys(P, polys, selectedVerts, options.checkDegenerate ?? false);
   if (made.size === 0) return new Set();
-  rebuildPolygons(em, em.positions, out, {});
+  rebuildPolygons(em, em.positions, polys, {});
   return made;
 }
 
