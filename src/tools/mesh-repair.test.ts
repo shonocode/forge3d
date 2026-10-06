@@ -115,6 +115,18 @@ describe("recalcFaceNormals", () => {
     expect(fixed.polys[1]).toEqual([4, 5, 2, 1]);
   });
 
+  it("turns an open shell outward too, by the furthest vertex from its centre (parity row recalc-normals-open)", () => {
+    // A cube without its top, wound inward: Blender flips it, where a signed-volume test would have no volume to read.
+    const open = cube().polys.slice(1);
+    const inward = open.map((p) => [...p].reverse());
+    const report = emptyRecalc();
+    const fixed = recalcFaceNormals({ positions: cube().positions, polys: inward }, report);
+    expect(fixed.polys).toEqual(open);
+    expect(report.openShells).toBe(1);
+    // And one already outward stays as it is.
+    expect(recalcFaceNormals({ positions: cube().positions, polys: open }).polys).toEqual(open);
+  });
+
   it("orients each shell independently", () => {
     const a = cube();
     const b = cube();

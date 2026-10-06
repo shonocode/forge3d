@@ -48,23 +48,6 @@ function polyNormal(P: Float32Array, poly: readonly number[]): Vec3 {
   return [nx, ny, nz];
 }
 
-/** Six times the signed volume of the cone from the origin over these faces. */
-function signedVolume6(P: Float32Array, polys: readonly (readonly number[])[]): number {
-  let v = 0;
-  for (const poly of polys) {
-    for (let t = 1; t + 1 < poly.length; t++) {
-      const a = poly[0]! * 3;
-      const b = poly[t]! * 3;
-      const c = poly[t + 1]! * 3;
-      v +=
-        P[a]! * (P[b + 1]! * P[c + 2]! - P[b + 2]! * P[c + 1]!) -
-        P[a + 1]! * (P[b]! * P[c + 2]! - P[b + 2]! * P[c]!) +
-        P[a + 2]! * (P[b]! * P[c + 1]! - P[b + 1]! * P[c]!);
-    }
-  }
-  return v;
-}
-
 const edgeKey = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
 
 // ── recalcFaceNormals ──────────────────────────────────────────────────────
@@ -80,21 +63,135 @@ export interface RecalcFaceNormalsReport {
    * signature of an inconsistently wound mesh. Zero on well-formed input.
    */
   inconsistentEdges: number;
-  /**
-   * Shells left consistent but not turned outward, because they have a
-   * boundary and so no inside for a normal to point away from.
-   */
+  /** Shells with a boundary. They are turned outward all the same, as Blender does (compat-backlog C58). */
   openShells: number;
   /** Edges shared by three or more faces, which no winding can satisfy. */
   nonManifoldEdges: number;
 }
 
 /**
- * Make face windings consistent within each shell, then turn each closed shell
+ * `recalc_face_normals_find_index`: is the shell wound inward? The centre is the area-weighted mean of the faces' weighted medians;
+ * the furthest loop vertex from it (then, on a tie, the loop whose edges point most along the direction to it, then the one whose
+ * own normal does) is where a ray from the centre would meet the surface first, so the face there must face away from the
+ * centre. All in float32, in the order the C does it.
+ */
+function shellPointsInward(P: Float32Array, faces: readonly (readonly number[])[]): boolean {
+  const f = Math.fround;
+  const at = (v: number): number[] => [f(P[v * 3]!), f(P[v * 3 + 1]!), f(P[v * 3 + 2]!)];
+  const sub3 = (a: number[], b: number[]): number[] => [f(a[0]! - b[0]!), f(a[1]! - b[1]!), f(a[2]! - b[2]!)];
+  const dot3 = (a: number[], b: number[]): number => f(f(f(a[0]! * b[0]!) + f(a[1]! * b[1]!)) + f(a[2]! * b[2]!));
+  const cross3 = (a: number[], b: number[]): number[] => [
+    f(f(a[1]! * b[2]!) - f(a[2]! * b[1]!)),
+    f(f(a[2]! * b[0]!) - f(a[0]! * b[2]!)),
+    f(f(a[0]! * b[1]!) - f(a[1]! * b[0]!)),
+  ];
+  const lenSq = (a: number[]): number => dot3(a, a);
+  /** `normalize_v3`: the length, with the vector scaled by its reciprocal (zero below 1e-35 squared). */
+  const normalize = (a: number[]): number => {
+    let d = lenSq(a);
+    if (d > f(1.0e-35)) {
+      d = f(Math.sqrt(d));
+      const inv = f(1 / d);
+      a[0] = f(a[0]! * inv);
+      a[1] = f(a[1]! * inv);
+      a[2] = f(a[2]! * inv);
+    } else {
+      a[0] = a[1] = a[2] = 0;
+      d = 0;
+    }
+    return d;
+  };
+  const eps = f(1.1920929e-7);
+  const n = faces.length;
+  const centFac = f(1 / n);
+  let cent = [0, 0, 0];
+  let area = 0;
+  const faceNo: number[][] = [];
+  for (const face of faces) {
+    const co = face.map(at);
+    // `BM_face_calc_area`: Newell's sum, half its length.
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = 0; i < co.length; i++) {
+      const a = co[i]!;
+      const b = co[(i + 1) % co.length]!;
+      nx = f(nx + f(f(a[1]! - b[1]!) * f(a[2]! + b[2]!)));
+      ny = f(ny + f(f(a[2]! - b[2]!) * f(a[0]! + b[0]!)));
+      nz = f(nz + f(f(a[0]! - b[0]!) * f(a[1]! + b[1]!)));
+    }
+    const nl = f(Math.sqrt(lenSq([nx, ny, nz])));
+    const fArea = f(nl * f(0.5));
+    // `BM_face_calc_center_median_weighted`: each vertex weighted by the two edges on it.
+    let wPrev = f(Math.sqrt(lenSq(sub3(co[0]!, co[co.length - 1]!))));
+    let totw = 0;
+    const fc = [0, 0, 0];
+    for (let i = 0; i < co.length; i++) {
+      const wCurr = f(Math.sqrt(lenSq(sub3(co[(i + 1) % co.length]!, co[i]!))));
+      const w = f(wCurr + wPrev);
+      for (let k = 0; k < 3; k++) fc[k] = f(fc[k]! + f(co[i]![k]! * w));
+      totw = f(totw + w);
+      wPrev = wCurr;
+    }
+    if (totw !== 0) {
+      const inv = f(1 / totw);
+      for (let k = 0; k < 3; k++) fc[k] = f(fc[k]! * inv);
+    }
+    const wgt = f(centFac * fArea);
+    for (let k = 0; k < 3; k++) cent[k] = f(cent[k]! + f(fc[k]! * wgt));
+    area = f(area + fArea);
+    // The face normal `BM_face_calc_normal` (Newell, normalized).
+    const no = [nx, ny, nz];
+    normalize(no);
+    faceNo.push(no);
+  }
+  if (area !== 0) {
+    const inv = f(1 / area);
+    cent = cent.map((c) => f(c * inv));
+  }
+
+  let bestDist = eps;
+  let bestEdge = -3.4028235e38;
+  let bestLoop = -3.4028235e38;
+  let isFlip = false;
+  faces.forEach((face, fi) => {
+    const m = face.length;
+    for (let i = 0; i < m; i++) {
+      const co = at(face[i]!);
+      const dir = sub3(co, cent);
+      const dist = lenSq(dir);
+      const isBestDist = dist > bestDist;
+      if (!(isBestDist || dist === bestDist)) continue;
+      const inv = f(1 / f(Math.sqrt(dist)));
+      for (let k = 0; k < 3; k++) dir[k] = f(dir[k]! * inv);
+      const e0 = sub3(at(face[(i + 1) % m]!), co);
+      const e1 = sub3(at(face[(i + m - 1) % m]!), co);
+      if (!(normalize(e0) > eps && normalize(e1) > eps)) continue;
+      const edgeDot = Math.max(dot3(dir, e0), dot3(dir, e1));
+      const isBestEdge = edgeDot > bestEdge;
+      if (!(isBestDist || isBestEdge || edgeDot === bestEdge)) continue;
+      const loopDir = cross3(e0, e1);
+      if (!(normalize(loopDir) > eps)) continue;
+      if (dot3(loopDir, faceNo[fi]!) < 0) for (let k = 0; k < 3; k++) loopDir[k] = -loopDir[k]!;
+      const loopDot = dot3(dir, loopDir);
+      const test = Math.abs(loopDot);
+      if (isBestDist || isBestEdge || test > bestLoop) {
+        bestDist = dist;
+        bestEdge = edgeDot;
+        bestLoop = test;
+        isFlip = loopDot < 0;
+      }
+    }
+  });
+  return isFlip;
+}
+
+/**
+ * Make face windings consistent within each shell, then turn each shell
  * outward — Blender's `bmesh.ops.recalc_face_normals(faces=)`, Mesh > Normals >
  * Recalculate Outside.
  *
- * Two steps, and the first is the one a signed-volume check cannot do:
+ * Two steps, and the first is the one a volume check cannot do:
  *
  * 1. **Consistency.** Walk each shell face to face across shared edges. Two
  *    faces agree when they traverse their shared edge in opposite directions;
@@ -102,16 +199,14 @@ export interface RecalcFaceNormalsReport {
  *    what catches a mesh whose caps and sides disagree — flipping everything at
  *    once, which is all a volume test can ask for, leaves that disagreement
  *    exactly where it was.
- * 2. **Direction.** A consistent closed shell is either entirely outward or
- *    entirely inward, which its signed volume now reports reliably. Reverse it
- *    if negative.
+ * 2. **Direction.** A consistent shell is either entirely outward or entirely
+ *    inward, which the furthest-vertex test reports. Reverse it if inward.
  *
- * An **open** shell is made consistent and then left alone. Signed volume is
- * only meaningful over a closed surface, and guessing from it is how four
- * meshes in the living room got quietly inverted: a recessed downlight housing
- * is a shallow cup whose centroid sits almost on its own surface, so the sum
- * comes out negative for perfectly good geometry. `report.openShells` says how
- * many were skipped so the caller can decide rather than be guessed at.
+ * **Open shells are turned outward too** (compat-backlog C58), by the same test as closed ones — Blender's, not a signed volume:
+ * the furthest loop vertex from the shell's area-weighted centre, where a ray from the centre meets the surface first, must face
+ * away from it (`recalc_face_normals_find_index`). Signed volume is only meaningful over a closed surface, and a recessed
+ * cup has its centroid almost on its own surface, which is why this used to leave open shells alone; the furthest-vertex rule does not
+ * have that trouble, and a spike is handled by looking at the loop rather than the face.
  *
  * Vertex indices are untouched, so creases and seams carry through unchanged.
  */
@@ -200,11 +295,9 @@ export function recalcFaceNormals(
     for (const f of shell) if (flipped[f]!) polys[f]!.reverse();
     for (const f of shell) flipped[f] = false;
 
-    if (open) {
-      openShells++;
-      continue;
-    }
-    if (signedVolume6(P, shell.map((f) => polys[f]!)) < 0) {
+    if (open) openShells++;
+    // Blender turns an open shell outward too, by the face furthest from the shell's centre (`recalc_face_normals_find_index`).
+    if (shellPointsInward(P, shell.map((f) => polys[f]!))) {
       for (const f of shell) {
         polys[f]!.reverse();
         flippedCount++;
