@@ -196,6 +196,13 @@ export interface VertexWeightMixOptions {
   defaultWeightA?: number;
   /** What a non-member of B counts as. Default 0. */
   defaultWeightB?: number;
+  /**
+   * Blender's `invert_vertex_group_a` / `_b`: the weight read from the group is `1 − w`. Only the *value* is inverted — which
+   * vertices are touched (`mixSet`) is still decided by membership — so a vertex outside the group reads `1 − default`.
+   * The result written back to A is the mix as computed (the inverted A is the "original" the mask blends from).
+   */
+  invertGroupA?: boolean;
+  invertGroupB?: boolean;
   /** Blender's `mix_mode`. Default `set`, Blender's. */
   mixMode?: VertexWeightMixMode;
   /** Blender's `mix_set`. Default `and`, Blender's. */
@@ -401,8 +408,8 @@ export function vertexWeightMix(data: MeshData, options: VertexWeightMixOptions)
       if (inA) next.set(v, a.get(v)!);
       continue;
     }
-    const wa = inA ? a.get(v)! : da;
-    const wb = inB ? b!.get(v)! : db;
+    const wa = options.invertGroupA ? 1 - (inA ? a.get(v)! : da) : inA ? a.get(v)! : da;
+    const wb = options.invertGroupB ? 1 - (inB ? b!.get(v)! : db) : inB ? b!.get(v)! : db;
     // **The clamp comes after the mask, not before it** — and the parity rows
     // found that, not the probes. Without a clamp the two readings are
     // algebraically identical: `lerp(a, a + b, m)` *is* `a + m·b`, so every

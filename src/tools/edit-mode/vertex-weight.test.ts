@@ -276,6 +276,23 @@ describe("vertexWeightMix", () => {
       );
   });
 
+  it("inverts the weight that is read, not the membership (invert A / B; parity rows vertex-weight-mix-invert-*)", () => {
+    const A = { 0: 0.25, 1: 0.25 };
+    const B = { 0: 0.5, 1: 0.5, 2: 1, 3: 1 };
+    // Invert A over the vertices of B: vertex 0 reads 0.75, vertex 2 is outside A and reads 1 − 0 = 1.
+    expectWeights(
+      evens(vertexWeightMix(withGroups({ A, B }), { groupA: "A", groupB: "B", mixMode: "avg", mixSet: "b", invertGroupA: true })),
+      [0.625, 1, null, null, null],
+      "invert A",
+    );
+    // Invert B over everything: vertex 0 reads 0.5, vertex 2 reads 1 − 1 = 0, vertex 4 is outside B and reads 1 − 0 = 1.
+    expectWeights(
+      evens(vertexWeightMix(withGroups({ A, B }), { groupA: "A", groupB: "B", mixMode: "avg", mixSet: "all", invertGroupB: true })),
+      [0.375, 0, 0.5, 0.5, 0.5],
+      "invert B",
+    );
+  });
+
   it("reads mixSet as which vertices it may touch", () => {
     // **The five values needed their own input.** On the first probe every
     // vertex was in A and all five agreed. Here vertex 0 is in A only, 2 in
