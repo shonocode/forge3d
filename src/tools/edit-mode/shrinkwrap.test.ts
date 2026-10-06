@@ -402,3 +402,32 @@ describe("shrinkwrap project: culling and the normal axis (compat-backlog C23)",
     for (let i = 0; i < 4; i++) expect(Number.isFinite(out.positions[i * 3 + 2]!)).toBe(true);
   });
 });
+
+describe("shrinkwrap auxiliary target (parity rows shrinkwrap-aux-*)", () => {
+  const plane = (z: number): MeshData => ({
+    positions: Float32Array.from([-5, -5, z, 5, -5, z, 5, 5, z, -5, 5, z]),
+    polys: [[0, 1, 2, 3]],
+  });
+  const project = { axis: "z" as const, positive: true, negative: true };
+
+  it("lands on whichever of the two surfaces the ray meets first", () => {
+    const source = points([[0, 0, 3]]);
+    // Main at z = 1, auxiliary at z = 2: the auxiliary one is nearer going down.
+    const nearAux = shrinkwrap(source, { target: plane(1), auxTarget: plane(2), method: "project", project });
+    expectPoint(firsts(nearAux, 1)[0]!, [0, 0, 2], "aux nearer");
+    // Swapped: the main target is nearer.
+    const nearMain = shrinkwrap(source, { target: plane(2), auxTarget: plane(1), method: "project", project });
+    expectPoint(firsts(nearMain, 1)[0]!, [0, 0, 2], "main nearer");
+    // Without the auxiliary target the main one is all there is.
+    const alone = shrinkwrap(source, { target: plane(1), method: "project", project });
+    expectPoint(firsts(alone, 1)[0]!, [0, 0, 1], "alone");
+  });
+
+  it("is not culled, while the main target is", () => {
+    // Looking down on a plane whose normal points up the ray hits its front face; culling `front` throws that hit away for the main
+    // target, but the auxiliary one is never culled.
+    const source = points([[0, 0, 3]]);
+    const culled = shrinkwrap(source, { target: plane(1), auxTarget: plane(0), method: "project", project: { ...project, cull: "front" } });
+    expectPoint(firsts(culled, 1)[0]!, [0, 0, 0], "main culled, aux kept");
+  });
+});

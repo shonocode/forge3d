@@ -157,6 +157,12 @@ export interface ShrinkwrapProjectOptions {
 export interface ShrinkwrapOptions {
   /** The mesh to wrap onto. Blender's `target`. */
   target: MeshData;
+  /**
+   * Blender's `auxiliary_target`, for the `project` method only: the rays are cast at it as well, with no culling, and whichever
+   * surface is hit first wins (on a tie the main target, which is cast second). The point is placed against the surface it hit
+   * (compat-backlog C53).
+   */
+  auxTarget?: MeshData;
   /** Blender's `wrap_method`. Default `"nearestSurface"`, Blender's. */
   method?: ShrinkwrapMethod;
   /** Blender's `wrap_mode`. Default `"onSurface"`, Blender's. */
@@ -258,6 +264,8 @@ interface Hit {
   /** The triangle hit and the point's weights on its corners, for `aboveSurface`. */
   tri?: number;
   bary?: Vec3;
+  /** The hit is on the auxiliary target. */
+  aux?: boolean;
 }
 
 /** `is_quad_flip_v3_first_third_fast`: is the 0–2 diagonal degenerate? */
@@ -692,7 +700,7 @@ function nearestVertex(t: Target, p: Vec3): Hit | null {
   };
 }
 
-function project(t: Target, p: Vec3, dir: Vec3, opts: ShrinkwrapProjectOptions): Hit | null {
+function project(t: Target, p: Vec3, dir: Vec3, opts: ShrinkwrapProjectOptions, aux: Target | null = null): Hit | null {
   const negative = opts.negative ?? false;
   const positive = opts.positive ?? true;
   const limit = opts.limit ?? 0;
@@ -701,6 +709,20 @@ function project(t: Target, p: Vec3, dir: Vec3, opts: ShrinkwrapProjectOptions):
   let bestHit: Hit | null = null;
   for (const sign of [positive ? 1 : 0, negative ? -1 : 0]) {
     if (sign === 0) continue;
+    // The auxiliary target is cast first, without culling; the main target replaces its hit only by being nearer.
+    if (aux) {
+      const ah = rayNearestHit(aux.grid, aux.positions, aux.tris, p[0], p[1], p[2], dir[0] * sign, dir[1] * sign, dir[2] * sign, tMax);
+      if (ah && ah.t < bestT) {
+        bestT = ah.t;
+        bestHit = {
+          point: [p[0] + dir[0] * sign * ah.t, p[1] + dir[1] * sign * ah.t, p[2] + dir[2] * sign * ah.t],
+          faceNormal: aux.faceNormals[aux.triFace[ah.face]!]!,
+          tri: ah.face,
+          bary: [ah.w0, ah.w1, ah.w2],
+          aux: true,
+        };
+      }
+    }
     const hit = rayNearestHit(
       t.grid, t.positions, t.tris,
       p[0], p[1], p[2],
@@ -772,6 +794,7 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   const offset = options.offset ?? 0;
   const t = prepare(options.target);
   if (t.tris.length === 0) throw new Error("shrinkwrap: the target has no faces");
+  const aux = options.auxTarget && method === "project" ? prepare(options.auxTarget) : null;
 
   const projectOpts = options.project ?? {};
   // `proj_axis` in `shrinkwrap.cc`: the chosen unit axes summed; none is "normal".
@@ -806,13 +829,13 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
       const dir: Vec3 = normals
         ? [normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!]
         : axisDir;
-      hit = project(t, o, normalized(dir), projectOpts);
+      hit = project(t, o, normalized(dir), projectOpts, aux);
     } else hit = nearestSurface(t, p);
 
     // A ray that misses leaves its vertex exactly where it was — measured.
     if (!hit) continue;
 
-    const out = place(t, o, hit, mode, offset);
+    const out = place(hit.aux && aux ? aux : t, o, hit, mode, offset);
     // The weight blends the start with the landing place — for the nearest-vertex method Blender scales the weight by
     // (dist − offset) / dist, which is the same point.
     for (let k = 0; k < 3; k++) positions[v * 3 + k] = weight === 1 ? out[k]! : p[k]! + (out[k]! - p[k]!) * weight;
