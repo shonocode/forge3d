@@ -1103,6 +1103,9 @@ export interface SmoothVertOptions {
  * z = 1 with neighbours at 0, 0 and 1, which comes back at 1/3.
  *
  * Positions only; nothing is added or removed. Run it twice for more.
+ *
+ * The axes are **off** unless asked for (the bmesh operator's slots): a call with no `useAxis*` moves nothing. The Edit Mode tool
+ * (`bpy.ops.mesh.vertices_smooth`) has all three on and a `repeat` count (compat-backlog C79).
  */
 export function smoothVert(
   em: EditMesh,
@@ -1165,6 +1168,8 @@ export interface HolesFillOptions {
    *
    * Measured: a square hole in a grid is filled at `sides = 0` and left alone
    * at `sides = 3`, which is what makes it a maximum rather than a count.
+   * The Edit Mode tool (`bpy.ops.mesh.fill_holes`) defaults to 4 and fills only the holes among the **selected** edges; this is the
+   * bmesh operator's, every loop in the mesh (compat-backlog C79).
    */
   sides?: number;
 }

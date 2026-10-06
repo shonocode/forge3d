@@ -79,6 +79,7 @@ export interface UnsubdivideOptions {
    * How many times to repeat. Blender clamps this to at least 1 and stops
    * early when an iteration finds nothing to dissolve — measured on an 8x8
    * grid, where iterations 3 and 4 give the same 27 vertices.
+   * Default 1, the bmesh operator's; the Edit Mode tool (`bpy.ops.mesh.unsubdivide`) starts at 2 (compat-backlog C79).
    */
   iterations?: number;
   /**
