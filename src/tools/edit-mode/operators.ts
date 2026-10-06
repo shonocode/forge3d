@@ -1738,6 +1738,7 @@ export function trisToQuads(
   selectedFaces: ReadonlySet<number> | null,
   maxAngleDeg = 40,
   maxShapeAngleDeg = 40,
+  edgeHint: ReadonlyArray<readonly [number, number]> | null = null,
 ): Set<number> {
   const polys = toPolygons(em);
   // `bmo_join_triangles_exec`: the candidates in edge order, each ranked by `quad_calc_error`, best first off a `BLI_heap`
@@ -1748,6 +1749,7 @@ export function trisToQuads(
     selectedFaces,
     Math.fround((maxAngleDeg * Math.PI) / 180),
     Math.fround((maxShapeAngleDeg * Math.PI) / 180),
+    edgeHint,
   );
   if (pairs.length === 0) return new Set();
 

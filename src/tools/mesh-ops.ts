@@ -24,6 +24,7 @@ import type { Vec3 } from "./generate";
 import { bulletConvexHull } from "./hull/bullet-hull";
 import { meshFromData, meshToData } from "../lib/mesh";
 import { trisToQuads } from "./edit-mode/operators";
+import { calcEdges } from "./bmesh-lite";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
 function remapKeys<T>(
@@ -2600,7 +2601,14 @@ export function convexHullOperator(data: MeshData, options: ConvexHullOperatorOp
     if ("hull" in o || outputExisting.has(o.face)) joinable.add(i);
   });
   const em = meshFromData(out);
-  trisToQuads(em, joinable, ((options.faceThreshold ?? 0.698) * 180) / Math.PI, ((options.shapeThreshold ?? 0.698) * 180) / Math.PI);
+  trisToQuads(em, joinable, ((options.faceThreshold ?? 0.698) * 180) / Math.PI, ((options.shapeThreshold ?? 0.698) * 180) / Math.PI,
+    // The edit mesh the hull ran on lists the input's edges first (`mesh_calc_edges` order) and the hull's new ones after.
+    calcEdges(data.polys, data.polys.length < 1000 ? 1 : 8).flatMap(([a, b]) => {
+      const x = remap.get(a);
+      const y = remap.get(b);
+      return x === undefined || y === undefined ? [] : [[x, y] as [number, number]];
+    }),
+  );
   return meshToData(em);
 }
 

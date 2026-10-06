@@ -84,6 +84,7 @@ export function joinTrianglePairs(
   input: ReadonlySet<number> | null,
   angleFace: number,
   angleShape: number,
+  edgeHint: ReadonlyArray<readonly [number, number]> | null = null,
 ): JoinPair[] {
   const bm = bmFromMesh({ positions, polys });
   const useFace = angleFace < f(Math.PI);
@@ -93,7 +94,22 @@ export function joinTrianglePairs(
   const used = new Set<number>();
   const inScope = (face: { len: number; index: number }): boolean => face.len === 3 && (!input || input.has(face.index));
 
-  for (const e of liveEdges(bm)) {
+  let edges = liveEdges(bm);
+  if (edgeHint) {
+    // The edges are the mesh's in its order, then the ones an operator made after, as `BM_face_create_verts` makes them — face by face from
+    // each face's first corner — which is how a bmesh that an operator built (the convex hull's) lists them.
+    const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+    const rank = new Map<string, number>();
+    for (const [a, b] of edgeHint) if (!rank.has(key(a, b))) rank.set(key(a, b), rank.size);
+    for (const p of polys)
+      p.forEach((a, i) => {
+        const k = key(a, p[(i + 1) % p.length]!);
+        if (!rank.has(k)) rank.set(k, rank.size);
+      });
+    const rk = (e: BE): number => rank.get(key(e.v1.index, e.v2.index)) ?? Infinity;
+    edges = [...edges].sort((x, y) => rk(x) - rk(y));
+  }
+  for (const e of edges) {
     const la = e.l;
     const lb = la?.rn;
     if (!la || !lb || lb === la || lb.rn !== la) continue; // `BM_edge_face_pair`: exactly two faces
