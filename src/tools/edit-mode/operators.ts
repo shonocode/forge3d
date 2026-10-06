@@ -671,30 +671,34 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
 
 // ── Rotate Edges / Flip Diagonal (tri-only) ────────────────────────────────
 
+export interface RotateEdgesOptions {
+  /** Blender's `use_ccw`. Default false. */
+  ccw?: boolean;
+}
+
 /**
- * Rotate the shared edge of two adjacent triangles — Blender's
- * `bmesh.ops.rotate_edges(edges=)`, "Rotate Edge" in the Edge menu.
+ * Rotate the shared edge of two faces — Blender's `bmesh.ops.rotate_edges`, "Rotate Edge" in the Edge menu.
  *
- * The edge a-b held by triangles (a, b, c) and (b, a, d) is replaced by c-d,
- * re-triangulating the quad they cover along its other diagonal. Edges whose
- * two faces are not both triangles are skipped: a quad has no diagonal to
- * rotate, so run `quadsToTris` first if that is what you meant.
+ * The edge `v1 → v2` (as its lower-numbered face runs it) is replaced by one that joins the neighbour of `v1` in one face to the neighbour
+ * of `v2` in the other: the two faces are joined and split again along the new edge, so a triangle pair flips its diagonal and two quads
+ * (or any two polygons) keep their sizes. Which neighbours — the other pair, one corner round the other way — is `ccw`
+ * (`BM_edge_calc_rotate`). An edge that is not shared by exactly two faces, whose two faces run it the same way (a flipped pair), or whose
+ * new edge would already exist (`BM_EDGEROT_CHECK_EXISTS`) is skipped.
  *
- * Takes half-edge indices, canonicalised internally, and returns the faces it
- * re-triangulated — the same contract as the other operators here.
+ * With more than one edge the rotation also refuses a result that folds a corner over or collapses it to zero area
+ * (`BM_edge_rotate_check_degenerate`), and the edges go in the order given — Blender's order when no two edges share a face
+ * (`bm_rotate_edges_simple`); sharing faces, Blender rotates the longest edge first and re-tries the edges that could not turn
+ * (`bm_rotate_edges_shared`), which is not ported (compat-backlog C46).
  *
- * Blender's `use_ccw` is not implemented. With two triangles there is only one
- * other diagonal, so the direction only decides which of the two resulting
- * triangles is listed first, which nothing downstream here reads.
+ * Takes half-edge indices, canonicalised internally, and returns the faces it re-split — the same contract as the other operators here.
  *
- * > This used to be exported as `knife`, which was wrong twice over: Blender's
- * > Knife is the interactive cut tool (forge3d's is `planeCut` in `knife.ts`),
- * > and the operation is a diagonal flip, not a cut. The editor's own label
- * > said "Flip Diagonal" while the library said `knife`.
+ * > This used to be exported as `knife`, which was wrong twice over: Blender's Knife is the interactive cut tool (forge3d's is `planeCut`
+ * > in `knife.ts`), and the operation is a diagonal flip, not a cut. The editor's own label said "Flip Diagonal" while the library said `knife`.
  */
-export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
-  // Resolve every target to a vertex pair BEFORE touching anything: each flip
-  // rebuilds the polygon list, which invalidates half-edge indices.
+export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>, options: RotateEdgesOptions = {}): Set<number> {
+  const ccw = options.ccw ?? false;
+  // Resolve every target to a vertex pair BEFORE touching anything: each rotation rebuilds the polygon list, which invalidates
+  // half-edge indices.
   const pairs: Array<[number, number]> = [];
   for (const he of selectedEdges) {
     const h = em.halfEdges[he];
@@ -703,35 +707,146 @@ export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): S
     const b = em.halfEdges[h.next]!.v;
     pairs.push(a < b ? [a, b] : [b, a]);
   }
+  const checkDegenerate = pairs.length > 1;
 
   const touched = new Set<number>();
   for (const [a, b] of pairs) {
-    // Re-find the edge: an earlier flip in this batch may have removed it.
-    let found = -1;
-    for (let he = 0; he < em.halfEdges.length && found < 0; he++) {
-      const h = em.halfEdges[he]!;
-      if (h.twin < 0) continue;
-      const x = h.v;
-      const y = em.halfEdges[h.next]!.v;
-      if ((x === a && y === b) || (x === b && y === a)) found = he;
-    }
-    if (found < 0) continue;
-
-    const f1 = em.halfEdges[found]!.face;
-    const f2 = em.halfEdges[em.halfEdges[found]!.twin]!.face;
-    if (faceVertexCount(em, f1) !== 3 || faceVertexCount(em, f2) !== 3) continue;
-
-    // The two off-edge verts are what the flip connects.
-    const c = faceVertices(em, f1).find((v) => v !== a && v !== b);
-    const d = faceVertices(em, f2).find((v) => v !== a && v !== b);
-    if (c === undefined || d === undefined || c === d) continue;
-
-    if (flipDiagonal(em, found, c, d).size > 0) {
-      touched.add(f1);
-      touched.add(f2);
-    }
+    const polys = toPolygons(em);
+    // Re-find the edge: an earlier rotation in this batch may have removed it.
+    const holders: number[] = [];
+    polys.forEach((p, f) => {
+      for (let i = 0; i < p.length; i++) {
+        const x = p[i]!;
+        const y = p[(i + 1) % p.length]!;
+        if ((x === a && y === b) || (x === b && y === a)) holders.push(f);
+      }
+    });
+    if (holders.length !== 2) continue;
+    const fa = Math.min(holders[0]!, holders[1]!);
+    const fb = Math.max(holders[0]!, holders[1]!);
+    const rotated = rotateEdgePolys(em.positions, polys, fa, fb, a, b, ccw, checkDegenerate);
+    if (!rotated) continue;
+    polys[fa] = rotated[0];
+    polys[fb] = rotated[1];
+    rebuildPolygons(em, em.positions, polys, { joins: true });
+    touched.add(fa);
+    touched.add(fb);
   }
   return touched;
+}
+
+/** The neighbour of `v` in `poly` that is not `other` (`BM_face_other_vert_loop`), or -1. */
+function otherNeighbour(poly: readonly number[], other: number, v: number): number {
+  const j = poly.indexOf(v);
+  const prev = poly[(j - 1 + poly.length) % poly.length]!;
+  const next = poly[(j + 1) % poly.length]!;
+  return prev === other ? next : next === other ? prev : -1;
+}
+
+/**
+ * One rotation on polygons: the two new faces `[for fa's slot, for fb's slot]`, or null when Blender would leave the edge alone.
+ * `fa` is the lower-numbered face, the one whose loop `BMEdge::l` points at, so it runs the edge `v1 → v2`.
+ */
+function rotateEdgePolys(
+  positions: Float32Array,
+  polys: readonly (readonly number[])[],
+  fa: number,
+  fb: number,
+  a: number,
+  b: number,
+  ccw: boolean,
+  checkDegenerate: boolean,
+): [number[], number[]] | null {
+  const A = polys[fa]!;
+  const B = polys[fb]!;
+  const ia = A.findIndex((v, i) => (v === a && A[(i + 1) % A.length] === b) || (v === b && A[(i + 1) % A.length] === a));
+  const v1 = A[ia]!;
+  const v2 = A[(ia + 1) % A.length]!;
+  // A pair that runs the edge the same way is a flipped one (`is_flipped`); the join below assumes they oppose.
+  const ib = B.findIndex((v, i) => v === v2 && B[(i + 1) % B.length] === v1);
+  if (ib < 0) return null;
+
+  // `BM_edge_rotate_check`: the next vertex on each side must differ, in both directions.
+  if (otherNeighbour(A, v2, v1) === otherNeighbour(B, v2, v1)) return null;
+  if (otherNeighbour(A, v1, v2) === otherNeighbour(B, v1, v2)) return null;
+
+  // `BM_edge_calc_rotate`: not ccw swaps the faces.
+  const pa = ccw ? A : B;
+  const pb = ccw ? B : A;
+  const n1 = otherNeighbour(pb, v2, v1);
+  const n2 = otherNeighbour(pa, v1, v2);
+  if (n1 < 0 || n2 < 0 || n1 === n2) return null;
+
+  // `BM_EDGEROT_CHECK_EXISTS`.
+  for (const p of polys)
+    for (let i = 0; i < p.length; i++) {
+      const x = p[i]!;
+      const y = p[(i + 1) % p.length]!;
+      if ((x === n1 && y === n2) || (x === n2 && y === n1)) return null;
+    }
+
+  if (checkDegenerate && !rotationKeepsCorners(positions, v1, v2, n1, n2, pb, pa)) return null;
+
+  // Join the two faces along the edge: v2, A's run to v1, then B's run back to v2.
+  const joined: number[] = [];
+  for (let k = 1; k <= A.length; k++) joined.push(A[(ia + k) % A.length]!); // v2 ... v1
+  for (let k = 2; k < B.length; k++) joined.push(B[(ib + k) % B.length]!); // after v1, up to before v2
+  const i1 = joined.indexOf(n1);
+  const i2 = joined.indexOf(n2);
+  const arc = (from: number, to: number): number[] => {
+    const out: number[] = [];
+    for (let k = from; ; k = (k + 1) % joined.length) {
+      out.push(joined[k]!);
+      if (k === to) break;
+    }
+    return out;
+  };
+  const first = arc(i1, i2);
+  const second = arc(i2, i1);
+  // The piece holding v2 takes fa's slot (starting at v2), the one holding v1 fb's (starting at the neighbour of v1) — the order the
+  // triangle case always had.
+  const startAt = (piece: number[], v: number): number[] => {
+    const k = piece.indexOf(v);
+    return [...piece.slice(k), ...piece.slice(0, k)];
+  };
+  const [holdsV2, holdsV1] = first.includes(v2) ? [first, second] : [second, first];
+  return [startAt(holdsV2, v2), startAt(holdsV1, n1)];
+}
+
+/** `BM_edge_rotate_check_degenerate`: the new edge must not fold a corner over or leave one of zero area. */
+function rotationKeepsCorners(
+  P: Float32Array,
+  v1Old: number,
+  v2Old: number,
+  v1: number,
+  v2: number,
+  f1: readonly number[],
+  f2: readonly number[],
+): boolean {
+  const co = (v: number): [number, number, number] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const sub = (x: number[], y: number[]): number[] => [x[0]! - y[0]!, x[1]! - y[1]!, x[2]! - y[2]!];
+  const norm = (x: number[]): number[] => {
+    const l = Math.hypot(x[0]!, x[1]!, x[2]!);
+    return l > 0 ? [x[0]! / l, x[1]! / l, x[2]! / l] : x;
+  };
+  const cross = (x: number[], y: number[]): number[] => [
+    x[1]! * y[2]! - x[2]! * y[1]!,
+    x[2]! * y[0]! - x[0]! * y[2]!,
+    x[0]! * y[1]! - x[1]! * y[0]!,
+  ];
+  const dot = (x: number[], y: number[]): number => x[0]! * y[0]! + x[1]! * y[1]! + x[2]! * y[2]!;
+  const v1Alt = otherNeighbour(f1, v1Old, v1);
+  const v2Alt = otherNeighbour(f2, v2Old, v2);
+  const dirOld = norm(sub(co(v1Old), co(v2Old)));
+  const dirNew = norm(sub(co(v1), co(v2)));
+  const dirV1Old = norm(sub(co(v1Old), co(v1)));
+  const dirV2Old = norm(sub(co(v2Old), co(v2)));
+  const dirV1New = norm(sub(co(v1), co(v1Alt)));
+  const dirV2New = norm(sub(co(v2), co(v2Alt)));
+  if (dot(cross(dirOld, dirV1Old), cross(dirNew, dirV1New)) < 0) return false;
+  if (dot(cross(dirOld, dirV2Old), cross(dirNew, dirV2New)) < 0) return false;
+  const flip = [-dirNew[0]!, -dirNew[1]!, -dirNew[2]!];
+  return !(dot(dirNew, dirV1New) > 0.999 || dot(flip, dirV2New) > 0.999);
 }
 
 /**

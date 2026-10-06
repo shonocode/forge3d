@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { buildEditMesh } from "./build";
-import { canonicalEdge, faceVertices, faceVerts, forEachEdge } from "./half-edge";
+import { canonicalEdge, faceVertices, faceVerts, forEachEdge, toPolygons } from "./half-edge";
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { bevelEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, rotateEdges, trisToQuads, reverseFaces, extrudeDiscreteFaces, connectVertPair, splitEdges, offsetEdgeLoops } from "./operators";
 
@@ -661,17 +661,46 @@ describe("rotateEdges", () => {
     expect(toArr(em)).toHaveLength(before.length);
   });
 
-  it("skips edges whose faces are not both triangles", () => {
-    // A cube merged into 6 quads: a quad has no diagonal to rotate, so every
-    // edge is held by the wrong kind of face and nothing should move.
-    const em = buildEditMesh(makeCube())!;
-    trisToQuads(em, null);
-    expect(em.faces).toHaveLength(6);
+  it("rotates the edge between two quads and keeps both faces quads (parity rows rotate-edges-quad*)", () => {
+    // 2 x 1 grid: 3-4-5 over 0-1-2, quads [0,1,4,3] and [1,2,5,4] sharing 1-4. Default (not ccw): the neighbour of 1 in the first
+    // face (0) joins the neighbour of 4 in the second (5); ccw takes the other pair, 2-3.
+    const quads = () => ({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 1, 1, 0, 2, 1, 0]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+    });
+    for (const [ccw, edge] of [[false, [0, 5]], [true, [2, 3]]] as const) {
+      const em = meshFromData(quads());
+      expect(rotateEdges(em, new Set([edgeBetween(em, 1, 4)]), { ccw }).size).toBe(2);
+      const polys = toPolygons(em);
+      expect(polys.map((p) => p.length)).toEqual([4, 4]);
+      expect(polys.some((p) => containsEdgeOf(p, edge[0], edge[1]))).toBe(true);
+      expect(polys.some((p) => containsEdgeOf(p, 1, 4))).toBe(false);
+    }
+  });
 
-    const all = new Set<number>();
-    forEachEdge(em, (he) => all.add(he));
-    expect(rotateEdges(em, all).size).toBe(0);
-    expect(em.faces).toHaveLength(6);
+  it("leaves an edge alone when the new one already exists", () => {
+    // A tetrahedron: the edge 0-1 would become 2-3, which is already an edge.
+    const em = meshFromData({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+      polys: [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
+    });
+    expect(rotateEdges(em, new Set([edgeBetween(em, 0, 1)])).size).toBe(0);
+    expect(em.faces).toHaveLength(4);
+  });
+
+  it("refuses a rotation that folds a corner over — but only when more than one edge is turned (parity rows rotate-edges-dart / -degenerate)", () => {
+    // A concave pair (0-2 is its only interior diagonal; 1-3 lies outside) beside a square pair.
+    const mesh = () => ({
+      positions: new Float32Array([0, 0, 0, 4, 0, 0, 1, 1, 0, 0, 4, 0, 10, 0, 0, 11, 0, 0, 11, 1, 0, 10, 1, 0]),
+      polys: [[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+    });
+    const alone = meshFromData(mesh());
+    expect(rotateEdges(alone, new Set([edgeBetween(alone, 0, 2)])).size).toBe(2);
+    const both = meshFromData(mesh());
+    const turned = rotateEdges(both, new Set([edgeBetween(both, 0, 2), edgeBetween(both, 4, 6)]));
+    // Only the square turned: faces 2 and 3.
+    expect([...turned].sort()).toEqual([2, 3]);
+    expect(toPolygons(both).some((p) => containsEdgeOf(p, 0, 2))).toBe(true);
   });
 
   it("skips boundary edges and empty input", () => {
@@ -682,6 +711,10 @@ describe("rotateEdges", () => {
     expect(em.faces).toHaveLength(2);
   });
 });
+
+function containsEdgeOf(p: readonly number[], a: number, b: number): boolean {
+  return p.some((v, i) => (v === a && p[(i + 1) % p.length] === b) || (v === b && p[(i + 1) % p.length] === a));
+}
 
 function toArr(em: import("./half-edge").EditMesh): number[] {
   const out: number[] = [];
