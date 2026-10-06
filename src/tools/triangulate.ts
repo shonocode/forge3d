@@ -225,6 +225,8 @@ export type QuadMethod = "beauty" | "fixed" | "alternate" | "shortEdge" | "longE
 export type NgonMethod = "beauty" | "earClip";
 
 export interface TriangulateOptions {
+  /** `bmesh.ops.triangulate`'s `faces`: indices into `data.polys` of the faces to cut; every other face is copied whole. Default all. */
+  faces?: ReadonlySet<number>;
   /** How a quad is split. Default `"beauty"`, Blender's default. */
   quadMethod?: QuadMethod;
   /** How a face of five or more corners is split. Default `"beauty"`. */
@@ -323,7 +325,7 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
   if (opts.dropDuplicates) for (const p of data.polys) if (p.length === 3) tris3.add(triKey(p));
   for (let fi = 0; fi < data.polys.length; fi++) {
     const p = data.polys[fi]!;
-    if (p.length <= 3 || p.length < minVertices) {
+    if (p.length <= 3 || p.length < minVertices || (opts.faces && !opts.faces.has(fi))) {
       polys.push([...p]);
       sources.push({ face: fi, corners: p.map((_, i) => i) });
       continue;

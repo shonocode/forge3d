@@ -31,6 +31,15 @@ const areaY = (m: MeshData, p: number[]): number => {
 };
 
 describe("triangulate", () => {
+  it("cuts only the listed faces and copies the rest (parity rows triangulate-faces*)", () => {
+    const two: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 2, 0, 0, 2, 0, 1]),
+      polys: [[0, 1, 2, 3], [1, 4, 5, 2]],
+    };
+    const out = triangulate(two, { quadMethod: "fixed", faces: new Set([1]) });
+    expect(out.polys).toEqual([[0, 1, 2, 3], [1, 4, 5], [1, 5, 2]]);
+  });
+
   it("cuts 0–2 with fixed, 1–3 with alternate", () => {
     expect(diagonal(triangulate(rhombus, { quadMethod: "fixed" }))).toBe("0-2");
     expect(diagonal(triangulate(rhombus, { quadMethod: "alternate" }))).toBe("1-3");
