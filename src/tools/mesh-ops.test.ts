@@ -387,6 +387,23 @@ describe("maskMesh", () => {
     expect(deleteLoose(out).positions.length / 3).toBe(0);
   });
 
+  it("keeps an edge whose two ends are kept, as a wire edge, when no kept polygon has it (parity rows mask-edges*)", () => {
+    // The left quad goes (3 is not kept), but 0-1 and 1-... between kept vertices stay: 0-1 is the quad's bottom edge.
+    const out = maskMesh(strip(), new Set([0, 1, 4, 5]));
+    expect(out.polys).toEqual([]);
+    // Edges of the two quads with both ends in {0, 1, 4, 5}: 0-1, 1-4, 4-5 (renumbered 0-1, 1-2, 2-3).
+    const keys = (out.edges ?? []).map((e) => [...e].sort().join("_")).sort();
+    expect(keys).toEqual(["0_1", "1_2", "2_3"]);
+  });
+
+  it("does not list an edge a kept polygon already has, and keeps the input's wire edges", () => {
+    const data = { ...strip(), edges: [[0, 4]] };
+    const out = maskMesh(data, new Set([0, 1, 3, 4]));
+    // The left quad is whole; its edges are its own. Only the wire 0-4 is extra (renumbered 0-3).
+    expect(out.polys).toHaveLength(1);
+    expect(out.edges).toEqual([[0, 3]]);
+  });
+
   it("renumbers in the original order", () => {
     const out = maskMesh(strip(), new Set([1, 2, 4, 5]));
     expect(out.polys).toEqual([[0, 1, 3, 2]]); // was [1, 2, 5, 4]

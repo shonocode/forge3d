@@ -2613,6 +2613,11 @@ export interface MaskOptions {
  *   of a sheet leaves its rim behind as loose vertices. Follow with
  *   {@link deleteLoose} if that is not wanted — Blender does not do it either.
  *
+ * - **An edge survives when both its ends do** — whether or not a polygon
+ *   still uses it. A removed polygon's edge between two kept vertices comes
+ *   back as a wire edge in `edges`, and so does a wire edge of the input
+ *   (`MOD_mask.cc`'s `computed_masked_edges`, compat-backlog C45).
+ *
  * Vertices come back in their original order, renumbered, with creases and
  * seams carried through.
  */
@@ -2630,5 +2635,25 @@ export function maskMesh(
   for (let v = 0; v < data.positions.length / 3; v++)
     if ((weightOf(v) > threshold) !== invert) keep.add(v);
 
-  return compactMesh(data, keep);
+  const out = compactMesh(data, keep);
+  // Every edge with both ends kept is kept; the ones a kept polygon already has are its own.
+  const remap = new Map<number, number>();
+  for (let v = 0, n = 0; v < data.positions.length / 3; v++) if (keep.has(v)) remap.set(v, n++);
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const owned = new Set<string>();
+  for (const p of out.polys) for (let i = 0; i < p.length; i++) owned.add(key(p[i]!, p[(i + 1) % p.length]!));
+  const seen = new Set<string>();
+  const wire: number[][] = [];
+  const add = (a: number, b: number): void => {
+    const na = remap.get(a);
+    const nb = remap.get(b);
+    if (na === undefined || nb === undefined || na === nb) return;
+    const k = key(na, nb);
+    if (owned.has(k) || seen.has(k)) return;
+    seen.add(k);
+    wire.push([na, nb]);
+  };
+  for (const p of data.polys) for (let i = 0; i < p.length; i++) add(p[i]!, p[(i + 1) % p.length]!);
+  for (const e of data.edges ?? []) add(e[0]!, e[1]!);
+  return wire.length ? { ...out, edges: wire } : out;
 }
