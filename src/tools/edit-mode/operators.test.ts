@@ -795,7 +795,7 @@ describe("delete variants", () => {
 
 // ── F-M8 batch 1: edgeSlide / merge / bridge ──
 
-import { edgeSlide, mergeAtCenter, collapseEdges, weldVerts, bridgeEdgeLoops } from "./operators";
+import { edgeSlide, mergeAtCenter, collapseEdges, weldVerts, bridgeEdgeLoops, dissolveDegenerate } from "./operators";
 import { edgeEnd, edgeOrigin, type EditMesh } from "./half-edge";
 import { cylinder } from "../generate";
 
