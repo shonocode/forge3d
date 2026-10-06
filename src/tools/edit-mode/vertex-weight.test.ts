@@ -244,7 +244,36 @@ describe("vertexWeightEdit", () => {
   });
 });
 
+describe("normalize and thresholds (parity rows vertex-weight-normalize-*, -remove-*)", () => {
+  it("stretches the weights from their smallest to their largest, and leaves a uniform group alone", () => {
+    // Inverted falloff at mask 0.25: lerp(w, 1 − w, .25) = .25 + .5w for every vertex, a non-member (default weight 0) included, so the
+    // range is .25 … .75 and the stretch sends .25 to 0, .5 to .5 and .75 to 1.
+    const all = withGroups({ A: { 0: 0, 1: 0, 2: 0.5, 3: 0.5, 4: 1, 5: 1, 6: 0, 7: 0, 8: 1, 9: 1 } });
+    const out = vertexWeightEdit(all, { group: "A", invertFalloff: true, maskConstant: 0.25, normalize: true });
+    expectWeights(evens(out), [0, 0.5, 1, 0, 1], "stretched");
+    // Every weight 0.5 (inverted falloff at mask 0.5, non-members included): a range of 0 leaves them as they are.
+    const uniform = withGroups({ A: { 0: 0.5, 2: 0.5, 4: 0.5, 6: 0.5, 8: 0.5 } });
+    const same = vertexWeightEdit(uniform, { group: "A", invertFalloff: true, maskConstant: 0.5, normalize: true });
+    expectWeights(evens(same), [0.5, 0.5, 0.5, 0.5, 0.5], "uniform");
+  });
+
+  it("removes by the final weight, after the falloff", () => {
+    // The threshold sees the curve's result: a member whose original weight is above it but whose final weight is below it goes.
+    const data = withGroups({ A: { 0: 0.4, 2: 0.9 } });
+    const out = vertexWeightEdit(data, { group: "A", falloff: "sharp", remove: true, removeThreshold: 0.3 });
+    // sharp(0.4) = 0.16, below 0.3: gone; sharp(0.9) = 0.81 stays.
+    expect(out.groups!.get("A")!.has(0)).toBe(false);
+    expect(out.groups!.get("A")!.get(2)!).toBeCloseTo(0.81, 5);
+  });
+});
+
 describe("vertexWeightMix", () => {
+  it("divides 0 by 0 as 0 and a positive by 0 as a number the clamp brings to 1 (parity row vertex-weight-mix-div-all)", () => {
+    const data = withGroups({ A: { 0: 0, 2: 0.4 }, B: { 0: 0, 2: 0 } });
+    const out = vertexWeightMix(data, { groupA: "A", groupB: "B", mixMode: "div", mixSet: "and" });
+    expectWeights(evens(out), [0, 1, null, null, null], "div");
+  });
+
   it("combines the two groups nine ways", () => {
     // Blender, with A the ramp and B [1, 0.5, 0, absent, absent] under
     // `mixSet: "all"` and both defaults 0 — so B reads as [1, 0.5, 0, 0, 0].

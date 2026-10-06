@@ -286,16 +286,26 @@ function copyGroups(data: MeshData): Map<string, Map<number, number>> {
 }
 
 /**
- * Divide the group by its largest weight — Blender's `normalize`.
- *
- * Measured against a group whose largest was 0.81: it became 1, and 0.04
- * became 0.049383. An empty group, or one whose largest is 0, is left alone.
+ * `weightvg_update_vg`'s normalisation: the processed weights are stretched from their smallest to their largest,
+ * `(w − min) / (max − min)` (float32) — not divided by the largest. A range no wider than FLT_EPSILON leaves them as they are
+ * (compat-backlog C60). The range is over **the vertices the modifier processed**, whether or not they end up in the group:
+ * all of them for Edit (non-members at the default weight), the touched ones for Mix.
  */
-function normalizeGroup(g: Map<number, number>): void {
-  let max = 0;
-  for (const w of g.values()) if (w > max) max = w;
-  if (max <= 0) return;
-  for (const [v, w] of g) g.set(v, w / max);
+function normalizeRange(w: readonly number[]): number[] {
+  const f = Math.fround;
+  if (w.length === 0) return [];
+  let min = f(w[0]!);
+  let max = min;
+  for (let i = 1; i < w.length; i++) {
+    const x = f(w[i]!);
+    if (x < min) min = x;
+    else if (x > max) max = x;
+  }
+  const range = f(max - min);
+  let fac = 1;
+  if (Math.abs(range) > f(1.1920929e-7)) fac = f(1 / range);
+  else min = 0;
+  return w.map((x) => f(f(f(x) - min) * fac));
 }
 
 /**
@@ -319,25 +329,27 @@ export function vertexWeightEdit(data: MeshData, options: VertexWeightEditOption
   const removeThreshold = options.removeThreshold ?? 0.01;
   const count = data.positions.length / 3;
 
+  // `weightvg_update_vg`: every vertex has a final weight (falloff, then the mask's lerp), the whole lot is stretched when `normalize`,
+  // clamped, and only then do the thresholds see it — the **final** weight decides, not the original or the candidate.
+  const finals: number[] = [];
+  for (let v = 0; v < count; v++) {
+    const original = g.has(v) ? g.get(v)! : dflt;
+    const candidate = clamp01(curve(clamp01(original), falloff, invert));
+    finals.push(lerp(original, candidate, mask));
+  }
+  const settled = options.normalize ? normalizeRange(finals) : finals;
   const next = new Map<number, number>();
   for (let v = 0; v < count; v++) {
-    const member = g.has(v);
-    const original = member ? g.get(v)! : dflt;
-    const candidate = clamp01(curve(clamp01(original), falloff, invert));
-    const result = clamp01(lerp(original, candidate, mask));
-
-    if (!member) {
-      // A non-member only joins with `add`, and only if its candidate clears
-      // the threshold. Measured on the boundary: `>=`, not `>`.
-      if (options.add && candidate >= addThreshold) next.set(v, result);
+    const w = clamp01(settled[v]!);
+    if (!g.has(v)) {
+      // A non-member only joins with `add`. Measured on the boundary: `>=`, not `>`.
+      if (options.add && w >= addThreshold) next.set(v, w);
       continue;
     }
-    // A member is dropped when its **original** weight is at or below the
-    // threshold — also measured on the boundary.
-    if (options.remove && original <= removeThreshold) continue;
-    next.set(v, result);
+    // A member is dropped when its final weight is at or below the threshold — also measured on the boundary.
+    if (options.remove && w <= removeThreshold) continue;
+    next.set(v, w);
   }
-  if (options.normalize) normalizeGroup(next);
   groups.set(options.group, next);
   return withGroups(data, groups);
 }
@@ -352,10 +364,13 @@ function mixed(mode: VertexWeightMixMode, a: number, b: number): number {
       return a - b;
     case "mul":
       return a * b;
-    case "div":
-      // Measured: a weight divided by zero comes back as 1, which is what
-      // clamping an infinity does. Written out rather than relying on it.
-      return b === 0 ? 1 : a / b;
+    case "div": {
+      // `mix_weight`: a divisor in [0, 1e-32) is 1e-32 and one in (−1e-32, 0) is −1e-32, so 0 / 0 is 0 and a / 0 a huge number the
+      // clamp brings to 1 (compat-backlog C62).
+      const floor = 1e-32;
+      const d = b < 0 && b > -floor ? -floor : b >= 0 && b < floor ? floor : b;
+      return a / d;
+    }
     case "dif":
       return Math.abs(a - b);
     case "avg":
@@ -390,6 +405,8 @@ export function vertexWeightMix(data: MeshData, options: VertexWeightMixOptions)
   const count = data.positions.length / 3;
 
   const next = new Map<number, number>();
+  const touched: number[] = [];
+  const mixedWeights: number[] = [];
   for (let v = 0; v < count; v++) {
     const inA = a.has(v);
     const inB = b !== null && b.has(v);
@@ -417,9 +434,12 @@ export function vertexWeightMix(data: MeshData, options: VertexWeightMixOptions)
     // cages put `a + b` above 1, and there `clamp01(lerp(a, a + b, m))` and
     // `lerp(a, clamp01(a + b), m)` part company — 0.999557 against 0.812389
     // for a = 0.249557, b = 1, m = 0.75.
-    next.set(v, clamp01(lerp(wa, mixed(mode, wa, wb), mask)));
+    touched.push(v);
+    mixedWeights.push(lerp(wa, mixed(mode, wa, wb), mask));
   }
-  if (options.normalize) normalizeGroup(next);
+  // The stretch runs over the touched vertices only (`weightvg_update_vg(indices, …)`); the untouched ones keep what they had.
+  const settled = options.normalize ? normalizeRange(mixedWeights) : mixedWeights;
+  touched.forEach((v, i) => next.set(v, clamp01(settled[i]!)));
   groups.set(options.groupA, next);
   return withGroups(data, groups);
 }
@@ -531,9 +551,14 @@ export function vertexWeightProximity(
     // measured: min 1, max 0 turns a distance of 0 into a weight of 1.
     const t = span === 0 ? (best >= maxDist ? 1 : 0) : clamp01((best - minDist) / span);
     const candidate = clamp01(curve(t, falloff, invert));
-    next.set(v, clamp01(lerp(original, candidate, mask)));
+    next.set(v, lerp(original, candidate, mask));
   }
-  if (options.normalize) normalizeGroup(next);
+  if (options.normalize) {
+    const keys = [...next.keys()];
+    const settled = normalizeRange(keys.map((k) => next.get(k)!));
+    keys.forEach((k, i) => next.set(k, settled[i]!));
+  }
+  for (const [k, w] of next) next.set(k, clamp01(w));
   groups.set(options.group, next);
   return withGroups(data, groups);
 }
