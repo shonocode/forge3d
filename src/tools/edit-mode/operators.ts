@@ -1,7 +1,7 @@
 import { offsetEdgeLoopsPort } from "./offset-edgeloops";
 import { orphanedEdges } from "./wire";
 import { interpWeightsPoly } from "./interp";
-import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, facePolyNormal, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, faceHalfEdges, faceVertexCount, faceVerts, faceVertices, forEachEdge, rebuildPolygons, seamKey, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { catmullClark } from "./subdivide";
 import { doublesByDistance } from "../remove-doubles";
 import { selectEdgeRing } from "./edge-walk";
@@ -10,6 +10,7 @@ import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from ".
 import { bevelMesh } from "../bevel/bevel";
 import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
 import { triangulate } from "../triangulate";
+import { joinTrianglePairs } from "./join-order";
 import { insetRegionMesh } from "../inset";
 
 /**
@@ -526,14 +527,6 @@ export function bevelEdges(
   return chamfer;
 }
 
-function thirdVertex(em: EditMesh, f: number, a: number, b: number): number {
-  const [v0, v1, v2] = faceVertices(em, f);
-  for (const v of [v0, v1, v2]) if (v !== a && v !== b) return v;
-  return -1;
-}
-
-
-
 // ── Loop Cut ───────────────────────────────────────────────────────────────
 
 /** Loop Cut's settings. The defaults are the operator's. */
@@ -586,10 +579,6 @@ export function loopCut(em: EditMesh, seedEdge: number, opts: LoopCutOptions = {
   const made = new Set<number>();
   for (let v = before; v < em.vertices.length; v++) made.add(v);
   return made;
-}
-
-function dot3(a: [number, number, number], b: [number, number, number]): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 // ── Edge Extrude ───────────────────────────────────────────────────────────
@@ -1610,50 +1599,30 @@ export function trisToQuads(
   maxAngleDeg = 40,
   maxShapeAngleDeg = 40,
 ): Set<number> {
-  const cosLimit = Math.cos((maxAngleDeg * Math.PI) / 180);
-  const shapeLimit = (maxShapeAngleDeg * Math.PI) / 180;
-  const inScope = (f: number): boolean =>
-    faceVertexCount(em, f) === 3 && (!selectedFaces || selectedFaces.has(f));
-
-  type Cand = { f1: number; f2: number; err: number; dot: number; quad: number[] };
-  const cands: Cand[] = [];
-  forEachEdge(em, (he) => {
-    const t = em.halfEdges[he]!.twin;
-    if (t < 0) return;
-    const f1 = em.halfEdges[he]!.face;
-    const f2 = em.halfEdges[t]!.face;
-    if (!inScope(f1) || !inScope(f2)) return;
-    const n1 = facePolyNormal(em, f1);
-    const n2 = facePolyNormal(em, f2);
-    const dot = dot3(n1, n2);
-    if (dot < cosLimit) return;
-    const a = edgeOrigin(em, he);
-    const b = edgeEnd(em, he);
-    const x = thirdVertex(em, f1, a, b);
-    const y = thirdVertex(em, f2, a, b);
-    if (x < 0 || y < 0 || x === y) return;
-    const quad = [b, x, a, y];
-    if (!isConvexQuad(em.positions, quad)) return;
-    if (worstCornerDeviation(em.positions, quad) > shapeLimit) return;
-    cands.push({ f1, f2, err: quadAngleError(em.positions, quad), dot, quad });
-  });
-  if (cands.length === 0) return new Set();
-  cands.sort((p, q) => (p.err - q.err) || (q.dot - p.dot));
+  const polys = toPolygons(em);
+  // `bmo_join_triangles_exec`: the candidates in edge order, each ranked by `quad_calc_error`, best first off a `BLI_heap`
+  // (compat-backlog C74) — see {@link joinTrianglePairs}.
+  const pairs = joinTrianglePairs(
+    em.positions,
+    polys,
+    selectedFaces,
+    Math.fround((maxAngleDeg * Math.PI) / 180),
+    Math.fround((maxShapeAngleDeg * Math.PI) / 180),
+  );
+  if (pairs.length === 0) return new Set();
 
   const used = new Set<number>();
   const merged: number[][] = [];
-  for (const c of cands) {
-    if (used.has(c.f1) || used.has(c.f2)) continue;
-    used.add(c.f1);
-    used.add(c.f2);
-    // `BM_faces_join_pair(l_a, l_b)` starts from the edge's first loop — the newest face on it, the one
-    // with the higher index — and the joined face copies the attributes (the slot) of the first face
-    // it is given. The quad is `[b, x, a, y]` with `b → x` on `f1`: start from `a` to put `f2` first.
-    merged.push(c.f2 > c.f1 ? [c.quad[2]!, c.quad[3]!, c.quad[0]!, c.quad[1]!] : c.quad);
+  for (const p of pairs) {
+    used.add(p.first);
+    used.add(p.second);
+    // `p.quad` is `[u, y, v, x]` for the edge u → v of the first face `l.f`; the quad as this file builds it is `[v, x, u, y]` with
+    // `v` after `u` on `f1`. `BM_faces_join_pair(l_a, l_b)` starts from the edge's first loop and the joined face copies the attributes
+    // (the slot) of the first face it is given: the quad starts at `a` to put `f2` first when `f2` is the higher-numbered.
+    const quad = [p.quad[2], p.quad[3], p.quad[0], p.quad[1]];
+    merged.push(p.second > p.first ? [quad[2]!, quad[3]!, quad[0]!, quad[1]!] : quad);
   }
-  if (merged.length === 0) return new Set();
 
-  const polys = toPolygons(em);
   const newPolys: number[][] = [];
   for (let f = 0; f < polys.length; f++) {
     if (!used.has(f)) newPolys.push(polys[f]!);
@@ -1665,96 +1634,6 @@ export function trisToQuads(
   const out = new Set<number>();
   for (let f = quadStart; f < newPolys.length; f++) out.add(f);
   return out;
-}
-
-/**
- * Shape-quality metric for a candidate quad: total corner-angle deviation
- * from 90° (radians). 0 = perfect rectangle; a "diamond" pairing across two
- * grid cells scores ~π/3 per corner. Degenerate corners count as worst-case.
- */
-/**
- * How far the worst corner of a quad is from a right angle, in radians.
- *
- * The rejection test, where {@link quadAngleError} (the sum over all four) is
- * only the ranking. Two triangles can meet in a perfectly flat plane and still
- * make a sliver, and a sliver quad is worse than the two triangles it replaced.
- */
-function worstCornerDeviation(P: Float32Array, quad: readonly number[]): number {
-  let worst = 0;
-  for (let i = 0; i < 4; i++) {
-    const p0 = quad[(i + 3) % 4]!;
-    const p1 = quad[i]!;
-    const p2 = quad[(i + 1) % 4]!;
-    const ux = P[p0 * 3]! - P[p1 * 3]!;
-    const uy = P[p0 * 3 + 1]! - P[p1 * 3 + 1]!;
-    const uz = P[p0 * 3 + 2]! - P[p1 * 3 + 2]!;
-    const vx = P[p2 * 3]! - P[p1 * 3]!;
-    const vy = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
-    const vz = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
-    const lu = Math.hypot(ux, uy, uz);
-    const lv = Math.hypot(vx, vy, vz);
-    if (lu < 1e-12 || lv < 1e-12) return Math.PI;
-    const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (lu * lv)));
-    worst = Math.max(worst, Math.abs(Math.acos(cos) - Math.PI / 2));
-  }
-  return worst;
-}
-
-function quadAngleError(P: Float32Array, quad: readonly number[]): number {
-  let err = 0;
-  for (let i = 0; i < 4; i++) {
-    const p0 = quad[(i + 3) % 4]!;
-    const p1 = quad[i]!;
-    const p2 = quad[(i + 1) % 4]!;
-    const ux = P[p0 * 3]! - P[p1 * 3]!;
-    const uy = P[p0 * 3 + 1]! - P[p1 * 3 + 1]!;
-    const uz = P[p0 * 3 + 2]! - P[p1 * 3 + 2]!;
-    const vx = P[p2 * 3]! - P[p1 * 3]!;
-    const vy = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
-    const vz = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
-    const lu = Math.hypot(ux, uy, uz);
-    const lv = Math.hypot(vx, vy, vz);
-    if (lu < 1e-12 || lv < 1e-12) { err += Math.PI / 2; continue; }
-    const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (lu * lv)));
-    err += Math.abs(Math.acos(cos) - Math.PI / 2);
-  }
-  return err;
-}
-
-/** Convexity test: every corner turn agrees with the quad's Newell normal. */
-function isConvexQuad(P: Float32Array, quad: readonly number[]): boolean {
-  // Newell normal over the 4 corners.
-  let nx = 0, ny = 0, nz = 0;
-  for (let i = 0; i < 4; i++) {
-    const a = quad[i]!;
-    const b = quad[(i + 1) % 4]!;
-    const ax = P[a * 3]!, ay = P[a * 3 + 1]!, az = P[a * 3 + 2]!;
-    const bx = P[b * 3]!, by = P[b * 3 + 1]!, bz = P[b * 3 + 2]!;
-    nx += (ay - by) * (az + bz);
-    ny += (az - bz) * (ax + bx);
-    nz += (ax - bx) * (ay + by);
-  }
-  const nlen = Math.hypot(nx, ny, nz);
-  if (nlen < 1e-12) return false;
-
-  for (let i = 0; i < 4; i++) {
-    const p0 = quad[i]!;
-    const p1 = quad[(i + 1) % 4]!;
-    const p2 = quad[(i + 2) % 4]!;
-    const e1x = P[p1 * 3]! - P[p0 * 3]!;
-    const e1y = P[p1 * 3 + 1]! - P[p0 * 3 + 1]!;
-    const e1z = P[p1 * 3 + 2]! - P[p0 * 3 + 2]!;
-    const e2x = P[p2 * 3]! - P[p1 * 3]!;
-    const e2y = P[p2 * 3 + 1]! - P[p1 * 3 + 1]!;
-    const e2z = P[p2 * 3 + 2]! - P[p1 * 3 + 2]!;
-    const cx = e1y * e2z - e1z * e2y;
-    const cy = e1z * e2x - e1x * e2z;
-    const cz = e1x * e2y - e1y * e2x;
-    const d = cx * nx + cy * ny + cz * nz;
-    const scale = Math.hypot(e1x, e1y, e1z) * Math.hypot(e2x, e2y, e2z) * nlen;
-    if (d <= scale * 1e-6) return false; // reflex or degenerate corner
-  }
-  return true;
 }
 
 /**
