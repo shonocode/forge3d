@@ -12,6 +12,8 @@ import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
 import { triangulate } from "../triangulate";
 import { joinTrianglePairs } from "./join-order";
 import { clipDegenerateEars } from "./degenerate-ears";
+import { bmFromMesh, bmToMesh, edgeExists, edgeFacePair, edgeRotate, edgeRotateCheck, isManifold, liveFaces, radialLoops, type BE } from "../bmesh-lite";
+import { f as f32, heapInsert, heapPopMin, FLT_MAX, sub as bsub, dot as bdot, cross as bcross, normalizeInPlace, type Heap, type V3 } from "../blender-math";
 import { insetRegionMesh } from "../inset";
 
 /**
@@ -683,8 +685,10 @@ export interface RotateEdgesOptions {
  *
  * With more than one edge the rotation also refuses a result that folds a corner over or collapses it to zero area
  * (`BM_edge_rotate_check_degenerate`), and the edges go in the order given — Blender's order when no two edges share a face
- * (`bm_rotate_edges_simple`); sharing faces, Blender rotates the longest edge first and re-tries the edges that could not turn
- * (`bm_rotate_edges_shared`), which is not ported (compat-backlog C46).
+ * (`bm_rotate_edges_simple`). Sharing faces (compat-backlog C47, `bm_rotate_edges_shared`) they are ranked: the edges with no other
+ * selected edge on one of their sides first, longest first — the first longest one is turned and then everything it frees up before the
+ * next such edge — then all the rest, longest first; an edge that could not turn is looked at again each time a neighbour turns.
+ * Ties between equal lengths go the way Blender's `BLI_heap` breaks them, from the order the edges were given.
  *
  * Takes half-edge indices, canonicalised internally, and returns the faces it re-split — the same contract as the other operators here.
  *
@@ -704,6 +708,24 @@ export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>, op
     pairs.push(a < b ? [a, b] : [b, a]);
   }
   const checkDegenerate = pairs.length > 1;
+
+  // `bmo_rotate_edges_exec`: edges that all have faces of their own turn in the order given; as soon as two share a face the
+  // shared walk takes over.
+  if (pairs.length > 1) {
+    const marked = new Set<number>();
+    let shared = false;
+    const polys0 = toPolygons(em);
+    for (const [a, b] of pairs) {
+      const holders = facesOfEdge(polys0, a, b);
+      if (holders.length !== 2) continue;
+      for (const g of holders) {
+        if (marked.has(g)) shared = true;
+        marked.add(g);
+      }
+      if (shared) break;
+    }
+    if (shared) return rotateEdgesShared(em, pairs, ccw);
+  }
 
   const touched = new Set<number>();
   for (const [a, b] of pairs) {
@@ -728,6 +750,109 @@ export function rotateEdges(em: EditMesh, selectedEdges: ReadonlySet<number>, op
     touched.add(fa);
     touched.add(fb);
   }
+  return touched;
+}
+
+/** The faces that have the edge `a`-`b`. */
+function facesOfEdge(polys: readonly (readonly number[])[], a: number, b: number): number[] {
+  const out: number[] = [];
+  polys.forEach((p, g) => {
+    for (let i = 0; i < p.length; i++) {
+      const x = p[i]!;
+      const y = p[(i + 1) % p.length]!;
+      if ((x === a && y === b) || (x === b && y === a)) out.push(g);
+    }
+  });
+  return out;
+}
+
+/**
+ * `bm_rotate_edges_shared`, on the small BMesh (`bmesh-lite`) so that which face an edge's first loop belongs to — the side `use_ccw` turns
+ * from — is what Blender's radial cycles give after each turn. The selected edges are `pairs`, in the order given; an edge is live while it
+ * is manifold and not yet turned (a turned edge and the one it makes are not in the table).
+ */
+function rotateEdgesShared(em: EditMesh, pairs: ReadonlyArray<readonly [number, number]>, ccw: boolean): Set<number> {
+  const n = pairs.length;
+  const bm = bmFromMesh(meshToData(em));
+  const edgeOf = pairs.map(([a, b]) => edgeExists(bm.verts[a]!, bm.verts[b]!));
+  const FREE = Symbol("freed");
+  const table: Array<object | typeof FREE | null> = pairs.map(() => null);
+  const live = new Map<BE, number>();
+  edgeOf.forEach((e, i) => {
+    if (e && isManifold(e)) live.set(e, i);
+  });
+  const len2 = (e: BE): number => {
+    const dx = f32(e.v1.co[0]! - e.v2.co[0]!);
+    const dy = f32(e.v1.co[1]! - e.v2.co[1]!);
+    const dz = f32(e.v1.co[2]! - e.v2.co[2]!);
+    return f32(f32(f32(dx * dx) + f32(dy * dy)) + f32(dz * dz));
+  };
+  /** The other edges of the faces on `e`: face by face in the radial order, each from the loop after `e`'s. */
+  const around = (e: BE): BE[][] =>
+    radialLoops(e).map((l) => {
+      const out: BE[] = [];
+      for (let it = l.next; it !== l; it = it.next) out.push(it.e!);
+      return out;
+    });
+  /** `bm_edge_rotate_is_boundary`: fewer than two of its faces have another live selected edge. */
+  const isBoundary = (e: BE): boolean => {
+    let count = 0;
+    for (const face of around(e)) {
+      if (face.some((x) => live.has(x))) {
+        if (count === 1) return false;
+        count++;
+      }
+    }
+    return true;
+  };
+
+  const made: BE[] = [];
+  const heap: Heap<number> = { tree: [] };
+  let rotated = 0;
+  let pass = 0; // 0 boundary, 1 all, 2 done
+  while (pass !== 2 && rotated !== n) {
+    for (let i = 0; i < n; i++) {
+      if (table[i] === FREE) continue;
+      const e = edgeOf[i];
+      let ok = !!e && live.has(e) && edgeRotateCheck(e);
+      if (ok && pass === 0) ok = isBoundary(e!);
+      if (!ok) continue;
+      let cost = f32(-len2(e!));
+      // Once started, the non-boundary edges go before the other boundary ones: the longest boundary edge is the one to start from.
+      if (pass === 0) cost = cost !== 0 ? f32(-1 / cost) : FLT_MAX;
+      table[i] = heapInsert(heap, cost, i);
+    }
+    if (heap.tree.length === 0) {
+      pass++;
+      continue;
+    }
+    const before = rotated;
+    while (heap.tree.length > 0) {
+      const i = heapPopMin(heap);
+      table[i] = null;
+      const e = edgeOf[i]!;
+      if (!edgeRotateCheck(e)) continue;
+      const eNew = edgeRotate(bm, e, ccw, true);
+      if (!eNew) continue;
+      made.push(eNew);
+      live.delete(e);
+      table[i] = FREE;
+      rotated++;
+      // The faces round the new edge: an edge that could not turn before may now.
+      for (const face of around(eNew))
+        for (const x of face) {
+          const j = live.get(x);
+          if (j !== undefined && table[j] === null && edgeRotateCheck(x)) table[j] = heapInsert(heap, f32(-len2(x)), j);
+        }
+    }
+    if (rotated === before) pass++;
+  }
+
+  const out = bmToMesh(bm);
+  rebuildPolygons(em, em.positions, out.polys, { joins: true });
+  const index = new Map(liveFaces(bm).map((x, k) => [x, k] as const));
+  const touched = new Set<number>();
+  for (const e of made) for (const x of edgeFacePair(e) ?? []) if (index.has(x)) touched.add(index.get(x)!);
   return touched;
 }
 
@@ -809,7 +934,10 @@ function rotateEdgePolys(
   return [startAt(holdsV2, v2), startAt(holdsV1, n1)];
 }
 
-/** `BM_edge_rotate_check_degenerate`: the new edge must not fold a corner over or leave one of zero area. */
+/**
+ * `BM_edge_rotate_check_degenerate`: the new edge must not fold a corner over or leave one of zero area. In float32 in the C's order —
+ * on a symmetric mesh the crosses are zero or a rounding off it, and the sign of the dot is the answer (compat-backlog C47).
+ */
 function rotationKeepsCorners(
   P: Float32Array,
   v1Old: number,
@@ -819,30 +947,24 @@ function rotationKeepsCorners(
   f1: readonly number[],
   f2: readonly number[],
 ): boolean {
-  const co = (v: number): [number, number, number] => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
-  const sub = (x: number[], y: number[]): number[] => [x[0]! - y[0]!, x[1]! - y[1]!, x[2]! - y[2]!];
-  const norm = (x: number[]): number[] => {
-    const l = Math.hypot(x[0]!, x[1]!, x[2]!);
-    return l > 0 ? [x[0]! / l, x[1]! / l, x[2]! / l] : x;
+  const co = (v: number): V3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
+  const dir = (a: number, b: number): V3 => {
+    const d = bsub(co(a), co(b));
+    normalizeInPlace(d);
+    return d;
   };
-  const cross = (x: number[], y: number[]): number[] => [
-    x[1]! * y[2]! - x[2]! * y[1]!,
-    x[2]! * y[0]! - x[0]! * y[2]!,
-    x[0]! * y[1]! - x[1]! * y[0]!,
-  ];
-  const dot = (x: number[], y: number[]): number => x[0]! * y[0]! + x[1]! * y[1]! + x[2]! * y[2]!;
   const v1Alt = otherNeighbour(f1, v1Old, v1);
   const v2Alt = otherNeighbour(f2, v2Old, v2);
-  const dirOld = norm(sub(co(v1Old), co(v2Old)));
-  const dirNew = norm(sub(co(v1), co(v2)));
-  const dirV1Old = norm(sub(co(v1Old), co(v1)));
-  const dirV2Old = norm(sub(co(v2Old), co(v2)));
-  const dirV1New = norm(sub(co(v1), co(v1Alt)));
-  const dirV2New = norm(sub(co(v2), co(v2Alt)));
-  if (dot(cross(dirOld, dirV1Old), cross(dirNew, dirV1New)) < 0) return false;
-  if (dot(cross(dirOld, dirV2Old), cross(dirNew, dirV2New)) < 0) return false;
-  const flip = [-dirNew[0]!, -dirNew[1]!, -dirNew[2]!];
-  return !(dot(dirNew, dirV1New) > 0.999 || dot(flip, dirV2New) > 0.999);
+  const dirOld = dir(v1Old, v2Old);
+  const dirNew = dir(v1, v2);
+  const dirV1Old = dir(v1Old, v1);
+  const dirV2Old = dir(v2Old, v2);
+  const dirV1New = dir(v1, v1Alt);
+  const dirV2New = dir(v2, v2Alt);
+  if (bdot(bcross(dirOld, dirV1Old), bcross(dirNew, dirV1New)) < 0) return false;
+  if (bdot(bcross(dirOld, dirV2Old), bcross(dirNew, dirV2New)) < 0) return false;
+  const flip: V3 = [-dirNew[0]!, -dirNew[1]!, -dirNew[2]!];
+  return !(bdot(dirNew, dirV1New) > f32(0.999) || bdot(flip, dirV2New) > f32(0.999));
 }
 
 /**

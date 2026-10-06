@@ -24,7 +24,7 @@
  * `bridgeLoops`.
  */
 import type { MeshData } from "../lib/mesh";
-import { f, sub, cross, normalizeInPlace, normalTri, normalQuad, newell, type V3 } from "./blender-math";
+import { f, sub, cross, dot, normalizeInPlace, normalTri, normalQuad, newell, type V3 } from "./blender-math";
 import { quadTriangles, ngonTriangles, type QuadMethod, type NgonMethod } from "./triangulate";
 
 export interface DiskLink {
@@ -1094,19 +1094,46 @@ export function edgeRotateCheck(e: BE): boolean {
   return true;
 }
 
-/** `BM_edge_rotate(bm, e, ccw = false, BM_EDGEROT_CHECK_EXISTS)`. */
-export function edgeRotate(bm: BM, e: BE): BE | null {
+/**
+ * `BM_edge_rotate_check_degenerate`: the new edge must not fold a corner over or leave one of zero area. `l1` / `l2` are the loops
+ * `BM_edge_calc_rotate` gave, `v1Old` / `v2Old` the edge's ends as its first loop runs it. Float32, in the C's order.
+ */
+export function edgeRotateCheckDegenerate(v1Old: BV, v2Old: BV, l1: BL, l2: BL): boolean {
+  const v1 = l1.v;
+  const v2 = l2.v;
+  const v1Alt = faceOtherVertLoop(l1.f, v1Old, v1)!.v;
+  const v2Alt = faceOtherVertLoop(l2.f, v2Old, v2)!.v;
+  const dir = (a: BV, b: BV): V3 => {
+    const d = sub(a.co, b.co);
+    normalizeInPlace(d);
+    return d;
+  };
+  const dirOld = dir(v1Old, v2Old);
+  const dirNew = dir(v1, v2);
+  const dirV1Old = dir(v1Old, v1);
+  const dirV2Old = dir(v2Old, v2);
+  const dirV1New = dir(v1, v1Alt);
+  const dirV2New = dir(v2, v2Alt);
+  if (dot(cross(dirOld, dirV1Old), cross(dirNew, dirV1New)) < 0) return false;
+  if (dot(cross(dirOld, dirV2Old), cross(dirNew, dirV2New)) < 0) return false;
+  const flip: V3 = [-dirNew[0]!, -dirNew[1]!, -dirNew[2]!];
+  return !(dot(dirNew, dirV1New) > f(0.999) || dot(flip, dirV2New) > f(0.999));
+}
+
+/** `BM_edge_rotate(bm, e, ccw, BM_EDGEROT_CHECK_EXISTS [| BM_EDGEROT_CHECK_DEGENERATE])`. */
+export function edgeRotate(bm: BM, e: BE, ccw = false, degenerate = false): BE | null {
   if (!edgeRotateCheck(e)) return null;
-  // BM_edge_calc_rotate with ccw = false: the faces swap.
+  // BM_edge_calc_rotate: not ccw swaps the faces.
   let [fa, fb] = edgeFacePair(e)!;
   const ov1 = e.l!.v;
   const ov2 = e.l!.next.v;
-  [fa, fb] = [fb, fa];
+  if (!ccw) [fa, fb] = [fb, fa];
   const l1 = faceOtherVertLoop(fb, ov2, ov1)!;
   const l2 = faceOtherVertLoop(fa, ov1, ov2)!;
   const v1 = l1.v;
   const v2 = l2.v;
   if (edgeExists(v1, v2)) return null;
+  if (degenerate && !edgeRotateCheckDegenerate(ov1, ov2, l1, l2)) return null;
   const eNew = edgeCreate(bm, v1, v2);
   eNew.tag = e.tag;
   const tag1 = l1.f.tag;
