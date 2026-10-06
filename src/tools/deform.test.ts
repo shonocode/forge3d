@@ -448,3 +448,19 @@ describe("defaults of a fresh modifier (probe-modifier-defaults.py, compat-backl
     expect(Array.from(plain.positions)).toEqual(Array.from(cyclic.positions));
   });
 });
+
+describe("warp with a negative strength (parity rows warp-negative*)", () => {
+  it("runs the transform backwards, with its translation negated rather than inverted", () => {
+    // `from` at (1, 0, 0) and `to` turned a quarter about z at (2, 0, 0): F = from⁻¹ · to = R·p + (1, 0, 0). The vertex sits on `from`, so
+    // the falloff is 1. Forwards it goes to `to`'s position, (2, 0, 0). Backwards F's translation is negated — (−1, 0, 0), not the
+    // inverse's R⁻¹ · (−1, 0, 0) = (0, 1, 0) — and the vertex ends at (0, 0, 0); the true inverse would have put it at (1, 1, 0).
+    const m: MeshData = { positions: Float32Array.from([1, 0, 0, 1.1, 0, 0, 1, 0.1, 0]), polys: [[0, 1, 2]] };
+    const to = { at: [2, 0, 0], rotate: [0, 0, Math.PI / 2] } as const;
+    const fwd = warp(m, { radius: 10, strength: 1, from: { at: [1, 0, 0] }, to });
+    expect(fwd.positions[0]!).toBeCloseTo(2, 5);
+    expect(fwd.positions[1]!).toBeCloseTo(0, 5);
+    const back = warp(m, { radius: 10, strength: -1, from: { at: [1, 0, 0] }, to });
+    expect(back.positions[0]!).toBeCloseTo(0, 5);
+    expect(back.positions[1]!).toBeCloseTo(0, 5);
+  });
+});

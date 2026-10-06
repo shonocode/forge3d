@@ -744,7 +744,9 @@ function compose(p: Affine, q: Affine): Affine {
  * - **`radius: 0` moves nothing.** Not "no falloff" — every vertex comes back
  *   untouched.
  * - **`strength` is not clamped.** At 2 the centre travels twice as far as
- *   `to`; the weight is a plain multiplier on the interpolation.
+ *   `to`; the weight is a plain multiplier on the interpolation. A negative one
+ *   runs the transform backwards (see the code: the inverse, with the
+ *   translation negated rather than inverted).
  * - **the distance is to `from`'s position only** — its rotation and scale
  *   change the transform but not the sphere the falloff is measured in.
  *
@@ -752,7 +754,7 @@ function compose(p: Affine, q: Affine): Affine {
  */
 export function warp(data: MeshData, opts: WarpOptions): MeshData {
   const radius = opts.radius;
-  const strength = opts.strength ?? 1;
+  let strength = opts.strength ?? 1;
   const falloff = opts.falloff ?? "smooth";
 
   const P = data.positions;
@@ -768,7 +770,21 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
       "warp: `from` has a zero scale on some axis, so there is no transform " +
         "from it to `to`.",
     );
-  const M = compose(affineOf(opts.to), inv);
+  let M = compose(affineOf(opts.to), inv);
+  // A negative strength runs the transform backwards (`MOD_warp.cc`): `F = from⁻¹ · to` is inverted — but "inverted location is not
+  // useful", so its translation is the **negative of F's own**, not the inverse's — and the strength is its absolute value
+  // (compat-backlog C68). For a pure translation the two agree; with a rotation or a scale they do not.
+  if (strength < 0) {
+    strength = -strength;
+    const F = compose(inv, affineOf(opts.to));
+    const Fi = invert(F);
+    if (Fi) {
+      Fi[3] = -F[3]!;
+      Fi[7] = -F[7]!;
+      Fi[11] = -F[11]!;
+      M = compose(fromMat, compose(Fi, inv));
+    }
+  }
   const [fx, fy, fz] = opts.from.at ?? [0, 0, 0];
   const vg = vertexGroupWeights(data, opts.vertexGroup, opts.invertVertexGroup);
   const groupWeights = vg && !vg.empty ? vg.weights : null;
