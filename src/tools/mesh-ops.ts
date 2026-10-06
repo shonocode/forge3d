@@ -2595,9 +2595,9 @@ export function convexHullOperator(data: MeshData, options: ConvexHullOperatorOp
 
 export interface MaskOptions {
   /**
-   * A vertex is kept when its weight is **strictly above** this. Default 0.5,
-   * Blender's. Strictly: a weight of exactly 0.5 against a threshold of 0.5 is
-   * dropped, measured.
+   * A vertex is kept when its weight is **strictly above** this. Default 0, Blender's
+   * (`probe-modifier-defaults.py`; the modifier's panel suggests 0.5 only because a selection is weight 1 — compat-backlog C64).
+   * Strictly: a weight of exactly 0.5 against a threshold of 0.5 is dropped, measured.
    */
   threshold?: number;
   /**
@@ -2645,7 +2645,7 @@ export function maskMesh(
   weights: ReadonlySet<number> | ReadonlyMap<number, number>,
   opts: MaskOptions = {},
 ): MeshData {
-  const threshold = opts.threshold ?? 0.5;
+  const threshold = opts.threshold ?? 0;
   const invert = opts.invert ?? false;
   const weightOf = (v: number): number =>
     weights instanceof Map ? (weights.get(v) ?? 0) : weights.has(v) ? 1 : 0;

@@ -211,7 +211,7 @@ function zAt(m: MeshData, x: number): number {
 describe("wave", () => {
   // Every number below came off Blender 5.1.1 via
   // tools/modeling/parity/probe-wave.py. Six places is what the probe printed.
-  const ridge = { height: 1, width: 1.5, narrowness: 1.5, speed: 0, along: "x" } as const;
+  const ridge = { height: 1, width: 1.5, narrowness: 1.5, speed: 0, along: "x", cyclic: false } as const;
 
   it("subtracts the pedestal, so the crest is short of the full height", () => {
     // The trap a first guess falls into: at the default width and narrowness
@@ -430,5 +430,21 @@ describe("every deform returns its own creases", () => {
       expect(out.creases!.get("0-1")).toBe(1);
       expect(out.seams!.has("2-3")).toBe(true);
     }
+  });
+});
+
+describe("defaults of a fresh modifier (probe-modifier-defaults.py, compat-backlog C65 / C66)", () => {
+  it("Simple Deform bends about X unless told otherwise", () => {
+    const m = row(9, -1, 1);
+    const plain = simpleDeform(m, { mode: "twist", angle: 0.8 });
+    const x = simpleDeform(m, { mode: "twist", angle: 0.8, axis: "x" });
+    expect(Array.from(plain.positions)).toEqual(Array.from(x.positions));
+  });
+
+  it("Wave repeats its ridge (cyclic) unless told otherwise", () => {
+    const m = row(33, -8, 8);
+    const plain = wave(m, { height: 1, width: 1.5, narrowness: 1.5, speed: 0, along: "x" });
+    const cyclic = wave(m, { height: 1, width: 1.5, narrowness: 1.5, speed: 0, along: "x", cyclic: true });
+    expect(Array.from(plain.positions)).toEqual(Array.from(cyclic.positions));
   });
 });

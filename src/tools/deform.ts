@@ -192,7 +192,7 @@ export function cast(data: MeshData, opts: CastOptions = {}): MeshData {
 export interface SimpleDeformOptions {
   /** Blender's `deform_method`. */
   mode: "twist" | "bend" | "taper" | "stretch";
-  /** Blender's `deform_axis`. Default `"z"`. */
+  /** Blender's `deform_axis`. Default `"x"`, as a new modifier's is (compat-backlog C65). */
   axis?: DeformAxis;
   /** Radians. `twist` and `bend` use this; the other two use `factor`. */
   angle?: number;
@@ -274,7 +274,7 @@ const BEND_EPS = 0.000001;
  * deform axis) is held at 0 the same way.
  */
 export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshData {
-  const axis = opts.axis ?? "z";
+  const axis = opts.axis ?? "x";
   const deformAxis = AXIS_INDEX[axis];
   const mode = opts.mode;
   const P = data.positions;
@@ -419,7 +419,7 @@ export interface WaveOptions {
    * Blender wraps with C's `fmod`, which keeps the sign of its left operand,
    * so the repeats appear on the near side of the front and not beyond it.
    * A line at `speed 0`, width 1.5, gets crests at 0, −3, −6… and nothing at
-   * +3. Default false.
+   * +3. Default **true**, as a new Wave modifier's is (compat-backlog C66).
    */
   cyclic?: boolean;
   /**
@@ -515,7 +515,7 @@ export function wave(data: MeshData, opts: WaveOptions = {}): MeshData {
   const narrowness = opts.narrowness ?? 1.5;
   const speed = opts.speed ?? 0.25;
   const along = opts.along ?? "xy";
-  const cyclic = opts.cyclic ?? false;
+  const cyclic = opts.cyclic ?? true;
   const falloff = opts.falloff ?? 0;
   const [su, sv] = opts.start ?? [0, 0];
   const elapsed = (opts.time ?? 0) - (opts.timeOffset ?? 0);

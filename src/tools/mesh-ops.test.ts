@@ -414,7 +414,9 @@ describe("maskMesh", () => {
     // Measured: weight 0.5 against threshold 0.5 is dropped, and 0.4 against
     // 0.3 is kept. A `>=` here would pass the second and fail the first.
     const all = new Map([0, 1, 2, 3, 4, 5].map((v) => [v, 0.5] as const));
-    expect(maskMesh(strip(), all).positions.length / 3).toBe(0);
+    expect(maskMesh(strip(), all, { threshold: 0.5 }).positions.length / 3).toBe(0);
+    // The default threshold is Blender's 0: anything above it stays.
+    expect(maskMesh(strip(), all).positions.length / 3).toBe(6);
     const lower = new Map([0, 1, 2, 3, 4, 5].map((v) => [v, 0.4] as const));
     expect(maskMesh(strip(), lower, { threshold: 0.3 }).positions.length / 3).toBe(6);
   });
