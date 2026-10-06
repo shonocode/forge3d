@@ -463,6 +463,7 @@ export { simpleSubdivide } from "../tools/modifier-core";
 // ── UV ─────────────────────────────────────────────────────────────────────
 export * from "../tools/edit-mode/uv-unwrap";
 export * from "../tools/edit-mode/select-topology";
+export * from "../tools/edit-mode/select-sets";
 export * from "../tools/edit-mode/uv-pack";
 // Blender's two UV **modifiers**, which write the same per-corner layer the
 // unwrappers do.

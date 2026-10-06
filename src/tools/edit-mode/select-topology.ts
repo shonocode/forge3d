@@ -45,7 +45,7 @@ export interface MeshSelection {
 export type SelectionSeed = Partial<MeshSelection>;
 
 /** The element flags of an edit mesh, and Blender's `BM_*_select_set` / flush on them. */
-class Selection {
+export class Selection {
   readonly bm: BM;
   sv = new Set<BV>();
   se = new Set<BE>();
@@ -269,7 +269,6 @@ export function regionToLoop(mesh: MeshData, mode: SelectMode, seed: SelectionSe
   return { ...sel.result(), mode: out };
 }
 
-// Placeholders until the next commits fill them in.
 export function loopToRegion(
   mesh: MeshData,
   mode: SelectMode,
