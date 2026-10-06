@@ -12,7 +12,7 @@ import { f, sub, dot, cross, normalizeInPlace, normalTri, heapInsert, heapPopMin
 const saasin = (x: number): number => (x <= -1 ? f(-Math.PI / 2) : x >= 1 ? f(Math.PI / 2) : f(Math.asin(x)));
 const lenV = (a: V3): number => f(Math.sqrt(dot(a, a)));
 /** `angle_normalized_v3v3`. */
-function angleNormalized(a: V3, b: V3): number {
+export function angleNormalized(a: V3, b: V3): number {
   if (dot(a, b) >= 0) return f(2 * saasin(f(lenV(sub(a, b)) / 2)));
   const nb: V3 = [f(-b[0]!), f(-b[1]!), f(-b[2]!)];
   return f(f(Math.PI) - f(2 * saasin(f(lenV(sub(a, nb)) / 2))));
