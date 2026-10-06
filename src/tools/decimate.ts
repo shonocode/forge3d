@@ -816,3 +816,68 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   }
   return out;
 }
+
+export interface DecimateSelectedOptions extends Omit<DecimateOptions, "vertexGroup"> {
+  /** `use_vertex_group`: the weights of this group (the active one in Blender) scale the cost, on the selected vertices. */
+  vertexGroup?: string;
+}
+
+/**
+ * Collapse edges inside a selection — Blender's **Decimate** in Edit Mode (`bpy.ops.mesh.decimate`, `edbm_decimate_exec`), which is
+ * not the modifier: the weight of a vertex is 1 when it is selected (or the group's weight, inverted if asked) and 0 when it is not, so
+ * nothing outside the selection is touched, and the ratio is re-scaled so `0..1` means something on a part of the mesh —
+ *
+ * `ratio_adjust = 1 − (1 − ratio) · adjacent / basis`
+ *
+ * where `basis` counts every face (an n-gon with more than 4 corners as `len − 2` triangles) and `adjacent` those with a weighted corner.
+ * Everything selected, or a ratio of 0, uses `ratio` as it is; a selection with no edge (both ends selected) is left alone.
+ * "Selected" is the vertex-select-mode flush: an edge is selected when both its ends are, a face when all of its corners are.
+ */
+export function decimateCollapseSelected(data: MeshData, selected: ReadonlySet<number>, opts: DecimateSelectedOptions): MeshData {
+  const ratio = f(opts.ratio);
+  const nv = data.positions.length / 3;
+  const plain = (): MeshData => decimateCollapse(data, { ...(opts.edgeTables !== undefined ? { edgeTables: opts.edgeTables } : {}), ratio: 1 });
+  if (ratio === 1) return plain();
+  const edgeSelected =
+    data.polys.some((p) => p.some((v, i) => selected.has(v) && selected.has(p[(i + 1) % p.length]!))) ||
+    (data.edges ?? []).some((e) => selected.has(e[0]!) && selected.has(e[1]!));
+  if (!edgeSelected) return plain();
+
+  const group = opts.vertexGroup ? data.groups?.get(opts.vertexGroup) : undefined;
+  const weights = new Map<number, number>();
+  for (const v of selected) {
+    if (v < 0 || v >= nv) continue;
+    let w = 1;
+    if (opts.vertexGroup && group) {
+      w = f(group.get(v) ?? 0);
+      if (opts.invertVertexGroup) w = f(1 - w);
+    }
+    weights.set(v, w);
+  }
+
+  let adjusted = ratio;
+  const totalFaces = data.polys.length;
+  const selectedFaces = data.polys.filter((p) => p.every((v) => selected.has(v))).length;
+  if (totalFaces !== selectedFaces && ratio !== 0) {
+    let basis = 0;
+    let adjacent = 0;
+    for (const p of data.polys) {
+      const len = p.length > 4 ? p.length - 2 : 1;
+      basis += len;
+      if (p.some((v) => (weights.get(v) ?? 0) !== 0)) adjacent += len;
+    }
+    adjusted = f(1 - f(f(1 - ratio) * f(f(adjacent) / f(basis))));
+  }
+
+  const TEMP = "decimate-selection";
+  const groups = new Map(data.groups ? [...data.groups].map(([k, g]) => [k, new Map(g)] as const) : []);
+  groups.set(TEMP, weights);
+  const { vertexGroup: _g, ...rest } = opts;
+  void _g;
+  const out = decimateCollapse({ ...data, groups }, { ...rest, ratio: adjusted, vertexGroup: TEMP, invertVertexGroup: false });
+  if (out.groups) {
+    out.groups.delete(TEMP);
+    if (out.groups.size === 0 && !data.groups) delete out.groups;
+  }
+  return out;
+}

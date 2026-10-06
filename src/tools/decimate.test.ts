@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decimateCollapse } from "./decimate";
+import { decimateCollapse, decimateCollapseSelected } from "./decimate";
 import { sphere, box } from "./generate";
 import type { MeshData } from "../lib/mesh";
 
@@ -164,5 +164,24 @@ describe("decimateCollapse: vertex group, symmetry and edge layers (compat-backl
     void sheet;
     const out = decimateCollapse(strip, { ratio: 0.2 });
     for (const e of out.edges ?? []) expect(e).toHaveLength(2);
+  });
+});
+
+describe("decimateCollapseSelected", () => {
+  it("leaves everything outside the selection alone, and a selection with no edge of its own", () => {
+    const grid = flatGrid();
+    // Two corners on opposite sides: no edge has both ends selected, so Blender does nothing.
+    const none = decimateCollapseSelected(grid, new Set([0, 24]), { ratio: 0.2 });
+    expect(none.polys).toHaveLength(16);
+    // The left two columns of vertices: the faces outside them keep every vertex.
+    const left = new Set([0, 1, 5, 6, 10, 11, 15, 16, 20, 21]);
+    const out = decimateCollapseSelected(grid, left, { ratio: 0.2 });
+    expect(out.polys.length).toBeLessThan(16);
+    // The 15 vertices of the three right-hand columns were never selected, so none of them goes: at most the 10 selected ones collapse.
+    expect(out.positions.length / 3).toBeGreaterThanOrEqual(25 - left.size);
+  });
+
+  it("at ratio 1 hands the mesh back", () => {
+    expect(decimateCollapseSelected(flatGrid(), new Set([0, 1, 5, 6]), { ratio: 1 }).polys).toHaveLength(16);
   });
 });
