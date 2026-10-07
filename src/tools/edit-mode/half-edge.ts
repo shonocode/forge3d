@@ -197,6 +197,21 @@ export function canonicalEdge(em: EditMesh, he: number): number {
 }
 
 /** Iterate every unique edge exactly once. */
+/**
+ * The vertices a face or a wire edge uses. The others are orphans an operator
+ * left behind (forge3d does not renumber where Blender compacts — see
+ * {@link EditMesh.wireEdges}); the editor neither draws nor picks them.
+ */
+export function usedVertices(em: EditMesh): Uint8Array {
+  const used = new Uint8Array(em.vertices.length);
+  for (const h of em.halfEdges) used[h.v] = 1;
+  for (const e of em.wireEdges ?? []) {
+    used[e[0]!] = 1;
+    used[e[1]!] = 1;
+  }
+  return used;
+}
+
 export function forEachEdge(em: EditMesh, cb: (he: number) => void): void {
   for (let i = 0; i < em.halfEdges.length; i++) {
     const twin = em.halfEdges[i]!.twin;

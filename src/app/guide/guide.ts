@@ -322,7 +322,7 @@ export const TAB_SECTIONS: Record<TabId, Section[]> = {
   ],
   edit: [
     { id: "cm", title: "Component Mode", desc: "Vertex＝点、Edge＝辺（線）、Face＝面。どの単位で選んで編集するかを切り替えます。{key:comp.vertex} / {key:comp.edge} / {key:comp.face} でも切替。" },
-    { id: "ops", title: "Operators", desc: "選んだ点・辺・面に対する加工。今のモードで使えないものはグレーになります。例: 面を選んで Extrude（{key:edit.extrude}）で押し出す。Loop Cut（{key:edit.loopCut}）は Loop Cuts の数だけ輪を足し、足した輪の辺が選ばれた状態で終わる ― そのまま Edge Slide で横へずらせる。キーは Blender と同じ。" },
+    { id: "ops", title: "Operators", desc: "選んだ点・辺・面に対する加工。今のモードで使えないものはグレーになります。例: 面を選んで Extrude（{key:edit.extrude}）で押し出す。Loop Cut（{key:edit.loopCut}）は Loop Cuts の数だけ輪を足し、足した輪の辺が選ばれた状態で終わる ― そのまま Edge Slide で横へずらせる。Delete は今のモードで Blender の X と同じ ― 点はそこに付く辺と面ごと、辺はそこに付く面ごと、面はその面だけが使う辺と点ごと消す（消えた面の残りの辺は線として残る）。キーは Blender と同じ。" },
     { id: "uv", title: "UV Unwrap", desc: "3D の表面をハサミで切り開いて平面にする作業（{key:edit.unwrap}）。これをしておくと Paint やテクスチャ画像がきれいに貼れます。" },
     IO,
   ],

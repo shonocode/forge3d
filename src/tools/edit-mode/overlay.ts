@@ -7,7 +7,7 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
-import { creaseOf, edgeEnd, edgeOrigin, faceVerts, forEachEdge, isSeam, type EditMesh } from "./half-edge";
+import { creaseOf, edgeEnd, edgeOrigin, faceVerts, forEachEdge, isSeam, usedVertices, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 const SELECTED_RGB: [number, number, number] = [1, 0.85, 0.15];
@@ -96,11 +96,13 @@ function rebuildVertices(overlay: EditOverlay, em: EditMesh, sel: EditSelection)
   const numV = em.vertices.length;
   const positions = new Float32Array(em.positions);
   const colors = new Float32Array(numV * 4);
-  const indices = new Array<number>(numV);
+  const indices: number[] = [];
+  // A vertex no face or wire edge uses is gone (Delete, Merge leave them unnumbered): not drawn.
+  const used = usedVertices(em);
 
   const showSelected = sel.mode === "vertex";
   for (let v = 0; v < numV; v++) {
-    indices[v] = v;
+    if (used[v]) indices.push(v);
     const isSel = showSelected && sel.indices.has(v);
     const rgb = isSel ? SELECTED_RGB : UNSELECTED_VERTEX;
     colors[v * 4] = rgb[0];
@@ -143,6 +145,14 @@ function buildEdgeLines(scene: Scene, em: EditMesh, sel: EditSelection): LinesMe
     lines.push([pa, pb]);
     colors.push([c, c]);
   });
+  // Wire edges (no face on them — what Delete Vertices / Edges leaves): drawn, not selectable in edge mode.
+  for (const [a, b] of em.wireEdges ?? []) {
+    const pa = new Vector3(em.positions[a! * 3]!, em.positions[a! * 3 + 1]!, em.positions[a! * 3 + 2]!);
+    const pb = new Vector3(em.positions[b! * 3]!, em.positions[b! * 3 + 1]!, em.positions[b! * 3 + 2]!);
+    const c = new Color4(UNSELECTED_EDGE[0], UNSELECTED_EDGE[1], UNSELECTED_EDGE[2], 0.7);
+    lines.push([pa, pb]);
+    colors.push([c, c]);
+  }
 
   const mesh = MeshBuilder.CreateLineSystem("edit-overlay-edges", { lines, colors }, scene);
   mesh.parent = em.source;

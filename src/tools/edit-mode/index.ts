@@ -8,13 +8,14 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, deleteFaces, deleteFacesByEdges, deleteFacesByVertices, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces } from "./half-edge";
+import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces, usedVertices } from "./half-edge";
+import { deleteGeometryMapped, type DeleteContext, type DeleteGeom } from "../delete-geometry";
 import { edgeFaceAdd } from "./face-add";
 import { lastSelected, updateGizmo } from "../selection";
 import { store } from "../../store";
@@ -123,7 +124,8 @@ export function selectAllComponents(): void {
   sel.indices.clear();
   const em = state.editMesh;
   if (sel.mode === "vertex") {
-    for (let i = 0; i < em.vertices.length; i++) sel.indices.add(i);
+    const used = usedVertices(em);
+    for (let i = 0; i < em.vertices.length; i++) if (used[i]) sel.indices.add(i);
   } else if (sel.mode === "edge") {
     for (let i = 0; i < em.halfEdges.length; i++) {
       const twin = em.halfEdges[i]!.twin;
@@ -164,6 +166,7 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
     polys: toPolygons(em),
     seams: new Set(em.seams),
     creases: new Map(em.creases),
+    wires: (em.wireEdges ?? []).map((e) => [...e]),
     selection: new Set(state.editSelection.indices),
     mode: state.editSelection.mode,
   };
@@ -179,20 +182,22 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
     polys: toPolygons(em),
     seams: new Set(em.seams),
     creases: new Map(em.creases),
+    wires: (em.wireEdges ?? []).map((e) => [...e]),
     selection: new Set(state.editSelection.indices),
   };
   const overlayRef = currentOverlay;
   const gizmoRef = currentGizmo;
-  const restoreEdgeAttrs = (seams: Set<string>, creases: Map<string, number>): void => {
+  const restoreEdgeAttrs = (seams: Set<string>, creases: Map<string, number>, wires: number[][]): void => {
     em.seams = new Set(seams);
     em.creases = new Map(creases);
+    em.wireEdges = wires.map((e) => [...e]);
   };
   state.history.push({
     label,
     undo() {
       if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
       rebuildPolygons(em, new Float32Array(before.positions), before.polys);
-      restoreEdgeAttrs(before.seams, before.creases);
+      restoreEdgeAttrs(before.seams, before.creases, before.wires);
       state.editSelection.indices = new Set(before.selection);
       state.editSelection.mode = before.mode;
       commitTopology(em);
@@ -203,7 +208,7 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
     redo() {
       if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
       rebuildPolygons(em, new Float32Array(after.positions), after.polys);
-      restoreEdgeAttrs(after.seams, after.creases);
+      restoreEdgeAttrs(after.seams, after.creases, after.wires);
       state.editSelection.indices = new Set(after.selection);
       commitTopology(em);
       rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
@@ -249,10 +254,26 @@ export function deleteSelection(): void {
   }
   const sel = new Set(state.editSelection.indices);
   const mode = state.editSelection.mode;
+  // Blender's Delete menu by the select mode (`MESH_OT_delete`, `bmesh.ops.delete`): Vertices takes every edge and
+  // face on them, Edges the faces on them and the vertices left with no edge, Faces the edges and vertices only they
+  // used. The other edges of a removed face stay as wire edges. Done by `deleteGeometry` (the `delete-bpy-*` rows) and
+  // put back without renumbering: the removed vertices stay in the arrays, unused, and are not drawn.
+  const context: DeleteContext = mode === "vertex" ? "VERTS" : mode === "edge" ? "EDGES" : "FACES";
+  const geom: DeleteGeom =
+    mode === "vertex"
+      ? { verts: sel }
+      : mode === "edge"
+        ? { edges: [...sel].map((he): [number, number] => [edgeOrigin(em, he), edgeEnd(em, he)]) }
+        : { faces: sel };
   applyTopologyOp("Delete " + mode, () => {
-    if (mode === "face") return deleteFaces(em, sel);
-    if (mode === "edge") return deleteFacesByEdges(em, sel);
-    return deleteFacesByVertices(em, sel);
+    const { data, source } = deleteGeometryMapped(
+      { positions: em.positions, polys: toPolygons(em), edges: (em.wireEdges ?? []).map((e) => [...e]) },
+      geom,
+      context,
+    );
+    rebuildPolygons(em, em.positions, data.polys.map((p) => p.map((v) => source[v]!)));
+    em.wireEdges = (data.edges ?? []).map((e) => [source[e[0]!]!, source[e[1]!]!]);
+    return new Set<number>();
   });
 }
 

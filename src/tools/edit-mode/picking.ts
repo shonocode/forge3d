@@ -1,7 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
-import { edgeEnd, edgeOrigin, forEachEdge, sourceMesh, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, forEachEdge, sourceMesh, usedVertices, type EditMesh } from "./half-edge";
 import { isMobile } from "../../state";
 
 // Pick radii scale up on touch devices so fingers can actually hit a vertex
@@ -38,7 +38,9 @@ export function pickVertex(scene: Scene, em: EditMesh, screenX: number, screenY:
   let bestDist2 = r * r;
 
   const v3 = new Vector3();
+  const used = usedVertices(em);
   for (let i = 0; i < em.vertices.length; i++) {
+    if (!used[i]) continue;
     v3.copyFromFloats(em.positions[i * 3]!, em.positions[i * 3 + 1]!, em.positions[i * 3 + 2]!);
     const screen = Vector3.Project(v3, worldMatrix, transform, vp);
     if (screen.z < 0 || screen.z > 1) continue; // behind near plane or past far

@@ -1,6 +1,6 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
-import { edgeEnd, edgeOrigin, faceVerts, forEachEdge, sourceMesh, type EditMesh } from "./half-edge";
+import { edgeEnd, edgeOrigin, faceVerts, forEachEdge, sourceMesh, usedVertices, type EditMesh } from "./half-edge";
 import type { EditSelection } from "../../state";
 
 /**
@@ -40,7 +40,9 @@ export function collectBoxSelection(
     sz >= 0 && sz <= 1 && sx >= xMin && sx <= xMax && sy >= yMin && sy <= yMax;
 
   if (mode === "vertex") {
+    const used = usedVertices(em);
     for (let i = 0; i < em.vertices.length; i++) {
+      if (!used[i]) continue;
       const p = projectVert(i);
       if (inRect(p.x, p.y, p.z)) out.add(i);
     }
