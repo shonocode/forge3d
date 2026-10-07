@@ -66,10 +66,14 @@ subject to the following restrictions:
 - **Ported into** `src/tools/edit-mode/subdiv-patches.ts`: the limit tangent
   weights and the Gregory patch points (`far/catmarkPatchBuilder.cpp`,
   `CatmarkLimits` and `GregoryConverter`), the B-spline and Gregory basis
-  (`far/patchBasis.cpp`) and the regular-patch test (`far/patchBuilder.cpp`).
-  The port is an altered version: translated to TypeScript, computing the
-  patch points directly instead of as a sparse matrix, without creases or
-  face-varying data.
+  (`far/patchBasis.cpp`), the regular-patch test and corner spans
+  (`far/patchBuilder.cpp`) and the vertex tags (`far/topologyRefinerFactory.cpp`);
+  and into `src/tools/edit-mode/subdivide.ts`: the face-varying value tags
+  (`vtr/fvarLevel.cpp`, `vtr/fvarRefinement.cpp`) and the face-varying
+  refinement with creases (`far/primvarRefiner.h`, `interpFVarFromVerts` /
+  `interpFVarFromEdges`). The port is an altered version: translated to
+  TypeScript, computing the patch points directly instead of as a sparse
+  matrix.
 
 ## Referenced, not copied
 

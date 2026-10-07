@@ -358,8 +358,6 @@ describe("catmullClark options (Blender's Subdivision Surface settings, compat-b
     expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true, quality: 0 })).toThrow(
       /quality/,
     );
-    const uvs = CUBE_QUADS.map((p) => p.map(() => [0, 0]));
-    expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 1, undefined, uvs, { limitSurface: true })).toThrow(/UVs/);
   });
 
   it("UV Smooth NONE subdivides the UVs linearly everywhere", () => {

@@ -30,7 +30,8 @@
  * (`EvalBasisBSpline`, `EvalBasisGregory`) and the regular-patch test of
  * `far/patchBuilder.cpp` (`IsPatchRegular`, the corner spans of
  * `assembleIrregularSourcePatch`) with the vertex tags of
- * `far/topologyRefinerFactory.cpp`. Face-varying data is not ported.
+ * `far/topologyRefinerFactory.cpp`, and for the face-varying patches the
+ * value tags of `vtr/fvarLevel.cpp` (`FVarTag`, `fvarCorner`).
  *
  * Creases: an infinitely sharp edge cuts a vertex's ring as a boundary does
  * (`useInfSharpPatch`) — two make a crease, three and more a sharp corner, a
@@ -56,6 +57,24 @@ interface Corner {
   cos: number;
 }
 
+/**
+ * The tags of a face-varying value that does not follow its vertex — on a UV
+ * seam or, under linear boundaries, the mesh boundary — as OpenSubdiv's
+ * `FVarLevel::ValueTag::combineWithLevelVTag` hands them to the patch
+ * builder. The value is always on a face-varying boundary (`_boundary`,
+ * `_infSharpEdges`); `crease` is a smooth boundary value (rule Crease), the
+ * rest are corners — infinitely sharp, or `semiSharp` while a finite
+ * sharpness lasts.
+ */
+export interface FVarTag {
+  crease: boolean;
+  semiSharp: boolean;
+  /** The value's own `_infSharpEdges`: an infinitely sharp edge inside its span. */
+  infSharpEdges: boolean;
+  infIrregular: boolean;
+  xordinary: boolean;
+}
+
 /** Where a vertex of the fine mesh lies: a face of the `quality` mesh and its (u, v) there. */
 export interface PatchParam {
   face: number;
@@ -70,7 +89,10 @@ export interface PatchParam {
  * patches, the finite ones only change a vertex's rule (OpenSubdiv's
  * `Level::VTag::_rule`). `preserveCorners` is `boundary_smooth`
  * PRESERVE_CORNERS, which makes a one-face boundary vertex infinitely sharp;
- * `vertexSharpness` is the vertex sharpness left at `quality`.
+ * `vertexSharpness` is the vertex sharpness left at `quality`. For a
+ * face-varying channel, `P` holds the values (u, v, 0) and `polys` the faces
+ * over them — a seam is then a boundary — and `fvarTags` the values that do
+ * not follow their vertex.
  */
 export function evaluatePatches(
   P: Float32Array,
@@ -79,6 +101,7 @@ export function evaluatePatches(
   sharpness: Map<string, number> = new Map(),
   preserveCorners = false,
   vertexSharpness: Map<number, number> = new Map(),
+  fvarTags: Map<number, FVarTag> = new Map(),
 ): Float32Array {
   const pos = (i: number): Vec => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!];
   // Directed edge a→b → the face that has it.
@@ -138,6 +161,8 @@ export function evaluatePatches(
     const full = walk(f, v, isBoundaryEdge);
     if (full.faces.length !== faceCount.get(v))
       throw new Error("catmullClark: limitSurface at a non-manifold vertex is not measured.");
+    const tag = fvarTags.get(v);
+    if (tag) return fvarCorner(f, v, tag);
     const topoBoundary = full.open;
     const ends = new Set<number>();
     for (const g of full.faces) ends.add(next(g, v)).add(prev(g, v));
@@ -186,6 +211,45 @@ export function evaluatePatches(
         isRegular,
         numFaces,
         valence: numFaces + (isBoundary ? 1 : 0),
+        faceInRing: span.faces.indexOf(f),
+        ring,
+        cos: isRegular ? 0 : Math.cos(angle),
+      },
+      regular,
+    };
+  };
+
+  /** A corner at a face-varying value — `PatchBuilder` with the value's combined tags. */
+  const fvarCorner = (f: number, v: number, tag: FVarTag): { corner: Corner; regular: boolean } => {
+    // Combined: rule Crease or Corner, never a dart, so the span is always cut at the singular edges.
+    const infSharp = !tag.crease && !tag.semiSharp;
+    const infSharpCrease = tag.crease || tag.semiSharp;
+    const vCorner = infSharp && !tag.infIrregular && !tag.infSharpEdges;
+    const span = walk(f, v, isInfEdge);
+    const numFaces = span.faces.length;
+    let isSharp = vCorner ? numFaces === 1 : !infSharpCrease;
+    if (!isSharp && tag.xordinary && !infSharp) isSharp = numFaces === 1;
+    let regular = true;
+    if (tag.xordinary || tag.infIrregular) {
+      const legacySmoothCorner = tag.xordinary && !infSharp && isBoundaryEdge(v, next(f, v)) && isBoundaryEdge(v, prev(f, v));
+      if (!legacySmoothCorner && tag.infIrregular) regular = !infSharpCrease && numFaces === 1;
+    }
+    const ring: number[] = [];
+    for (const g of span.faces) {
+      const p = polys[g]!;
+      ring.push(next(g, v), p[(p.indexOf(v) + 2) % 4]!);
+    }
+    ring.push(prev(span.faces[numFaces - 1]!, v));
+    const isRegular = numFaces << 1 === 4 && !isSharp;
+    const angle = isRegular ? Math.PI / 2 : Math.PI / numFaces;
+    return {
+      corner: {
+        v,
+        isBoundary: true,
+        isSharp,
+        isRegular,
+        numFaces,
+        valence: numFaces + 1,
         faceInRing: span.faces.indexOf(f),
         ring,
         cos: isRegular ? 0 : Math.cos(angle),

@@ -40,7 +40,7 @@
  * Non-manifold edges (>2 faces) are treated as boundaries for the edge point
  * (midpoint) — a safe degeneration that keeps the operator total.
  */
-import { evaluatePatches, type PatchParam } from "./subdiv-patches";
+import { evaluatePatches, type FVarTag, type PatchParam } from "./subdiv-patches";
 
 export interface SubdivResult {
   positions: Float32Array;
@@ -66,6 +66,197 @@ export interface SubdivResult {
 const UV_CONNECT_LIMIT = 0.0001;
 
 /**
+ * The face-varying values of a UV layer: corners at one vertex share a value
+ * when their UVs are within `UV_CONNECT_LIMIT` and their faces are wound the
+ * same way in UV (Blender's converter calls `BKE_mesh_uv_vert_map_create`
+ * with `use_winding`, the sign of `cross_poly_v2`). `cid[f][i]` is corner `i`
+ * of face `f`'s value, `valueAt` a vertex's values, `vertexOf` a value's vertex.
+ */
+function faceVaryingValues(
+  polys: number[][],
+  uvs: number[][][],
+): { values: number[][]; valueAt: Map<number, number[]>; cid: number[][]; vertexOf: number[] } {
+  const values: number[][] = [];
+  const valueAt = new Map<number, number[]>();
+  const vertexOf: number[] = [];
+  const windingOf: boolean[] = [];
+  // `cross_poly_v2` (BLI_math_geom): Σ (cur.x − prev.x)(cur.y + prev.y).
+  const winding = uvs.map((c) => {
+    let cross = 0;
+    for (let i = 0; i < c.length; i++) {
+      const prev = c[(i + c.length - 1) % c.length]!;
+      cross += (c[i]![0]! - prev[0]!) * (c[i]![1]! + prev[1]!);
+    }
+    return cross < 0;
+  });
+  const cid: number[][] = polys.map((p, f) =>
+    p.map((v, i) => {
+      const uv = uvs[f]![i]!;
+      const ids = valueAt.get(v) ?? [];
+      for (const id of ids) {
+        const w = values[id]!;
+        if (
+          Math.abs(w[0]! - uv[0]!) < UV_CONNECT_LIMIT &&
+          Math.abs(w[1]! - uv[1]!) < UV_CONNECT_LIMIT &&
+          windingOf[id] === winding[f]
+        )
+          return id;
+      }
+      values.push([uv[0]!, uv[1]!]);
+      windingOf.push(winding[f]!);
+      vertexOf.push(v);
+      ids.push(values.length - 1);
+      valueAt.set(v, ids);
+      return values.length - 1;
+    }),
+  );
+  return { values, valueAt, cid, vertexOf };
+}
+
+/** The faces of `value` round its vertex, walked across the edges the value shares (any polygon size). */
+function valueFan(
+  vpolys: number[][],
+  half: Map<string, number>,
+  f: number,
+  value: number,
+): { faces: number[]; open: boolean } {
+  const at = (g: number, d: number): number => {
+    const p = vpolys[g]!;
+    return p[(p.indexOf(value) + d + p.length) % p.length]!;
+  };
+  let first = f;
+  let open = false;
+  for (let guard = 0; ; guard++) {
+    const g = half.get(`${at(first, 1)},${value}`);
+    if (g === undefined) {
+      open = true;
+      break;
+    }
+    if (g === f) break;
+    first = g;
+    if (guard > vpolys.length) throw new Error("catmullClark: a face-varying ring does not close.");
+  }
+  if (!open) first = f;
+  const faces: number[] = [];
+  for (let g: number | undefined = first; g !== undefined; ) {
+    faces.push(g);
+    g = half.get(`${value},${at(g, -1)}`);
+    if (g === first) break;
+    if (faces.length > vpolys.length) throw new Error("catmullClark: a face-varying ring does not close.");
+  }
+  return { faces, open };
+}
+
+/** Directed value edge a→b → its face, for `valueFan`. */
+function valueHalfEdges(vpolys: number[][]): Map<string, number> {
+  const half = new Map<string, number>();
+  vpolys.forEach((p, f) => p.forEach((a, i) => half.set(`${a},${p[(i + 1) % p.length]}`, f)));
+  return half;
+}
+
+/** A base value's tags from `FVarLevel::completeTopologyFromFaceValues` (`kind` "dep" is semi-sharp by dependence). */
+interface BaseValueTag {
+  kind: "sharp" | "crease" | "semi" | "dep";
+  infSharpEdges: boolean;
+  infIrregular: boolean;
+  xordinary: boolean;
+}
+
+/**
+ * The tags OpenSubdiv gives the face-varying values of the cage that do not
+ * follow their vertex (`FVarLevel::completeTopologyFromFaceValues` and
+ * `gatherValueSpans`), by value id. `sharpness` is the edge sharpness and
+ * `vertexSharpness` the vertex sharpness OpenSubdiv was handed.
+ */
+function baseFaceVaryingTags(
+  polys: number[][],
+  fv: { valueAt: Map<number, number[]>; cid: number[][] },
+  sharpness: Map<string, number>,
+  vertexSharpness: Map<number, number> | undefined,
+  mode: UVSmooth,
+  preserveCorners: boolean,
+): Map<number, BaseValueTag> {
+  const linearBoundaries = mode === "PRESERVE_BOUNDARIES";
+  const dependent = mode === "PRESERVE_CORNERS_AND_JUNCTIONS" || mode === "PRESERVE_CORNERS_JUNCTIONS_AND_CONCAVE";
+  const sharpenBothIfOneCorner = mode === "PRESERVE_CORNERS_JUNCTIONS_AND_CONCAVE";
+  const sharpenDarts = sharpenBothIfOneCorner || linearBoundaries;
+  const fvarCornersAreSharp = mode !== "SMOOTH_ALL";
+  const makeSmoothCornersSharp = !preserveCorners && fvarCornersAreSharp;
+  const edgeUse = new Map<string, number>();
+  const vertexFaces = new Map<number, number[]>();
+  const vertexEdges = new Map<number, Set<string>>();
+  polys.forEach((p, f) =>
+    p.forEach((v, i) => {
+      const k = edgeKey(v, p[(i + 1) % p.length]!);
+      edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+      (vertexFaces.get(v) ?? vertexFaces.set(v, []).get(v)!).push(f);
+      for (const w of [v, p[(i + 1) % p.length]!]) (vertexEdges.get(w) ?? vertexEdges.set(w, new Set()).get(w)!).add(k);
+    }),
+  );
+  const half = valueHalfEdges(fv.cid);
+  const out = new Map<number, BaseValueTag>();
+  for (const [v, ids] of fv.valueAt) {
+    if ([...vertexEdges.get(v)!].some((k) => edgeUse.get(k)! > 2))
+      throw new Error("catmullClark: limitSurface with UVs at a non-manifold vertex is not measured.");
+    const vBoundary = [...vertexEdges.get(v)!].some((k) => edgeUse.get(k) === 1);
+    const faces = vertexFaces.get(v)!;
+    const topologicalCorner = faces.length === 1 && vertexEdges.get(v)!.size === 2;
+    // Each value's span: its faces, whether it is cut at a seam, and the sharp edges inside it.
+    const spans = ids.map((id) => {
+      const f = faces.find((g) => fv.cid[g]!.includes(id) && polys[g]![fv.cid[g]!.indexOf(id)] === v)!;
+      const fan = valueFan(fv.cid, half, f, id);
+      const all = faces.filter((g) => fv.cid[g]![polys[g]!.indexOf(v)] === id).length;
+      if (fan.faces.length !== all)
+        throw new Error("catmullClark: limitSurface with UVs at a value whose faces are disjoint is not measured.");
+      let inf = 0;
+      let semi = 0;
+      const inner = fan.open ? fan.faces.length - 1 : fan.faces.length;
+      for (let j = 0; j < inner; j++) {
+        const g = fan.faces[j]!;
+        const p = polys[g]!;
+        const s = sharpness.get(edgeKey(v, p[(p.indexOf(v) + p.length - 1) % p.length]!)) ?? 0;
+        if (s === Infinity) inf++;
+        else if (s > 0) semi++;
+      }
+      // An end of the fan on an interior edge is a seam.
+      let seam = false;
+      if (fan.open) {
+        const a = polys[fan.faces[0]!]!;
+        const b = polys[fan.faces[fan.faces.length - 1]!]!;
+        const k0 = edgeKey(v, a[(a.indexOf(v) + 1) % a.length]!);
+        const k1 = edgeKey(v, b[(b.indexOf(v) + b.length - 1) % b.length]!);
+        seam = edgeUse.get(k0) === 2 || edgeUse.get(k1) === 2;
+      }
+      return { id, size: fan.faces.length, inf, semi, seam };
+    });
+    const mismatch =
+      ids.length > 1 || spans.some((sp) => sp.seam) || (linearBoundaries && vBoundary) || (makeSmoothCornersSharp && topologicalCorner);
+    if (!mismatch) continue;
+    const vS = vertexSharpness?.get(v) ?? 0;
+    const vInfSharp = vS === Infinity || (preserveCorners && topologicalCorner);
+    const vSemiSharp = vS > 0 && vS !== Infinity;
+    let allSharp = linearBoundaries || vInfSharp || (dependent && ids.length > 2) || (sharpenDarts && ids.length === 1 && !vBoundary);
+    let hasDependent = false;
+    if (!allSharp && dependent && ids.length === 2) {
+      allSharp = spans[0]!.inf > 0 || spans[1]!.inf > 0;
+      if (sharpenBothIfOneCorner) allSharp ||= spans[0]!.size === 1 || spans[1]!.size === 1;
+      hasDependent = spans[0]!.semi > 0 !== spans[1]!.semi > 0;
+    }
+    for (const sp of spans) {
+      const isInfSharp = allSharp || sp.inf > 0 || (sp.size === 1 && fvarCornersAreSharp);
+      const xordinary = sp.size === 1 ? !isInfSharp : sp.size !== 2;
+      out.set(sp.id, {
+        kind: isInfSharp ? "sharp" : sp.semi > 0 || vSemiSharp ? "semi" : hasDependent ? "dep" : "crease",
+        infSharpEdges: sp.inf > 0,
+        infIrregular: sp.inf > 0 ? sp.size - sp.inf > 1 : isInfSharp ? sp.size > 1 : xordinary,
+        xordinary,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * One level of **face-varying** Catmull-Clark on a UV layer — what Blender's
  * Subdivision Surface does with UVs under its default UV Smooth, "Keep
  * Boundaries" (OpenSubdiv's `FVAR_LINEAR_BOUNDARIES`):
@@ -87,25 +278,15 @@ function subdivideUVOnce(
   uvs: number[][][],
   mode: UVSmooth = "PRESERVE_BOUNDARIES",
   preserveCorners = false,
+  sharpness?: Map<string, number>,
+  vertexSharpness?: Map<number, number>,
+  carry?: { state?: Map<string, FVarState> },
 ): number[][][] {
+  if (mode !== "NONE" && ([...(sharpness?.values() ?? [])].some((x) => x > 0) || vertexSharpness?.size))
+    return subdivideUVOnceCreased(polys, uvs, mode, preserveCorners, sharpness!, vertexSharpness, carry);
+  if (carry) carry.state = undefined;
   const F = polys.length;
-  // ── face-varying values: corners at one vertex with (nearly) equal UVs ────
-  const values: number[][] = [];
-  const valueAt = new Map<number, number[]>(); // vertex → its value ids
-  const cid: number[][] = polys.map((p, f) =>
-    p.map((v, i) => {
-      const uv = uvs[f]![i]!;
-      const ids = valueAt.get(v) ?? [];
-      for (const id of ids) {
-        const w = values[id]!;
-        if (Math.abs(w[0]! - uv[0]!) < UV_CONNECT_LIMIT && Math.abs(w[1]! - uv[1]!) < UV_CONNECT_LIMIT) return id;
-      }
-      values.push([uv[0]!, uv[1]!]);
-      ids.push(values.length - 1);
-      valueAt.set(v, ids);
-      return values.length - 1;
-    }),
-  );
+  const { values, valueAt, cid } = faceVaryingValues(polys, uvs);
   // ── which edge uses are continuous in UV ─────────────────────────────────
   const uses = new Map<string, Array<[number, number]>>(); // edge → [face, corner]
   polys.forEach((p, f) =>
@@ -553,8 +734,10 @@ export interface CatmullClarkOptions {
    * infinitely sharp edges, so a finite sharpness still left at `quality`
    * is smoothed over.
    *
-   * Refused rather than approximated: UVs (the face-varying limit is not
-   * ported).
+   * UVs go on OpenSubdiv's face-varying patches, built on the UV topology
+   * (`faceVaryingLimit`); refused rather than approximated: a UV value whose
+   * faces are disjoint (a seam ending on the boundary, a T-shaped slit, a UV
+   * bowtie — OpenSubdiv sharpens those as non-manifold).
    */
   limitSurface?: boolean;
   /** `quality` — the adaptive refinement level of Blender's evaluator, default 3. */
@@ -609,7 +792,6 @@ export function catmullClark(
   const quality = options.quality ?? 3;
   if (options.limitSurface && level > 0) {
     if (quality < 1) throw new Error(`catmullClark: quality ${quality} — Blender's is 1 to 10.`);
-    if (uvs) throw new Error("catmullClark: limitSurface with UVs (the face-varying limit) is not ported.");
   }
   let result: SubdivResult = {
     positions: Float32Array.from(positions),
@@ -626,19 +808,34 @@ export function catmullClark(
   // Above `quality`, or wherever a crease is, the vertices are evaluated on the patches of the `quality` mesh
   // (`subdiv-patches.ts`): each face remembers the face of that mesh it lies in and its corners' (u, v) there.
   const creased = [...result.creases.values()].some((s) => s > 0) || !!result.vertexSharpness;
-  const onPatches = !!options.limitSurface && level > 0 && (level > quality || creased);
+  const uvOnPatches = !!options.limitSurface && level > 0 && !!uvs;
+  const onPatches = !!options.limitSurface && level > 0 && (level > quality || creased || uvOnPatches);
+  const uvMode = options.uvSmooth ?? "PRESERVE_BOUNDARIES";
+  const uvCarry: { state?: Map<string, FVarState> } = {};
+  // The cage's face-varying values and their tags, and each face's face of the cage (for the tags of the values there).
+  const cage = uvOnPatches ? faceVaryingValues(result.polys, result.uvs!) : undefined;
+  const cageTags =
+    cage && uvMode !== "NONE"
+      ? baseFaceVaryingTags(result.polys, cage, result.creases, result.vertexSharpness, uvMode, preserveCorners)
+      : undefined;
+  const cageVertices = positions.length / 3;
+  let cageFace: number[] = result.polys.map((_, f) => f);
+  const childCageFaces = (parentPolys: number[][], parentCage: number[]): number[] =>
+    parentPolys.flatMap((p, f) => p.map(() => parentCage[f]!));
   const unitSquare = (): [number, number][] => [[0, 0], [1, 0], [1, 1], [0, 1]];
   let isolated: SubdivResult | undefined;
+  let descend: [number, number][][] | undefined;
   let ancestor: number[] = [];
   let cornerUV: [number, number][][] = [];
   for (let l = 0; l < level; l++) {
     const nextUV = result.uvs
-      ? subdivideUVOnce(result.polys, result.uvs, options.uvSmooth ?? "PRESERVE_BOUNDARIES", preserveCorners)
+      ? subdivideUVOnce(result.polys, result.uvs, uvMode, preserveCorners, result.creases, result.vertexSharpness, uvCarry)
       : undefined;
     const parentPolys = result.polys;
     result = subdivideOnce(result.positions, result.polys, result.creases, preserveCorners, result.vertexSharpness);
     if (nextUV) result.uvs = nextUV;
     if (!onPatches) continue;
+    if (l < quality) cageFace = childCageFaces(parentPolys, cageFace);
     if (l + 1 === quality) {
       isolated = result;
       ancestor = result.polys.map((_, f) => f);
@@ -662,8 +859,23 @@ export function catmullClark(
   if (onPatches && !isolated) {
     // Below `quality`: refine on to it; the vertices keep their indices and are corners of its faces.
     let iso = result;
-    for (let l = level; l < quality; l++)
+    // Each output face corner's face at `quality`: the corner's child, then that child's first child, level by level.
+    descend = result.polys.map((p, f) => p.map((_, i) => [f, i] as [number, number]));
+    for (let l = level; l < quality; l++) {
+      const start: number[] = [];
+      let n = 0;
+      for (const p of iso.polys) {
+        start.push(n);
+        n += p.length;
+      }
+      descend = descend.map((row) => row.map(([f, i]): [number, number] => [start[f]! + i, 0]));
+      const nextUV = iso.uvs
+        ? subdivideUVOnce(iso.polys, iso.uvs, uvMode, preserveCorners, iso.creases, iso.vertexSharpness, uvCarry)
+        : undefined;
+      cageFace = childCageFaces(iso.polys, cageFace);
       iso = subdivideOnce(iso.positions, iso.polys, iso.creases, preserveCorners, iso.vertexSharpness);
+      if (nextUV) iso.uvs = nextUV;
+    }
     isolated = iso;
     ancestor = iso.polys.map((_, f) => f);
     cornerUV = iso.polys.map(unitSquare);
@@ -690,9 +902,390 @@ export function catmullClark(
       if (!p) out.set(result.positions.subarray(v * 3, v * 3 + 3), v * 3);
     });
     result.positions = out;
+    if (uvOnPatches && isolated.uvs) {
+      // Every output corner on its own face's face-varying patch.
+      const corner = (f: number, i: number): PatchParam =>
+        descend
+          ? { face: descend[f]![i]![0], u: 0, v: 0 }
+          : { face: ancestor[f]!, u: cornerUV[f]![i]![0], v: cornerUV[f]![i]![1] };
+      result.uvs = faceVaryingLimit(
+        isolated,
+        result.polys.map((p, f) => p.map((_, i) => corner(f, i))),
+        uvMode,
+        preserveCorners,
+        cage!,
+        cageTags,
+        cageFace,
+        polys,
+        cageVertices,
+      );
+    }
   } else if (options.limitSurface && level > 0)
     result.positions = limitPositions(positions, polys, result.positions, result.polys, preserveCorners, quality);
   return result;
+}
+
+/**
+ * `subdivideUVOnce` on a creased cage (compat-backlog C28): OpenSubdiv refines
+ * the face-varying values with the vertex's own sharpness
+ * (`PrimvarRefiner::interpFVarFromVerts` / `interpFVarFromEdges`). A value
+ * that follows its vertex takes the vertex's rule — Smooth / Dart / Crease /
+ * Corner, mixed by the fractional weight as the sharpness runs out — and an
+ * edge that is continuous in UV the edge's; a value on a seam is a corner
+ * (stays), a crease (along its span's two boundary edges), or semi-sharp: a
+ * corner while an edge inside its span (or its vertex) stays sharp, then the
+ * crease mixed with the corner by the fractional weight.
+ */
+function subdivideUVOnceCreased(
+  polys: number[][],
+  uvs: number[][][],
+  mode: UVSmooth,
+  preserveCorners: boolean,
+  sharpness: Map<string, number>,
+  vertexSharpness: Map<number, number> | undefined,
+  carry?: { state?: Map<string, FVarState> },
+): number[][][] {
+  const fv = faceVaryingValues(polys, uvs);
+  const { values, valueAt, cid, vertexOf } = fv;
+  // The tags: carried from the level above (`FVarRefinement::propagateValueTags` and
+  // `reclassifySemisharpValues`), or the cage's own.
+  const tags = new Map<number, FVarState>();
+  const fresh = baseFaceVaryingTags(polys, fv, sharpness, vertexSharpness, mode, preserveCorners);
+  cid.forEach((row, f) => row.forEach((id, i) => {
+    if (tags.has(id)) return;
+    const carried = carry?.state?.get(`${f},${i}`);
+    if (carried) tags.set(id, carried);
+  }));
+  for (const [id, t] of fresh)
+    if (!tags.has(id)) tags.set(id, { kind: t.kind === "dep" ? "semi" : t.kind, dep: t.kind === "dep" });
+  const decay = (x: number): number => (x === Infinity ? x : x > 1 ? x - 1 : 0);
+  const edgeUse = new Map<string, number>();
+  polys.forEach((p) => p.forEach((v, i) => {
+    const k = edgeKey(v, p[(i + 1) % p.length]!);
+    edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+  }));
+  const sharpOf = (k: string): number => (edgeUse.get(k) === 1 ? Infinity : (sharpness.get(k) ?? 0));
+  const half = valueHalfEdges(cid);
+  const at = (f: number, i: number, d: number): number => polys[f]![(i + d + polys[f]!.length) % polys[f]!.length]!;
+  const around: Array<Array<[number, number]>> = values.map(() => []);
+  cid.forEach((row, f) => row.forEach((id, i) => around[id]!.push([f, i])));
+  const facePoint = polys.map((p, f) => {
+    let u = 0, w = 0;
+    for (let i = 0; i < p.length; i++) {
+      u += values[cid[f]![i]!]![0]!;
+      w += values[cid[f]![i]!]![1]!;
+    }
+    return [u / p.length, w / p.length];
+  });
+  // Across an edge continuous in UV: the other face's corner, as `subdivideUVOnce`'s `continuous`.
+  const across = (f: number, i: number): number | undefined => {
+    const a = cid[f]![i]!;
+    const b = cid[f]![(i + 1) % polys[f]!.length]!;
+    return half.get(`${b},${a}`);
+  };
+  const lerp = (x: number[], y: number[], t: number): number[] => [x[0]! + (y[0]! - x[0]!) * t, x[1]! + (y[1]! - x[1]!) * t];
+  const edgePoint = (f: number, i: number): number[] => {
+    const a = values[cid[f]![i]!]!;
+    const b = values[cid[f]![(i + 1) % polys[f]!.length]!]!;
+    const mid = [(a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2];
+    const g = across(f, i);
+    if (g === undefined) return mid;
+    const sm = [(a[0]! + b[0]! + facePoint[f]![0]! + facePoint[g]![0]!) / 4, (a[1]! + b[1]! + facePoint[f]![1]! + facePoint[g]![1]!) / 4];
+    const sh = sharpOf(edgeKey(at(f, i, 0), at(f, i, 1)));
+    return sh <= 0 ? sm : sh < 1 ? lerp(sm, mid, sh) : mid;
+  };
+  // The span of a value: its faces in order and the edges inside it (vertex index of the far end).
+  const spanOf = (id: number): { faces: number[]; open: boolean; inner: number[] } => {
+    const [f0] = around[id]![0]!;
+    const fan = valueFan(cid, half, f0, id);
+    const v = vertexOf[id]!;
+    const inner: number[] = [];
+    const count = fan.open ? fan.faces.length - 1 : fan.faces.length;
+    for (let j = 0; j < count; j++) {
+      const p = polys[fan.faces[j]!]!;
+      inner.push(p[(p.indexOf(v) + p.length - 1) % p.length]!);
+    }
+    return { ...fan, inner };
+  };
+  /** `ComputeFractionalWeightAtVertex` over a value's span. */
+  const fractional = (id: number): number => {
+    const v = vertexOf[id]!;
+    const vs = vertexSharpness?.get(v) ?? 0;
+    let sum = 0;
+    let n = 0;
+    if (vs > 0 && decay(vs) <= 0) {
+      sum += vs;
+      n++;
+    }
+    for (const w of spanOf(id).inner) {
+      const x = sharpOf(edgeKey(v, w));
+      if (x > 0 && x <= 1) {
+        sum += x;
+        n++;
+      }
+    }
+    return n === 0 ? 0 : Math.min(1, sum / n);
+  };
+  // `reclassifySemisharpValues`: the child's tags. A value stays semi-sharp while its vertex is still sharp; with no
+  // semi-sharp edge left at the vertex every value becomes a crease; otherwise a value (not dependent) stays semi-sharp
+  // while an edge inside its span is, and a dependent value stops depending once its partner is no longer semi-sharp.
+  const childFinite = (v: number, w: number): boolean => {
+    const x = decay(sharpOf(edgeKey(v, w)));
+    return x > 0 && x !== Infinity;
+  };
+  const vertexEnds = new Map<number, Set<number>>();
+  polys.forEach((p) => p.forEach((v, i) => {
+    const set = vertexEnds.get(v) ?? vertexEnds.set(v, new Set()).get(v)!;
+    set.add(p[(i + 1) % p.length]!).add(p[(i + p.length - 1) % p.length]!);
+  }));
+  const childTags = new Map<number, FVarState>();
+  for (const [v, ids] of valueAt) {
+    if (!ids.some((id) => tags.get(id)?.kind === "semi")) {
+      for (const id of ids) if (tags.has(id)) childTags.set(id, tags.get(id)!);
+      continue;
+    }
+    const next = ids.map((id) => ({ ...tags.get(id)! }));
+    const vs = decay(vertexSharpness?.get(v) ?? 0);
+    if (vs <= 0) {
+      const semiEdges = [...vertexEnds.get(v)!].some((w) => childFinite(v, w));
+      next.forEach((t, j) => {
+        if (t.kind !== "semi") return;
+        if (!semiEdges || (!t.dep && !spanOf(ids[j]!).inner.some((w) => childFinite(v, w)))) {
+          t.kind = "crease";
+          t.dep = false;
+        }
+      });
+      const dependent = mode === "PRESERVE_CORNERS_AND_JUNCTIONS" || mode === "PRESERVE_CORNERS_JUNCTIONS_AND_CONCAVE";
+      if (semiEdges && dependent && next.length === 2) {
+        if (next[0]!.dep && next[1]!.kind !== "semi") next[0]!.dep = false;
+        else if (next[1]!.dep && next[0]!.kind !== "semi") next[1]!.dep = false;
+      }
+    }
+    ids.forEach((id, j) => childTags.set(id, next[j]!));
+  }
+  const creaseRule = (id: number): number[] => {
+    // (prev + 6 S + next) / 8 between the far ends of the span's two boundary edges.
+    const span = spanOf(id);
+    const first = span.faces[0]!;
+    const last = span.faces[span.faces.length - 1]!;
+    const fi = polys[first]!.indexOf(vertexOf[id]!);
+    const li = polys[last]!.indexOf(vertexOf[id]!);
+    const a = values[cid[first]![(fi + 1) % polys[first]!.length]!]!;
+    const b = values[cid[last]![(li + polys[last]!.length - 1) % polys[last]!.length]!]!;
+    const s0 = values[id]!;
+    return [(a[0]! + 6 * s0[0]! + b[0]!) / 8, (a[1]! + 6 * s0[1]! + b[1]!) / 8];
+  };
+  const valuePoint = values.map((s0, id) => {
+    const tag = tags.get(id);
+    if (tag) {
+      // A corner (sharp, or semi-sharp while it lasts) stays; a crease takes the crease rule; a semi-sharp value
+      // becoming a crease mixes the two by the fractional weight — its partner's when it was dependent.
+      const child = childTags.get(id)!;
+      if (child.kind !== "crease") return [s0[0]!, s0[1]!];
+      if (tag.kind !== "semi") return creaseRule(id);
+      const partner = tag.dep ? valueAt.get(vertexOf[id]!)!.find((o) => o !== id) : id;
+      return lerp(creaseRule(id), s0, fractional(partner ?? id));
+    }
+    // A value that follows its vertex: the vertex's own rule, as `subdivideOnce` gives the positions.
+    const v = vertexOf[id]!;
+    const corners = around[id]!;
+    const ends = new Map<number, number[]>();
+    for (const [f, i] of corners) {
+      ends.set(at(f, i, 1), values[cid[f]![(i + 1) % polys[f]!.length]!]!);
+      ends.set(at(f, i, -1), values[cid[f]![(i + polys[f]!.length - 1) % polys[f]!.length]!]!);
+    }
+    const n = corners.length;
+    let qu = 0, qv = 0;
+    for (const [f] of corners) {
+      qu += facePoint[f]![0]!;
+      qv += facePoint[f]![1]!;
+    }
+    let ru = 0, rv = 0;
+    for (const e of ends.values()) {
+      ru += (s0[0]! + e[0]!) / 2;
+      rv += (s0[1]! + e[1]!) / 2;
+    }
+    const m = ends.size;
+    const smooth = [(qu / n + (2 * ru) / m + (n - 3) * s0[0]!) / n, (qv / n + (2 * rv) / m + (n - 3) * s0[1]!) / n];
+    const vs = vertexSharpness?.get(v) ?? 0;
+    const cvs = decay(vs);
+    let creaseCount = 0, childCount = 0, tSum = vs > 0 && cvs <= 0 ? vs : 0, tCount = vs > 0 && cvs <= 0 ? 1 : 0;
+    const nbrs: number[][] = [];
+    const childNbrs: number[][] = [];
+    for (const [w, e] of ends) {
+      const x = sharpOf(edgeKey(v, w));
+      if (x <= 0) continue;
+      creaseCount++;
+      nbrs.push(e);
+      if (decay(x) > 0) {
+        childCount++;
+        childNbrs.push(e);
+      } else {
+        tSum += x;
+        tCount++;
+      }
+    }
+    if (preserveCorners && n === 1) return [s0[0]!, s0[1]!];
+    if (creaseCount === 0 && vs <= 0) return smooth;
+    const ruleOf = (x: number, c: number): number => (x > 0 || c > 2 ? 3 : c);
+    const ruleAt = (rule: number, ns: number[][]): number[] =>
+      rule <= 1 ? smooth : rule === 2 ? [(6 * s0[0]! + ns[0]![0]! + ns[1]![0]!) / 8, (6 * s0[1]! + ns[0]![1]! + ns[1]![1]!) / 8] : [s0[0]!, s0[1]!];
+    const pr = ruleOf(vs, creaseCount);
+    const cr = ruleOf(cvs, childCount);
+    if (pr === cr) return ruleAt(pr, nbrs);
+    const wgt = tCount === 0 ? 0 : Math.min(1, tSum / tCount);
+    return lerp(ruleAt(cr, childNbrs), ruleAt(pr, nbrs), wgt);
+  });
+  const out: number[][][] = [];
+  polys.forEach((p, f) => {
+    for (let i = 0; i < p.length; i++)
+      out.push([valuePoint[cid[f]![i]!]!, edgePoint(f, i), facePoint[f]!, edgePoint(f, (i + p.length - 1) % p.length)]);
+  });
+  if (carry) {
+    // The child corners' tags: a vertex's values carry theirs, a value made on a seam is a corner under linear
+    // boundaries and a crease otherwise (`propagateValueTags`).
+    const state = new Map<string, FVarState>();
+    const linearBoundaries = mode === "PRESERVE_BOUNDARIES";
+    let start = 0;
+    polys.forEach((p, f) => {
+      for (let i = 0; i < p.length; i++) {
+        const t = childTags.get(cid[f]![i]!);
+        if (t) state.set(`${start + i},0`, t);
+        const seam = across(f, i) === undefined && (edgeUse.get(edgeKey(at(f, i, 0), at(f, i, 1))) === 2 || linearBoundaries);
+        if (seam) {
+          const made: FVarState = { kind: linearBoundaries ? "sharp" : "crease", dep: false };
+          state.set(`${start + i},1`, made);
+          state.set(`${start + ((i + 1) % p.length)},3`, made);
+        }
+      }
+      start += p.length;
+    });
+    carry.state = state;
+  }
+  return out;
+}
+
+/** A face-varying value's tags as they pass from level to level (`FVarLevel::ValueTag`, the part refinement reads). */
+interface FVarState {
+  kind: "sharp" | "crease" | "semi";
+  dep: boolean;
+}
+
+/**
+ * The UVs on OpenSubdiv's face-varying patches (compat-backlog C28), one per
+ * output corner. `isolated` is the `quality` mesh with its UVs; the values
+ * that do not follow their vertex take the cage's tags (vertices below
+ * `cageVertices` keep their numbers, `cageFace` names each `quality` face's
+ * face of the cage) or, made on a seam during refinement, a corner's
+ * (linear boundaries) or a crease's.
+ */
+function faceVaryingLimit(
+  isolated: SubdivResult,
+  corners: PatchParam[][],
+  mode: UVSmooth,
+  preserveCorners: boolean,
+  cage: { cid: number[][] },
+  cageTags: Map<number, BaseValueTag> | undefined,
+  cageFace: number[],
+  cagePolys: number[][],
+  cageVertices: number[] | number,
+): number[][][] {
+  const polys = isolated.polys;
+  const fv = faceVaryingValues(polys, isolated.uvs!);
+  if (mode === "NONE") {
+    // FVAR_LINEAR_ALL: bilinear patches on the `quality` faces.
+    return corners.map((row) =>
+      row.map(({ face, u, v }) => {
+        const c = fv.cid[face]!.map((id) => fv.values[id]!);
+        const w = [(1 - u) * (1 - v), u * (1 - v), u * v, (1 - u) * v];
+        return [0, 1].map((k) => c.reduce((acc, x, j) => acc + x[k]! * w[j]!, 0));
+      }),
+    );
+  }
+  const V0 = typeof cageVertices === "number" ? cageVertices : cageVertices.length;
+  const linearBoundaries = mode === "PRESERVE_BOUNDARIES";
+  const sharp = isolated.creases;
+  const vS = isolated.vertexSharpness ?? new Map<number, number>();
+  const edgeUse = new Map<string, number>();
+  polys.forEach((p) => p.forEach((v, i) => {
+    const k = edgeKey(v, p[(i + 1) % 4]!);
+    edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+  }));
+  const boundaryVertex = new Set<number>();
+  for (const [k, n] of edgeUse) if (n === 1) for (const v of parseKey(k)) boundaryVertex.add(v);
+  const half = valueHalfEdges(fv.cid);
+  const firstCorner = new Map<number, [number, number]>();
+  fv.cid.forEach((row, f) => row.forEach((id, i) => {
+    if (!firstCorner.has(id)) firstCorner.set(id, [f, i]);
+  }));
+  // A semi-sharp value stays so while its vertex or an edge inside its span is still sharp.
+  const stillSemi = (id: number): boolean => {
+    const v = fv.vertexOf[id]!;
+    if ((vS.get(v) ?? 0) > 0) return true;
+    const [f] = firstCorner.get(id)!;
+    const fan = valueFan(fv.cid, half, f, id);
+    const inner = fan.open ? fan.faces.length - 1 : fan.faces.length;
+    for (let j = 0; j < inner; j++) {
+      const p = polys[fan.faces[j]!]!;
+      const s = sharp.get(edgeKey(v, p[(p.indexOf(v) + 3) % 4]!)) ?? 0;
+      if (s > 0 && s !== Infinity) return true;
+    }
+    return false;
+  };
+  const baseTagOf = (id: number): BaseValueTag | undefined => {
+    const [f, i] = firstCorner.get(id)!;
+    const c = cageFace[f]!;
+    return cageTags?.get(cage.cid[c]![cagePolys[c]!.indexOf(polys[f]![i]!)]!);
+  };
+  // The cage's values (and their descendants) by their tags; values made on a seam a corner's or a crease's.
+  const kinds = new Map<number, { kind: BaseValueTag["kind"]; base: BaseValueTag }>();
+  const tags = new Map<number, FVarTag>();
+  fv.values.forEach((_, id) => {
+    const v = fv.vertexOf[id]!;
+    if (v < V0) {
+      const base = baseTagOf(id);
+      if (!base) return;
+      kinds.set(id, { kind: base.kind === "semi" && !stillSemi(id) ? "crease" : base.kind, base });
+      return;
+    }
+    const mismatch = fv.valueAt.get(v)!.length > 1 || (linearBoundaries && boundaryVertex.has(v));
+    if (!mismatch) return;
+    tags.set(id, { crease: !linearBoundaries, semiSharp: false, infSharpEdges: false, infIrregular: false, xordinary: false });
+  });
+  // A value semi-sharp by dependence stays so while a value it depends on is semi-sharp.
+  for (const [id, { kind, base }] of kinds) {
+    let k = kind;
+    if (k === "dep")
+      k = fv.valueAt.get(fv.vertexOf[id]!)!.some((o) => o !== id && kinds.get(o)?.kind === "semi") ? "semi" : "crease";
+    tags.set(id, {
+      crease: k === "crease",
+      semiSharp: k === "semi",
+      infSharpEdges: base.infSharpEdges,
+      infIrregular: base.infIrregular,
+      xordinary: base.xordinary,
+    });
+  }
+  const P = new Float32Array(fv.values.length * 3);
+  fv.values.forEach((uv, id) => P.set([uv[0]!, uv[1]!, 0], id * 3));
+  const valueSharpness = new Map<string, number>();
+  fv.cid.forEach((row, f) => row.forEach((a, i) => {
+    const b = row[(i + 1) % 4]!;
+    const s = sharp.get(edgeKey(polys[f]![i]!, polys[f]![(i + 1) % 4]!));
+    if (s) valueSharpness.set(edgeKey(a, b), s);
+  }));
+  const valueVertexSharpness = new Map<number, number>();
+  fv.vertexOf.forEach((v, id) => {
+    const s = vS.get(v);
+    if (s) valueVertexSharpness.set(id, s);
+  });
+  const flat = corners.flat();
+  const out = evaluatePatches(P, fv.cid, flat, valueSharpness, preserveCorners, valueVertexSharpness, tags);
+  let k = 0;
+  return corners.map((row) => row.map(() => {
+    const uv = [out[k * 3]!, out[k * 3 + 1]!];
+    k++;
+    return uv;
+  }));
 }
 
 /**
