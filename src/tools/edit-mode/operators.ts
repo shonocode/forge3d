@@ -565,14 +565,39 @@ export interface LoopCutOptions {
  * macro's second half) is not part of this; the loops sit where the cut put
  * them.
  *
- * Returns the new vertices.
+ * Returns the new vertices. `info.innerEdges` (when given) receives the new
+ * loops' edges — the ones made inside the cut faces, one half-edge each:
+ * what the operator leaves selected (`SUBDIV_SELECT_LOOPCUT`, the subdivide
+ * op's `geom_inner.out`), not the pieces of the ring's edges.
  */
-export function loopCut(em: EditMesh, seedEdge: number, opts: LoopCutOptions = {}): Set<number> {
+export function loopCut(
+  em: EditMesh,
+  seedEdge: number,
+  opts: LoopCutOptions = {},
+  info?: { innerEdges?: Set<number> },
+): Set<number> {
   if (!em.halfEdges[seedEdge]) return new Set();
   const ring = selectEdgeRing(em, seedEdge);
   const before = em.vertices.length;
+  const cuts = Math.max(1, Math.floor(opts.cuts ?? 1));
+  // `subdivideEdges` makes each ring edge's vertices together, in the ring's order: which edge a new vertex is on.
+  const onEdge = new Map<number, number>();
+  {
+    const seen = new Set<string>();
+    let next = before;
+    let edge = 0;
+    for (const he of ring) {
+      const h = em.halfEdges[he];
+      if (!h) continue;
+      const key = seamKey(h.v, em.halfEdges[h.next]!.v);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      for (let k = 0; k < cuts; k++) onEdge.set(next++, edge);
+      edge++;
+    }
+  }
   subdivideEdges(em, ring, {
-    cuts: Math.max(1, Math.floor(opts.cuts ?? 1)),
+    cuts,
     smooth: opts.smoothness ?? 0,
     smoothFalloff: opts.falloff ?? "INVERSE_SQUARE",
     useSmoothEven: true,
@@ -581,6 +606,14 @@ export function loopCut(em: EditMesh, seedEdge: number, opts: LoopCutOptions = {
   });
   const made = new Set<number>();
   for (let v = before; v < em.vertices.length; v++) made.add(v);
+  if (info) {
+    info.innerEdges = new Set();
+    forEachEdge(em, (he) => {
+      const a = edgeOrigin(em, he);
+      const b = edgeEnd(em, he);
+      if (a >= before && b >= before && onEdge.get(a) !== onEdge.get(b)) info.innerEdges!.add(he);
+    });
+  }
   return made;
 }
 

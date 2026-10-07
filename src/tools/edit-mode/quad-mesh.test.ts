@@ -322,6 +322,21 @@ describe("polygon-aware operators on a quad cube", () => {
     expectManifold(em);
   });
 
+  it("loopCut reports the new loops' edges, not the pieces of the ring's edges", () => {
+    // SUBDIV_SELECT_LOOPCUT: three cuts across a ring of 4 quads make 3 closed
+    // loops of 4 edges; the 4 ring edges are split into 4 pieces each.
+    const em = makeQuadCubeEM();
+    let seed = -1;
+    forEachEdge(em, (he) => { if (seed < 0) seed = he; });
+    const info: { innerEdges?: Set<number> } = {};
+    const made = loopCut(em, seed, { cuts: 3 }, info);
+    expect(info.innerEdges!.size).toBe(12);
+    for (const he of info.innerEdges!) {
+      expect(made.has(em.halfEdges[he]!.v)).toBe(true);
+      expect(made.has(em.halfEdges[em.halfEdges[he]!.next]!.v)).toBe(true);
+    }
+  });
+
   it("loopCut smoothness bows the new loop out along the normals", () => {
     // Cube corners at ±1: a flat cut lands on the edge midpoints, |x| or |y|
     // or |z| exactly 0 on one axis and 1 on the other two. Smoothed, the

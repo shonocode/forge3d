@@ -759,15 +759,21 @@ export function loopCutSelection(): void {
   // only, as Blender's) is what gets cut.
   const seed = state.editSelection.indices.values().next().value!;
   applyTopologyOp("Loop Cut", () => {
-    const newVerts = loopCut(em, seed);
+    const info: { innerEdges?: Set<number> } = {};
+    const newVerts = loopCut(
+      em,
+      seed,
+      { cuts: state.editConfig.loopCutCuts, smoothness: state.editConfig.loopCutSmoothness },
+      info,
+    );
     if (newVerts.size === 0) {
       status("⚠ Loop Cut: nothing to cut from this seed");
       return new Set();
     }
-    // After cut, the natural follow-up is "drag the new ring" — switch to
-    // vertex mode so the midpoint verts can be moved with the gizmo.
-    state.editSelection.mode = "vertex";
-    return newVerts;
+    // As Blender leaves it (`SUBDIV_SELECT_LOOPCUT`): the new loops' edges in
+    // edge mode — Edge Slide moves them next.
+    state.editSelection.mode = "edge";
+    return info.innerEdges!;
   });
 }
 

@@ -187,6 +187,8 @@ function OperatorsSection() {
   const insetAmount = useForge((s) => s.editConfig.insetAmount);
   const bevelOffset = useForge((s) => s.editConfig.bevelOffset);
   const slideAmount = useForge((s) => s.editConfig.slideAmount);
+  const loopCutCuts = useForge((s) => s.editConfig.loopCutCuts);
+  const loopCutSmoothness = useForge((s) => s.editConfig.loopCutSmoothness);
   const creaseWeight = useForge((s) => s.editConfig.creaseWeight);
   const inEdit = editMesh !== null;
 
@@ -270,6 +272,40 @@ function OperatorsSection() {
           aria-label="Bevel Offset %"
           onChange={(e) => {
             state.editConfig.bevelOffset = +e.target.value;
+            store.notify();
+          }}
+        />
+      </div>
+      <div className="sr">
+        <label>
+          Loop Cuts <span>{loopCutCuts}</span>
+        </label>
+        <input
+          type="range"
+          min={1}
+          max={10}
+          step={1}
+          value={loopCutCuts}
+          aria-label="Loop Cuts"
+          onChange={(e) => {
+            state.editConfig.loopCutCuts = +e.target.value;
+            store.notify();
+          }}
+        />
+      </div>
+      <div className="sr">
+        <label>
+          Loop Smoothness <span>{loopCutSmoothness.toFixed(2)}</span>
+        </label>
+        <input
+          type="range"
+          min={-1}
+          max={1}
+          step={0.05}
+          value={loopCutSmoothness}
+          aria-label="Loop Smoothness"
+          onChange={(e) => {
+            state.editConfig.loopCutSmoothness = +e.target.value;
             store.notify();
           }}
         />

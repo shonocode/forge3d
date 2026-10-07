@@ -533,6 +533,10 @@ export const state = {
     bevelOffset: 15,
     /** Edge Slide factor per press: sign = side, magnitude = lerp toward the rail. */
     slideAmount: 0.25,
+    /** Loop Cut's `number_cuts` — how many loops one cut adds (Blender's default 1). */
+    loopCutCuts: 1,
+    /** Loop Cut's `smoothness` — how far the new loops bow out (Blender's default 0). */
+    loopCutSmoothness: 0,
     /** Proportional editing (soft select): gizmo transforms also pull nearby verts. */
     proportional: false,
     /** Falloff radius (local units) for proportional editing. */
