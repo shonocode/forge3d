@@ -54,6 +54,8 @@ export interface SubdivResult {
   uvs?: number[][][];
   /** One step's edge points: the vertex made at each parent edge ("min_max"), for carrying edge and vertex layers. */
   edgePoints?: Map<string, number>;
+  /** Propagated vertex sharpness (OpenSubdiv's, σ − 1 a level), by vertex — only where it is still above 0. */
+  vertexSharpness?: Map<number, number>;
 }
 
 /**
@@ -263,12 +265,17 @@ function parseKey(k: string): [number, number] {
   return [Number(k.slice(0, us)), Number(k.slice(us + 1))];
 }
 
-/** One Catmull-Clark step. `creases` maps edge keys to sharpness (σ ≥ 0). */
+/**
+ * One Catmull-Clark step. `creases` maps edge keys to sharpness (σ ≥ 0);
+ * `vertexSharpness` (optional) is OpenSubdiv's vertex sharpness, which makes
+ * a vertex a corner while it lasts.
+ */
 export function subdivideOnce(
   positions: Float32Array,
   polys: number[][],
   creases: Map<string, number>,
   preserveCorners = false,
+  vertexSharpness?: Map<number, number>,
 ): SubdivResult {
   const V = positions.length / 3;
   const F = polys.length;
@@ -358,6 +365,7 @@ export function subdivideOnce(
   }
 
   // ── Vertex points ────────────────────────────────────────────────────────
+  const newVertexSharpness = new Map<number, number>();
   for (let v = 0; v < V; v++) {
     const Px = positions[v * 3]!, Py = positions[v * 3 + 1]!, Pz = positions[v * 3 + 2]!;
     const faces = incidentFaces[v]!;
@@ -390,14 +398,17 @@ export function subdivideOnce(
 
     // Crease / boundary handling: collect the vertex's sharp edges.
     // OpenSubdiv's vertex rule (`Scheme::ComputeVertexVertexMask`): the rule is Smooth / Dart / Crease / Corner by the number of
-    // sharp edges (0 / 1 / 2 / more), for the parent's sharpness and for the child's (σ − 1, ≤ 0 ⇒ 0, ∞ stays). When the two
-    // differ the position is the mix of the parent's rule and the child's, weighted by the mean parent sharpness of the edges
-    // that decay to 0 (`ComputeFractionalWeightAtVertex`, clamped to 1).
+    // sharp edges (0 / 1 / 2 / more) — Corner whenever the vertex itself is sharp — for the parent's sharpness and for the child's
+    // (σ − 1, ≤ 0 ⇒ 0, ∞ stays). When the two differ the position is the mix of the parent's rule and the child's, weighted by
+    // the mean parent sharpness of the edges (and the vertex) that decay to 0 (`ComputeFractionalWeightAtVertex`, clamped to 1).
     const decay = (s: number): number => (s === Infinity ? s : s > 1 ? s - 1 : 0);
+    const vertexS = vertexSharpness?.get(v) ?? 0;
+    const childVertexS = decay(vertexS);
+    if (childVertexS > 0) newVertexSharpness.set(v, childVertexS);
     let creaseCount = 0;
     let childCount = 0;
-    let transitionSum = 0;
-    let transitionCount = 0;
+    let transitionSum = vertexS > 0 && childVertexS <= 0 ? vertexS : 0;
+    let transitionCount = vertexS > 0 && childVertexS <= 0 ? 1 : 0;
     const creaseNbrs: number[] = [];
     const childCreaseNbrs: number[] = [];
     for (const k of edges) {
@@ -426,7 +437,7 @@ export function subdivideOnce(
       continue;
     }
 
-    if (creaseCount === 0) {
+    if (creaseCount === 0 && vertexS <= 0) {
       newPos[v * 3] = smoothX;
       newPos[v * 3 + 1] = smoothY;
       newPos[v * 3 + 2] = smoothZ;
@@ -434,18 +445,20 @@ export function subdivideOnce(
     }
 
     // The position a rule gives: Smooth / Dart → the smooth mask; Crease → (6P + n1 + n2) / 8; Corner → P.
-    const ruleAt = (count: number, nbrs: number[], k: number): number => {
-      if (count <= 1) return k === 0 ? smoothX : k === 1 ? smoothY : smoothZ;
+    const ruleAt = (rule: number, nbrs: number[], k: number): number => {
+      if (rule <= 1) return k === 0 ? smoothX : k === 1 ? smoothY : smoothZ;
       const p = k === 0 ? Px : k === 1 ? Py : Pz;
-      if (count === 2) return (6 * p + positions[nbrs[0]! * 3 + k]! + positions[nbrs[1]! * 3 + k]!) / 8;
+      if (rule === 2) return (6 * p + positions[nbrs[0]! * 3 + k]! + positions[nbrs[1]! * 3 + k]!) / 8;
       return p;
     };
-    const ruleOf = (count: number): number => (count > 2 ? 3 : count);
-    const same = ruleOf(creaseCount) === ruleOf(childCount);
+    const ruleOf = (vs: number, count: number): number => (vs > 0 || count > 2 ? 3 : count);
+    const parentRule = ruleOf(vertexS, creaseCount);
+    const childRule = ruleOf(childVertexS, childCount);
+    const same = parentRule === childRule;
     const weight = same || transitionCount === 0 ? 0 : Math.min(1, transitionSum / transitionCount);
     for (let k = 0; k < 3; k++) {
-      const parent = ruleAt(creaseCount, creaseNbrs, k);
-      const child = same ? parent : ruleAt(childCount, childCreaseNbrs, k);
+      const parent = ruleAt(parentRule, creaseNbrs, k);
+      const child = same ? parent : ruleAt(childRule, childCreaseNbrs, k);
       newPos[v * 3 + k] = weight * parent + (1 - weight) * child;
     }
   }
@@ -480,7 +493,41 @@ export function subdivideOnce(
     newCreases.set(edgeKey(ep, b), childS);
   }
 
-  return { positions: Float32Array.from(newPos), polys: newPolys, creases: newCreases, edgePoints: edgePointIndex };
+  return {
+    positions: Float32Array.from(newPos),
+    polys: newPolys,
+    creases: newCreases,
+    edgePoints: edgePointIndex,
+    ...(newVertexSharpness.size ? { vertexSharpness: newVertexSharpness } : {}),
+  };
+}
+
+/**
+ * The vertex sharpness Blender hands OpenSubdiv for a cage
+ * (`topology_refiner_factory.cc`, `assignComponentTags`): a vertex with
+ * exactly two edges takes the smaller of their two sharpnesses, capped at 10
+ * (infinite) — a boundary edge's crease counts here, though OpenSubdiv makes
+ * the edge itself infinitely sharp.
+ */
+function blenderVertexSharpness(polys: number[][], sharpness: Map<string, number>): Map<number, number> {
+  const edgesOf = new Map<number, Set<string>>();
+  for (const p of polys)
+    p.forEach((a, i) => {
+      const k = edgeKey(a, p[(i + 1) % p.length]!);
+      for (const v of [a, p[(i + 1) % p.length]!]) {
+        let set = edgesOf.get(v);
+        if (!set) edgesOf.set(v, (set = new Set()));
+        set.add(k);
+      }
+    });
+  const out = new Map<number, number>();
+  for (const [v, edges] of edgesOf) {
+    if (edges.size !== 2) continue;
+    const [e0, e1] = [...edges].map((k) => Math.min(sharpness.get(k) ?? 0, 10)) as [number, number];
+    const s = Math.min(e0, e1);
+    if (s > 0) out.set(v, s >= 10 ? Infinity : s);
+  }
+  return out;
 }
 
 /** Blender's Subdivision Surface settings beyond the level (compat-backlog B1). */
@@ -502,9 +549,12 @@ export interface CatmullClarkOptions {
    * level-`quality` mesh — B-splines on its regular faces, Gregory patches on
    * the faces at an extraordinary vertex, which are not the limit there —
    * and are evaluated on them as Blender does (`subdiv-patches.ts`, C28).
+   * With creases every level is evaluated so: the patches know only the
+   * infinitely sharp edges, so a finite sharpness still left at `quality`
+   * is smoothed over.
    *
-   * Refused rather than approximated: creases (not measured) and UVs (the
-   * face-varying limit is not ported).
+   * Refused rather than approximated: UVs (the face-varying limit is not
+   * ported).
    */
   limitSurface?: boolean;
   /** `quality` — the adaptive refinement level of Blender's evaluator, default 3. */
@@ -559,8 +609,6 @@ export function catmullClark(
   const quality = options.quality ?? 3;
   if (options.limitSurface && level > 0) {
     if (quality < 1) throw new Error(`catmullClark: quality ${quality} — Blender's is 1 to 10.`);
-    if (creases && [...creases.values()].some((s) => s > 0))
-      throw new Error("catmullClark: limitSurface with creases is not measured, so it is refused.");
     if (uvs) throw new Error("catmullClark: limitSurface with UVs (the face-varying limit) is not ported.");
   }
   let result: SubdivResult = {
@@ -571,9 +619,16 @@ export function catmullClark(
     ),
     ...(uvs ? { uvs: uvs.map((f) => f.map((c) => [...c])) } : {}),
   };
-  // Above `quality`, each face remembers the face of the `quality` mesh it lies in and its corners' (u, v) there.
-  const deep = options.limitSurface && level > quality;
-  let isolated: { positions: Float32Array; polys: number[][] } | undefined;
+  if (options.blenderCreases) {
+    const vs = blenderVertexSharpness(result.polys, result.creases);
+    if (vs.size) result.vertexSharpness = vs;
+  }
+  // Above `quality`, or wherever a crease is, the vertices are evaluated on the patches of the `quality` mesh
+  // (`subdiv-patches.ts`): each face remembers the face of that mesh it lies in and its corners' (u, v) there.
+  const creased = [...result.creases.values()].some((s) => s > 0) || !!result.vertexSharpness;
+  const onPatches = !!options.limitSurface && level > 0 && (level > quality || creased);
+  const unitSquare = (): [number, number][] => [[0, 0], [1, 0], [1, 1], [0, 1]];
+  let isolated: SubdivResult | undefined;
   let ancestor: number[] = [];
   let cornerUV: [number, number][][] = [];
   for (let l = 0; l < level; l++) {
@@ -581,13 +636,13 @@ export function catmullClark(
       ? subdivideUVOnce(result.polys, result.uvs, options.uvSmooth ?? "PRESERVE_BOUNDARIES", preserveCorners)
       : undefined;
     const parentPolys = result.polys;
-    result = subdivideOnce(result.positions, result.polys, result.creases, preserveCorners);
+    result = subdivideOnce(result.positions, result.polys, result.creases, preserveCorners, result.vertexSharpness);
     if (nextUV) result.uvs = nextUV;
-    if (!deep) continue;
+    if (!onPatches) continue;
     if (l + 1 === quality) {
-      isolated = { positions: result.positions, polys: result.polys };
+      isolated = result;
       ancestor = result.polys.map((_, f) => f);
-      cornerUV = result.polys.map(() => [[0, 0], [1, 0], [1, 1], [0, 1]]);
+      cornerUV = result.polys.map(unitSquare);
     } else if (l + 1 > quality) {
       const mid = (a: [number, number], b: [number, number]): [number, number] => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       const nextAncestor: number[] = [];
@@ -604,14 +659,32 @@ export function catmullClark(
       cornerUV = nextUVs;
     }
   }
-  if (deep && isolated) {
-    const params: PatchParam[] = new Array(result.positions.length / 3);
-    result.polys.forEach((p, f) =>
+  if (onPatches && !isolated) {
+    // Below `quality`: refine on to it; the vertices keep their indices and are corners of its faces.
+    let iso = result;
+    for (let l = level; l < quality; l++)
+      iso = subdivideOnce(iso.positions, iso.polys, iso.creases, preserveCorners, iso.vertexSharpness);
+    isolated = iso;
+    ancestor = iso.polys.map((_, f) => f);
+    cornerUV = iso.polys.map(unitSquare);
+  }
+  if (onPatches && isolated) {
+    const count = result.positions.length / 3;
+    const params: (PatchParam | undefined)[] = new Array(count);
+    const fine = level >= quality ? result.polys : isolated.polys;
+    fine.forEach((p, f) =>
       p.forEach((v, i) => {
-        params[v] ??= { face: ancestor[f]!, u: cornerUV[f]![i]![0], v: cornerUV[f]![i]![1] };
+        if (v < count) params[v] ??= { face: ancestor[f]!, u: cornerUV[f]![i]![0], v: cornerUV[f]![i]![1] };
       }),
     );
-    const out = evaluatePatches(isolated.positions, isolated.polys, params.map((p) => p ?? { face: -1, u: 0, v: 0 }));
+    const out = evaluatePatches(
+      isolated.positions,
+      isolated.polys,
+      params.map((p) => p ?? { face: -1, u: 0, v: 0 }),
+      isolated.creases,
+      preserveCorners,
+      isolated.vertexSharpness,
+    );
     // A vertex no face uses keeps its refined position.
     params.forEach((p, v) => {
       if (!p) out.set(result.positions.subarray(v * 3, v * 3 + 3), v * 3);

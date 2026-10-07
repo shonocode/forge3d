@@ -340,13 +340,24 @@ describe("catmullClark options (Blender's Subdivision Surface settings, compat-b
     expect(gregory.polys).toEqual(limit.polys);
   });
 
+  it("gives a vertex with two edges the smaller of their sharpnesses, as Blender hands OpenSubdiv", () => {
+    // The corner of the grid: its two boundary edges at crease 0.2 make a
+    // vertex sharpness of 10 · 0.2² = 0.4, so the corner rule (stay) and the
+    // crease rule ((a + 6x + b) / 8 = 0.125) mix 0.4 : 0.6 (C28, `val2Grid` /
+    // `fanNgon` in `subdiv-creases-sharp`).
+    const g = grid();
+    const creases = new Map([["0_1", 0.2], ["0_3", 0.2]]);
+    const out = catmullClark(g.positions, g.polys, 1, creases, undefined, { blenderCreases: true });
+    expect(at(out.positions, 0)[0]).toBeCloseTo(0.075, 6);
+    expect(at(out.positions, 0)[2]).toBeCloseTo(0.075, 6);
+    // Without Blender's reading the creases are the sharpness itself and the vertex has none.
+    expect(at(catmullClark(g.positions, g.polys, 1, creases).positions, 0)[0]).toBeCloseTo(0.125, 6);
+  });
+
   it("refuses the limit where it would not be Blender's", () => {
     expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 2, undefined, undefined, { limitSurface: true, quality: 0 })).toThrow(
       /quality/,
     );
-    expect(() =>
-      catmullClark(CUBE_POS, CUBE_QUADS, 1, new Map([["0_1", 1]]), undefined, { limitSurface: true }),
-    ).toThrow(/creases/);
     const uvs = CUBE_QUADS.map((p) => p.map(() => [0, 0]));
     expect(() => catmullClark(CUBE_POS, CUBE_QUADS, 1, undefined, uvs, { limitSurface: true })).toThrow(/UVs/);
   });

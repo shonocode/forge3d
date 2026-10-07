@@ -1,6 +1,7 @@
 /**
  * The patches Blender's OpenSubdiv evaluator puts on the limit surface, for
- * Subdivision Surface levels **above** `quality` (compat-backlog C28).
+ * Subdivision Surface levels **above** `quality` and for creased cages
+ * (compat-backlog C28).
  *
  * Blender refines adaptively to the isolation level `quality` and evaluates
  * every vertex of the subdivided mesh on a patch of that refinement
@@ -27,8 +28,14 @@
  * rather than as a sparse matrix — see NOTICE.md: `far/catmarkPatchBuilder.cpp`
  * (`CatmarkLimits`, `GregoryConverter`), `far/patchBasis.cpp`
  * (`EvalBasisBSpline`, `EvalBasisGregory`) and the regular-patch test of
- * `far/patchBuilder.cpp` (`IsPatchRegular`). Creases and face-varying data
- * are not ported.
+ * `far/patchBuilder.cpp` (`IsPatchRegular`, the corner spans of
+ * `assembleIrregularSourcePatch`) with the vertex tags of
+ * `far/topologyRefinerFactory.cpp`. Face-varying data is not ported.
+ *
+ * Creases: an infinitely sharp edge cuts a vertex's ring as a boundary does
+ * (`useInfSharpPatch`) — two make a crease, three and more a sharp corner, a
+ * lone one a dart (smooth, but never a regular patch). A finite sharpness
+ * left at `quality` shapes nothing here; it only counts toward a vertex's rule.
  */
 
 type Vec = [number, number, number];
@@ -58,9 +65,21 @@ export interface PatchParam {
 
 /**
  * Evaluate the patches of the level-`quality` mesh (`P` / `polys`, all quads)
- * at `params`, one per output vertex.
+ * at `params`, one per output vertex. `sharpness` holds the edge sharpness
+ * left at `quality` ("min_max" keys); only the infinite ones shape the
+ * patches, the finite ones only change a vertex's rule (OpenSubdiv's
+ * `Level::VTag::_rule`). `preserveCorners` is `boundary_smooth`
+ * PRESERVE_CORNERS, which makes a one-face boundary vertex infinitely sharp;
+ * `vertexSharpness` is the vertex sharpness left at `quality`.
  */
-export function evaluatePatches(P: Float32Array, polys: number[][], params: PatchParam[]): Float32Array {
+export function evaluatePatches(
+  P: Float32Array,
+  polys: number[][],
+  params: PatchParam[],
+  sharpness: Map<string, number> = new Map(),
+  preserveCorners = false,
+  vertexSharpness: Map<number, number> = new Map(),
+): Float32Array {
   const pos = (i: number): Vec => [P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!];
   // Directed edge a→b → the face that has it.
   const half = new Map<string, number>();
@@ -82,51 +101,96 @@ export function evaluatePatches(P: Float32Array, polys: number[][], params: Patc
     const p = polys[f]!;
     return p[(p.indexOf(v) + 3) % 4]!;
   };
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const isBoundaryEdge = (a: number, b: number): boolean => !half.has(`${a},${b}`) || !half.has(`${b},${a}`);
+  /** Boundary and infinitely sharp edges: where OpenSubdiv cuts a vertex's ring into spans. */
+  const isInfEdge = (a: number, b: number): boolean => isBoundaryEdge(a, b) || sharpness.get(key(a, b)) === Infinity;
 
-  const cornerOf = (f: number, v: number): Corner => {
-    // Rotate back across the edge to `next` until the boundary (or round).
+  /** The faces round `v` from `f`: back across the edge to `next` until `stop` (or round), then forward. */
+  const walk = (f: number, v: number, stop: (a: number, b: number) => boolean): { faces: number[]; open: boolean } => {
     let first = f;
-    let isBoundary = false;
+    let open = false;
     for (let guard = 0; ; guard++) {
-      const g = half.get(`${next(first, v)},${v}`);
+      const n = next(first, v);
+      const g = stop(v, n) ? undefined : half.get(`${n},${v}`);
       if (g === undefined) {
-        isBoundary = true;
+        open = true;
         break;
       }
       if (g === f) break;
       first = g;
       if (guard > polys.length) throw new Error("evaluatePatches: a vertex ring does not close.");
     }
-    if (!isBoundary) first = f;
+    if (!open) first = f;
     const faces: number[] = [];
     for (let g: number | undefined = first; g !== undefined; ) {
       faces.push(g);
-      g = half.get(`${v},${prev(g, v)}`);
+      const p = prev(g, v);
+      g = stop(v, p) ? undefined : half.get(`${v},${p}`);
       if (g === first) break;
       if (faces.length > polys.length) throw new Error("evaluatePatches: a vertex ring does not close.");
     }
+    return { faces, open };
+  };
+
+  /** A corner as `GregoryConverter` takes it, and whether `IsPatchRegular` passes it for this face. */
+  const cornerOf = (f: number, v: number): { corner: Corner; regular: boolean } => {
+    const full = walk(f, v, isBoundaryEdge);
+    if (full.faces.length !== faceCount.get(v))
+      throw new Error("catmullClark: limitSurface at a non-manifold vertex is not measured.");
+    const topoBoundary = full.open;
+    const ends = new Set<number>();
+    for (const g of full.faces) ends.add(next(g, v)).add(prev(g, v));
+    let infCount = 0;
+    let semiCount = 0;
+    for (const w of ends) {
+      if (isInfEdge(v, w)) infCount++;
+      else if ((sharpness.get(key(v, w)) ?? 0) > 0) semiCount++;
+    }
+    const xordinary = full.faces.length !== (topoBoundary ? 2 : 4);
+    // A one-face boundary vertex is infinitely sharp under PRESERVE_CORNERS (TopologyRefinerFactory's sharpened corner).
+    const vertexS = vertexSharpness.get(v) ?? 0;
+    const vertexInf = vertexS === Infinity || (preserveCorners && topoBoundary && full.faces.length === 1 && ends.size === 2);
+    // Sdc's vertex rule counts the finite edges and vertex sharpness too: one sharp edge in all, and no more, is a dart.
+    const isDart = !vertexInf && vertexS <= 0 && infCount + semiCount === 1;
+    const testInfSharpEdges = infCount > 0 && !isDart;
+    const span = testInfSharpEdges ? walk(f, v, isInfEdge) : full;
+    const numFaces = span.faces.length;
+    const infSharpCrease = !vertexInf && infCount === 2;
+    let isSharp = vertexInf || (testInfSharpEdges && !infSharpCrease);
+    // generateLegacySharpCornerPatches (approxSmoothCornerWithSharp).
+    if (!isSharp && xordinary && topoBoundary) isSharp = numFaces === 1;
+
+    // IsPatchRegular, corner by corner.
+    let regular: boolean;
+    if (vertexInf) regular = infCount > 0 && numFaces === 1;
+    else if (infCount === 0) regular = !xordinary;
+    else if (infCount === 1) regular = false; // a dart, or one sharp edge among finite ones
+    else if (infSharpCrease) regular = topoBoundary ? !xordinary || numFaces === 1 : numFaces === 2;
+    else regular = numFaces === 1;
+
     const ring: number[] = [];
-    for (const g of faces) {
+    for (const g of span.faces) {
       const p = polys[g]!;
       ring.push(next(g, v), p[(p.indexOf(v) + 2) % 4]!);
     }
-    if (isBoundary) ring.push(prev(faces[faces.length - 1]!, v));
-    const numFaces = faces.length;
-    if (numFaces !== faceCount.get(v))
-      throw new Error("catmullClark: limitSurface at a non-manifold vertex is not measured.");
-    const isSharp = isBoundary && numFaces === 1;
+    const isBoundary = span.open;
+    if (isBoundary) ring.push(prev(span.faces[numFaces - 1]!, v));
     const isRegular = numFaces << (isBoundary ? 1 : 0) === 4 && !isSharp;
     const angle = isRegular ? Math.PI / 2 : (isBoundary ? Math.PI : 2 * Math.PI) / numFaces;
     return {
-      v,
-      isBoundary,
-      isSharp,
-      isRegular,
-      numFaces,
-      valence: numFaces + (isBoundary ? 1 : 0),
-      faceInRing: faces.indexOf(f),
-      ring,
-      cos: isRegular ? 0 : Math.cos(angle),
+      corner: {
+        v,
+        isBoundary,
+        isSharp,
+        isRegular,
+        numFaces,
+        valence: numFaces + (isBoundary ? 1 : 0),
+        faceInRing: span.faces.indexOf(f),
+        ring,
+        cos: isRegular ? 0 : Math.cos(angle),
+      },
+      regular,
     };
   };
 
@@ -135,10 +199,16 @@ export function evaluatePatches(P: Float32Array, polys: number[][], params: Patc
   const patchOf = (f: number): Patch => {
     let patch = patches.get(f);
     if (patch) return patch;
-    const corners = polys[f]!.map((v) => cornerOf(f, v));
-    // IsPatchRegular: every corner regular, a one-face corner counting as a sharp (regular) corner.
-    patch = corners.every((c) => c.isRegular || c.isSharp)
-      ? bsplinePatch(polys[f]!, corners)
+    const face = polys[f]!;
+    const tags = face.map((v) => cornerOf(f, v));
+    const corners = tags.map((t) => t.corner);
+    // GetRegularPatchBoundaryMask: the face's boundary and infinitely sharp edges.
+    let mask = 0;
+    face.forEach((v, i) => {
+      if (isInfEdge(v, face[(i + 1) % 4]!)) mask |= 1 << i;
+    });
+    patch = tags.every((t) => t.regular)
+      ? bsplinePatch(face, corners, mask)
       : { kind: "gregory", points: gregoryPoints(corners, pos) };
     patches.set(f, patch);
     return patch;
@@ -174,9 +244,10 @@ function addScaled(acc: Vec, p: Vec, s: number): void {
 /**
  * The 16 points of a regular face, row-major with s along corner 0 → 1 and t
  * along corner 0 → 3 (the face at the middle four), and the boundary mask of
- * the sides whose row is missing (1: t = 0, 2: s = 1, 4: t = 1, 8: s = 0).
+ * the sides across a boundary or infinitely sharp edge (1: t = 0, 2: s = 1,
+ * 4: t = 1, 8: s = 0), whose rows are extrapolated.
  */
-function bsplinePatch(face: number[], corners: Corner[]): { kind: "bspline"; points: (number | -1)[]; boundary: number } {
+function bsplinePatch(face: number[], corners: Corner[], boundary: number): { kind: "bspline"; points: (number | -1)[]; boundary: number } {
   const points: (number | -1)[] = new Array(16).fill(-1);
   // Corner 0's ring laid out by offset from the patch face: edge k and the diagonal of face k.
   const edgeAt: [number, number][] = [[2, 1], [1, 2], [0, 1], [1, 0]];
@@ -197,11 +268,6 @@ function bsplinePatch(face: number[], corners: Corner[]): { kind: "bspline"; poi
       if (i < corner.numFaces) put(rotate(diagAt[k]!, c), corner.ring[2 * i + 1]!);
     }
   });
-  let boundary = 0;
-  if (points[1] === -1 && points[2] === -1) boundary |= 1;
-  if (points[7] === -1 && points[11] === -1) boundary |= 2;
-  if (points[13] === -1 && points[14] === -1) boundary |= 4;
-  if (points[4] === -1 && points[8] === -1) boundary |= 8;
   return { kind: "bspline", points, boundary };
 }
 
@@ -418,6 +484,11 @@ function gregoryPoints(corners: Corner[], pos: (i: number) => Vec): Vec[] {
       Em.push(epOnBoundary ? eInterior : eBoundary);
     } else if (c.isSharp) {
       P.push(pos(c.v));
+      Ep.push(combine([[c.v, 2 / 3], [nextV, 1 / 3]]));
+      Em.push(combine([[c.v, 2 / 3], [prevV, 1 / 3]]));
+    } else if (c.isBoundary && c.numFaces === 1) {
+      // The smooth corner of a span (an inf-sharp crease turning at the face).
+      P.push(combine([[c.v, 4 / 6], [nextV, 1 / 6], [prevV, 1 / 6]]));
       Ep.push(combine([[c.v, 2 / 3], [nextV, 1 / 3]]));
       Em.push(combine([[c.v, 2 / 3], [prevV, 1 / 3]]));
     } else if (!c.isBoundary) {
