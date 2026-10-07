@@ -80,7 +80,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   Boolean の FLOAT / MANIFOLD ソルバー（やらない、C38）、Shrinkwrap の `subsurf_levels`（C39）、
   Displace の CUSTOM_NORMAL（C37、GLOBAL と OBJECT は済み）。Bisect の埋めは**面の形と向きまで**一致（C25）で、
   埋めた面の角が隣の面の何を写すか（BMesh のプール順に依る）だけが違う（C40）
-- **Subdivision Surface の極限曲面**：crease 付き・UV 付きのケージは拒否する（level が quality を超える場合は 2026-10-07 から一致）
+- **Subdivision Surface の極限曲面**：UV 付きのケージは拒否する（level が quality を超える場合と crease 付きは 2026-10-07 から一致）
 - **カスタム法線の持ち方**：Blender は角の法線空間に対する2つの角度で保存する。値を補間したり、
   扇が変わったりする操作（reverse、bisect の切り口など）では答えが変わる
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
