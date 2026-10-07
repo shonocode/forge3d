@@ -84,7 +84,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 - **カスタム法線の持ち方**：Blender は角の法線空間に対する2つの角度で保存する。値を補間したり、
   扇が変わったりする操作（reverse、bisect の切り口など）では答えが変わる
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
-- **GUI**：Loop Cut はスライドが無い。Delete は種類を選べない
+- **GUI**：Loop Cut の後のスライドはドラッグではなく Edge Slide の量で動かす。Delete はメニューが無く、選択モードで種類が決まる（点＝Vertices、辺＝Edges、面＝Faces）。ワイヤ辺は描くが選べない
 
 使っていて Blender と違う結果に当たったら、それは不具合として扱う。
 
