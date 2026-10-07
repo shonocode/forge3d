@@ -75,10 +75,23 @@ const UV_CONNECT_LIMIT = 0.0001;
 function faceVaryingValues(
   polys: number[][],
   uvs: number[][][],
+  given?: number[][],
 ): { values: number[][]; valueAt: Map<number, number[]>; cid: number[][]; vertexOf: number[] } {
   const values: number[][] = [];
   const valueAt = new Map<number, number[]>();
   const vertexOf: number[] = [];
+  if (given) {
+    // Below the cage the values come down from the level above (`childValueIds`), as OpenSubdiv's do.
+    given.forEach((row, f) =>
+      row.forEach((id, i) => {
+        if (values[id]) return;
+        values[id] = [uvs[f]![i]![0]!, uvs[f]![i]![1]!];
+        vertexOf[id] = polys[f]![i]!;
+        (valueAt.get(polys[f]![i]!) ?? valueAt.set(polys[f]![i]!, []).get(polys[f]![i]!)!).push(id);
+      }),
+    );
+    return { values, valueAt, cid: given, vertexOf };
+  }
   const windingOf: boolean[] = [];
   // `cross_poly_v2` (BLI_math_geom): Σ (cur.x − prev.x)(cur.y + prev.y).
   const winding = uvs.map((c) => {
@@ -111,6 +124,35 @@ function faceVaryingValues(
     }),
   );
   return { values, valueAt, cid, vertexOf };
+}
+
+/**
+ * The child corners' values after one step, in `subdivideOnce`'s corner order: a vertex keeps its values, a face
+ * makes one, an edge one if it is continuous in UV and one per side if it is a seam. Blender groups the corners into
+ * values once, on the cage (by distance and winding); OpenSubdiv refines that topology — grouping the refined UVs
+ * again would join a seam's two sides wherever they meet (mirrored islands) or split them where a face degenerates.
+ */
+function childValueIds(
+  polys: number[][],
+  cid: number[][],
+  nValues: number,
+  continuous: (f: number, i: number) => boolean,
+): number[][] {
+  let next = nValues;
+  const faceId = polys.map(() => next++);
+  const edgeIds = new Map<string, number>();
+  const eid = (f: number, i: number): number => {
+    const p = polys[f]!;
+    const key = continuous(f, i) ? `e${edgeKey(p[i]!, p[(i + 1) % p.length]!)}` : `s${f},${i}`;
+    let id = edgeIds.get(key);
+    if (id === undefined) edgeIds.set(key, (id = next++));
+    return id;
+  };
+  const out: number[][] = [];
+  polys.forEach((p, f) => {
+    for (let i = 0; i < p.length; i++) out.push([cid[f]![i]!, eid(f, i), faceId[f]!, eid(f, (i + p.length - 1) % p.length)]);
+  });
+  return out;
 }
 
 /** The faces of `value` round its vertex, walked across the edges the value shares (any polygon size). */
@@ -280,13 +322,13 @@ function subdivideUVOnce(
   preserveCorners = false,
   sharpness?: Map<string, number>,
   vertexSharpness?: Map<number, number>,
-  carry?: { state?: Map<string, FVarState> },
+  carry?: { state?: Map<string, FVarState>; cid?: number[][] },
 ): number[][][] {
   if (mode !== "NONE" && ([...(sharpness?.values() ?? [])].some((x) => x > 0) || vertexSharpness?.size))
     return subdivideUVOnceCreased(polys, uvs, mode, preserveCorners, sharpness!, vertexSharpness, carry);
   if (carry) carry.state = undefined;
   const F = polys.length;
-  const { values, valueAt, cid } = faceVaryingValues(polys, uvs);
+  const { values, valueAt, cid } = faceVaryingValues(polys, uvs, carry?.cid);
   // ── which edge uses are continuous in UV ─────────────────────────────────
   const uses = new Map<string, Array<[number, number]>>(); // edge → [face, corner]
   polys.forEach((p, f) =>
@@ -426,6 +468,7 @@ function subdivideUVOnce(
       out.push([valuePoint[cid[f]![i]!]!, edgePoint(f, i), facePoint[f]!, edgePoint(f, prev)]);
     }
   }
+  if (carry) carry.cid = childValueIds(polys, cid, values.length, (f, i) => continuous(f, i) !== null);
   return out;
 }
 
@@ -811,7 +854,8 @@ export function catmullClark(
   const uvOnPatches = !!options.limitSurface && level > 0 && !!uvs;
   const onPatches = !!options.limitSurface && level > 0 && (level > quality || creased || uvOnPatches);
   const uvMode = options.uvSmooth ?? "PRESERVE_BOUNDARIES";
-  const uvCarry: { state?: Map<string, FVarState> } = {};
+  const uvCarry: { state?: Map<string, FVarState>; cid?: number[][] } = {};
+  let isolatedCid: number[][] | undefined;
   // The cage's face-varying values and their tags, and each face's face of the cage (for the tags of the values there).
   const cage = uvOnPatches ? faceVaryingValues(result.polys, result.uvs!) : undefined;
   const cageTags =
@@ -838,6 +882,7 @@ export function catmullClark(
     if (l < quality) cageFace = childCageFaces(parentPolys, cageFace);
     if (l + 1 === quality) {
       isolated = result;
+      isolatedCid = uvCarry.cid;
       ancestor = result.polys.map((_, f) => f);
       cornerUV = result.polys.map(unitSquare);
     } else if (l + 1 > quality) {
@@ -877,6 +922,7 @@ export function catmullClark(
       if (nextUV) iso.uvs = nextUV;
     }
     isolated = iso;
+    isolatedCid = uvCarry.cid;
     ancestor = iso.polys.map((_, f) => f);
     cornerUV = iso.polys.map(unitSquare);
   }
@@ -918,6 +964,7 @@ export function catmullClark(
         cageFace,
         polys,
         cageVertices,
+        isolatedCid,
       );
     }
   } else if (options.limitSurface && level > 0)
@@ -943,9 +990,9 @@ function subdivideUVOnceCreased(
   preserveCorners: boolean,
   sharpness: Map<string, number>,
   vertexSharpness: Map<number, number> | undefined,
-  carry?: { state?: Map<string, FVarState> },
+  carry?: { state?: Map<string, FVarState>; cid?: number[][] },
 ): number[][][] {
-  const fv = faceVaryingValues(polys, uvs);
+  const fv = faceVaryingValues(polys, uvs, carry?.cid);
   const { values, valueAt, cid, vertexOf } = fv;
   // The tags: carried from the level above (`FVarRefinement::propagateValueTags` and
   // `reclassifySemisharpValues`), or the cage's own.
@@ -1161,6 +1208,7 @@ function subdivideUVOnceCreased(
       start += p.length;
     });
     carry.state = state;
+    carry.cid = childValueIds(polys, cid, values.length, (f, i) => across(f, i) !== undefined);
   }
   return out;
 }
@@ -1189,9 +1237,10 @@ function faceVaryingLimit(
   cageFace: number[],
   cagePolys: number[][],
   cageVertices: number[] | number,
+  isolatedCid?: number[][],
 ): number[][][] {
   const polys = isolated.polys;
-  const fv = faceVaryingValues(polys, isolated.uvs!);
+  const fv = faceVaryingValues(polys, isolated.uvs!, isolatedCid);
   if (mode === "NONE") {
     // FVAR_LINEAR_ALL: bilinear patches on the `quality` faces.
     return corners.map((row) =>
