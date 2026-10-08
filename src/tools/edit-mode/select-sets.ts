@@ -238,3 +238,242 @@ export function selectSharpEdges(mesh: MeshData, mode: SelectMode, seed: Selecti
   } else sel.flush(mode);
   return sel.result();
 }
+
+/** Options of {@link selectNth} — the operator's checker interval. */
+export interface SelectNthOptions {
+  /** `skip`: how many in a row are deselected. Default 1. */
+  skip?: number;
+  /** `nth`: how many in a row stay selected. Default 1. */
+  nth?: number;
+  /** `offset`: where the pattern starts. Default 0. */
+  offset?: number;
+  /**
+   * The active element the pattern counts from — the select history's last (`BM_mesh_active_elem_get`): a vertex in vertex
+   * mode, an edge (vertex pair) in edge mode, a face in face mode. Left out, or not selected: the first selected vertex /
+   * edge in the mesh's order, or the first selected face.
+   */
+  active?: number | [number, number];
+}
+
+/**
+ * Blender's Select ▸ Checker Deselect (`mesh.select_nth`, compat-backlog C83): from the active element, the selected elements
+ * of the mode are counted out and every `skip` after `nth` deselected. The count is the breadth-first depth from the active
+ * element over the selection — vertices through edges (`BMW_CONNECTED_VERTEX`), edges through vertices (`BMW_VERT_SHELL`) or,
+ * for an edge with no selected edge beside it, through faces (`BMW_FACE_SHELL`), faces through edges (`BMW_ISLAND`) — except
+ * where the selection is one closed chain, which is walked round in one direction (the disk / loop order) so the count runs
+ * on (`walker_deselect_nth_*_chain`). Deselecting a vertex deselects its edges and faces; an edge, its vertices no other
+ * selected edge uses; a face, its edges and vertices no other selected face uses — then the mode's flush.
+ */
+export function selectNth(mesh: MeshData, mode: SelectMode, seed: SelectionSeed, options: SelectNthOptions = {}): MeshSelection {
+  const sel = new Selection(mesh, seed, mode);
+  const nth = Math.max(1, Math.trunc(options.nth ?? 1));
+  const skip = Math.max(1, Math.trunc(options.skip ?? 1));
+  const period = nth + skip;
+  const offset = (((options.offset ?? 0) % period) + period) % period;
+  const keep = (depth: number): boolean => (offset + depth) % period >= skip;
+  const other = (e: BE, v: BV): BV => (e.v1 === v ? e.v2 : e.v1);
+
+  const unselectVert = (v: BV): void => {
+    sel.sv.delete(v);
+    for (const e of diskEdges(v)) {
+      sel.se.delete(e);
+      for (const l of radialFaces(e)) sel.sf.delete(l);
+    }
+  };
+  const unselectEdge = (e: BE): void => {
+    sel.se.delete(e);
+    for (const v of [e.v1, e.v2]) if (!diskEdges(v).some((x) => x !== e && sel.se.has(x))) sel.sv.delete(v);
+  };
+  const unselectFace = (f: BF): void => {
+    sel.sf.delete(f);
+    for (const l of faceLoops(f)) {
+      if (!radialFaces(l.e!).some((g) => g !== f && sel.sf.has(g))) sel.se.delete(l.e!);
+      if (!facesOfVert(l.v).some((g) => g !== f && sel.sf.has(g))) sel.sv.delete(l.v);
+    }
+  };
+
+  if (mode === "vertex") {
+    const want = typeof options.active === "number" ? sel.bm.verts[options.active] : undefined;
+    const start = want && sel.sv.has(want) ? want : sel.bm.verts.find((v): v is BV => !!v && sel.sv.has(v));
+    if (!start) return sel.result();
+    // `bm_step_to_next_selected_vert_in_chain`: the selected neighbours in disk order, one expected after the first step, two at it.
+    const step = (cur: BV, prev: BV | null): BV | null => {
+      let next: BV | null = null;
+      let count = 0;
+      const expected = prev ? 1 : 2;
+      for (const e of diskEdges(cur)) {
+        const w = other(e, cur);
+        if (w === prev || !sel.sv.has(w)) continue;
+        if (++count > expected) return null;
+        next = w;
+      }
+      return count === expected ? next : null;
+    };
+    const cyclic = ((): boolean => {
+      let prev: BV | null = null;
+      let cur = start;
+      do {
+        if (diskEdges(cur).filter((e) => sel.sv.has(other(e, cur))).length !== 2) return false;
+        const next = step(cur, prev);
+        if (!next) return false;
+        prev = cur;
+        cur = next;
+      } while (cur !== start);
+      return true;
+    })();
+    const drop: BV[] = [];
+    if (cyclic) {
+      let prev: BV | null = null;
+      let cur: BV | null = start;
+      const seen = new Set<BV>();
+      for (let index = 0; cur && !seen.has(cur); index++) {
+        seen.add(cur);
+        if (!keep(index)) drop.push(cur);
+        const next: BV | null = step(cur, prev);
+        if (!next || next === start) break;
+        prev = cur;
+        cur = next;
+      }
+    } else
+      bfs(start, (v) => diskEdges(v).map((e) => other(e, v)).filter((w) => sel.sv.has(w)), (v, depth) => {
+        if (!keep(depth)) drop.push(v);
+      });
+    for (const v of drop) unselectVert(v);
+    sel.flush("vertex");
+  } else if (mode === "edge") {
+    const want = Array.isArray(options.active) ? edgeExists(sel.bm.verts[options.active[0]]!, sel.bm.verts[options.active[1]]!) : null;
+    const start = want && sel.se.has(want) ? want : liveEdges(sel.bm).find((e) => sel.se.has(e));
+    if (!start) return sel.result();
+    // `bm_step_over_vert_to_next_selected_edge_in_chain`.
+    const stepOver = (cur: BE, v: BV): BE | null => {
+      let next: BE | null = null;
+      let count = 0;
+      for (const e of diskEdges(v)) {
+        if (e === cur || !sel.se.has(e)) continue;
+        if (++count > 1) return null;
+        next = e;
+      }
+      return count === 1 ? next : null;
+    };
+    const cyclic = ((): boolean => {
+      let cur = start;
+      let through = start.v1;
+      do {
+        const next = stepOver(cur, through);
+        if (!next) return false;
+        through = other(next, through);
+        cur = next;
+      } while (cur !== start);
+      return true;
+    })();
+    const drop: BE[] = [];
+    if (cyclic) {
+      let cur: BE | null = start;
+      let through = start.v1;
+      const seen = new Set<BE>();
+      for (let index = 0; cur && !seen.has(cur); index++) {
+        seen.add(cur);
+        if (!keep(index)) drop.push(cur);
+        const next: BE | null = stepOver(cur, through);
+        if (!next || next === start) break;
+        through = other(next, through);
+        cur = next;
+      }
+    } else {
+      // `bm_edge_is_select_isolated`: no selected edge at either end — then the walk steps across faces (edge rings).
+      const isolated = [start.v1, start.v2].every((v) => diskEdges(v).every((e) => e === start || !sel.se.has(e)));
+      const near = isolated
+        ? (e: BE): BE[] => radialFaces(e).flatMap((f) => faceLoops(f).map((l) => l.e!)).filter((x) => sel.se.has(x))
+        : (e: BE): BE[] => [e.v1, e.v2].flatMap((v) => diskEdges(v)).filter((x) => sel.se.has(x));
+      bfs(start, near, (e, depth) => {
+        if (!keep(depth)) drop.push(e);
+      });
+    }
+    for (const e of drop) unselectEdge(e);
+    sel.flush("edge");
+  } else {
+    const bySrc = new Map(liveFaces(sel.bm).map((f) => [f.src, f] as const));
+    const want = typeof options.active === "number" ? bySrc.get(options.active) : undefined;
+    const start = want && sel.sf.has(want) ? want : liveFaces(sel.bm).find((f) => sel.sf.has(f));
+    if (!start) return sel.result();
+    // `bm_step_over_shared_edge_to_next_selected_face_in_chain`.
+    const step = (cur: BF, prev: BF | null): BF | null => {
+      let next: BF | null = null;
+      let count = 0;
+      const expected = prev ? 1 : 2;
+      for (const l of faceLoops(cur))
+        for (const g of radialFaces(l.e!)) {
+          if (g === cur || g === prev || !sel.sf.has(g)) continue;
+          if (++count > expected) return null;
+          next = g;
+        }
+      return count === expected ? next : null;
+    };
+    const cyclic = ((): boolean => {
+      let prev: BF | null = null;
+      let cur = start;
+      do {
+        let n = 0;
+        for (const l of faceLoops(cur)) for (const g of radialFaces(l.e!)) if (g !== cur && sel.sf.has(g)) n++;
+        if (n !== 2) return false;
+        const next = step(cur, prev);
+        if (!next) return false;
+        prev = cur;
+        cur = next;
+      } while (cur !== start);
+      return true;
+    })();
+    const drop: BF[] = [];
+    if (cyclic) {
+      let prev: BF | null = null;
+      let cur: BF | null = start;
+      const seen = new Set<BF>();
+      for (let index = 0; cur && !seen.has(cur); index++) {
+        seen.add(cur);
+        const next: BF | null = step(cur, prev);
+        if (!keep(index)) drop.push(cur);
+        if (!next || next === start) break;
+        prev = cur;
+        cur = next;
+      }
+    } else
+      bfs(start, (f) => faceLoops(f).flatMap((l) => radialFaces(l.e!)).filter((g) => g !== f && sel.sf.has(g)), (f, depth) => {
+        if (!keep(depth)) drop.push(f);
+      });
+    for (const f of drop) unselectFace(f);
+  }
+  return sel.result();
+}
+
+/** Breadth first from `start` over `next`, each element once at its depth (the BMesh walkers' breadth-first order). */
+function bfs<T>(start: T, next: (x: T) => T[], visit: (x: T, depth: number) => void): void {
+  const depth = new Map<T, number>([[start, 0]]);
+  const queue: T[] = [start];
+  for (let i = 0; i < queue.length; i++) {
+    const x = queue[i]!;
+    visit(x, depth.get(x)!);
+    for (const y of next(x)) {
+      if (depth.has(y)) continue;
+      depth.set(y, depth.get(x)! + 1);
+      queue.push(y);
+    }
+  }
+}
+
+/** The faces on an edge, in its radial order. */
+function radialFaces(e: BE): BF[] {
+  const out: BF[] = [];
+  const l0 = e.l;
+  if (!l0) return out;
+  let l = l0;
+  do {
+    out.push(l.f);
+    l = l.rn!;
+  } while (l !== l0);
+  return out;
+}
+
+/** The faces round a vertex. */
+function facesOfVert(v: BV): BF[] {
+  return loopsOfVert(v).map((l) => l.f);
+}
