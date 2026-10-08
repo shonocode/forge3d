@@ -640,7 +640,14 @@ export function loopCut(
  * Returns the fin face IDs as the new selection (caller flips mode to "face"
  * so the gizmo lands on the fins for the inevitable "now drag them" step).
  */
-export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): Set<number> {
+export function extrudeEdges(
+  em: EditMesh,
+  selectedEdges: ReadonlySet<number>,
+  opts: {
+    /** `use_normal_flip`: every fin wound the other way (`bmo_extrude_edge_only_exec`). Default false. */
+    normalFlip?: boolean;
+  } = {},
+): Set<number> {
   if (selectedEdges.size === 0) return new Set();
 
   // Canonicalize. Boundary edges (twin = -1) are kept as-is — they're valid
@@ -682,12 +689,17 @@ export function extrudeEdges(em: EditMesh, selectedEdges: ReadonlySet<number>): 
     const bDup = dupOrCreate(b);
     // Fin quad — CCW from the fin's outside, with the b→a edge pairing as
     // twin to F1's existing a→b.
-    newPolys.push([a, aDup, bDup, b]);
     const h = em.halfEdges[he]!;
     const o = h.twin < 0 ? h.face : Math.min(h.face, em.halfEdges[h.twin]!.face);
     const ca: [number, number, number][] = [[o, oldPolys[o]!.indexOf(a), 1]];
     const cb: [number, number, number][] = [[o, oldPolys[o]!.indexOf(b), 1]];
-    stated.push({ corners: [ca, ca, cb, cb], material: o });
+    if (opts.normalFlip) {
+      newPolys.push([b, bDup, aDup, a]);
+      stated.push({ corners: [cb, cb, ca, ca], material: o });
+    } else {
+      newPolys.push([a, aDup, bDup, b]);
+      stated.push({ corners: [ca, ca, cb, cb], material: o });
+    }
   }
   const finEnd = newPolys.length;
   const origins = new Map<number, VertexOrigin>();
