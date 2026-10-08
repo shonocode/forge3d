@@ -1247,7 +1247,11 @@ export function bmFromMesh(data: MeshData, opts: { edgeTables?: number; vertNorm
   const edgeOf = new Map<number, BE>();
   const pairs = calcEdges(polys, tables);
   const wires = (data.edges ?? []).map((e) => [Math.min(e[0]!, e[1]!), Math.max(e[0]!, e[1]!)] as [number, number]);
-  for (const [a, b] of [...pairs, ...wires]) {
+  // The wire edges first: a mesh read with loose edges (the OBJ importer's `create_edges`) has them before
+  // `mesh_calc_edges(mesh, keep_existing_edges = true)` appends the face edges after them, in its own order
+  // (`mesh_calc_edges.cc`). The order decides each vertex's first disk edge, which the bevel's vertex fan starts
+  // from (compat-backlog C36).
+  for (const [a, b] of [...wires, ...pairs]) {
     if (edgeOf.has(a * stride + b) || a === b) continue;
     const e = edgeCreate(bm, bm.verts[a]!, bm.verts[b]!);
     e.index = edgeOf.size;
