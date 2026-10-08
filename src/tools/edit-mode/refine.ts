@@ -1189,35 +1189,60 @@ export function holesFill(em: EditMesh, opts: HolesFillOptions = {}): Set<number
   const limit = opts.sides ?? 0;
   const polys = toPolygons(em);
 
-  // Boundary half-edges, in the direction their face traverses them. The fill
-  // face runs the other way, or its normal would face into the surface.
-  const next = new Map<number, number>();
-  for (let he = 0; he < em.halfEdges.length; he++) {
-    const h = em.halfEdges[he]!;
-    if (h.twin >= 0) continue;
-    next.set(em.halfEdges[h.next]!.v, h.v);
+  // The boundary half-edges, each run backwards by the fill face (or its normal would face into the surface): an
+  // edge end → origin. A loop is the **shortest** way back to its first edge's end over unused ones — where two holes
+  // touch at one vertex there are two ways on, and `BM_mesh_edgenet` (which `holes_fill` runs) closes the smallest
+  // cycles, one per hole (`holes-fill-pinch`). A loop with no such vertex has one way, so nothing changes there.
+  const end = (h: number): number => em.halfEdges[em.halfEdges[h]!.next]!.v;
+  const fromVertex = new Map<number, number[]>(); // fill-edge start (a half-edge's end) → those half-edges
+  for (let h = 0; h < em.halfEdges.length; h++) {
+    if (em.halfEdges[h]!.twin >= 0) continue;
+    const list = fromVertex.get(end(h));
+    if (list) list.push(h);
+    else fromVertex.set(end(h), [h]);
   }
 
   const out = polys.map((p) => p);
   const start = out.length;
-  const seen = new Set<number>();
+  const used = new Set<number>();
 
-  for (const from of next.keys()) {
-    if (seen.has(from)) continue;
-    const loop: number[] = [from];
-    seen.add(from);
-    let cur = next.get(from)!;
-    let ok = true;
-    while (cur !== from) {
-      if (cur === undefined || seen.has(cur) || loop.length > next.size) {
-        ok = false;
-        break;
+  for (let h0 = 0; h0 < em.halfEdges.length; h0++) {
+    if (em.halfEdges[h0]!.twin >= 0 || used.has(h0)) continue;
+    const goal = end(h0);
+    // Breadth first from h0's origin back to its end, over unused boundary half-edges.
+    const via = new Map<number, number>(); // vertex → the half-edge that reached it
+    const queue: number[] = [em.halfEdges[h0]!.v];
+    via.set(em.halfEdges[h0]!.v, h0);
+    let found = em.halfEdges[h0]!.v === goal;
+    for (let qi = 0; qi < queue.length && !found; qi++) {
+      for (const h of fromVertex.get(queue[qi]!) ?? []) {
+        if (h === h0 || used.has(h)) continue;
+        const to = em.halfEdges[h]!.v;
+        if (via.has(to)) continue;
+        via.set(to, h);
+        if (to === goal) {
+          found = true;
+          break;
+        }
+        queue.push(to);
       }
-      seen.add(cur);
-      loop.push(cur);
-      cur = next.get(cur)!;
     }
-    if (!ok || loop.length < 3) continue;
+    if (!found) {
+      used.add(h0);
+      continue;
+    }
+    // Back from the goal: the half-edges of the loop, then its vertices in fill order.
+    const edges: number[] = [];
+    for (let v = goal; ; ) {
+      const h = via.get(v)!;
+      edges.push(h);
+      if (h === h0) break;
+      v = end(h);
+    }
+    edges.reverse();
+    for (const h of edges) used.add(h);
+    const loop = edges.map((h) => end(h));
+    if (loop.length < 3) continue;
     if (limit > 0 && loop.length > limit) continue;
     out.push(loop);
   }
