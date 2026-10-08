@@ -196,12 +196,36 @@ function valueHalfEdges(vpolys: number[][]): Map<string, number> {
   return half;
 }
 
+/**
+ * Whether a value's corners fall into more than one fan round its vertex (`gatherValueSpans`' disjoint span: a seam
+ * ending on the boundary, one pinched shut inside, a UV bowtie).
+ */
+function hasDisjointValue(cid: number[][]): boolean {
+  // Fans are only walked where every directed value edge has one face; elsewhere (a non-manifold edge) the plain path stays.
+  let directed = 0;
+  for (const row of cid) directed += row.length;
+  const half = valueHalfEdges(cid);
+  if (half.size !== directed) return false;
+  const count = new Map<number, number>();
+  for (const row of cid) for (const id of row) count.set(id, (count.get(id) ?? 0) + 1);
+  const seen = new Set<number>();
+  for (let f = 0; f < cid.length; f++)
+    for (const id of cid[f]!) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (valueFan(cid, half, f, id).faces.length !== count.get(id)) return true;
+    }
+  return false;
+}
+
 /** A base value's tags from `FVarLevel::completeTopologyFromFaceValues` (`kind` "dep" is semi-sharp by dependence). */
 interface BaseValueTag {
   kind: "sharp" | "crease" | "semi" | "dep";
   infSharpEdges: boolean;
   infIrregular: boolean;
   xordinary: boolean;
+  /** A disjoint value (`_nonManifold`): a corner, whose patches take a sharp span on each side. */
+  nonManifold?: boolean;
 }
 
 /**
@@ -248,8 +272,8 @@ function baseFaceVaryingTags(
       const f = faces.find((g) => fv.cid[g]!.includes(id) && polys[g]![fv.cid[g]!.indexOf(id)] === v)!;
       const fan = valueFan(fv.cid, half, f, id);
       const all = faces.filter((g) => fv.cid[g]![polys[g]!.indexOf(v)] === id).length;
-      if (fan.faces.length !== all)
-        throw new Error("catmullClark: limitSurface with UVs at a value whose faces are disjoint is not measured.");
+      // `gatherValueSpans` counts a seam inside the value's faces (`_disctsEdgeCount`): they are disjoint.
+      const disjoint = fan.faces.length !== all;
       let inf = 0;
       let semi = 0;
       const inner = fan.open ? fan.faces.length - 1 : fan.faces.length;
@@ -269,7 +293,7 @@ function baseFaceVaryingTags(
         const k1 = edgeKey(v, b[(b.indexOf(v) + b.length - 1) % b.length]!);
         seam = edgeUse.get(k0) === 2 || edgeUse.get(k1) === 2;
       }
-      return { id, size: fan.faces.length, inf, semi, seam };
+      return { id, size: fan.faces.length, inf, semi, seam, disjoint };
     });
     const mismatch =
       ids.length > 1 || spans.some((sp) => sp.seam) || (linearBoundaries && vBoundary) || (makeSmoothCornersSharp && topologicalCorner);
@@ -280,11 +304,16 @@ function baseFaceVaryingTags(
     let allSharp = linearBoundaries || vInfSharp || (dependent && ids.length > 2) || (sharpenDarts && ids.length === 1 && !vBoundary);
     let hasDependent = false;
     if (!allSharp && dependent && ids.length === 2) {
-      allSharp = spans[0]!.inf > 0 || spans[1]!.inf > 0;
+      allSharp = spans[0]!.inf > 0 || spans[1]!.inf > 0 || spans[0]!.disjoint || spans[1]!.disjoint;
       if (sharpenBothIfOneCorner) allSharp ||= spans[0]!.size === 1 || spans[1]!.size === 1;
       hasDependent = spans[0]!.semi > 0 !== spans[1]!.semi > 0;
     }
     for (const sp of spans) {
+      if (sp.disjoint) {
+        // `_nonManifold`: the tags cleared, so a corner.
+        out.set(sp.id, { kind: "sharp", infSharpEdges: false, infIrregular: false, xordinary: false, nonManifold: true });
+        continue;
+      }
       const isInfSharp = allSharp || sp.inf > 0 || (sp.size === 1 && fvarCornersAreSharp);
       const xordinary = sp.size === 1 ? !isInfSharp : sp.size !== 2;
       out.set(sp.id, {
@@ -324,7 +353,12 @@ function subdivideUVOnce(
   vertexSharpness?: Map<number, number>,
   carry?: { state?: Map<string, FVarState>; cid?: number[][] },
 ): number[][][] {
-  if (mode !== "NONE" && ([...(sharpness?.values() ?? [])].some((x) => x > 0) || vertexSharpness?.size))
+  if (
+    mode !== "NONE" &&
+    ([...(sharpness?.values() ?? [])].some((x) => x > 0) ||
+      vertexSharpness?.size ||
+      hasDisjointValue(faceVaryingValues(polys, uvs, carry?.cid).cid))
+  )
     return subdivideUVOnceCreased(polys, uvs, mode, preserveCorners, sharpness!, vertexSharpness, carry);
   if (carry) carry.state = undefined;
   const F = polys.length;
@@ -728,12 +762,15 @@ export function subdivideOnce(
 
 /**
  * The vertex sharpness Blender hands OpenSubdiv for a cage
- * (`topology_refiner_factory.cc`, `assignComponentTags`): a vertex with
- * exactly two edges takes the smaller of their two sharpnesses, capped at 10
- * (infinite) — a boundary edge's crease counts here, though OpenSubdiv makes
- * the edge itself infinitely sharp.
+ * (`topology_refiner_factory.cc`, `assignComponentTags`): the vertex crease as a sharpness (`10 · crease²`), and a vertex
+ * with exactly two edges adds the smaller of their two sharpnesses, capped at 10 (infinite) — a boundary edge's crease
+ * counts here, though OpenSubdiv makes the edge itself infinitely sharp.
  */
-function blenderVertexSharpness(polys: number[][], sharpness: Map<string, number>): Map<number, number> {
+function blenderVertexSharpness(
+  polys: number[][],
+  sharpness: Map<string, number>,
+  vertexCreases?: Map<number, number>,
+): Map<number, number> {
   const edgesOf = new Map<number, Set<string>>();
   for (const p of polys)
     p.forEach((a, i) => {
@@ -746,9 +783,12 @@ function blenderVertexSharpness(polys: number[][], sharpness: Map<string, number
     });
   const out = new Map<number, number>();
   for (const [v, edges] of edgesOf) {
-    if (edges.size !== 2) continue;
-    const [e0, e1] = [...edges].map((k) => Math.min(sharpness.get(k) ?? 0, 10)) as [number, number];
-    const s = Math.min(e0, e1);
+    const c = vertexCreases?.get(v) ?? 0;
+    let s = c > 0 ? Math.min(osdSharpness(c), 10) : 0;
+    if (edges.size === 2) {
+      const [e0, e1] = [...edges].map((k) => Math.min(sharpness.get(k) ?? 0, 10)) as [number, number];
+      s = Math.min(Math.fround(s + Math.min(e0, e1)), 10);
+    }
     if (s > 0) out.set(v, s >= 10 ? Infinity : s);
   }
   return out;
@@ -804,6 +844,13 @@ export interface CatmullClarkOptions {
    * corners, the junctions of three or more islands, and the concave corners.
    */
   uvSmooth?: UVSmooth;
+  /**
+   * Vertices OpenSubdiv is told are infinitely sharp (`isInfiniteSharpVertex`) — corners, whatever their edges. Blender's
+   * modifier names the vertices of its wire edges (`subdiv_converter_mesh.cc`); {@link subsurfModifier} passes them.
+   */
+  infiniteSharpVertices?: Iterable<number>;
+  /** Blender's vertex creases (`crease_vert`, 0..1), read with `blenderCreases` as OpenSubdiv's vertex sharpness. */
+  vertexCreases?: Map<number, number>;
 }
 
 /** Blender's `uv_smooth` values. */
@@ -844,8 +891,12 @@ export function catmullClark(
     ),
     ...(uvs ? { uvs: uvs.map((f) => f.map((c) => [...c])) } : {}),
   };
-  if (options.blenderCreases) {
-    const vs = blenderVertexSharpness(result.polys, result.creases);
+  if (options.blenderCreases || options.infiniteSharpVertices) {
+    const vs = options.blenderCreases
+      ? blenderVertexSharpness(result.polys, result.creases, options.vertexCreases)
+      : new Map<number, number>();
+    // `assignComponentTags`: an infinitely sharp vertex skips the two-edge rule.
+    for (const v of options.infiniteSharpVertices ?? []) vs.set(v, Infinity);
     if (vs.size) result.vertexSharpness = vs;
   }
   // Above `quality`, or wherever a crease is, the vertices are evaluated on the patches of the `quality` mesh
@@ -943,10 +994,9 @@ export function catmullClark(
       preserveCorners,
       isolated.vertexSharpness,
     );
-    // A vertex no face uses keeps its refined position.
-    params.forEach((p, v) => {
-      if (!p) out.set(result.positions.subarray(v * 3, v * 3 + 3), v * 3);
-    });
+    // A vertex no face uses keeps its refined position. (A loop, not `forEach`: the array is sparse, and `forEach`
+    // skips exactly the holes this is for.)
+    for (let v = 0; v < count; v++) if (!params[v]) out.set(result.positions.subarray(v * 3, v * 3 + 3), v * 3);
     result.positions = out;
     if (uvOnPatches && isolated.uvs) {
       // Every output corner on its own face's face-varying patch.
@@ -1312,6 +1362,7 @@ function faceVaryingLimit(
       infSharpEdges: base.infSharpEdges,
       infIrregular: base.infIrregular,
       xordinary: base.xordinary,
+      ...(base.nonManifold ? { nonManifold: true } : {}),
     });
   }
   const P = new Float32Array(fv.values.length * 3);

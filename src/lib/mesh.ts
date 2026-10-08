@@ -132,6 +132,11 @@ export interface MeshData {
    * `EditMesh`; the functions that read it are pure `MeshData` functions.
    */
   materials?: number[];
+  /**
+   * Vertex creases — Blender's `crease_vert` (0..1), by vertex. Read by `subsurfModifier` (OpenSubdiv's vertex sharpness,
+   * compat-backlog C85); the other operators neither read nor carry it.
+   */
+  vertexCreases?: Map<number, number>;
 }
 
 /**
@@ -172,7 +177,7 @@ export function meshFromData(data: MeshData): EditMesh {
 }
 
 /** Read an editable mesh back out as plain arrays. */
-export function meshToData(em: EditMesh): Required<Omit<MeshData, "faceStrength">> {
+export function meshToData(em: EditMesh): Required<Omit<MeshData, "faceStrength" | "vertexCreases">> {
   return {
     positions: new Float32Array(em.positions),
     polys: toPolygons(em),

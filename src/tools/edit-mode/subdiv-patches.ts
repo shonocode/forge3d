@@ -73,6 +73,8 @@ export interface FVarTag {
   infSharpEdges: boolean;
   infIrregular: boolean;
   xordinary: boolean;
+  /** A disjoint value (`_nonManifold`): each of its fans is a sharp span, regular only with one face. */
+  nonManifold?: boolean;
 }
 
 /** Where a vertex of the fine mesh lies: a face of the `quality` mesh and its (u, v) there. */
@@ -158,10 +160,11 @@ export function evaluatePatches(
 
   /** A corner as `GregoryConverter` takes it, and whether `IsPatchRegular` passes it for this face. */
   const cornerOf = (f: number, v: number): { corner: Corner; regular: boolean } => {
+    const tag = fvarTags.get(v);
+    if (tag?.nonManifold) return fvarCorner(f, v, tag);
     const full = walk(f, v, isBoundaryEdge);
     if (full.faces.length !== faceCount.get(v))
       throw new Error("catmullClark: limitSurface at a non-manifold vertex is not measured.");
-    const tag = fvarTags.get(v);
     if (tag) return fvarCorner(f, v, tag);
     const topoBoundary = full.open;
     const ends = new Set<number>();
@@ -227,10 +230,13 @@ export function evaluatePatches(
     const vCorner = infSharp && !tag.infIrregular && !tag.infSharpEdges;
     const span = walk(f, v, isInfEdge);
     const numFaces = span.faces.length;
-    let isSharp = vCorner ? numFaces === 1 : !infSharpCrease;
+    // `getCornerSpans`: a corner in face-varying space is sharp with one face, a non-manifold one always.
+    let isSharp = vCorner ? numFaces === 1 || !!tag.nonManifold : !infSharpCrease;
     if (!isSharp && tag.xordinary && !infSharp) isSharp = numFaces === 1;
     let regular = true;
-    if (tag.xordinary || tag.infIrregular) {
+    // `IsPatchRegular`: an infinitely sharp non-manifold corner is regular only on a span of one face.
+    if (tag.nonManifold) regular = numFaces === 1;
+    else if (tag.xordinary || tag.infIrregular) {
       const legacySmoothCorner = tag.xordinary && !infSharp && isBoundaryEdge(v, next(f, v)) && isBoundaryEdge(v, prev(f, v));
       if (!legacySmoothCorner && tag.infIrregular) regular = !infSharpCrease && numFaces === 1;
     }
