@@ -281,6 +281,8 @@ export interface MirrorModifierOptions {
   bisectThreshold?: number;
   /** `use_mirror_u` / `use_mirror_v`: the copy's UVs become 1 − u (1 − v), plus `uvOffset`. */
   mirrorU?: boolean;
+  /** `use_mirror_udim`: flip each UV round the centre of its own UDIM tile — ceil(u) − (u mod 1) — not round 0.5. */
+  mirrorUdim?: boolean;
   mirrorV?: boolean;
   /** `mirror_offset_u` / `_v`: added where a coordinate is mirrored. */
   uvOffset?: readonly [number, number];
@@ -378,10 +380,12 @@ function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bi
     const [ou, ov] = opts.uvOffset ?? [0, 0];
     const [cu, cv] = opts.uvOffsetCopy ?? [0, 0];
     for (let f = faces0; f < joined.uvs.length; f++)
-      joined.uvs[f] = joined.uvs[f]!.map(([u, v]) => [
-        (opts.mirrorU ? 1 - u! + ou : u!) + cu,
-        (opts.mirrorV ? 1 - v! + ov : v!) + cv,
-      ]);
+      joined.uvs[f] = joined.uvs[f]!.map(([u, v]) => {
+        // `mesh_mirror.cc`: ceilf(x) − fmodf(x, 1) for a UDIM flip, 1 − x otherwise; float32 as Blender holds UVs.
+        const flip = (x: number, o: number): number =>
+          opts.mirrorUdim ? Math.fround(Math.fround(Math.ceil(x) - Math.fround(x % 1)) + o) : 1 - x + o;
+        return [(opts.mirrorU ? flip(u!, ou) : u!) + cu, (opts.mirrorV ? flip(v!, ov) : v!) + cv];
+      });
   }
 
   // Which vertices weld onto their own image, and where they go. The copy
