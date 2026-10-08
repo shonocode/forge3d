@@ -20,9 +20,14 @@ import type { MeshData } from "../lib/mesh";
 import { catmullClark, subdivideOnce, type CatmullClarkOptions } from "./edit-mode/subdivide";
 import { seamKey } from "./edit-mode/half-edge";
 
-export interface SubsurfModifierOptions extends Omit<CatmullClarkOptions, "blenderCreases"> {
+export interface SubsurfModifierOptions extends Omit<CatmullClarkOptions, "blenderCreases" | "limitSurface"> {
   /** `levels`. Default 1. */
   levels?: number;
+  /**
+   * `use_limit_surface` — **on by default, as in Blender's modifier** (`catmullClark` itself defaults to off, plain
+   * refinement). See {@link CatmullClarkOptions.limitSurface}.
+   */
+  limitSurface?: boolean;
   /** `use_creases`. Default on. */
   useCreases?: boolean;
 }
@@ -37,6 +42,7 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   const keptFace = data.polys.map((p, i) => (p.length >= 3 ? i : -1)).filter((i) => i >= 0);
   const result = catmullClark(data.positions, polys0, level, useCreases ? data.creases : undefined, data.uvs, {
     ...cc,
+    limitSurface: opts.limitSurface ?? true,
     blenderCreases: true,
   });
   const out: MeshData = { positions: result.positions, polys: result.polys };
