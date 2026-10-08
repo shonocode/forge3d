@@ -84,8 +84,8 @@ export interface UnsubdivideOptions {
   iterations?: number;
   /**
    * Which vertices may be dissolved. Left out, every vertex is a candidate —
-   * which is Blender's `unsubdivide` with everything selected, and the only
-   * form the parity rows measure.
+   * which is Blender's `unsubdivide` with everything selected. Given, the
+   * others are never candidates (`tag_only`), measured by `unsubdivide-verts`.
    */
   verts?: ReadonlySet<number>;
 }
