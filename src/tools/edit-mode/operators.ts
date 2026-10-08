@@ -7,7 +7,7 @@ import { doublesByDistance } from "../remove-doubles";
 import { selectEdgeRing } from "./edge-walk";
 import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine";
 import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
-import { bevelMesh } from "../bevel/bevel";
+import { bevelMesh, type BevelOffsetType } from "../bevel/bevel";
 import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
 import { triangulate } from "../triangulate";
 import { joinTrianglePairs } from "./join-order";
@@ -387,17 +387,24 @@ export function insetFaces(
  */
 export interface BevelOptions {
   /**
-   * Blender's `offset`, in the units `offsetType` selects. For PERCENT that is
-   * a percentage of each adjacent edge.
+   * Blender's `offset`, in the units `offsetType` selects. For OFFSET (the
+   * default) that is a distance; for PERCENT, a percentage of each adjacent edge.
    */
   offset: number;
   /**
-   * `'PERCENT'` (the default) measures `offset` as a percentage of each
-   * adjacent edge; `'OFFSET'` as the distance from the edge to each new one,
-   * `'WIDTH'` as the chamfer face's own width, `'DEPTH'` as how far the
-   * chamfer sits in from the original corner — Blender's four.
+   * `'OFFSET'` (the default, as `bmesh.ops.bevel`'s and `bpy.ops.mesh.bevel`'s)
+   * measures `offset` as the distance from the edge to each new one;
+   * `'PERCENT'` as a percentage of each adjacent edge, `'WIDTH'` as the
+   * chamfer face's own width, `'DEPTH'` as how far the chamfer sits in from
+   * the original corner, `'ABSOLUTE'` as a distance along each adjacent edge —
+   * the five {@link bevelMesh} takes.
+   *
+   * Until 2026-10-08 the default here was PERCENT, so `{ offset: 0.1 }` meant
+   * 0.1 % where Blender's meant 0.1 units (compat-backlog C87); a caller that
+   * means a percentage now says so. The editor's Bevel does (its slider is
+   * labelled "%").
    */
-  offsetType?: "PERCENT" | "OFFSET" | "WIDTH" | "DEPTH";
+  offsetType?: BevelOffsetType;
   /**
    * `loop_slide`: prefer sliding along an unbeveled edge to keeping the width exact. **Default false**, as `bmesh.ops.bevel`'s; the
    * Edit Mode Bevel tool (`bpy.ops.mesh.bevel`) has it on, and the editor's Bevel passes `true` (compat-backlog C78).
@@ -457,7 +464,7 @@ export function bevelEdges(
   opts: BevelOptions,
   outInfo?: { skipped: number },
 ): Set<number> {
-  const offsetType = opts.offsetType ?? "PERCENT";
+  const offsetType = opts.offsetType ?? "OFFSET";
   const segments = Math.max(1, Math.floor(opts.segments ?? 1));
   const profile = Math.min(1, Math.max(0, opts.profile ?? 0.5));
   if (selectedEdges.size === 0 || opts.offset <= 0) return new Set(selectedEdges);

@@ -228,12 +228,39 @@ function makeQuadPair(): Mesh {
 describe("bevelEdges", () => {
   it("is a no-op on empty selection or zero width", () => {
     const em = buildEditMesh(makeQuadPair())!;
-    expect(bevelEdges(em, new Set(), { offset: 15 }).size).toBe(0);
+    expect(bevelEdges(em, new Set(), { offset: 15, offsetType: "PERCENT" }).size).toBe(0);
     let firstEdge = -1;
     forEachEdge(em, (he) => { if (firstEdge < 0) firstEdge = he; });
-    const noop = bevelEdges(em, new Set([firstEdge]), { offset: 0 });
+    const noop = bevelEdges(em, new Set([firstEdge]), { offset: 0, offsetType: "PERCENT" });
     expect(em.faces).toHaveLength(2);
     expect(noop.has(firstEdge)).toBe(true);
+  });
+
+  it("defaults to OFFSET, as Blender's bevel does — not PERCENT (compat-backlog C87)", () => {
+    // `{ offset: 0.1 }` is 0.1 units in `bmesh.ops.bevel` and `bpy.ops.mesh.bevel`;
+    // here it used to be 0.1 %, a bevel too small to see.
+    // A quad cube's edge 2-3: a real crease between two faces of different normals
+    // (the triangle cube's first edge is a face diagonal, which bevels to nothing).
+    const run = (opts: Parameters<typeof bevelEdges>[2]) => {
+      const em = meshFromData({
+        positions: new Float32Array([
+          -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+          -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+        ]),
+        polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]],
+      });
+      let edge = -1;
+      forEachEdge(em, (he) => {
+        const x = edgeOrigin(em, he);
+        const y = edgeEnd(em, he);
+        if ((x === 2 && y === 3) || (x === 3 && y === 2)) edge = he;
+      });
+      bevelEdges(em, new Set([edge]), opts);
+      return Array.from(em.positions);
+    };
+    const byDefault = run({ offset: 0.1 });
+    expect(byDefault).toEqual(run({ offset: 0.1, offsetType: "OFFSET" }));
+    expect(byDefault).not.toEqual(run({ offset: 0.1, offsetType: "PERCENT" }));
   });
 
   it("bevels two edges that share a vertex — Blender's branch, once refused", () => {
@@ -253,7 +280,7 @@ describe("bevelEdges", () => {
       return o === a || d === a;
     })!;
     const info = { skipped: 0 };
-    const result = bevelEdges(em, new Set([first, second]), { offset: 15 }, info);
+    const result = bevelEdges(em, new Set([first, second]), { offset: 15, offsetType: "PERCENT" }, info);
     expect(result.size).toBe(2);
     expect(info.skipped).toBe(0);
     let boundaries = 0;
@@ -276,7 +303,7 @@ describe("bevelEdges", () => {
       if ((x === 0 || y === 0) && [1, 3, 4].includes(x === 0 ? y : x)) targets.add(he);
     });
     expect(targets.size).toBe(3);
-    const result = bevelEdges(em, targets, { offset: 20, segments: 2 });
+    const result = bevelEdges(em, targets, { offset: 20, offsetType: "PERCENT", segments: 2 });
     expect(result.size).toBe(6);
     let boundaries = 0;
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
@@ -303,7 +330,7 @@ describe("bevelEdges", () => {
       const y = edgeEnd(em, he);
       if ((x === 2 && y === 3) || (x === 3 && y === 2)) target = he;
     });
-    bevelEdges(em, new Set([target]), { offset: 20 });
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" });
     // 0, 1, 4..7 survive as 0, 1, 2..5.
     expect([...em.seams].sort()).toEqual(["2_3", "4_7"]);
     // A crease has no continuity rule, so it also lands on the corner segment the
@@ -332,7 +359,7 @@ describe("bevelEdges", () => {
       const y = edgeEnd(em, he);
       if ((x === 2 && y === 3) || (x === 3 && y === 2)) target = he;
     });
-    bevelEdges(em, new Set([target]), { offset: 20 });
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" });
     const out = meshToData(em);
     expect(out.polys).toHaveLength(7);
     expect(out.uvs.map((f) => f.length)).toEqual(out.polys.map((p) => p.length));
@@ -357,7 +384,7 @@ describe("bevelEdges", () => {
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin >= 0 && diagonal < 0) diagonal = he; });
     expect(diagonal).toBeGreaterThanOrEqual(0);
 
-    const result = bevelEdges(em, new Set([diagonal]), { offset: 20 });
+    const result = bevelEdges(em, new Set([diagonal]), { offset: 20, offsetType: "PERCENT" });
     // 2 original tris (remapped) + 1 chamfer quad (V2) = 3 (no caps because
     // the fan around each endpoint has only F1+F2, so no implicit split).
     expect(em.faces).toHaveLength(3);
@@ -375,7 +402,7 @@ describe("bevelEdges", () => {
     // of the edges at each end are not the beveled one.
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    const result = bevelEdges(em, new Set([target]), { offset: 20 });
+    const result = bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" });
 
     // Topology delta:
     //   - 12 original tris remapped (no faces removed)
@@ -410,7 +437,7 @@ describe("bevelEdges", () => {
       if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
     });
     const info = { skipped: 0 };
-    bevelEdges(em, new Set([target]), { offset: 20 }, info);
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" }, info);
 
     expect(info.skipped).toBe(0);
     expect(em.vertices).toHaveLength(10);
@@ -443,7 +470,7 @@ describe("bevelEdges", () => {
         const b = edgeEnd(em, he);
         if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
       });
-      bevelEdges(em, new Set([target]), { offset: 20, segments });
+      bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT", segments });
       expect(em.vertices).toHaveLength(verts);
       expect(em.faces).toHaveLength(faces);
     }
@@ -472,7 +499,7 @@ describe("bevelEdges", () => {
       const b = edgeEnd(em, he);
       if ((a === 2 && b === 3) || (a === 3 && b === 2)) target = he;
     });
-    bevelEdges(em, new Set([target]), { offset: 20, segments: 4, profile: 0.75 });
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT", segments: 4, profile: 0.75 });
 
     const { positions } = meshToData(em);
     const rail: Array<[number, number]> = [];
@@ -501,7 +528,7 @@ describe("bevelEdges", () => {
     const em = buildEditMesh(makeCube())!;
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    bevelEdges(em, new Set([target]), { offset: 20 });
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" });
     let boundaries = 0;
     forEachEdge(em, (he) => { if (em.halfEdges[he]!.twin < 0) boundaries++; });
     expect(boundaries).toBe(0);
@@ -511,7 +538,7 @@ describe("bevelEdges", () => {
     const em = buildEditMesh(makeCube())!;
     let target = -1;
     forEachEdge(em, (he) => { if (target < 0) target = he; });
-    bevelEdges(em, new Set([target]), { offset: 20 });
+    bevelEdges(em, new Set([target]), { offset: 20, offsetType: "PERCENT" });
     for (let i = 0; i < em.halfEdges.length; i++) {
       const t = em.halfEdges[i]!.twin;
       if (t >= 0) expect(em.halfEdges[t]!.twin).toBe(i);

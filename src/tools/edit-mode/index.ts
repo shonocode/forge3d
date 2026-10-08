@@ -815,7 +815,7 @@ export function bevelSelection(): void {
   applyTopologyOp("Bevel", () => {
     const info = { skipped: 0 };
     // `bpy.ops.mesh.bevel` slides along unbeveled edges (`loop_slide` on), which the bmesh operator does not.
-    const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset, loopSlide: true }, info);
+    const newFaces = bevelEdges(em, sel, { offset: state.editConfig.bevelOffset, offsetType: "PERCENT", loopSlide: true }, info);
     if (newFaces.size === 0) {
       status("⚠ Bevel: nothing was beveled");
       return new Set();
