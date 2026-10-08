@@ -286,10 +286,9 @@ export function selectNth(mesh: MeshData, mode: SelectMode, seed: SelectionSeed,
   };
   const unselectFace = (f: BF): void => {
     sel.sf.delete(f);
-    for (const l of faceLoops(f)) {
-      if (!radialFaces(l.e!).some((g) => g !== f && sel.sf.has(g))) sel.se.delete(l.e!);
-      if (!facesOfVert(l.v).some((g) => g !== f && sel.sf.has(g))) sel.sv.delete(l.v);
-    }
+    // `BM_face_select_set(false)` in face mode: its edges no other selected face keeps, then its vertices no other selected edge keeps.
+    for (const l of faceLoops(f)) if (!radialFaces(l.e!).some((g) => g !== f && sel.sf.has(g))) sel.se.delete(l.e!);
+    for (const l of faceLoops(f)) if (!diskEdges(l.v).some((e) => e !== l.e && sel.se.has(e))) sel.sv.delete(l.v);
   };
 
   if (mode === "vertex") {
@@ -461,7 +460,7 @@ function bfs<T>(start: T, next: (x: T) => T[], visit: (x: T, depth: number) => v
 }
 
 /** The faces on an edge, in its radial order. */
-function radialFaces(e: BE): BF[] {
+export function radialFaces(e: BE): BF[] {
   const out: BF[] = [];
   const l0 = e.l;
   if (!l0) return out;
@@ -474,6 +473,6 @@ function radialFaces(e: BE): BF[] {
 }
 
 /** The faces round a vertex. */
-function facesOfVert(v: BV): BF[] {
+export function facesOfVert(v: BV): BF[] {
   return loopsOfVert(v).map((l) => l.f);
 }
