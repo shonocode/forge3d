@@ -181,6 +181,9 @@ export interface BevelMeshOptions {
    * two ends weigh at least 0.5 in that vertex group (`invert` for
    * `invert_vertex_group`). The weights choose edges only; the offset is not
    * scaled (compat-backlog B5).
+   *
+   * `{ vertexWeights }` is `limit_method = 'WEIGHT'` for a vertex bevel: every vertex with a non-zero **vertex
+   * bevel weight** (`bevel_weight_vert`), its offset scaled by the weight (compat-backlog C83).
    */
   /**
    * `affect`: `"EDGES"` (default) bevels edges; `"VERTICES"` cuts each chosen
@@ -198,6 +201,7 @@ export interface BevelMeshOptions {
     | "all"
     | { angle: number }
     | { weights: ReadonlyMap<string, number> }
+    | { vertexWeights: ReadonlyMap<number, number> }
     | { vertexGroup: string; invert?: boolean }
     | Iterable<readonly [number, number]>;
   /**
@@ -4415,6 +4419,8 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       e.v1.index < e.v2.index ? `${e.v1.index}_${e.v2.index}` : `${e.v2.index}_${e.v1.index}`;
     p.weightOf = (e) => sel.weights.get(key(e)) ?? 0;
     for (const e of edges) if (isManifold(e) && p.weightOf(e) !== 0) p.selected.add(e);
+  } else if (typeof sel === "object" && "vertexWeights" in sel) {
+    // Vertex bevel weights choose vertices (below), not edges.
   } else {
     const verts = bm.verts;
     for (const [a, b] of sel as Iterable<readonly [number, number]>) {
@@ -4432,9 +4438,16 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     p.selected.clear();
     // An edge list or bevel weights choose edges, which a vertex bevel has no
     // use for — refused rather than read as "every vertex" (found by review).
-    if (!opts.vertices && typeof sel === "object" && sel !== null && !("vertexGroup" in sel) && !("angle" in sel))
+    if (
+      !opts.vertices &&
+      typeof sel === "object" &&
+      sel !== null &&
+      !("vertexGroup" in sel) &&
+      !("angle" in sel) &&
+      !("vertexWeights" in sel)
+    )
       throw new Error(
-        'bevelMesh: affect "VERTICES" chooses vertices — pass `vertices`, a `{ vertexGroup }`, or "all"; not an edge list or edge weights.',
+        'bevelMesh: affect "VERTICES" chooses vertices — pass `vertices`, a `{ vertexGroup }`, `{ vertexWeights }` or "all"; not an edge list or edge weights.',
       );
     const all = bm.verts.filter((v): v is BV => !!v);
     if (opts.vertices) {
@@ -4449,6 +4462,11 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
       for (const v of all) if (wOf(v) >= 0.5) p.tagged.add(v);
       const raw = vertexGroupWeights(data, sel.vertexGroup, false);
       if (raw && !raw.empty) p.vertexOffsetWeight = (v) => raw.weights[v.index]!;
+    } else if (typeof sel === "object" && sel !== null && "vertexWeights" in sel) {
+      // `MOD_bevel.cc`: a vertex with weight 0 is left out; `bevel_vert_construct` (`use_weights`) scales the offset.
+      const wOf = (v: BV): number => sel.vertexWeights.get(v.index) ?? 0;
+      for (const v of all) if (wOf(v) !== 0) p.tagged.add(v);
+      p.vertexOffsetWeight = wOf;
     } else for (const v of all) p.tagged.add(v);
   } else
     for (const e of p.selected) {
