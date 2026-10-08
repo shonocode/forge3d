@@ -626,6 +626,110 @@ export interface WarpOptions {
   vertexGroup?: string;
   /** `invert_vertex_group`: `1 − weight`. */
   invertVertexGroup?: boolean;
+  /**
+   * `use_volume_preserve`: a vertex part of the way in is moved by the transform blended as location, rotation
+   * (quaternion slerp) and scale (`blend_m4_m4m4`), not along the straight line to where the whole transform takes it.
+   */
+  volumePreserve?: boolean;
+}
+
+/**
+ * `blend_m4_m4m4(identity, F, t)` (`math_matrix_c.cc`): `F` split into location, rotation and scale
+ * (`mat4_to_loc_rot_size`), the rotation as a quaternion (`mat3_normalized_to_quat_fast`), each blended from the
+ * identity's (`interp_qt_qtqt` for the rotation) and put back together (`loc_quat_size_to_mat4`).
+ */
+function blendFromIdentity(F: Affine, t: number): Affine {
+  // Blender's column-major mat[i][j] is F[j * 4 + i].
+  const col = (i: number): Vec3 => [F[i]!, F[4 + i]!, F[8 + i]!];
+  const size = [0, 1, 2].map((i) => Math.hypot(...col(i)));
+  const rot: number[][] = [0, 1, 2].map((i) => col(i).map((x) => (size[i]! > 0 ? x / size[i]! : 0)));
+  const r = (i: number, j: number): number => rot[i]![j]!;
+  const det =
+    r(0, 0) * (r(1, 1) * r(2, 2) - r(1, 2) * r(2, 1)) -
+    r(1, 0) * (r(0, 1) * r(2, 2) - r(0, 2) * r(2, 1)) +
+    r(2, 0) * (r(0, 1) * r(1, 2) - r(0, 2) * r(1, 1));
+  if (det < 0)
+    for (let i = 0; i < 3; i++) {
+      rot[i] = rot[i]!.map((x) => -x);
+      size[i] = -size[i]!;
+    }
+  const m = (i: number, j: number): number => rot[i]![j]!;
+  const q = [0, 0, 0, 0];
+  if (m(2, 2) < 0) {
+    if (m(0, 0) > m(1, 1)) {
+      const trace = 1 + m(0, 0) - m(1, 1) - m(2, 2);
+      let s = 2 * Math.sqrt(trace);
+      if (m(1, 2) < m(2, 1)) s = -s;
+      q[1] = 0.25 * s;
+      s = 1 / s;
+      q[0] = (m(1, 2) - m(2, 1)) * s;
+      q[2] = (m(0, 1) + m(1, 0)) * s;
+      q[3] = (m(2, 0) + m(0, 2)) * s;
+    } else {
+      const trace = 1 - m(0, 0) + m(1, 1) - m(2, 2);
+      let s = 2 * Math.sqrt(trace);
+      if (m(2, 0) < m(0, 2)) s = -s;
+      q[2] = 0.25 * s;
+      s = 1 / s;
+      q[0] = (m(2, 0) - m(0, 2)) * s;
+      q[1] = (m(0, 1) + m(1, 0)) * s;
+      q[3] = (m(1, 2) + m(2, 1)) * s;
+    }
+  } else if (m(0, 0) < -m(1, 1)) {
+    const trace = 1 - m(0, 0) - m(1, 1) + m(2, 2);
+    let s = 2 * Math.sqrt(trace);
+    if (m(0, 1) < m(1, 0)) s = -s;
+    q[3] = 0.25 * s;
+    s = 1 / s;
+    q[0] = (m(0, 1) - m(1, 0)) * s;
+    q[1] = (m(2, 0) + m(0, 2)) * s;
+    q[2] = (m(1, 2) + m(2, 1)) * s;
+  } else {
+    const trace = 1 + m(0, 0) + m(1, 1) + m(2, 2);
+    let s = 2 * Math.sqrt(trace);
+    q[0] = 0.25 * s;
+    s = 1 / s;
+    q[1] = (m(1, 2) - m(2, 1)) * s;
+    q[2] = (m(2, 0) - m(0, 2)) * s;
+    q[3] = (m(0, 1) - m(1, 0)) * s;
+  }
+  const len2 = q[0]! ** 2 + q[1]! ** 2 + q[2]! ** 2 + q[3]! ** 2;
+  if (Math.abs(len2 - 1) >= 0.0002 * 3) {
+    const l = Math.sqrt(len2);
+    for (let k = 0; k < 4; k++) q[k] = q[k]! / l;
+  }
+  // `interp_qt_qtqt` from the identity (1, 0, 0, 0): the shorter way round, `interp_dot_slerp`.
+  let a = [1, 0, 0, 0];
+  let cosom = q[0]!;
+  if (cosom < 0) {
+    cosom = -cosom;
+    a = [-1, 0, 0, 0];
+  }
+  let w0: number, w1: number;
+  if (Math.abs(cosom) < 1 - 1e-4) {
+    const omega = Math.acos(cosom);
+    const sinom = Math.sin(omega);
+    w0 = Math.sin((1 - t) * omega) / sinom;
+    w1 = Math.sin(t * omega) / sinom;
+  } else {
+    w0 = 1 - t;
+    w1 = t;
+  }
+  const fq = [0, 1, 2, 3].map((k) => w0 * a[k]! + w1 * q[k]!);
+  // `quat_to_mat3_no_error`, then each column scaled by the blended size.
+  const [q0, q1, q2, q3] = fq.map((x) => Math.SQRT2 * x) as [number, number, number, number];
+  const qda = q0 * q1, qdb = q0 * q2, qdc = q0 * q3, qaa = q1 * q1, qab = q1 * q2, qac = q1 * q3;
+  const qbb = q2 * q2, qbc = q2 * q3, qcc = q3 * q3;
+  const R = [
+    [1 - qbb - qcc, qdc + qab, -qdb + qac],
+    [-qdc + qab, 1 - qaa - qcc, qda + qbc],
+    [qdb + qac, -qda + qbc, 1 - qaa - qbb],
+  ];
+  const fsize = size.map((x) => 1 + (x - 1) * t);
+  const out: Affine = new Array(12).fill(0);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) out[j * 4 + i] = R[i]![j]! * fsize[i]!;
+  for (let j = 0; j < 3; j++) out[j * 4 + 3] = F[j * 4 + 3]! * t;
+  return out;
 }
 
 /** A 3×4 affine matrix, row-major: `[m00 m01 m02 tx, m10 … ]`. */
@@ -771,18 +875,20 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
         "from it to `to`.",
     );
   let M = compose(affineOf(opts.to), inv);
+  // The transform in `from`'s space, `mat_final` (`from⁻¹ · to`), for the volume-preserving blend.
+  let F = compose(inv, affineOf(opts.to));
   // A negative strength runs the transform backwards (`MOD_warp.cc`): `F = from⁻¹ · to` is inverted — but "inverted location is not
   // useful", so its translation is the **negative of F's own**, not the inverse's — and the strength is its absolute value
   // (compat-backlog C68). For a pure translation the two agree; with a rotation or a scale they do not.
   if (strength < 0) {
     strength = -strength;
-    const F = compose(inv, affineOf(opts.to));
     const Fi = invert(F);
     if (Fi) {
       Fi[3] = -F[3]!;
       Fi[7] = -F[7]!;
       Fi[11] = -F[11]!;
       M = compose(fromMat, compose(Fi, inv));
+      F = Fi;
     }
   }
   const [fx, fy, fz] = opts.from.at ?? [0, 0, 0];
@@ -802,6 +908,12 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
     const w = strength * vertexWeight * falloffWeight(1 - d / radius, falloff);
     if (w === 0) continue;
 
+    if (opts.volumePreserve && w !== 1) {
+      // `MOD_WARP_VOLUME_PRESERVE`: into `from`'s space, the blended transform, and back.
+      const T = compose(fromMat, compose(blendFromIdentity(F, w), inv));
+      for (let r = 0; r < 3; r++) out[k * 3 + r] = T[r * 4]! * x + T[r * 4 + 1]! * y + T[r * 4 + 2]! * z + T[r * 4 + 3]!;
+      continue;
+    }
     for (let r = 0; r < 3; r++) {
       const moved = M[r * 4]! * x + M[r * 4 + 1]! * y + M[r * 4 + 2]! * z + M[r * 4 + 3]!;
       const here = r === 0 ? x : r === 1 ? y : z;
