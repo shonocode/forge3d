@@ -197,6 +197,25 @@ describe("simpleSubdivide", () => {
   });
 });
 
+describe("Subdivision (Catmull-Clark) on a mesh the limit surface refuses", () => {
+  it("falls back to plain refinement for a vertex held by two separate faces, and still gives every face its four", () => {
+    // Two quads that touch at one corner only — a bow-tie vertex, which the limit surface does not take
+    // (compat-backlog C86). The stack keeps going rather than failing; the other errors are not caught.
+    const surface: MeshData = {
+      positions: Float32Array.from([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 1, 0, 2, 2, 0, 1, 2, 0]),
+      polys: [[0, 1, 2, 3], [2, 4, 5, 6]],
+      uvs: [
+        [[0, 0], [1, 0], [1, 1], [0, 1]],
+        [[1, 1], [2, 1], [2, 2], [1, 2]],
+      ],
+    };
+    const mod: Modifier = { id: "m", type: "subdivision", enabled: true, level: 1, mode: "catmull-clark" };
+    const out = applyModifierTo(surface, mod);
+    expect(out.polys).toHaveLength(8);
+    expect(out.uvs).toHaveLength(8);
+  });
+});
+
 describe("transferUVs", () => {
   it("on a flat sheet with a planar map, every corner gets its own position's UV", () => {
     const n = 6;

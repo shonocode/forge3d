@@ -1,8 +1,12 @@
 /**
  * The GUI's modifier stack, headless: a render buffer in, a render buffer out,
- * through the library's own operators — `catmullClark`, `mirrorMesh`,
- * `arrayMesh`, `solidify`, `decimateCollapse`, `smoothVert`, `triangulate`,
- * `weldMesh`. Until 2026-09-25 the GUI had its own three (a midpoint split of
+ * through the library's own operators — `subsurfModifier`, `mirrorModifier`,
+ * `arrayMesh`, `solidifyModifier`, `decimateCollapse`, `smoothMesh`,
+ * `triangulateModifier`, `mergeByDistance` — the ones the parity rows measure
+ * (the rows `gui-stack-*` run this very path; compat-backlog C86). Until
+ * 2026-10-08 Smooth, Weld and Subdivision called their Edit Mode or generator
+ * cousins (`smoothVert`, `weldMesh`, `catmullClark`), which answer differently.
+ * Until 2026-09-25 the GUI had its own three (a midpoint split of
  * the triangles, and per-triangle mirror and array) that shared nothing with
  * what `import { ... } from "forge3d"` gives.
  *
@@ -22,10 +26,10 @@
  * Pure; `modifiers.ts` is the Babylon side.
  */
 import type { MeshData } from "../lib/mesh";
-import { meshFromData } from "../lib/mesh";
 import type { Modifier, OriginalGeometry } from "../state";
-import { catmullClark } from "./edit-mode/subdivide";
-import { smoothVert } from "./edit-mode/refine";
+import { subsurfModifier } from "./subsurf-modifier";
+import { smoothMesh } from "./smooth-mesh";
+import { mergeByDistance } from "./remove-doubles";
 import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
 import { arrayMesh, mirrorModifier, weldMesh } from "./mesh-ops";
 import { solidifyModifier } from "./solidify-modifier";
@@ -300,6 +304,9 @@ export function simpleSubdivide(s: MeshData, level: number): MeshData {
 }
 
 /**
+ * **Not called by the stack any more** (compat-backlog C86: Decimate now takes the UVs in and folds them, as Blender's does); kept,
+ * with its test, as a way to read UVs off one surface onto another.
+ *
  * UVs for a surface whose faces were rebuilt (Decimate), sampled from the
  * surface it came from: each corner takes the UV of the old triangle nearest
  * a point nudged a little into its own face — so a corner on a UV seam reads
@@ -399,8 +406,16 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
   switch (mod.type) {
     case "subdivision": {
       if ((mod.mode ?? "simple") === "simple") return simpleSubdivide(s, mod.level);
-      const r = catmullClark(s.positions, s.polys, mod.level, undefined, s.uvs);
-      return r.uvs ? { positions: r.positions, polys: r.polys, uvs: r.uvs } : { positions: r.positions, polys: r.polys };
+      // Blender's Subdivision Surface modifier as it is added: limit surface on (compat-backlog C86). `catmullClark` alone is plain
+      // refinement — a different shape at the same level. The limit surface refuses UVs at a non-manifold vertex (a render mesh
+      // welded back together can have one); that mesh is refined without it rather than failing the whole stack.
+      try {
+        return subsurfModifier(s, { levels: mod.level });
+      } catch (e) {
+        // Only that refusal; any other error from the limit surface is a real one and goes up.
+        if (!(e instanceof Error) || !/non-manifold vertex/.test(e.message)) throw e;
+        return subsurfModifier(s, { levels: mod.level, limitSurface: false });
+      }
     }
     case "mirror":
       // Blender's Mirror modifier: each vertex welds onto its own image only.
@@ -410,28 +425,21 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
     case "solidify":
       // Blender's Solidify modifier (Simple mode, its defaults: offset -1, even off, rim on).
       return solidifyModifier(s, { thickness: mod.thickness });
-    case "decimate": {
-      const out = decimateCollapse({ positions: s.positions, polys: s.polys }, { ratio: mod.ratio });
-      const uvs = transferUVs(s, out);
-      return uvs ? { positions: out.positions, polys: out.polys, uvs } : { positions: out.positions, polys: out.polys };
-    }
-    case "smooth": {
-      // Positions only: the faces and their UVs stay as they were.
-      const em = meshFromData({ positions: s.positions, polys: s.polys });
-      const all = new Set<number>();
-      for (let v = 0; v < s.positions.length / 3; v++) all.add(v);
-      for (let i = 0; i < mod.repeat; i++)
-        smoothVert(em, all, { factor: mod.factor, useAxisX: true, useAxisY: true, useAxisZ: true });
-      const out: MeshData = { positions: Float32Array.from(em.positions), polys: s.polys.map((p) => [...p]) };
-      // A copy, as every other case returns fresh arrays — a later step that
-      // edited the corners in place would otherwise reach back into `s`.
-      if (s.uvs) out.uvs = s.uvs.map((f) => f.map((c) => [...c]));
-      return out;
-    }
+    case "decimate":
+      // The corners' UVs go in with the faces and are folded by the collapse, as Blender's (compat-backlog C86). They used to be
+      // dropped and read back off the result by nearest point (`transferUVs`), which is not what Decimate does.
+      return decimateCollapse(s, { ratio: mod.ratio });
+    case "smooth":
+      // Blender's Smooth modifier (`smoothMesh`, the port of `MOD_smooth.cc`): each vertex toward the mean of its edges' midpoints.
+      // `smoothVert` — the Edit Mode operator — moves toward the mean of the neighbours, about twice as far for the same factor.
+      // Positions only; every other layer comes back as it went in.
+      return smoothMesh(s, { factor: mod.factor, iterations: mod.repeat });
     case "triangulate":
       return triangulateModifier(s, { quadMethod: mod.quadMethod, ngonMethod: mod.ngonMethod });
     case "weld":
-      return weldMesh(s, mod.distance);
+      // Blender's Weld modifier, mode All (`mergeByDistance`). `weldMesh` is the generators' seam closer: it keeps a vertex where
+      // it is, where the modifier moves the survivor to the cluster's mean (compat-backlog C86).
+      return mergeByDistance(s, mod.distance);
   }
 }
 

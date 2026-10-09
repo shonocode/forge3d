@@ -305,7 +305,7 @@ export interface DecimateModifier extends BaseModifier {
   ratio: number;
 }
 
-/** Each vertex toward its neighbours' average — `smoothVert`, `repeat` times. */
+/** Each vertex toward the mean of its edges' midpoints — Blender's Smooth modifier (`smoothMesh`), `repeat` times. */
 export interface SmoothModifier extends BaseModifier {
   type: "smooth";
   factor: number;
@@ -319,7 +319,7 @@ export interface TriangulateModifier extends BaseModifier {
   ngonMethod: "beauty" | "earClip";
 }
 
-/** Fuse vertices closer than `distance` — `weldMesh`. */
+/** Fuse vertices closer than `distance` — Blender's Weld modifier, mode All (`mergeByDistance`): the survivor moves to the cluster's mean. */
 export interface WeldModifier extends BaseModifier {
   type: "weld";
   distance: number;

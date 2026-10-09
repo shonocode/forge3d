@@ -342,14 +342,14 @@ export const TAB_SECTIONS: Record<TabId, Section[]> = {
 
 /** Each modifier in one line — the add menu and the note under each stack entry. */
 export const MODIFIER_HELP: Record<ModifierType, { name: string; one: string }> = {
-  subdivision: { name: "Subdivision", one: "面を細かく割る。「丸く」は角を丸め、「割るだけ」は形を変えない" },
+  subdivision: { name: "Subdivision", one: "面を細かく割る。「丸く」は角を丸め（Blender の既定どおり、極限面の位置に置く）、「割るだけ」は形を変えない" },
   mirror: { name: "Mirror", one: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点は自分の鏡像とくっつき、.L / .R の頂点グループは鏡写し側で入れ替わる" },
   array: { name: "Array", one: "同じ形を Offset ずつずらして Count 個並べる" },
   solidify: { name: "Solidify", one: "面を法線の内側へ押し出して厚みをつける。マイナスで外側" },
   decimate: { name: "Decimate", one: "形をなるべく保ったまま面を減らす。Ratio は残す割合" },
-  smooth: { name: "Smooth", one: "頂点を隣の平均へ寄せて、でこぼこをならす" },
+  smooth: { name: "Smooth", one: "頂点を、つながった辺の中点の平均へ寄せて、でこぼこをならす。Factor 1 でも隣の平均まで半分。開いた板は縁の頂点も動く" },
   triangulate: { name: "Triangulate", one: "四角形以上の面を三角形に割る（書き出し先が三角形しか読めないとき）" },
-  weld: { name: "Weld", one: "Distance より近い頂点をひとつにまとめる" },
+  weld: { name: "Weld", one: "Distance より近い頂点をひとつにまとめる。残る頂点は、まとめた頂点の平均の位置へ動く" },
 };
 
 export type GlossaryCategory = "基本" | "モデリング" | "見た目" | "リギング・アニメ" | "ファイル";

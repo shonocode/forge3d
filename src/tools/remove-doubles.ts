@@ -346,18 +346,41 @@ export function mergeByDistance(data: MeshData, dist: number, options: MergeByDi
   const selected = vg && !vg.empty ? Array.from(vg.weights, (w) => w > 0 !== invert) : null;
   if (options.mode === "connected") return mergeConnected(data, rangeSq, options.onlyLooseEdges ?? false, selected);
   const dest = new Int32Array(n).fill(-1);
+  // Candidates from a grid a range wide — a vertex within `range` of another lies in the 27 cells around it — instead of every
+  // vertex against every vertex. The clusters are the same: a vertex claims *every* untaken one in range, so the order they are
+  // tried in does not matter (compat-backlog C86: the editor runs this on each change of a Weld in the stack).
+  const cell = range * 1.001 + 1e-9;
+  const at = (x: number): number => Math.floor(x / cell);
+  const grid = new Map<string, number[]>();
+  for (let v = 0; v < n; v++) {
+    const key = `${at(P[v * 3]!)},${at(P[v * 3 + 1]!)},${at(P[v * 3 + 2]!)}`;
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(v);
+    else grid.set(key, [v]);
+  }
   for (let v = 0; v < n; v++) {
     if (selected && !selected[v]) continue;
     if (dest[v] !== -1 && dest[v] !== v) continue;
-    const co: V3 = [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
-    for (let w = 0; w < n; w++) {
-      if (w === v || dest[w] !== -1) continue;
-      if (selected && !selected[w]) continue;
-      if (distSq([P[w * 3]!, P[w * 3 + 1]!, P[w * 3 + 2]!], co) <= rangeSq) {
-        dest[w] = v;
-        dest[v] = v;
-      }
-    }
+    const x = P[v * 3]!, y = P[v * 3 + 1]!, z = P[v * 3 + 2]!;
+    const cx = at(x), cy = at(y), cz = at(z);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
+          if (!bucket) continue;
+          for (const w of bucket) {
+            if (w === v || dest[w] !== -1) continue;
+            if (selected && !selected[w]) continue;
+            // `distSq`, without the arrays.
+            const ex = f(P[w * 3]! - x);
+            const ey = f(P[w * 3 + 1]! - y);
+            const ez = f(P[w * 3 + 2]! - z);
+            if (f(f(f(ex * ex) + f(ey * ey)) + f(ez * ez)) <= rangeSq) {
+              dest[w] = v;
+              dest[v] = v;
+            }
+          }
+        }
   }
   const map = (v: number): number => (dest[v] === -1 ? v : dest[v]!);
 
