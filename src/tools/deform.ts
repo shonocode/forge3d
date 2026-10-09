@@ -194,9 +194,12 @@ export interface SimpleDeformOptions {
   mode: "twist" | "bend" | "taper" | "stretch";
   /** Blender's `deform_axis`. Default `"x"`, as a new modifier's is (compat-backlog C65). */
   axis?: DeformAxis;
-  /** Radians. `twist` and `bend` use this; the other two use `factor`. */
+  /**
+   * Radians. `twist` and `bend` use this; the other two use `factor`. **Default 45°** — the one field Blender's `angle` and `factor`
+   * both are, as a new modifier has it (`DEG2RADF(45)`); it was 0, which left `{ mode: "taper" }` doing nothing (compat-backlog C90).
+   */
   angle?: number;
-  /** `taper` and `stretch` use this; the other two use `angle`. */
+  /** `taper` and `stretch` use this; the other two use `angle`. Default 45° as a number (0.785…), like `angle`. */
   factor?: number;
   /**
    * Blender's `limits`: the part of the mesh that is deformed, as fractions of its extent along the axis the mode
@@ -242,6 +245,8 @@ const AXIS_MAP: readonly (readonly [number, number, number])[] = [
 ];
 /** `FLT_EPSILON`. */
 const FLT_EPSILON = 1.1920928955078125e-7;
+/** A new Simple Deform modifier's `angle` / `factor`: `DEG2RADF(45.0f)`, as a float (compat-backlog C90). */
+const DEFAULT_AMOUNT = Math.fround((45 * Math.PI) / 180);
 /** `BEND_EPS`. */
 const BEND_EPS = 0.000001;
 
@@ -304,7 +309,7 @@ export function simpleDeform(data: MeshData, opts: SimpleDeformOptions): MeshDat
   }
   const limit1 = lower + (upper - lower) * l1;
   const limit0 = lower + (upper - lower) * l0;
-  const base = mode === "twist" || mode === "bend" ? (opts.angle ?? 0) : (opts.factor ?? 0);
+  const base = mode === "twist" || mode === "bend" ? (opts.angle ?? DEFAULT_AMOUNT) : (opts.factor ?? DEFAULT_AMOUNT);
   const factor = base / Math.max(FLT_EPSILON, limit1 - limit0);
   if (mode === "bend" && Math.abs(factor) < BEND_EPS) return deformed(data, out);
 

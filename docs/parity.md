@@ -62,7 +62,7 @@ README の「一致」は **same の行がすべて通っている**という意
 
 | | |
 |---|---|
-| 行 | **1229**（2026-10-08、全体の回帰で `same` の行は全部一致。`different` の行は差そのものが結果）。ほかに選択系の比較 `compare-select.ts` が 246 問、全部一致 |
+| 行 | **1233**（2026-10-08、全体の回帰で `same` の行は全部一致。`different` の行は差そのものが結果）。ほかに選択系の比較 `compare-select.ts` が 246 問、全部一致 |
 | `bmesh.ops`（80 個） | 76 個が一致。`create_vert` は実装済みだが、面ゼロの出力は比較器が何とでも一致と言うので行が作れない。3 個は型の変換で、forge3d に対応するものが無い |
 | `bpy.ops.mesh` 専用の操作 | 15 / 15 |
 | モディファイア（メッシュ用 36 個） | 31 個。無いのは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
@@ -83,10 +83,11 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
 - **Subdivision Surface の極限曲面**：2026-10-07 から level が quality を超える場合・crease 付き・UV 付きも一致。UV の値の面が離れている形（境界で止まる継ぎ目など）だけ拒否する
 - **カスタム法線の持ち方**：Blender は角の法線空間に対する2つの角度で保存する。値を補間したり、
   扇が変わったりする操作（reverse、bisect の切り口など）では答えが変わる
-- **2026-10-08 の監査（第4回）で見つかった、未測のもの**：スタックの途中で頂点 crease などの層が消える、Simple Deform の角度の既定、
+- **2026-10-08 の監査（第4回）で見つかった、未測のもの**：スタックの途中で頂点 crease などの層が消える、
   Shrinkwrap の INSIDE / OUTSIDE の距離、編集モードの Merge / Collapse UVs / F キー、Screw 演算子、カスタム法線の4演算子の式、ほか。
   ソースを読んだ推論で、実測はまだ（直した順に行を足している）。直したもの：`bevelEdges` の `offsetType` の既定（Blender の `OFFSET` に）、
-  GUI のモディファイア・スタックが呼ぶ関数（Smooth・Weld・Subdivision・Decimate をパリティ済みのものに。行 `gui-stack-*` がその経路を測る）
+  GUI のモディファイア・スタックが呼ぶ関数（Smooth・Weld・Subdivision・Decimate をパリティ済みのものに。行 `gui-stack-*` がその経路を測る）、
+  Simple Deform の `angle` / `factor` の既定（0 から Blender の 45° に）
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
 - **GUI**：Loop Cut の後のスライドはドラッグではなく Edge Slide の量で動かす。Delete はメニューが無く、選択モードで種類が決まる（点＝Vertices、辺＝Edges、面＝Faces）。ワイヤ辺は描くが選べない
 
