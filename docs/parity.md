@@ -62,7 +62,7 @@ README の「一致」は **same の行がすべて通っている**という意
 
 | | |
 |---|---|
-| 行 | **1237**（2026-10-08、全体の回帰で `same` の行は全部一致。`different` の行は差そのものが結果）。ほかに選択系の比較 `compare-select.ts` が 246 問、全部一致 |
+| 行 | **1244**（2026-10-08、全体の回帰で `same` の行は全部一致。`different` の行は差そのものが結果）。ほかに選択系の比較 `compare-select.ts` が 246 問、全部一致 |
 | `bmesh.ops`（80 個） | 76 個が一致。`create_vert` は実装済みだが、面ゼロの出力は比較器が何とでも一致と言うので行が作れない。3 個は型の変換で、forge3d に対応するものが無い |
 | `bpy.ops.mesh` 専用の操作 | 15 / 15 |
 | モディファイア（メッシュ用 36 個） | 31 個。無いのは OpenVDB が要るもの（Remesh の Voxel、ボリューム⇔メッシュ）と、基準の形が要るもの（Corrective Smooth、Laplacian Deform） |
@@ -80,6 +80,9 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   Boolean の FLOAT / MANIFOLD ソルバー（やらない、C38）、Shrinkwrap の `subsurf_levels`（C39）、
   Displace の CUSTOM_NORMAL（C37、GLOBAL と OBJECT は済み）。Bisect の埋めは**面の形と向きまで**一致（C25）で、
   埋めた面の角が隣の面の何を写すか（BMesh のプール順に依る）だけが違う（C40）
+- **Remesh Sharp の `sharpness` 0**：QEF の限界がセルの境界ちょうどに乗り、float32 の1ulp で範囲内外が決まる同点（`body` で頂点1つ、2.26 mm）。
+  式は同じで、0.001・0.5・2 は一致する。真似せず `different` の行で記録している。`threshold`（Remove Disconnected が消すもの）は、
+  今の入力では何も消えず未測（C93）
 - **Subdivision Surface の極限曲面**：2026-10-07 から level が quality を超える場合・crease 付き・UV 付きも一致。UV の値の面が離れている形（境界で止まる継ぎ目など）だけ拒否する
 - **カスタム法線の持ち方**：Blender は角の法線空間に対する2つの角度で保存する。値を補間したり、
   扇が変わったりする操作（reverse、bisect の切り口など）では答えが変わる
