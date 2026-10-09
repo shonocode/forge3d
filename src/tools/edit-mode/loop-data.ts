@@ -161,16 +161,20 @@ function midpointOf(values: readonly (readonly number[])[]): number[] {
 }
 
 /**
- * Flatten the seam along an edge — Blender's `collapse_uvs`.
+ * Flatten the seam along edges — Blender's `collapse_uvs` (`bmo_collapsecon_do_layer`).
  *
- * Within **each face** using the edge, its two corners on that edge are set to
- * their mean. The two faces are not brought together: a seam across the edge
- * survives, and what goes is the variation *along* it.
+ * For each corner whose edge is chosen, Blender walks the **island** of corners that corner belongs to — `BMW_LOOPDATA_ISLAND`,
+ * `bmw_UVEdgeWalker_step` — and sets every corner of it to the **midpoint of the island's range**, `min · 0.5 + max · 0.5` per
+ * component. An island is closed under: at both ends of the corner's edge, every corner around that vertex whose value equals the
+ * end's (UVs within a squared distance of 1e-5, colours within a squared sum of 0.001), reached across a chosen edge only
+ * (a corner on the other end of its edge needs that edge chosen); and the walk goes on from a corner only if its own edge is chosen.
+ * Where the edge is on a boundary, the previous corner's edge is followed too (the walker's own note: the algorithm is asymmetric with
+ * the winding). Each island is done once, in face and corner order, and the values it writes are what the next island is compared on.
  *
- * Measured on a 2×2 grid of quads. For the shared edge 1-4, the face holding
- * 0.10 and 0.20 there comes back holding 0.15 twice, and the face holding
- * 1.00 and 1.30 comes back holding 1.15 twice — each face averaged its own
- * pair, and neither took anything from the other.
+ * With one chosen edge and a different value on every corner that is **the two corners on the edge, in each face, set to their mean** — the
+ * old reading of this function, measured on a 2×2 grid (the face holding 0.10 and 0.20 on the edge comes back with 0.15 twice, a seam
+ * across the edge survives). With a chain of edges, or a continuous map, it is not: the island is the whole chain and it goes to one value
+ * (compat-backlog C97).
  *
  * `edges` are vertex pairs; order within a pair does not matter.
  */
@@ -180,25 +184,97 @@ export function collapseLoopData(
   layer: LoopLayer = "uv",
 ): MeshData {
   const current = requireLayer(data, layer, "collapseLoopData");
-  const next = current.map((corners) => corners.map((c) => [...c]));
+  const values = current.map((corners) => corners.map((c) => [...c]));
+  const polys = data.polys;
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const marked = new Set(edges.map((e) => key(e[0]!, e[1]!)));
 
-  for (const edge of edges) {
-    const [a, b] = edge as [number, number];
-    for (let f = 0; f < data.polys.length; f++) {
-      const poly = data.polys[f]!;
-      const ia = poly.indexOf(a);
-      const ib = poly.indexOf(b);
-      if (ia < 0 || ib < 0) continue;
-      // Only when they really are neighbours around this face, or a diagonal
-      // would count as an edge of it.
-      const n = poly.length;
-      if ((ia + 1) % n !== ib && (ib + 1) % n !== ia) continue;
-      const mid = meanOf([next[f]![ia]!, next[f]![ib]!]);
-      next[f]![ia] = [...mid];
-      next[f]![ib] = [...mid];
-    }
+  // Corners ("loops") by id; each one's vertex, its face's next and previous corner, and its edge.
+  const base: number[] = [];
+  let total = 0;
+  for (const poly of polys) {
+    base.push(total);
+    total += poly.length;
   }
-  return withLayer(data, layer, next);
+  const faceOf = new Array<number>(total);
+  const cornerOf = new Array<number>(total);
+  const loopsOfVert = new Map<number, number[]>();
+  const loopsOfEdge = new Map<string, number[]>();
+  polys.forEach((poly, f) =>
+    poly.forEach((v, i) => {
+      const id = base[f]! + i;
+      faceOf[id] = f;
+      cornerOf[id] = i;
+      (loopsOfVert.get(v) ?? loopsOfVert.set(v, []).get(v)!).push(id);
+      const k = key(v, poly[(i + 1) % poly.length]!);
+      (loopsOfEdge.get(k) ?? loopsOfEdge.set(k, []).get(k)!).push(id);
+    }),
+  );
+  const vert = (id: number): number => polys[faceOf[id]!]![cornerOf[id]!]!;
+  const next = (id: number): number => base[faceOf[id]!]! + ((cornerOf[id]! + 1) % polys[faceOf[id]!]!.length);
+  const prev = (id: number): number => {
+    const n = polys[faceOf[id]!]!.length;
+    return base[faceOf[id]!]! + ((cornerOf[id]! + n - 1) % n);
+  };
+  const edgeKey = (id: number): string => key(vert(id), vert(next(id)));
+  const value = (id: number): number[] => values[faceOf[id]!]![cornerOf[id]!]!;
+  const width = layer === "uv" ? 2 : 4;
+  // `layerEqual_propfloat2` (< 0.00001) and `layerEqual_propcol` (< 0.001), on squared distance.
+  const limit = Math.fround(layer === "uv" ? 0.00001 : 0.001);
+  const equal = (a: readonly number[], b: readonly number[]): boolean => {
+    let sum = 0;
+    for (let k = 0; k < width; k++) sum += Math.fround((a[k]! - b[k]!) ** 2);
+    return Math.fround(sum) < limit;
+  };
+
+  const visited = new Set<number>();
+  for (let f = 0; f < polys.length; f++)
+    for (let i = 0; i < polys[f]!.length; i++) {
+      const start = base[f]! + i;
+      if (!marked.has(edgeKey(start)) || visited.has(start)) continue;
+
+      const island: number[] = [];
+      const stack = [start];
+      visited.add(start);
+      while (stack.length) {
+        const l = stack.pop()!;
+        island.push(l);
+        if (!marked.has(edgeKey(l))) continue; // yielded, not expanded
+        for (let end = 0; end < 2; end++) {
+          const pivot = end ? next(l) : l;
+          const pivotValue = value(pivot);
+          for (const first of loopsOfVert.get(vert(pivot)) ?? []) {
+            for (const radial of loopsOfEdge.get(edgeKey(first)) ?? []) {
+              if (visited.has(radial)) continue;
+              const atPivot = vert(radial) === vert(pivot);
+              if (!atPivot && !marked.has(edgeKey(radial))) continue;
+              const other = atPivot ? radial : next(radial);
+              if (!equal(value(other), pivotValue)) continue;
+              visited.add(radial);
+              stack.push(radial);
+            }
+            // A boundary edge is followed from the corner before it (the walker's note on winding, bmesh_walkers_impl.cc #152249).
+            const before = prev(first);
+            const beforeKey = edgeKey(before);
+            if (loopsOfEdge.get(beforeKey)!.length === 1 && marked.has(beforeKey) && !visited.has(before)) {
+              visited.add(before);
+              stack.push(before);
+            }
+          }
+        }
+      }
+
+      const lo = [...value(island[0]!)];
+      const hi = [...lo];
+      for (const l of island)
+        for (let k = 0; k < width; k++) {
+          lo[k] = Math.min(lo[k]!, value(l)[k]!);
+          hi[k] = Math.max(hi[k]!, value(l)[k]!);
+        }
+      const middle = lo.map((x, k) => Math.fround(Math.fround(x * 0.5) + Math.fround(hi[k]! * 0.5)));
+      for (const l of island) values[faceOf[l]!]![cornerOf[l]!] = [...middle];
+    }
+  return withLayer(data, layer, values);
 }
 
 /**
