@@ -12,8 +12,9 @@
  * Normals are the edit mesh's: BMesh recomputes them on entering edit mode (`BKE_editmesh_looptris_and_normals_calc`) — a
  * degenerate n-gon's normal stays zero, and a vertex whose corner normals cancel takes its own position, normalised.
  *
- * Layers forge3d's mesh does not carry — vertex groups, vertex creases, bevel weights, Freestyle marks, the faces' smooth
- * flag — take Blender's branch for a mesh without the layer: `VERT_GROUPS` changes nothing, the others find every element
+ * Vertex groups and vertex creases are read from the mesh (`groups`, `vertexCreases`; compat-backlog C102 — they used to be taken as
+ * absent). The layers forge3d's mesh does not carry — bevel weights, Freestyle marks, the faces' smooth
+ * flag — take Blender's branch for a mesh without the layer: the others find every element
  * equal and select them all. `FACE_MATERIAL` takes each material slot (`materials`) as its own material — Blender compares
  * the materials, so two slots holding one material count as one — and without `materials` (no slots) changes nothing.
  * The object is taken at the identity transform.
@@ -233,11 +234,17 @@ export function selectSimilar(mesh: MeshData, mode: SelectMode, seed: SelectionS
   if (type.startsWith("VERT_")) {
     const verts = sel.bm.verts.filter((v): v is BV => !!v);
     const picked = verts.filter((v) => sel.sv.has(v));
-    if (!picked.length || type === "VERT_GROUPS") return sel.result();
+    if (!picked.length) return sel.result();
     const thetaMax = f(f(thresh * f(Math.PI)) + FLT_EPSILON);
     const count = (v: BV): number => (type === "VERT_EDGES" ? diskEdges(v).length : loopsOfVert(v).length);
     let test: (v: BV) => boolean;
-    if (type === "VERT_NORMAL") {
+    if (type === "VERT_GROUPS") {
+      // `SIMVERT_VGROUP`: the groups any selected vertex is in with a weight above 0, then every unselected vertex that is in one of them
+      // with a weight above 0 (a member of weight 0 is in the group but does not count). No groups, or none among the selected: nothing.
+      const chosen = [...(mesh.groups?.values() ?? [])].filter((g) => picked.some((v) => (g.get(v.index) ?? 0) > 0));
+      if (!chosen.length) return sel.result();
+      test = (v) => chosen.some((g) => (g.get(v.index) ?? 0) > 0);
+    } else if (type === "VERT_NORMAL") {
       const no = new Map(verts.map((v) => [v, bmVertNormal(v, faceNormal)] as const));
       const tree = picked.map((v) => normalize(no.get(v)!));
       test = (v) => {
@@ -245,8 +252,17 @@ export function selectSimilar(mesh: MeshData, mode: SelectMode, seed: SelectionS
         const near = nearestOf(tree, n);
         return !!near && angleNormalized(n, near.co) <= thetaMax;
       };
-    } else if (type === "VERT_CREASE") test = () => true;
-    else {
+    } else if (type === "VERT_CREASE") {
+      // `SIMVERT_CREASE`: the selected vertices' `crease_vert` values into a tree, every unselected vertex compared against it as an edge's
+      // crease is. A mesh without the layer holds 0.0 in the tree and compares every vertex's 0.0 against it, which passes: everything.
+      const layer = mesh.vertexCreases;
+      if (!layer) test = () => true;
+      else {
+        const crease = (v: BV): number => f(layer.get(v.index) ?? 0);
+        const tree = picked.map(crease);
+        test = (v) => compareFloatTree(tree, crease(v), thresh, compare);
+      }
+    } else {
       const set = new Set(picked.map(count));
       test = (v) => compareIntSet(set, count(v), compare);
     }
