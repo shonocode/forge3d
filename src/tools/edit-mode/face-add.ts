@@ -436,6 +436,52 @@ function edgenetOrder(selected: number[][], wire: number[][], polys: number[][])
 }
 
 /**
+ * The loop the edges **between** `verts` make, in order, when they make exactly one through all of them — every vertex on exactly two of
+ * those edges, and the walk from any one of them visiting every vertex before it comes back. Null otherwise.
+ *
+ * The F key with the vertices selected has their joining edges selected with them, and `edgenet_fill` makes the face from the loop
+ * they form (`bmo_contextual_create_exec`, compat-backlog C98); a sort of the vertices by angle only matches it where the outline is
+ * convex enough that each vertex has its own direction from the centre.
+ */
+function loopOfEdges(polys: readonly (readonly number[])[], wire: readonly (readonly number[])[], verts: ReadonlySet<number>): number[] | null {
+  const seen = new Set<string>();
+  const adj = new Map<number, number[]>();
+  const add = (a: number, b: number): void => {
+    if (a === b || !verts.has(a) || !verts.has(b)) return;
+    const k = a < b ? `${a}_${b}` : `${b}_${a}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    (adj.get(b) ?? adj.set(b, []).get(b)!).push(a);
+  };
+  for (const poly of polys) for (let i = 0; i < poly.length; i++) add(poly[i]!, poly[(i + 1) % poly.length]!);
+  for (const e of wire) add(e[0]!, e[1]!);
+  for (const v of verts) if (adj.get(v)?.length !== 2) return null;
+  const start = [...verts][0]!;
+  const loop = [start];
+  let prev = start;
+  let cur = adj.get(start)![0]!;
+  while (cur !== start) {
+    loop.push(cur);
+    const [a, b] = adj.get(cur)!;
+    const next = a === prev ? b! : a!;
+    prev = cur;
+    cur = next;
+    if (loop.length > verts.size) return null;
+  }
+  return loop.length === verts.size ? loop : null;
+}
+
+/** Are `a` and `b` the same closed loop, from any starting vertex and either way round? */
+function sameLoop(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  const n = a.length;
+  const at = b.indexOf(a[0]!);
+  if (at < 0) return false;
+  return a.every((v, i) => b[(at + i) % n] === v) || a.every((v, i) => b[(at - i + n * n) % n] === v);
+}
+
+/**
  * Make one face from a set of vertices — Blender's F key.
  *
  * ```ts
@@ -497,7 +543,15 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
   for (const poly of polys)
     if (poly.length === verts.size && poly.every((v) => verts.has(v))) return null;
 
-  const ring = extended ? extended.ring : ringOf(em.positions, verts);
+  // The vertices' own edges first: when they make one loop through all of them that is the face (`edgenet_fill`). The angle sort
+  // stays for the cloud with no such loop, and for a loop it agrees with, so a convex outline keeps the order it always had.
+  let ring: number[];
+  if (extended) ring = extended.ring;
+  else {
+    const sorted = ringOf(em.positions, verts);
+    const loop = loopOfEdges(polys, em.wireEdges ?? [], verts);
+    ring = loop && !sameLoop(sorted, loop) ? loop : sorted;
+  }
 
   // `BM_face_create_ngon_verts(calc_winding)`: each ring edge that already has
   // a face votes by the direction of its **newest** face (`e->l` — the radial
