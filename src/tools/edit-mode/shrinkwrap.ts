@@ -28,9 +28,12 @@
  * | mode | direction | rule |
  * |---|---|---|
  * | `onSurface` (default) | `normalize(original - hit)` | back the way the vertex came |
- * | `inside` | the target's **face** normal | clamp the signed distance to `<= -offset` |
- * | `outside` | the target's **face** normal | clamp the signed distance to `>= +offset` |
- * | `outsideSurface` | the target's **face** normal | always `hit + offset * n` |
+ * | `inside` | back along the line to the hit (`shrinkwrap_snap_with_side`, −1) | the distance **to the hit** must be `>= offset` on the inside, by the hit triangle's normal |
+ * | `outside` | the same, +1 | the same on the outside |
+ * | `outsideSurface` | the same, +1, always snapped | `hit + offset * unit(vertex − hit)` |
+ *
+ * The three side modes were read as "clamp the signed distance along the face normal", which is the same number wherever the nearest point
+ * is the foot of a perpendicular — every row over a grown box — and a different one over an edge or a corner (compat-backlog C91).
  *
  * Each row is pinned by a case where the candidates disagree:
  *
@@ -874,16 +877,52 @@ function place(t: Target, p: Vec3, hit: Hit, mode: ShrinkwrapMode, offset: numbe
     return [h[0] + d[0] * offset, h[1] + d[1] * offset, h[2] + d[2] * offset];
   }
 
-  // The three clamping modes work on the **signed** distance along the
-  // target's flat normal, which is what says which side the vertex is on.
-  const n = hit.faceNormal;
-  const signed = away[0] * n[0] + away[1] * n[1] + away[2] * n[2];
-  const want =
-    mode === "inside"
-      ? Math.min(signed, -offset)
-      : mode === "outside"
-        ? Math.max(signed, offset)
-        : offset; // outsideSurface always snaps
-  if (mode !== "outsideSurface" && want === signed) return p; // already far enough
-  return [h[0] + n[0] * want, h[1] + n[1] * want, h[2] + n[2] * want];
+  // The three side modes are `shrinkwrap_snap_with_side` (compat-backlog C91): the distance is the one **to the hit point**, the sign comes from
+  // the hit triangle's normal, and the vertex lands back along the line to the hit. Where the nearest point is the foot of a perpendicular this
+  // is the signed distance along the face normal — the reading this file had, and the only one the rows over a grown box could tell — but
+  // over an edge or a corner it is not. The normal is the **triangle's**, as the BVH's `nearest.no` is.
+  const n = hit.tri !== undefined && hit.bary ? triNormal(t, hit.tri) : hit.faceNormal;
+  if (mode === "inside") return snapWithSide(p, h, n, offset, -1, false);
+  if (mode === "outside") return snapWithSide(p, h, n, offset, 1, false);
+  // outsideSurface: always snapped, to the hit itself when there is no offset.
+  return offset !== 0 ? snapWithSide(p, h, n, offset, 1, true) : [h[0], h[1], h[2]];
+}
+
+/** The flat normal of one triangle of the target — Blender's `normal_tri_v3`, which the BVH nearest callback fills `nearest.no` with. */
+function triNormal(t: Target, tri: number): Vec3 {
+  const a = t.tris[tri * 3]! * 3;
+  const b = t.tris[tri * 3 + 1]! * 3;
+  const c = t.tris[tri * 3 + 2]! * 3;
+  const P = t.positions;
+  const u: Vec3 = [P[b]! - P[a]!, P[b + 1]! - P[a + 1]!, P[b + 2]! - P[a + 2]!];
+  const v: Vec3 = [P[c]! - P[a]!, P[c + 1]! - P[a + 1]!, P[c + 2]! - P[a + 2]!];
+  return normalized([u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]);
+}
+
+/**
+ * `shrinkwrap_snap_with_side`, for `INSIDE` (`forcesign` −1), `OUTSIDE` (+1) and `OUTSIDE_SURFACE` (+1, `forcesnap`). `p` is the vertex, `h` the hit,
+ * `n` the hit's normal, `goal` the offset. The vertex moves only when it is on the wrong side or nearer than `goal` (or when `forcesnap`), and
+ * lands at `hit + unit(p − hit) · side · goal · forcesign`; very near the hit that direction is blended with the normal.
+ */
+function snapWithSide(p: Vec3, h: Vec3, n: Vec3, goal: number, forcesign: number, forcesnap: boolean): Vec3 {
+  const FLT_EPSILON = 1.1920928955078125e-7;
+  const delta: Vec3 = [p[0] - h[0], p[1] - h[1], p[2] - h[2]];
+  const dist = Math.hypot(delta[0], delta[1], delta[2]);
+  // Exactly on the surface: push out along the normal.
+  if (dist < FLT_EPSILON) {
+    return forcesnap || goal > 0
+      ? [h[0] + n[0] * goal * forcesign, h[1] + n[1] * goal * forcesign, h[2] + n[2] * goal * forcesign]
+      : [h[0], h[1], h[2]];
+  }
+  const dsign = delta[0] * n[0] + delta[1] * n[1] + delta[2] * n[2] < 0 ? -1 : 1; // `signf`
+  const sign = forcesign === 0 ? dsign : forcesign;
+  if (!(forcesnap || dsign * dist * sign < goal)) return p; // on the right side, far enough
+  let d: Vec3 = [(delta[0] * dsign) / dist, (delta[1] * dsign) / dist, (delta[2] * dsign) / dist];
+  // At a very small distance, blend in the hit normal to stabilise the math.
+  const epsilon = (Math.abs(goal) + Math.abs(h[0]) + Math.abs(h[1]) + Math.abs(h[2])) * 1e-4;
+  if (dist < epsilon) {
+    const k = dist / epsilon;
+    d = [n[0] * (1 - k) + d[0] * k, n[1] * (1 - k) + d[1] * k, n[2] * (1 - k) + d[2] * k];
+  }
+  return [h[0] + d[0] * goal * sign, h[1] + d[1] * goal * sign, h[2] + d[2] * goal * sign];
 }
