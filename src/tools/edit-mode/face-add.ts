@@ -48,6 +48,7 @@ import {
   type ExplicitFace,
 } from "./half-edge";
 import { addFaces } from "./refine";
+import { dissolveFaces } from "./dissolve";
 
 // ── float32, in C's evaluation order ───────────────────────────────────────
 // Blender does this in `float` with no fused multiply-add, and on a grid the
@@ -492,6 +493,8 @@ function sameLoop(a: readonly number[], b: readonly number[]): boolean {
  * Returns the index of the face it made, or `null` when a face with exactly
  * those vertices was already there — which is what Blender does, and is why
  * the return is not a `Set` like the operators that touch several faces.
+ * When the selection covers whole faces and `contextual_create` dissolves them
+ * (compat-backlog C98), the index is the merged face's.
  *
  * With exactly **two** vertices it adds a wire edge instead and returns null —
  * no face was made. It refuses when those two already have an edge between
@@ -542,6 +545,22 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
   }
   for (const poly of polys)
     if (poly.length === verts.size && poly.every((v) => verts.has(v))) return null;
+
+  // Whole faces selected (compat-backlog C98): the vertex selection flushes to the faces it covers, and
+  // `contextual_create` tries `edgenet_fill` first, which can only use edges with fewer than two faces. When those
+  // make no loop, it goes on to `dissolve_faces` on the selected faces and stops if that merged anything.
+  if (!extended) {
+    const covered = new Set<number>();
+    polys.forEach((poly, f) => {
+      if (poly.every((v) => verts.has(v))) covered.add(f);
+    });
+    if (covered.size >= 2 && !edgenetHasLoop(polys, em.wireEdges ?? [], verts)) {
+      const before = toPolygons(em).length;
+      dissolveFaces(em, covered);
+      // The merged face is the last (`mergeGroups` appends it).
+      if (toPolygons(em).length !== before) return toPolygons(em).length - 1;
+    }
+  }
 
   // The vertices' own edges first: when they make one loop through all of them that is the face (`edgenet_fill`). The angle sort
   // stays for the cloud with no such loop, and for a loop it agrees with, so a convex outline keeps the order it always had.
@@ -637,4 +656,44 @@ export function edgeFaceAdd(em: EditMesh, verts: ReadonlySet<number>): number | 
   stated[polys.length - 1] = { corners, material: -1 };
   rebuildPolygons(em, em.positions, polys, { faces: stated });
   return polys.length - 1;
+}
+
+/**
+ * Whether `edgenet_fill` could make a face from the selected vertices' edges: those with both ends selected and fewer
+ * than two faces (a wire edge has none, `bm_edge_step_ok`), searched for a cycle — and a cycle whose vertices take in
+ * an existing face whole does not count (`BM_face_exists_overlap_subset` rejects it: the outline of a lone 1×2 plane
+ * runs round both its quads). The F key goes on to `dissolve_faces` when there is none. An approximation of
+ * `BM_mesh_edgenet`'s search, per connected piece of those edges.
+ */
+function edgenetHasLoop(polys: readonly (readonly number[])[], wires: readonly (readonly number[])[], verts: ReadonlySet<number>): boolean {
+  const faces = new Map<string, number>();
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  for (const poly of polys)
+    for (let i = 0; i < poly.length; i++) {
+      const k = key(poly[i]!, poly[(i + 1) % poly.length]!);
+      faces.set(k, (faces.get(k) ?? 0) + 1);
+    }
+  for (const [a, b] of wires) if (!faces.has(key(a!, b!))) faces.set(key(a!, b!), 0);
+  const parent = new Map<number, number>();
+  const find = (x: number): number => {
+    while (parent.has(x) && parent.get(x) !== x) x = parent.get(x)!;
+    return x;
+  };
+  const cyclic: number[] = [];
+  for (const [k, count] of faces) {
+    if (count >= 2) continue;
+    const [a, b] = k.split("_").map(Number) as [number, number];
+    if (!verts.has(a) || !verts.has(b)) continue;
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) cyclic.push(a);
+    else parent.set(ra, rb);
+  }
+  for (const root of new Set(cyclic.map(find))) {
+    const piece = new Set([...parent.keys()].filter((v) => find(v) === root));
+    if (!polys.some((p) => p.every((v) => piece.has(v)))) return true;
+  }
+  return false;
 }

@@ -255,3 +255,27 @@ describe("dissolveVerts on a vertex with two edges (parity row dissolve-verts-pa
     expect(polys[0]!.includes(0)).toBe(false);
   });
 });
+
+describe("dissolveFaces drops the vertex it leaves loose, dissolveVerts is not renumbered (C98)", () => {
+  it("dissolving the centre of a 4×4 grid gives one 8-gon among quads", () => {
+    const em = meshFromData(grid(4, 4));
+    dissolveVerts(em, new Set([12]));
+    const polys = toPolygons(em);
+    expect(polys.filter((p) => p.length === 8)).toHaveLength(1);
+    expect(polys.filter((p) => p.length === 3)).toHaveLength(0);
+    expect(polys).toHaveLength(13);
+  });
+
+  it("dissolving the inner 2×2 block's faces takes the centre vertex away", () => {
+    const em = meshFromData(grid(4, 4));
+    const before = em.positions.length / 3;
+    const centre = new Set([6, 7, 11, 12, 8, 13, 16, 17, 18]);
+    const faces = new Set<number>();
+    toPolygons(em).forEach((p, f) => {
+      if (p.every((v) => centre.has(v))) faces.add(f);
+    });
+    dissolveFaces(em, faces);
+    expect(em.positions.length / 3).toBe(before - 1);
+    expect(toPolygons(em)).toHaveLength(13);
+  });
+});

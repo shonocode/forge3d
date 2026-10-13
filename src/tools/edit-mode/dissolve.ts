@@ -17,6 +17,7 @@ import { meshFromData, meshToData } from "../../lib/mesh";
 import { connectVertsPolys } from "./connect-pair";
 import type { V3 } from "../blender-math";
 import { dissolveLimitMesh, type DissolveDelimit } from "../dissolve-limit";
+import { compactMesh } from "../mesh-repair";
 
 /** Shared by the three: what came out, for callers that want to assert on it. */
 export interface DissolveReport {
@@ -73,6 +74,7 @@ function mergeGroups(
   groups: Map<number, number>,
   useVerts: boolean,
   report: DissolveReport,
+  dropLoose = false,
 ): void {
   const polys = toPolygons(em);
   const byGroup = new Map<number, number[]>();
@@ -207,6 +209,22 @@ function mergeGroups(
   }
 
   rebuildPolygons(em, em.positions, out, { joins: true });
+  // `BM_faces_join(do_del)`: a vertex inside the region left with no edge goes with the edges it held (the middle of a
+  // 2×2 block). Only those — a vertex loose before the dissolve stays (compat-backlog C98, `edge-face-add-block`).
+  // Only for `dissolveFaces`: the renumbering would shift the vertex selection `dissolveVerts` goes on to use.
+  if (!dropLoose) return;
+  const used = new Set<number>();
+  for (const poly of out) for (const v of poly) used.add(v);
+  for (const [a, b] of em.wireEdges ?? []) (used.add(a!), used.add(b!));
+  const loose = [...interior].filter((v) => !used.has(v));
+  if (loose.length > 0) {
+    const gone = new Set(loose);
+    const keep = new Set<number>();
+    for (let v = 0; v < em.positions.length / 3; v++) if (!gone.has(v)) keep.add(v);
+    const source = em.source;
+    Object.assign(em, meshFromData(compactMesh(meshToData(em), keep)), { source });
+    report.vertsRemoved += loose.length;
+  }
 }
 
 /**
@@ -264,7 +282,7 @@ export function dissolveFaces(
     }
   }
 
-  mergeGroups(em, groups, opts.useVerts ?? false, report);
+  mergeGroups(em, groups, opts.useVerts ?? false, report, true);
   return report;
 }
 
