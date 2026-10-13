@@ -4494,6 +4494,12 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
         if (kind === "recon") return level >= 2 ? 16384 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
         return level === 3 ? 16384 : (o !== undefined ? data.faceStrength?.[o] : undefined) ?? 0;
       });
+    } else if (data.faceStrength && data.faceStrength.length === data.polys.length) {
+      // Mode off: the layer is an int face attribute, so each face keeps its source face's value (C88).
+      mesh.faceStrength = live.map((f) => {
+        const o = p.faceOrig.get(f);
+        return (o !== undefined ? data.faceStrength![o] : undefined) ?? 0;
+      });
     }
     const C = p.layers.corners;
     if (hasUv) mesh.uvs = live.map((f) => faceLoops(f).map((l) => [...(C[l.src]?.uv ?? [0, 0])]));

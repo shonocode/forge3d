@@ -130,6 +130,9 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   let src: [number, number][][] = data.polys.map((p, f) => p.map((_, i) => [f, i] as [number, number]));
   const hasMats = data.materials !== undefined && data.materials.length === data.polys.length;
   let mat: number[] = data.polys.map((_, f) => (hasMats ? data.materials![f]! : 0));
+  // The face strength rides with the material: both are face data the joined face copies from one face (C88).
+  const hasStrength = data.faceStrength !== undefined && data.faceStrength.length === data.polys.length;
+  let strength: number[] = data.polys.map((_, f) => (hasStrength ? data.faceStrength![f]! : 0));
   const without = (f: number, v: number): void => {
     const keep = polys[f]!.map((x) => x !== v);
     polys[f] = polys[f]!.filter((_, i) => keep[i]);
@@ -412,6 +415,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       // The joined face keeps the material of the newest face round `v`
       // (measured, `unsubdivide-layers` on `bodyMats`).
       mat.push(mat[Math.max(...incident)]!);
+      strength.push(strength[Math.max(...incident)]!);
 
       for (const f of incident) {
         if (polys[f]!.length > 3) without(f, v);
@@ -426,6 +430,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
     }
     src = src.filter((_, f) => polys[f]!.length >= 3);
     mat = mat.filter((_, f) => polys[f]!.length >= 3);
+    strength = strength.filter((_, f) => polys[f]!.length >= 3);
     polys = polys.filter((p) => p.length >= 3);
   }
 
@@ -458,6 +463,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   const normals = corners(data.normals);
   if (normals) result.normals = normals;
   if (hasMats) result.materials = mat;
+  if (hasStrength) result.faceStrength = strength;
   if (data.groups) {
     result.groups = new Map(
       [...data.groups].map(([name, g]) => [
@@ -466,6 +472,10 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       ]),
     );
   }
+  if (data.vertexCreases)
+    result.vertexCreases = new Map(
+      [...data.vertexCreases].filter(([v]) => remap[v]! >= 0).map(([v, c]) => [remap[v]!, c] as [number, number]),
+    );
   const edges = new Set<string>();
   for (const p of result.polys) for (let i = 0; i < p.length; i++) edges.add(key(p[i]!, p[(i + 1) % p.length]!));
   const remapEdges = (s: ReadonlySet<string> | undefined): Set<string> | undefined => {

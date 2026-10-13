@@ -689,5 +689,26 @@ export function weldByMap(
       result.groups.set(name, ng);
     }
   }
+  // Vertex creases (C88): a float attribute — the survivor's, or with `weld`
+  // the plain mean over the merged vertices, an absent one counting 0.
+  if (data.vertexCreases) {
+    const c = data.vertexCreases;
+    const nc = new Map<number, number>();
+    if (mode !== "weld") {
+      for (const [v, x] of c) if (!merged(v) && index[v]! >= 0) nc.set(index[v]!, x);
+    } else {
+      const sum = new Map<number, [number, number]>();
+      for (let v = 0; v < n; v++) {
+        const t = index[map(v)]!;
+        if (t < 0) continue;
+        const s = sum.get(t) ?? [0, 0];
+        s[0] += c.get(v) ?? 0;
+        s[1]++;
+        sum.set(t, s);
+      }
+      for (const [t, [s, k]] of sum) if (s !== 0) nc.set(t, s / k);
+    }
+    result.vertexCreases = nc;
+  }
   return result;
 }

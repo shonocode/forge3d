@@ -122,6 +122,17 @@ export interface EditMesh {
    */
   vertexGroups?: Map<string, Map<number, number>>;
   /**
+   * `MeshData.faceStrength`, one per face, following the faces exactly as {@link faceMaterials} does — Blender's
+   * `__mod_weightednormals_faceweight` is an int face attribute, copied from the example face (compat-backlog C88).
+   */
+  faceStrength?: number[];
+  /**
+   * `MeshData.vertexCreases`, by vertex — Blender's `crease_vert`, a float point attribute: a vertex keeps its value, a
+   * made one takes its origins' weighted sum (`layerInterp_propfloat`, an absent vertex counting 0), and a new vertex
+   * with no known origin drops the layer, as {@link vertexGroups} does (compat-backlog C88).
+   */
+  vertexCreases?: Map<number, number>;
+  /**
    * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
    * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
    * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them
@@ -320,7 +331,10 @@ export function rebuildPolygons(
   carry?: LayerCarry,
 ): void {
   const hasLayers =
-    LAYER_KEYS.some((k) => em[k] !== undefined) || em.faceMaterials !== undefined || em.vertexGroups !== undefined;
+    LAYER_KEYS.some((k) => em[k] !== undefined) ||
+    FACE_KEYS.some((k) => em[k] !== undefined) ||
+    em.vertexGroups !== undefined ||
+    em.vertexCreases !== undefined;
   const oldPolys = hasLayers ? toPolygons(em) : [];
   const oldNumV = em.vertices.length;
   const oldPositions = em.positions;
@@ -461,6 +475,8 @@ export interface LayerCarry {
 }
 
 const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
+/** The per-face layers: a face takes its source face's value. */
+const FACE_KEYS = ["faceMaterials", "faceStrength"] as const;
 
 /**
  * Carry the per-corner layers from `oldPolys` to `newPolys`. Returns, per
@@ -483,28 +499,25 @@ function carryLayers(
       layer.length === oldPolys.length && layer.every((f, i) => f.length === oldPolys[i]!.length);
     if (!ok) em[k] = undefined;
   }
-  if (em.faceMaterials && em.faceMaterials.length !== oldPolys.length) em.faceMaterials = undefined;
+  for (const k of FACE_KEYS) if (em[k] && em[k].length !== oldPolys.length) em[k] = undefined;
   const live = LAYER_KEYS.filter((k) => em[k] !== undefined);
-  if (live.length === 0 && !em.faceMaterials && !em.vertexGroups) return;
+  const liveFace = FACE_KEYS.filter((k) => em[k] !== undefined);
+  if (live.length === 0 && liveFace.length === 0 && !em.vertexGroups && !em.vertexCreases) return;
   if (carry?.sameCorners) {
     const same =
       newPolys.length === oldPolys.length && newPolys.every((p, i) => p.length === oldPolys[i]!.length);
     if (!same) {
       for (const k of live) em[k] = undefined;
-      em.faceMaterials = undefined;
+      for (const k of liveFace) em[k] = undefined;
     }
-    if (em.vertexGroups) {
-      const map = carry.vertexMap;
-      if (!map) em.vertexGroups = undefined;
-      else
-        em.vertexGroups = new Map(
-          [...em.vertexGroups].map(([name, g]) => {
-            const ng = new Map<number, number>();
-            for (const [v, w] of g) if (v < map.length && map[v]! >= 0) ng.set(map[v]!, w);
-            return [name, ng];
-          }),
-        );
-    }
+    const map = carry.vertexMap;
+    const remap = (g: ReadonlyMap<number, number>): Map<number, number> => {
+      const ng = new Map<number, number>();
+      for (const [v, w] of g) if (map && v < map.length && map[v]! >= 0) ng.set(map[v]!, w);
+      return ng;
+    };
+    if (em.vertexGroups) em.vertexGroups = map ? new Map([...em.vertexGroups].map(([n, g]) => [n, remap(g)])) : undefined;
+    if (em.vertexCreases) em.vertexCreases = map ? remap(em.vertexCreases) : undefined;
     return;
   }
 
@@ -711,10 +724,11 @@ function carryLayers(
   // Materials: a face keeps the slot of the face its corners came from. A
   // joined face whose sources disagree takes its first corner's face —
   // `BM_faces_join` keeps its `faces[0]`'s, and which face the caller put
-  // first is not reproduced here. Not measured.
-  if (em.faceMaterials) {
-    const old = em.faceMaterials;
-    em.faceMaterials = failed
+  // first is not reproduced here. Not measured. The face strength (an int
+  // face attribute) follows the same face (C88).
+  for (const k of liveFace) {
+    const old = em[k]!;
+    em[k] = failed
       ? undefined
       : sources.map((face, i) => {
           const stated = explicitMaterial.get(i);
@@ -724,7 +738,7 @@ function carryLayers(
   }
 
   // Vertex groups: a vertex keeps its weights; a made one mixes its origins'.
-  if (em.vertexGroups) {
+  if (em.vertexGroups || em.vertexCreases) {
     let ok = !failed;
     const used = new Set<number>();
     for (const p of newPolys) for (const v of p) used.add(v);
@@ -738,6 +752,23 @@ function carryLayers(
       }
       mixes.set(v, e);
     }
+    // Vertex creases: `crease_vert` is a plain float attribute, so a made
+    // vertex takes the weighted sum, an absent vertex counting 0 (C88).
+    if (em.vertexCreases) {
+      const c = em.vertexCreases;
+      if (!ok) em.vertexCreases = undefined;
+      else {
+        const nc = new Map<number, number>();
+        for (const [v, x] of c) if (v < oldNumV && !origins.has(v)) nc.set(v, x);
+        for (const [v, mix] of mixes) {
+          let sum = 0;
+          for (const [u, w] of mix) sum += w * (c.get(u) ?? 0);
+          if (sum !== 0) nc.set(v, sum);
+        }
+        em.vertexCreases = nc;
+      }
+    }
+    if (!em.vertexGroups) return;
     if (!ok) em.vertexGroups = undefined;
     else
       for (const [name, g] of em.vertexGroups) {

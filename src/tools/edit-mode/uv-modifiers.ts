@@ -267,6 +267,8 @@ function carry(data: MeshData, uvs: number[][][]): MeshData {
   if (data.normals) out.normals = data.normals.map((f) => f.map((c) => [...c]));
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.materials) out.materials = [...data.materials];
+  if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+  if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   return out;
 }
 

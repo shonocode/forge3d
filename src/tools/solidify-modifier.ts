@@ -441,6 +441,18 @@ export function solidifyModifier(data: MeshData, opts: SolidifyModifierOptions =
   const colors = corner(data.colors);
   if (colors) out.colors = colors;
   if (data.materials && data.materials.length === data.polys.length) out.materials = mats;
+  // The face strength is copied from the same face, with no offset (C88).
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = src.map(({ face }) => data.faceStrength![keptFace[face]!]!);
+  // Vertex creases: the copies copy, like the groups (C88).
+  if (data.vertexCreases) {
+    const c = new Map(data.vertexCreases);
+    for (const [v, x] of data.vertexCreases) {
+      if (doShell) c.set(v + V, x);
+      else if (oldVertArr[v]! >= 0) c.set(oldVertArr[v]! + V, x);
+    }
+    out.vertexCreases = c;
+  }
 
   // Vertex groups: the copies copy; shell / rim groups at 1.
   if (data.groups || opts.shellVertexGroup || opts.rimVertexGroup) {

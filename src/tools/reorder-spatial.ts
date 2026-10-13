@@ -168,6 +168,7 @@ export function reorderSpatial(data: MeshData): MeshData {
     ...(data.groups
       ? { groups: new Map([...data.groups].map(([k, g]) => [k, new Map([...g].map(([v, w]) => [reverse[v]!, w]))])) }
       : {}),
+    ...(data.vertexCreases ? { vertexCreases: new Map([...data.vertexCreases].map(([v, c]) => [reverse[v]!, c])) } : {}),
     ...carryFaceLayers(data, sameFaces(newFaceOrder, data)),
     ...(data.materials ? { materials: newFaceOrder.map((fi) => data.materials![fi] ?? 0) } : {}),
   });

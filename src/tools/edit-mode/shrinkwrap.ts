@@ -108,7 +108,7 @@
  */
 import { catmullClark } from "./subdivide";
 import { vertexGroupWeights } from "../mesh-layers";
-import type { MeshData } from "../../lib/mesh";
+import { withPositions, type MeshData } from "../../lib/mesh";
 import { closestPointOnTriangleBary } from "./attribute-transfer";
 import {
   buildTriGrid,
@@ -844,17 +844,8 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
     for (let k = 0; k < 3; k++) positions[v * 3 + k] = weight === 1 ? out[k]! : p[k]! + (out[k]! - p[k]!) * weight;
   }
 
-  const result: MeshData = { positions, polys: data.polys.map((poly) => [...poly]) };
-  if (data.creases) result.creases = new Map(data.creases);
-  if (data.seams) result.seams = new Set(data.seams);
-  if (data.sharp && data.sharp.size > 0) result.sharp = new Set(data.sharp);
-  if (data.edges) result.edges = data.edges.map((e) => [...e]);
-  if (data.uvs) result.uvs = data.uvs.map((f) => f.map((c) => [...c]));
-  if (data.colors) result.colors = data.colors.map((f) => f.map((c) => [...c]));
-  if (data.normals) result.normals = data.normals.map((f) => f.map((c) => [...c]));
-  if (data.groups) result.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
-  if (data.materials) result.materials = [...data.materials];
-  return result;
+  // Positions only, as `BKE_modifier_deform_verts`: every layer is carried (C88).
+  return withPositions(data, positions);
 }
 
 /** Where the vertex ends up, given the hit and the mode. */

@@ -176,6 +176,8 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
     if (data.colors) out.colors = deep(data.colors)!;
     if (data.normals) out.normals = deep(data.normals)!;
     if (data.materials) out.materials = [...data.materials];
+    if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+    if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
     if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
     if (data.creases) out.creases = new Map(data.creases);
     if (data.seams) out.seams = new Set(data.seams);
@@ -806,6 +808,9 @@ export function decimateCollapse(data: MeshData, opts: DecimateOptions): MeshDat
   if (colors) out.colors = colors;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faces.map((x) => (x.src >= 0 ? data.materials![x.src]! : 0));
+  // An int face attribute, from the same face as the slot (C88).
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = faces.map((x) => (x.src >= 0 ? data.faceStrength![x.src]! : 0));
   if (groups) {
     out.groups = new Map(
       [...groups].map(([n, g]) => [

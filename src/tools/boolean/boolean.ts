@@ -205,6 +205,9 @@ function booleanLayers(
   if (colors) out.colors = colors;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faces.map((f) => data.materials![f.face]!);
+  // An int face attribute, from the same input face as the slot (C88).
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = faces.map((f) => data.faceStrength![f.face]!);
   if (data.groups) {
     out.groups = new Map(
       [...data.groups].map(([name, g]) => [

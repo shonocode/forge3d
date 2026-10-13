@@ -1292,11 +1292,11 @@ export function bmFromMesh(data: MeshData, opts: { edgeTables?: number; vertNorm
 export function bmLayers(
   bm: BM,
   data: MeshData,
-): Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> {
+): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> {
   const flat: [number, number][] = [];
   data.polys.forEach((p, f) => p.forEach((_, k) => flat.push([f, k])));
   const faces = liveFaces(bm);
-  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> = {};
+  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> = {};
   const layer = (src: number[][][] | undefined, blank: number): number[][][] | undefined => {
     if (!src || src.length !== data.polys.length) return undefined;
     const width = src.find((x) => x.length > 0)?.[0]?.length ?? 2;
@@ -1315,6 +1315,9 @@ export function bmLayers(
   if (normals) out.normals = normals;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faces.map((x) => (x.src >= 0 ? data.materials![x.src]! : 0));
+  // An int face attribute, from the same source face as the slot (compat-backlog C88).
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = faces.map((x) => (x.src >= 0 ? data.faceStrength![x.src]! : 0));
   return out;
 }
 

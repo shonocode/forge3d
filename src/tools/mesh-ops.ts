@@ -67,13 +67,15 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const seams = new Set<string>();
   // A layer is there when it is shaped for the part — `meshToData` hands
   // back `[]` for "none", which is not a layer with no faces.
-  const shaped = (p: MeshData, k: "uvs" | "colors" | "normals" | "materials"): boolean =>
+  const shaped = (p: MeshData, k: "uvs" | "colors" | "normals" | "materials" | "faceStrength"): boolean =>
     (p[k]?.length ?? 0) > 0 && p[k]!.length === p.polys.length;
-  const has = (k: "uvs" | "colors" | "normals" | "sharp" | "edges" | "groups" | "materials") =>
+  const has = (
+    k: "uvs" | "colors" | "normals" | "sharp" | "edges" | "groups" | "materials" | "faceStrength" | "vertexCreases",
+  ) =>
     parts.some((p) =>
-      k === "uvs" || k === "colors" || k === "normals" || k === "materials"
+      k === "uvs" || k === "colors" || k === "normals" || k === "materials" || k === "faceStrength"
         ? shaped(p, k)
-        : k === "sharp" || k === "groups"
+        : k === "sharp" || k === "groups" || k === "vertexCreases"
           ? (p[k]?.size ?? 0) > 0
           : (p[k]?.length ?? 0) > 0,
     );
@@ -93,6 +95,8 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const edges: number[][] | undefined = has("edges") ? [] : undefined;
   const groups: Map<string, Map<number, number>> | undefined = has("groups") ? new Map() : undefined;
   const materials: number[] | undefined = has("materials") ? [] : undefined;
+  const faceStrength: number[] | undefined = has("faceStrength") ? [] : undefined;
+  const vertexCreases: Map<number, number> | undefined = has("vertexCreases") ? new Map() : undefined;
   let cursor = 0;
 
   for (const part of parts) {
@@ -109,7 +113,9 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
       // Slots are concatenated as numbers. Blender's join renumbers them by
       // the material in each slot, which `MeshData` does not carry.
       materials?.push(shaped(part, "materials") ? part.materials![f]! : 0);
+      faceStrength?.push(shaped(part, "faceStrength") ? part.faceStrength![f]! : 0);
     });
+    for (const [v, c] of part.vertexCreases ?? []) vertexCreases?.set(v + base, c);
     remapKeys(part.creases, base, (k, v) => creases.set(k, v));
     remapKeys(part.seams, base, (k) => seams.add(k));
     if (sharp) remapKeys(part.sharp, base, (k) => sharp.add(k));
@@ -130,6 +136,8 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   if (edges) out.edges = edges;
   if (groups) out.groups = groups;
   if (materials) out.materials = materials;
+  if (faceStrength) out.faceStrength = faceStrength;
+  if (vertexCreases) out.vertexCreases = vertexCreases;
   return out;
 }
 
@@ -1154,6 +1162,10 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
       out.groups.set(name, ng);
     }
   }
+  if (data.vertexCreases) {
+    out.vertexCreases = new Map();
+    for (const [v, c] of data.vertexCreases) if (claimedBy[v] === -1) out.vertexCreases.set(remap[v]!, c);
+  }
   return out;
 }
 
@@ -1433,6 +1445,7 @@ export function solidify(data: MeshData, opts: SolidifyOptions): MeshData {
   };
   if (vertexLayers.sharp) out.sharp = vertexLayers.sharp;
   if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  if (vertexLayers.vertexCreases) out.vertexCreases = vertexLayers.vertexCreases;
   if (data.edges && data.edges.length > 0) out.edges = data.edges.map((e) => [...e]);
   return out;
 }
@@ -1647,8 +1660,12 @@ export function wireframe(data: MeshData, opts: WireframeOptions): MeshData {
   }
 
   const out: MeshData = { positions: Float32Array.from(positions), polys, ...defined(carryFaceLayers(data, sources)) };
-  const groups = carryVertexLayers({ groups: data.groups } as MeshData, vertexSource).groups;
+  const { groups, vertexCreases } = carryVertexLayers(
+    { groups: data.groups, vertexCreases: data.vertexCreases } as MeshData,
+    vertexSource,
+  );
   if (groups) out.groups = groups;
+  if (vertexCreases) out.vertexCreases = vertexCreases;
   return out;
 }
 
@@ -2119,6 +2136,19 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   if (normals) out.normals = normals;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faceSrc.map(({ face }) => data.materials![face]!);
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = faceSrc.map(({ face }) => data.faceStrength![face]!);
+  if (data.vertexCreases) {
+    // A float attribute: a cut vertex is its edge's ends mixed, absent counting 0 (C88).
+    const c = data.vertexCreases;
+    out.vertexCreases = new Map();
+    for (const [v, x] of c) if (v < count && remap[v]! >= 0) out.vertexCreases.set(remap[v]!, x);
+    for (const [m, { a, b, t }] of cutAt) {
+      if (remap[m]! < 0) continue;
+      const x = (c.get(a) ?? 0) * (1 - t) + (c.get(b) ?? 0) * t;
+      if (x !== 0) out.vertexCreases.set(remap[m]!, x);
+    }
+  }
   if (data.groups) {
     // A cut vertex mixes its edge's ends (`BM_data_interp_from_verts` —
     // `layerInterp_mdeformvert`: a source counts where its weight times the
@@ -2465,8 +2495,11 @@ export function convexHull(
   if (normals) out.normals = normals;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = material.map((f) => (f < 0 ? 0 : data.materials![f]!));
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = material.map((f) => (f < 0 ? 0 : data.faceStrength![f]!));
   const vertexLayers = carryVertexLayers({ ...data, edges: undefined }, source);
   if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  if (vertexLayers.vertexCreases) out.vertexCreases = vertexLayers.vertexCreases;
   // The hull's edges are made with `BM_CREATE_NO_DOUBLE`: an input edge it
   // runs along is that edge, flags and all.
   onlyEdgesOf(vertexLayers, polys);
@@ -2591,8 +2624,11 @@ export function convexHullOperator(data: MeshData, options: ConvexHullOperatorOp
   if (colors) out.colors = colors;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = origin.map((o) => ("face" in o ? data.materials![o.face]! : (hull.materials?.[o.hull] ?? 0)));
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    out.faceStrength = origin.map((o) => ("face" in o ? data.faceStrength![o.face]! : (hull.faceStrength?.[o.hull] ?? 0)));
   const vertexLayers = carryVertexLayers({ ...data, edges: undefined }, source);
   if (vertexLayers.groups) out.groups = vertexLayers.groups;
+  if (vertexLayers.vertexCreases) out.vertexCreases = vertexLayers.vertexCreases;
   onlyEdgesOf(vertexLayers, polys);
   if (vertexLayers.creases) out.creases = vertexLayers.creases;
   if (vertexLayers.seams) out.seams = vertexLayers.seams;

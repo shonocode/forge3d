@@ -375,6 +375,18 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   const colors = corner(data.colors);
   if (colors) result.colors = colors;
   if (data.materials && data.materials.length === data.polys.length) result.materials = mats;
+  // The face strength is copied from the face, with no offset; a vertex's crease from its source vertex (C88).
+  if (data.faceStrength && data.faceStrength.length === data.polys.length)
+    result.faceStrength = src.map(({ face }) => data.faceStrength![keptFace[face]!]!);
+  if (data.vertexCreases) {
+    const c = data.vertexCreases;
+    const nc = new Map<number, number>();
+    srcOf.forEach((s, v) => {
+      const x = c.get(s);
+      if (x !== undefined && keep[v]! >= 0) nc.set(keep[v]!, x);
+    });
+    result.vertexCreases = nc;
+  }
   if (data.groups) {
     const groups = new Map<string, Map<number, number>>();
     for (const [name, g] of data.groups) {

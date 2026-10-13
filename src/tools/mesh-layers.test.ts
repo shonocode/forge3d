@@ -34,11 +34,18 @@ function cube(): MeshData {
     normals: polys.map((p) => p.map(() => [0, 0, 1])),
     groups: new Map([["g", new Map([[0, 0.5], [6, 1]])]]),
     materials: polys.map((_, f) => f % 2),
+    vertexCreases: new Map([[0, 0.5], [6, 1]]),
+    faceStrength: polys.map((_, f) => (f % 3) * 16384 - 16384),
   };
 }
 
-type Layer = "uvs" | "colors" | "normals" | "groups" | "materials" | "creases" | "seams" | "sharp" | "edges";
-const ALL: Layer[] = ["uvs", "colors", "normals", "groups", "materials", "creases", "seams", "sharp", "edges"];
+type Layer =
+  | "uvs" | "colors" | "normals" | "groups" | "materials" | "creases" | "seams" | "sharp" | "edges"
+  | "vertexCreases" | "faceStrength";
+const ALL: Layer[] = [
+  "uvs", "colors", "normals", "groups", "materials", "creases", "seams", "sharp", "edges",
+  "vertexCreases", "faceStrength",
+];
 
 /** Present and shaped for these faces, absent, or (the failure) stale. */
 function state(out: MeshData, k: Layer): "ok" | "absent" | "stale" {
@@ -48,8 +55,8 @@ function state(out: MeshData, k: Layer): "ok" | "absent" | "stale" {
     if (!l || l.length === 0) return "absent";
     return l.length === F && l.every((f, i) => f.length === out.polys[i]!.length) ? "ok" : "stale";
   }
-  if (k === "materials") {
-    const m = out.materials;
+  if (k === "materials" || k === "faceStrength") {
+    const m = out[k];
     if (!m || m.length === 0) return "absent";
     return m.length === F ? "ok" : "stale";
   }
@@ -59,6 +66,13 @@ function state(out: MeshData, k: Layer): "ok" | "absent" | "stale" {
     const n = out.positions.length / 3;
     for (const grp of g.values()) for (const v of grp.keys()) if (v >= n) return "stale";
     return [...g.values()].some((grp) => grp.size > 0) ? "ok" : "absent";
+  }
+  if (k === "vertexCreases") {
+    const c = out.vertexCreases;
+    if (!c || c.size === 0) return "absent";
+    const n = out.positions.length / 3;
+    for (const v of c.keys()) if (v >= n) return "stale";
+    return "ok";
   }
   if (k === "edges") {
     const e = out.edges;
@@ -113,18 +127,37 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["meshFromData / meshToData", () => L.meshToData(L.meshFromData(cube()))],
   // The wire edge is not a hull edge.
   ["convexHull", () => L.convexHull(cube()), ALL.filter((k) => k !== "edges")],
-  ["unsubdivide", () => L.unsubdivide(cube()), ["uvs", "colors", "normals", "materials", "edges"]],
+  ["unsubdivide", () => L.unsubdivide(cube()), ["uvs", "colors", "normals", "materials", "edges", "faceStrength"]],
   ["bisectPlane", () => L.bisectPlane(cube(), { planeCo: [0, 0, 0], planeNo: [1, 0, 0] } as never)],
   // The wire edge 0-6 crosses to the side that goes.
   ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ALL.filter((k) => k !== "edges")],
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 })],
-  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials"]],
+  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials", "vertexCreases", "faceStrength"]],
+  // Weights are all they write; everything else passes through (C88 review).
+  ["vertexWeightEdit", () => L.vertexWeightEdit(cube(), { group: "g" })],
+  ["vertexWeightMix", () => L.vertexWeightMix(cube(), { groupA: "g" } as never)],
+  ["dissolveLimitMesh", () => L.dissolveLimitMesh(cube(), { angleLimit: 0.1 })],
+  ["decimatePlanar", () => L.decimatePlanar(cube())],
+  // Custom normals and the wire edge are not carried by the complex mode (they never were; not part of C88). The vertex
+  // creases go into the rim's edge creases, and with a rim Blender drops them from the result; without one they stay.
+  [
+    "solidifyComplex",
+    () => L.solidifyComplex(cube(), { thickness: 0.1 }),
+    ALL.filter((k) => k !== "normals" && k !== "edges" && k !== "vertexCreases"),
+  ],
+  [
+    "solidifyComplex (no rim)",
+    () => L.solidifyComplex(cube(), { thickness: 0.1, rim: false }),
+    ALL.filter((k) => k !== "normals" && k !== "edges"),
+  ],
 ];
 
 // New geometry whose layers need interpolation that is not ported: these
 // may drop a layer, whole. (Which ones they keep is listed so a change shows.)
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
-  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials"]],
+  // The vertex creases are interpolated into the result in Blender (`subdiv_mesh.cc`), not yet here (C89).
+  ["subsurfModifier", () => L.subsurfModifier(cube()), ["uvs", "groups", "materials", "creases", "seams", "sharp", "edges", "faceStrength"]],
+  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials", "faceStrength"]],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [
     "booleanMesh",
@@ -133,13 +166,13 @@ const DROPS: Array<[string, () => MeshData, Layer[]]> = [
         operation: "union",
         parts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
       } as never),
-    ["uvs", "colors", "groups", "materials"],
+    ["uvs", "colors", "groups", "materials", "faceStrength"],
   ],
   // Custom normals are compat-backlog C35 (Bevel's `harden_normals`); the edge layers are carried since C17.
-  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges"]],
+  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges", "faceStrength"]],
   // Custom normals are compat-backlog C29.
-  ["solidifyModifier", () => L.solidifyModifier(cube(), { thickness: 0.1 }), ["uvs", "colors", "groups", "materials", "creases", "seams", "sharp", "edges"]],
-  ["wireframeModifier", () => L.wireframeModifier(cube(), { thickness: 0.05 }), ["uvs", "colors", "groups", "materials"]],
+  ["solidifyModifier", () => L.solidifyModifier(cube(), { thickness: 0.1 }), ["uvs", "colors", "groups", "materials", "creases", "seams", "sharp", "edges", "vertexCreases", "faceStrength"]],
+  ["wireframeModifier", () => L.wireframeModifier(cube(), { thickness: 0.05 }), ["uvs", "colors", "groups", "materials", "vertexCreases", "faceStrength"]],
 ];
 
 describe("MeshData layers through the operators", () => {
@@ -233,6 +266,46 @@ describe("the values follow their vertex or face", () => {
     const out = L.meshToData(em);
     expect(weightAt(out, -0.5, 0, -0.5)).toBeCloseTo(0.25, 9);
     expect(out.materials).toHaveLength(out.polys.length);
+  });
+
+  // compat-backlog C88: `crease_vert` is a plain float attribute, mixed with an absent vertex counting 0.
+  const creaseAt = (out: MeshData, x: number, y: number, z: number): number | undefined => {
+    const P = out.positions;
+    for (let v = 0; v < P.length / 3; v++)
+      if (Math.abs(P[v * 3]! - x) < 1e-6 && Math.abs(P[v * 3 + 1]! - y) < 1e-6 && Math.abs(P[v * 3 + 2]! - z) < 1e-6)
+        return out.vertexCreases?.get(v);
+    return undefined;
+  };
+
+  it("a subdivided edge's new vertex mixes its ends' vertex creases (C88)", () => {
+    const em = L.meshFromData(cube());
+    const edges = new Set<number>();
+    L.forEachEdge(em, (he) => {
+      const a = L.edgeOrigin(em, he);
+      const b = L.edgeEnd(em, he);
+      if ((a === 0 && b === 3) || (a === 3 && b === 0)) edges.add(he);
+    });
+    L.subdivideEdges(em, edges, { cuts: 1 });
+    const out = L.meshToData(em);
+    // Vertex 0 at 0.5, vertex 3 not creased.
+    expect(creaseAt(out, -0.5, 0, -0.5)).toBeCloseTo(0.25, 9);
+    expect(creaseAt(out, -0.5, -0.5, -0.5)).toBe(0.5);
+    expect(out.faceStrength).toHaveLength(out.polys.length);
+  });
+
+  it("mergeByDistance (the Weld modifier) takes the mean of the merged vertex creases (C88)", () => {
+    const c = cube();
+    c.positions[3] = -0.5;
+    const out = L.mergeByDistance(c, 1e-4);
+    expect(creaseAt(out, -0.5, -0.5, -0.5)).toBeCloseTo(0.25, 9);
+  });
+
+  it("bevelMesh with the strength mode off keeps each face's source strength (C88)", () => {
+    const c = cube();
+    const out = L.bevelMesh(c, { offset: 0.1 } as never).mesh;
+    expect(out.faceStrength).toHaveLength(out.polys.length);
+    // The six original faces come back somewhere with their own values; every value is one the input had.
+    for (const s of out.faceStrength!) expect(c.faceStrength).toContain(s);
   });
 
   it("a rebuild with no known origin for a new vertex drops the groups whole", () => {

@@ -7,7 +7,7 @@
  *
  * - **Edge attributes** (crease, seam, sharp) are copied to **both child edges of every original edge**, at every level, and
  *   unchanged — the refined sharpness lives in OpenSubdiv's tables, not in the mesh. An edge made inside a face has none.
- * - **Faces** take their coarse face's material.
+ * - **Faces** take their coarse face's material and face strength (`faceStrength`).
  * - **Vertex groups** are interpolated from the **coarse face** a new vertex lies in (OpenSubdiv's ptex face; the lowest-numbered face
  *   for a vertex on an edge): its weight is the bilinear mix of that face's corners — which, level by level, is the average of the
  *   vertices it is made from — and it is in every group any corner of that face is in, a zero weight included.
@@ -87,6 +87,9 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   let seams = data.seams ? new Set(data.seams) : null;
   let sharp = data.sharp ? new Set(data.sharp) : null;
   let mats: number[] | null = data.materials && data.materials.length === data.polys.length ? keptFace.map((f) => data.materials![f]!) : null;
+  // An int face attribute: every child face keeps its coarse face's value (`subdiv_mesh_face`, compat-backlog C88).
+  let strength: number[] | null =
+    data.faceStrength && data.faceStrength.length === data.polys.length ? keptFace.map((f) => data.faceStrength![f]!) : null;
   let groups: Map<string, Map<number, number>> | null = data.groups ? new Map([...data.groups].map(([k, g]) => [k, new Map(g)])) : null;
   let positions = data.positions;
   let sigma = new Map<string, number>();
@@ -133,6 +136,7 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
     seams = carry(seams) as Set<string> | null;
     sharp = carry(sharp) as Set<string> | null;
     if (mats) mats = polys.flatMap((p, f) => p.map(() => mats![f]!));
+    if (strength) strength = polys.flatMap((p, f) => p.map(() => strength![f]!));
     if (groups) {
       const next = new Map<string, Map<number, number>>();
       for (const [name, g] of groups) {
@@ -204,6 +208,7 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   if (seams && seams.size) out.seams = seams;
   if (sharp && sharp.size) out.sharp = sharp;
   if (mats) out.materials = mats;
+  if (strength) out.faceStrength = strength;
   if (groups) out.groups = groups;
   return out;
 }

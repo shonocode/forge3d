@@ -159,6 +159,7 @@ export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<strin
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.materials) out.materials = [...data.materials];
   if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+  if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   return out;
 }
 

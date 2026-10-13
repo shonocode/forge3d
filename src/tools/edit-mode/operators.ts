@@ -498,6 +498,8 @@ export function bevelEdges(
   if (em.loopColors?.length) data.colors = em.loopColors;
   if (em.faceMaterials?.length) data.materials = em.faceMaterials;
   if (em.vertexGroups?.size) data.groups = em.vertexGroups;
+  if (em.faceStrength?.length) data.faceStrength = em.faceStrength;
+  if (em.vertexCreases?.size) data.vertexCreases = em.vertexCreases;
   if (em.wireEdges?.length) data.edges = em.wireEdges;
   if (em.seams.size) data.seams = em.seams;
   if (em.creases.size) data.creases = em.creases;
@@ -518,12 +520,16 @@ export function bevelEdges(
   delete em.loopColors;
   delete em.faceMaterials;
   delete em.vertexGroups;
+  delete em.faceStrength;
+  delete em.vertexCreases;
   delete em.loopNormals;
   delete em.sharpEdges;
   if (out.uvs) em.loopUVs = out.uvs;
   if (out.colors) em.loopColors = out.colors;
   if (out.materials) em.faceMaterials = out.materials;
   if (out.groups) em.vertexGroups = out.groups;
+  if (out.faceStrength) em.faceStrength = out.faceStrength;
+  if (out.vertexCreases) em.vertexCreases = out.vertexCreases;
   em.wireEdges = (out.edges ?? []).map((e) => [...e]);
   // The edge layers come back keyed by the new vertex numbers: `bevelMesh`
   // carries them as BMesh does (compat-backlog C17), so what the bevel left
@@ -2018,16 +2024,21 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
   }
 
   const materials = em.faceMaterials?.length === polys0.length ? parent.map((f) => em.faceMaterials![f]!) : undefined;
+  const faceStrength = em.faceStrength?.length === polys0.length ? parent.map((f) => em.faceStrength![f]!) : undefined;
   // Laid down after the rebuild: every face is new, so it would drop them all.
   em.loopUVs = undefined;
   em.loopColors = undefined;
   em.loopNormals = undefined;
   em.faceMaterials = undefined;
+  em.faceStrength = undefined;
   em.vertexGroups = undefined;
+  // What the subdivided vertices' creases are is not measured: dropped (C88).
+  em.vertexCreases = undefined;
   rebuildPolygons(em, result.positions, result.polys);
   if (result.uvs) em.loopUVs = result.uvs;
   if (colors) em.loopColors = colors;
   if (materials) em.faceMaterials = materials;
+  if (faceStrength) em.faceStrength = faceStrength;
   if (groups) em.vertexGroups = groups;
   // Carry the propagated (σ−1) creases onto the subdivided edges. Seams are
   // dropped — their vertex-pair keys no longer name real edges after the split.

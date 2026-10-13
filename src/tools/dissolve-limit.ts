@@ -97,8 +97,8 @@ function vertEdgePair(v: BV): [BE, BE] | null {
  * whatever its angle. Edges delimited (see `delimit`) are never dissolved.
  *
  * Layers: joined faces keep their corners (`BM_faces_join`); a removed
- * vertex's neighbours keep theirs; materials, vertex groups and the edge
- * flags of the edges that survive are carried. The joined face's material is
+ * vertex's neighbours keep theirs; materials, face strength, vertex groups,
+ * vertex creases and the edge flags of the edges that survive are carried. The joined face's material is
  * `faces[0]`'s — the face on the edge's first loop.
  */
 export function dissolveLimitMesh(data: MeshData, opts: DissolveLimitMeshOptions): MeshData {
@@ -336,6 +336,15 @@ function dissolveCore(data: MeshData, opts: DissolveLimitMeshOptions): MeshData 
         return [name, ng];
       }),
     );
+  // No vertex is made, so a vertex crease stays with its vertex (compat-backlog C88).
+  if (data.vertexCreases) {
+    const vc = new Map<number, number>();
+    for (const [v, c] of data.vertexCreases) {
+      const nvx = remap.get(v);
+      if (nvx !== undefined) vc.set(nvx, c);
+    }
+    out.vertexCreases = vc;
+  }
   const outKey = (e: BE): string => key(remap.get(e.v1.index)!, remap.get(e.v2.index)!);
   const live = new Set(liveEdges(bm));
   if (data.sharp) out.sharp = new Set([...sharp].filter((e) => live.has(e)).map(outKey));

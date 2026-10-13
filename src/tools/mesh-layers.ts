@@ -31,8 +31,8 @@ export interface FaceSource {
 export function carryFaceLayers(
   data: MeshData,
   sources: readonly FaceSource[],
-): Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> {
-  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials"> = {};
+): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> {
+  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> = {};
   const corner = (layer: number[][][] | undefined) =>
     layer && layer.length === data.polys.length
       ? sources.map((s) =>
@@ -56,6 +56,11 @@ export function carryFaceLayers(
     data.materials && data.materials.length === data.polys.length
       ? sources.map((s) => data.materials![s.face]!)
       : undefined;
+  // An int face attribute, copied from the source face like the slot (C88).
+  out.faceStrength =
+    data.faceStrength && data.faceStrength.length === data.polys.length
+      ? sources.map((s) => data.faceStrength![s.face]!)
+      : undefined;
   return out;
 }
 
@@ -74,8 +79,8 @@ export function sameFaces(faces: readonly number[], data: MeshData): FaceSource[
 export function carryVertexLayers(
   data: MeshData,
   source: ArrayLike<number>,
-): Pick<MeshData, "groups" | "creases" | "seams" | "sharp" | "edges"> {
-  const out: Pick<MeshData, "groups" | "creases" | "seams" | "sharp" | "edges"> = {};
+): Pick<MeshData, "groups" | "vertexCreases" | "creases" | "seams" | "sharp" | "edges"> {
+  const out: Pick<MeshData, "groups" | "vertexCreases" | "creases" | "seams" | "sharp" | "edges"> = {};
   // Input vertex -> output vertices (a vertex can be copied).
   const targets = new Map<number, number[]>();
   for (let v = 0; v < source.length; v++) {
@@ -92,6 +97,10 @@ export function carryVertexLayers(
       for (const [v, w] of g) for (const t of targets.get(v) ?? []) ng.set(t, w);
       out.groups.set(name, ng);
     }
+  }
+  if (data.vertexCreases) {
+    out.vertexCreases = new Map();
+    for (const [v, c] of data.vertexCreases) for (const t of targets.get(v) ?? []) out.vertexCreases.set(t, c);
   }
   // An edge key maps to every pair of copies of its ends that are both used
   // by an output face or wire edge; the caller filters with `usedEdges`.

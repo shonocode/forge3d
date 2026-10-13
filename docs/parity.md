@@ -88,7 +88,7 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   扇が変わったりする操作（reverse、bisect の切り口など）では答えが変わる。Weighted Normal を頂点グループか Keep Sharp 付きで、
   すでにカスタム法線を持つメッシュにかけると、Blender は滑らかな扇ごとに法線を混ぜて書く（`normals_corner_custom_set`）ので、
   グループ内外の角の答えが違う（行 `weighted-normal-vgroup-custom` / `-sharp-custom`、C94）
-- **2026-10-08 の監査（第4回）で見つかった、未測のもの**：スタックの途中で頂点 crease などの層が消える、
+- **2026-10-08 の監査（第4回）で見つかった、未測のもの**：
   Shrinkwrap の INSIDE / OUTSIDE の距離、編集モードの Merge / Collapse UVs / F キー、Screw 演算子、カスタム法線の4演算子の式、ほか。
   ソースを読んだ推論で、実測はまだ（直した順に行を足している）。直したもの：`bevelEdges` の `offsetType` の既定（Blender の `OFFSET` に）、
   GUI のモディファイア・スタックが呼ぶ関数（Smooth・Weld・Subdivision・Decimate をパリティ済みのものに。行 `gui-stack-*` がその経路を測る）、
@@ -97,7 +97,11 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   `selectSimilar` の頂点グループと頂点 crease、`collapse_uvs`（辺が鎖のとき、UV 島ごとに最小と最大の中点へ。行 `collapse-uvs-chain` / `-all` / `-boundary`）、
   編集モードの Weld / Merge / Collapse の面の作り直し（同じ面の隣でない2隅を溶接すると先に面を割る、同じ頂点の組になった面は1枚、
   生き残りは target、孤立頂点は残る。行 `weld-verts-pentagon` ほか6本）。溶接で辺が重なるときの seam / crease / sharp の引き継ぎはまだ違う。
-  編集モードの Screw 演算子（`screw()`、鎖の両端から climb を取る。行 `screw-bpy` / `-turns` / `-flat`）
+  編集モードの Screw 演算子（`screw()`、鎖の両端から climb を取る。行 `screw-bpy` / `-turns` / `-flat`）、
+  スタックの途中で消えていた頂点 crease と Weighted Normal の面の強さ（Mirror・Array・Displace・Wave・Shrinkwrap を通してから Subdivision、
+  Bevel の強さを Mirror・Triangulate・Edge Split・Solidify（両モード）・Decimate Planar を通してから Weighted Normal。行 `carry-*` の14本。
+  Complex Solidify は Blender と同じく頂点 crease を縁の辺の crease に入れ、縁があると結果から消す。Decimate（Collapse）・Boolean・Bevel・
+  Subdivision は頂点 crease を補間しないので落とす ― Subdivision は Blender では補間される、C89）
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
 - **GUI**：Loop Cut の後のスライドはドラッグではなく Edge Slide の量で動かす。Delete はメニューが無く、選択モードで種類が決まる（点＝Vertices、辺＝Edges、面＝Faces）。ワイヤ辺は描くが選べない
 

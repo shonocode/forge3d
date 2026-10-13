@@ -31,8 +31,8 @@ export interface MeshData {
   /**
    * One strength per polygon — Blender's `__mod_weightednormals_faceweight`, which the Bevel modifier's
    * `face_strength_mode` writes and the Weighted Normal modifier's `use_face_influence` reads (weak −16384,
-   * medium 0, strong 16384; any int is accepted). **Read by {@link weightedNormal} only** — no other operator
-   * carries it (compat-backlog C18; Bevel does not write it yet, C35).
+   * medium 0, strong 16384; any int is accepted). Read by {@link weightedNormal}, written by Bevel's
+   * `faceStrengthMode`. Carried like {@link materials} since compat-backlog C88: a face keeps its source face's value.
    */
   faceStrength?: number[];
   /**
@@ -134,7 +134,8 @@ export interface MeshData {
   materials?: number[];
   /**
    * Vertex creases — Blender's `crease_vert` (0..1), by vertex. Read by `subsurfModifier` (OpenSubdiv's vertex sharpness,
-   * compat-backlog C85); the other operators neither read nor carry it.
+   * compat-backlog C85). Carried like {@link groups} since C88 — a copied vertex keeps its value, a made one takes its
+   * origins' weighted sum (a float attribute's `layerInterp_propfloat`), absent counting 0.
    */
   vertexCreases?: Map<number, number>;
 }
@@ -169,6 +170,8 @@ export function meshFromData(data: MeshData): EditMesh {
   if (data.colors) em.loopColors = data.colors.map((f) => f.map((c) => [...c]));
   if (data.materials && data.materials.length === data.polys.length) em.faceMaterials = [...data.materials];
   if (data.groups) em.vertexGroups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.faceStrength && data.faceStrength.length === data.polys.length) em.faceStrength = [...data.faceStrength];
+  if (data.vertexCreases) em.vertexCreases = new Map(data.vertexCreases);
 
   const tri = triangulateFaces(em);
   em.triToFace = tri.triToFace;
@@ -177,8 +180,14 @@ export function meshFromData(data: MeshData): EditMesh {
 }
 
 /** Read an editable mesh back out as plain arrays. */
-export function meshToData(em: EditMesh): Required<Omit<MeshData, "faceStrength" | "vertexCreases">> {
+export function meshToData(
+  em: EditMesh,
+): Required<Omit<MeshData, "faceStrength" | "vertexCreases">> & Pick<MeshData, "faceStrength" | "vertexCreases"> {
   return {
+    // Only when present — absent is what every reader already takes as
+    // "none", and an empty `faceStrength` would read as one shaped for no faces.
+    ...(em.faceStrength ? { faceStrength: [...em.faceStrength] } : {}),
+    ...(em.vertexCreases ? { vertexCreases: new Map(em.vertexCreases) } : {}),
     positions: new Float32Array(em.positions),
     polys: toPolygons(em),
     creases: new Map(em.creases),
@@ -220,6 +229,8 @@ export function withPositions(data: MeshData, positions: Float32Array): MeshData
   if (data.normals) out.normals = data.normals.map((f) => f.map((c) => [...c]));
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.materials) out.materials = [...data.materials];
+  if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+  if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   return out;
 }
 

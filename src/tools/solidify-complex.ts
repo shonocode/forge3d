@@ -13,8 +13,12 @@
  * Merging (`nonmanifold_merge_threshold`) collapses vertices closer than the threshold first, and faces that
  * would degenerate are dropped.
  *
- * Not carried: custom normals (as in Simple mode, compat-backlog C29), bevel weights (a `MeshData` has none —
- * `bevelConvex` therefore does nothing) and vertex creases (none either).
+ * Not carried: custom normals (as in Simple mode, compat-backlog C29) and bevel weights (a `MeshData` has none —
+ * `bevelConvex` therefore does nothing).
+ *
+ * Vertex creases (compat-backlog C88) go into the rim: an open-face edge at vertex `i` gets `max(crease_vert[i], …)` of
+ * the edge creases, and with a rim the result has no vertex creases at all — Blender removes `crease_vert` (2041-2043).
+ * Without a rim each new vertex keeps its source vertex's crease (`vert_interp.copy`).
  */
 import type { MeshData } from "../lib/mesh";
 import { faceNormalCalc, type V3 } from "./blender-math";
@@ -1245,7 +1249,8 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
   const outEdges: [number, number][] = [];
   const srcEdge: number[] = [];
   const outCrease: number[] = [];
-  const hasCrease = !!data.creases && data.creases.size > 0;
+  // Blender writes the edge crease layer when either crease layer exists: the vertex creases go into the rim's edges.
+  const hasCrease = (!!data.creases && data.creases.size > 0) || (!!data.vertexCreases && data.vertexCreases.size > 0);
   const origCrease = (e: number): number => data.creases?.get(seamKey(origEdges[e]![0], origEdges[e]![1])) ?? 0;
   const outFaces: { corners: number[]; edges: number[]; srcCorner: number[]; srcFace: number; material: number }[] = [];
 
@@ -1291,6 +1296,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
     let firstG: EdgeGroup | null = null;
     let lastMaxCrease = 0;
     let firstMaxCrease = 0;
+    const mvCrease = data.vertexCreases?.get(i) ?? 0;
     let j = 0;
     for (let gi = 0; gi < gs.length; gi++) {
       const g = gs[gi]!;
@@ -1312,7 +1318,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
           const idx = outEdges.length;
           srcEdge[idx] = lastG!.edges[0]!.oldEdge;
           outEdges[idx] = [lastG!.newVert, g.newVert];
-          outCrease[idx] = Math.max(0, Math.min(lastMaxCrease, maxCrease));
+          outCrease[idx] = Math.max(mvCrease, Math.min(lastMaxCrease, maxCrease));
         }
         lastG = g;
         lastMaxCrease = maxCrease;
@@ -1325,7 +1331,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
           srcEdge[idx] = lastG!.edges[0]!.oldEdge;
           lastG!.openFaceEdge = idx;
           outEdges[idx] = [lastG!.newVert, firstG!.newVert];
-          outCrease[idx] = Math.max(0, Math.min(lastMaxCrease, firstMaxCrease));
+          outCrease[idx] = Math.max(mvCrease, Math.min(lastMaxCrease, firstMaxCrease));
           const edgeEnd = outEdges.length;
 
           // The face's material is the consensus of the faces at its two far ends.
@@ -1563,6 +1569,18 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
   const colFlat = flat(data.colors);
   if (colFlat) out.colors = outFaces.map((fc) => fc.srcCorner.map((c) => [...colFlat[c]!]));
   if (data.materials && data.materials.length === polys.length) out.materials = outFaces.map((fc) => fc.material);
+  // The face strength (an int face attribute) rides the same source face as the corners (C88). The vertex creases follow
+  // the groups' sources, but only without a rim: with one they went into the rim's edge creases above, and Blender drops them.
+  if (data.faceStrength && data.faceStrength.length === polys.length)
+    out.faceStrength = outFaces.map((fc) => data.faceStrength![fc.srcFace]!);
+  if (data.vertexCreases && !doRim) {
+    const vc = new Map<number, number>();
+    for (let nv = 0; nv < newVertsNum; nv++) {
+      const c = data.vertexCreases.get(srcVert[nv]!);
+      if (c !== undefined) vc.set(nv, c);
+    }
+    out.vertexCreases = vc;
+  }
 
   if (data.groups || opts.shellVertexGroup || opts.rimVertexGroup) {
     const groups = new Map<string, Map<number, number>>();
