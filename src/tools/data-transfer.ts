@@ -36,7 +36,7 @@
 import { vertexGroupWeights } from "./mesh-layers";
 import type { MeshData } from "../lib/mesh";
 import { closestPointOnTriangleBary } from "./edit-mode/attribute-transfer";
-import { faceNormalCalc, meshVertNormals, type V3 } from "./blender-math";
+import { meshFaceNormal, meshVertNormals, type V3 } from "./blender-math";
 import { calcEdges } from "./bmesh-lite";
 
 export type TransferMapping =
@@ -719,8 +719,9 @@ export function transferLoopData(
 
   const SP: V3[] = Array.from({ length: ns }, (_, v) => at(S, v));
   const TP: V3[] = Array.from({ length: T.length / 3 }, (_, v) => at(T, v));
-  const srcFaceNormals = srcPolys.map((p) => faceNormalCalc(SP, p));
-  const dstFaceNormals = dstPolys.map((p) => faceNormalCalc(TP, p));
+  // The Mesh's face normals (`mesh->face_normals()` in `mesh_remap.cc`): Newell, quads included (C104).
+  const srcFaceNormals = srcPolys.map((p) => meshFaceNormal(SP, p));
+  const dstFaceNormals = dstPolys.map((p) => meshFaceNormal(TP, p));
   const cornerNormal = (m: MeshData, faceNormals: V3[], f: number, i: number): Vec3 => {
     const n = m.normals?.[f]?.[i];
     const face = faceNormals[f]!;

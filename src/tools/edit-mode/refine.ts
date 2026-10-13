@@ -19,7 +19,7 @@
  * Pure and headless — Vitest-pinned.
  */
 import { scanfillTriangles } from "./triangle-fill";
-import { meshVertNormals } from "../blender-math";
+import { faceNormalCalc, meshVertNormals } from "../blender-math";
 import { bmFromMesh, calcEdges, diskEdges, liveEdges, otherVert, type BE, type BV } from "../bmesh-lite";
 import { rngSrandom } from "../blender-rng";
 import { genericTurbulence } from "../texture/noise";
@@ -618,7 +618,10 @@ function subdivide(
   const smoothFac = opts?.smooth ?? 0;
   const fractal = opts?.fractal ?? 0;
   const vno: Vec[] | null =
-    smoothFac !== 0 || fractal !== 0 ? meshVertNormals(polysToV3(P), polys).map((n): Vec => [n[0]!, n[1]!, n[2]!]) : null;
+    // The edit-mode BMesh's normals (`BM_mesh_normals_update`): its own face normals, a quad by its diagonals (C104).
+    smoothFac !== 0 || fractal !== 0
+      ? meshVertNormals(polysToV3(P), polys, faceNormalCalc).map((n): Vec => [n[0]!, n[1]!, n[2]!])
+      : null;
   // `bmo_subdivide_edges`: the fractal's offset into the noise is three
   // numbers from the seeded generator, times 200.
   const fractalOfs: Vec | null = (() => {

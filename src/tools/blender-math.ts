@@ -159,12 +159,78 @@ export function faceNormalCalc(P: readonly V3[], poly: readonly number[]): V3 {
 }
 
 /**
+ * A face normal as the **Mesh** has it — `normals_calc_faces` / `normal_calc_ngon` (`mesh_normals.cc`): Newell for every
+ * face, quads and triangles included, straight up when degenerate. `Mesh::face_normals_true()`, which the Mesh-side
+ * modifiers read (Solidify, both modes). The BMesh computes its own with {@link faceNormalCalc} (a quad by its
+ * diagonals). For a quad the two are the same vector in exact arithmetic (½ d1 × d2); they part only where a face is
+ * nearly flat to nothing and the float rounding is all there is (compat-backlog C104: a bevelled arm's crushed quad).
+ */
+export function meshFaceNormal(P: readonly V3[], poly: readonly number[]): V3 {
+  const n = newell(poly.map((v) => P[v]!));
+  if (normalizeInPlace(n) === 0) n[2] = 1;
+  return n;
+}
+
+/** `safe_asinf`: the argument clamped to [-1, 1]. */
+function safeAsinf(x: number): number {
+  return f(Math.asin(Math.max(-1, Math.min(1, x))));
+}
+
+/** `angle_normalized_v3v3`: the angle between two unit vectors by the asin form (more accurate than acos near 0 and π). */
+export function angleNormalizedV3v3(a: V3, b: V3): number {
+  if (dot(a, b) >= 0) return f(2 * safeAsinf(f(f(Math.sqrt(lenSq(sub(a, b)))) / 2)));
+  const nb: V3 = [-b[0]!, -b[1]!, -b[2]!];
+  return f(f(Math.PI) - f(2 * safeAsinf(f(f(Math.sqrt(lenSq(sub(a, nb)))) / 2))));
+}
+
+/**
+ * `face_angles_calc` (`mesh_evaluate.cc`): per corner, the angle between `prev − this` and `this − next` — the turn,
+ * π minus the interior angle — on float-normalised edges. The Weighted Normal's angle modes read `π − this`.
+ */
+export function meshFaceAngles(P: readonly V3[], poly: readonly number[]): number[] {
+  const n = poly.length;
+  const out = new Array<number>(n);
+  let iThis = n - 1;
+  const prev = sub(P[poly[iThis - 1]!]!, P[poly[iThis]!]!);
+  normalizeInPlace(prev);
+  for (let iNext = 0; iNext < n; iNext++) {
+    const next = sub(P[poly[iThis]!]!, P[poly[iNext]!]!);
+    normalizeInPlace(next);
+    out[iThis] = angleNormalizedV3v3(prev, next);
+    prev[0] = next[0]!;
+    prev[1] = next[1]!;
+    prev[2] = next[2]!;
+    iThis = iNext;
+  }
+  return out;
+}
+
+/**
+ * `face_area_calc` (`mesh_evaluate.cc`): a triangle by `area_tri_v3`, anything larger by `area_poly_v3` — half the
+ * length of the Newell vector, in float. The cross products cancel where the polygon turns back, so a twisted or
+ * folded quad (a rim face Solidify makes between two vertices nearly on top of each other) has far less than its
+ * triangles' areas summed (compat-backlog C104).
+ */
+export function meshFaceArea(P: readonly V3[], poly: readonly number[]): number {
+  const n = poly.length === 3 ? cross(sub(P[poly[0]!]!, P[poly[1]!]!), sub(P[poly[1]!]!, P[poly[2]!]!)) : newell(poly.map((v) => P[v]!));
+  return f(f(Math.sqrt(lenSq(n))) * 0.5);
+}
+
+/**
  * `Mesh::vert_normals()` / `normals_calc_verts`: each face's normal weighted by
  * the corner's angle (`safe_acos_approx`), summed and normalised. A vertex on
  * no face takes its own position, normalised — Blender's.
+ *
+ * The face normals are the Mesh's, {@link meshFaceNormal} (Newell) — also what a BMesh made from the Mesh starts with
+ * (`BM_mesh_bm_from_me` copies `vert_normals()`). `faceNormal` is for a BMesh that recomputes them after an edit
+ * (`BM_mesh_normals_update`, {@link faceNormalCalc}).
  */
-export function meshVertNormals(P: readonly V3[], polys: readonly (readonly number[])[]): V3[] {
-  const faceNo = polys.map((p) => faceNormalCalc(P, p));
+export function meshVertNormals(
+  P: readonly V3[],
+  polys: readonly (readonly number[])[],
+  faceNormal: (P: readonly V3[], poly: readonly number[]) => V3 = meshFaceNormal,
+): V3[] {
+  const faceNo = polys.map((p) => faceNormal(P, p));
   const acc: V3[] = P.map(() => [0, 0, 0]);
   const has = new Uint8Array(P.length);
   polys.forEach((p, fi) => {

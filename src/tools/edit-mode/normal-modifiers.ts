@@ -135,10 +135,9 @@
  * unit tests compare angles for the same reason.
  */
 import type { MeshData } from "../../lib/mesh";
+import { f as fl, meshFaceAngles, meshFaceArea, meshFaceNormal, mathNormalize, safeAcosApprox, sub as subF, dot as dotF, type V3 } from "../blender-math";
 import {
-  cornerAngle,
   currentNormals,
-  faceArea,
   faceNormal,
   smoothGroups,
   withNormals,
@@ -341,11 +340,17 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   // Per-face terms, computed once: the normal and the area, and the angle per
   // corner. `angle` mode drops the area, `area` mode drops the angle, and
   // `areaAngle` keeps both — measured as exactly those three products.
-  const normals = data.polys.map((poly) => faceNormal(P, poly));
-  const areas = data.polys.map((poly) => (mode === "angle" ? 1 : faceArea(P, poly)));
+  // `mesh->face_normals_true()` and `face_area_calc`: Newell in float, the area half the Newell length — as the modifier
+  // reads them (compat-backlog C104; the fan-summed area and the double Newell parted on Solidify's thin rim faces).
+  const PV: V3[] = Array.from({ length: P.length / 3 }, (_, v) => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]);
+  const normals = data.polys.map((poly) => meshFaceNormal(PV, poly) as Vec3);
+  const areas = data.polys.map((poly) => (mode === "angle" ? 1 : meshFaceArea(PV, poly)));
 
+  // `wn_corner_angle` / `wn_face_with_angle`: `π − face_angles_calc` (the interior angle, by the asin form on float
+  // edges), times the area in float for `areaAngle` (C104 review: the double acos lost accuracy at thin rim corners).
+  const turns = mode === "area" ? null : data.polys.map((poly) => meshFaceAngles(PV, poly));
   const cornerWeight = (f: number, i: number): number =>
-    areas[f]! * (mode === "area" ? 1 : cornerAngle(P, data.polys[f]!, i));
+    mode === "area" ? areas[f]! : mode === "angle" ? fl(fl(Math.PI) - turns![f]![i]!) : fl(fl(fl(Math.PI) - turns![f]![i]!) * areas[f]!);
 
   const out: Vec3[][] = data.polys.map((poly) => poly.map(() => [0, 0, 0] as Vec3));
 
@@ -363,15 +368,28 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
       for (const [i, v] of poly.entries()) itemOf[f]![i] = v;
   }
 
-  // The normal a corner has before any weighting: face normals weighted by the corner's angle, summed over
-  // its smooth group (what `normals_calc_corners` gives a smooth fan).
+  // The normal a corner has before any weighting: what `normals_calc_corners` gives its smooth fan —
+  // `accumulate_fan_normal`, the Mesh's face normals weighted by `safe_acos_approx` of the corner's edges, normalised;
+  // a fan of one corner keeps its face normal (C104 review).
   let defaults: Map<string, Vec3> | null = null;
+  const fanWeight = (gf: number, gi: number): number => {
+    const poly = data.polys[gf]!;
+    const v = PV[poly[gi]!]!;
+    const dp = mathNormalize(subF(PV[poly[(gi - 1 + poly.length) % poly.length]!]!, v));
+    const dn = mathNormalize(subF(PV[poly[(gi + 1) % poly.length]!]!, v));
+    return safeAcosApprox(dotF(dp, dn));
+  };
   const defaultNormal = (f: number, i: number): Vec3 => {
     if (!defaults) {
       defaults = new Map();
       for (const group of smoothGroups(data)) {
+        if (group.length === 1) {
+          const [gf, gi] = group[0]!;
+          defaults.set(`${gf}_${gi}`, normals[gf]!);
+          continue;
+        }
         let sum: Vec3 = [0, 0, 0];
-        for (const [gf, gi] of group) sum = add(sum, scale(normals[gf]!, cornerAngle(P, data.polys[gf]!, gi)));
+        for (const [gf, gi] of group) sum = add(sum, scale(normals[gf]!, fanWeight(gf, gi)));
         const n = normalized(sum);
         for (const [gf, gi] of group) defaults.set(`${gf}_${gi}`, n);
       }

@@ -21,7 +21,7 @@
  * Without a rim each new vertex keeps its source vertex's crease (`vert_interp.copy`).
  */
 import type { MeshData } from "../lib/mesh";
-import { faceNormalCalc, type V3 } from "./blender-math";
+import { meshFaceNormal, type V3 } from "./blender-math";
 import { seamKey } from "./edit-mode/half-edge";
 import { calcEdges } from "./bmesh-lite";
 import { vertexGroupWeights } from "./mesh-layers";
@@ -251,7 +251,8 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
   const edgesNum = origEdges.length;
 
   const origCo: V3[] = Array.from({ length: vertsNum }, (_, i) => [data.positions[i * 3]!, data.positions[i * 3 + 1]!, data.positions[i * 3 + 2]!]);
-  const faceNors: V3[] = polys.map((p) => [...faceNormalCalc(origCo, p)] as V3);
+  // `mesh->face_normals_true()` (`MOD_solidify_nonmanifold.cc` 215): Newell, quads included (compat-backlog C104).
+  const faceNors: V3[] = polys.map((p) => [...meshFaceNormal(origCo, p)] as V3);
 
   const faceSides: NewFaceRef[] = new Array(facesNum * 2);
   const nullFaces: boolean[] | null = offsetMode === "CONSTRAINTS" ? new Array<boolean>(facesNum).fill(false) : null;

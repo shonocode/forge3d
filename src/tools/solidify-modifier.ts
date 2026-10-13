@@ -20,7 +20,7 @@
  * the turned faces' normal spaces (C29).
  */
 import type { MeshData } from "../lib/mesh";
-import { faceNormalCalc, meshVertNormals, type V3 } from "./blender-math";
+import { meshFaceNormal, meshVertNormals, type V3 } from "./blender-math";
 import { seamKey } from "./edit-mode/half-edge";
 import { vertexGroupWeights } from "./mesh-layers";
 
@@ -175,7 +175,8 @@ export function solidifyModifier(data: MeshData, opts: SolidifyModifierOptions =
   const E = edges.length;
 
   const Pv: V3[] = Array.from({ length: V }, (_, i) => [P0[i * 3]!, P0[i * 3 + 1]!, P0[i * 3 + 2]!]);
-  const faceNo = polys.map((p) => faceNormalCalc(Pv, p));
+  // `mesh->face_normals_true()`: Newell, quads included (compat-backlog C104).
+  const faceNo = polys.map((p) => meshFaceNormal(Pv, p));
   const vertNo = meshVertNormals(Pv, polys);
 
   // ── rim: boundary edges and their vertices ─────────────────────────────

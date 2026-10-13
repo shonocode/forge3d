@@ -594,6 +594,9 @@ const positionsV3 = (em: EditMesh): V3[] => {
  * vectors, as the editor does.
  */
 function connectPairOnce(em: EditMesh, a: number, b: number, mode: "op" | "edbm" | "path", vertNormals?: readonly V3[]): Set<number> {
+  // The operators run on the edit-mode BMesh, whose normals are its own (a quad by its diagonals, compat-backlog C104);
+  // `bmesh.ops.connect_vert_pair` after `from_mesh` has the Mesh's — the default of `findConnectPath`.
+  if (!vertNormals && mode !== "op") vertNormals = meshVertNormals(positionsV3(em).map((p) => p.map(f)) as V3[], toPolygons(em), faceNormalCalc);
   const polys = toPolygons(em).map((p) => [...p]);
   const path = findConnectPath(polys, em.positions, a, b, vertNormals);
   if (!path) return new Set();
@@ -727,13 +730,13 @@ export function connectVertPath(em: EditMesh, verts: readonly number[]): boolean
   }
 
   const P = positionsV3(em);
-  const orig = meshVertNormals(P.map((p) => p.map(f)), polys);
+  const orig = meshVertNormals(P.map((p) => p.map(f)), polys, faceNormalCalc);
   let changed = false;
   for (let i = 0; i + 1 < verts.length; i++) {
     const a = verts[i]!;
     const b = verts[i + 1]!;
     if (edgeBetween(a, b)) continue;
-    const now = meshVertNormals(positionsV3(em).map((p) => p.map(f)), toPolygons(em));
+    const now = meshVertNormals(positionsV3(em).map((p) => p.map(f)), toPolygons(em), faceNormalCalc);
     now[a] = orig[a]!;
     now[b] = orig[b]!;
     if (connectPairOnce(em, a, b, "path", now).size > 0) changed = true;
