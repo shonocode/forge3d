@@ -1286,11 +1286,17 @@ export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: n
  * because Blender puts an edge collapse at the mean of the edge midpoints
  * rather than at the mean of the vertices, and those differ whenever the run is
  * unevenly spaced. `where` is indexed by cluster, and a missing or undefined
- * entry means the centroid. Faces whose cycle collapses below 3 unique verts are
- * dropped; a quad losing one edge to the merge degrades to a triangle
- * (consecutive duplicate corners are collapsed). The vertex buffer is
- * compacted (unreferenced verts removed), and seam keys are remapped across
- * the compaction.
+ * entry means the centroid. The survivor of each cluster is `survivors[c]` —
+ * `weldVerts` names its target — or else the lowest-numbered member.
+ *
+ * The faces follow `bmo_weld_verts_exec`: a face with two corners merging that
+ * are not neighbours is first cut between them (`remdoubles_splitface`); a
+ * face whose cycle collapses below 3 unique verts is dropped, and a quad
+ * losing one edge to the merge degrades to a triangle (consecutive duplicate
+ * corners are collapsed); a face that comes out as one already there is that
+ * face (`BM_face_exists`). Only the merged-away vertices leave the buffer —
+ * the rest keep their order, a loose vertex included — and seam keys are
+ * remapped across it.
  *
  * Returns the merged vertices' NEW (compacted) indices.
  */
@@ -1298,6 +1304,7 @@ function mergeClusters(
   em: EditMesh,
   clusters: number[][],
   where?: ReadonlyArray<readonly [number, number, number] | undefined>,
+  survivors?: ReadonlyArray<number>,
 ): Set<number> {
   const P = em.positions;
   const remap = new Map<number, number>();
@@ -1306,7 +1313,7 @@ function mergeClusters(
   for (let c = 0; c < clusters.length; c++) {
     const cluster = clusters[c]!;
     if (cluster.length < 2) continue;
-    const target = Math.min(...cluster);
+    const target = survivors?.[c] ?? Math.min(...cluster);
     targets.push(target);
     let cx = 0, cy = 0, cz = 0;
     for (const v of cluster) {
@@ -1334,21 +1341,94 @@ function mergeClusters(
   const keptPolys: number[][] = [];
   const stated: ExplicitFace[] = [];
   const polys = toPolygons(em);
-  polys.forEach((poly, g) => {
-    const n = poly.length;
+
+  /**
+   * `remdoubles_splitface`: a corner whose vertex merges onto another corner of the same face that is not its neighbour cuts the face between
+   * the two first, and each side is cut again the same way — a pentagon welded across a diagonal leaves a triangle rather than nothing.
+   * Only when the survivor itself is a corner: two corners merging onto a vertex outside the face is not cut, and the face is dropped below
+   * (`remdoubles_createface` bails out on a repeated vertex). A side is a run of the face's corner numbers; both sides keep the corners at the
+   * cut, with their data, as `BM_face_split` does. The first side stays in the face's place and the second goes to the end of the list, as
+   * `BM_face_split` appends its new face (compat-backlog C96).
+   */
+  const split = (poly: number[], run: number[], out: number[][], late: number[][]): void => {
+    const n = run.length;
+    for (let k = 0; k < n; k++) {
+      const v = poly[run[k]!]!;
+      const t = remap.get(v);
+      if (t === undefined || t === v) continue;
+      const j = run.findIndex((i) => poly[i] === t);
+      if (j < 0 || j === (k + 1) % n || j === (k + n - 1) % n) continue;
+      const side = (from: number, to: number): number[] => {
+        const s: number[] = [];
+        for (let i = from; ; i = (i + 1) % n) {
+          s.push(run[i]!);
+          if (i === to) return s;
+        }
+      };
+      // `a` is k … j-1 and a copy of j, `b` is j … k-1 and a copy of k. Each side is scanned from its first corner, which is where the next
+      // cut is looked for: the face's own first corner (`run[0]`) on its side, and on the other the corner `bmesh_kernel_split_face_make_edge`
+      // gives it — next to that first corner across the cut when it is a neighbour of the cut, else the copy.
+      const a = side(k, j);
+      const b = side(j, k);
+      const rot = (s: number[], at: number): number[] => [...s.slice(at), ...s.slice(0, at)];
+      const inA = (n - k) % n < (j - k + n) % n; // run[0] is one of k … j-1
+      let sa: number, sb: number;
+      if (inA) {
+        sa = (n - k) % n;
+        sb = k === 0 ? b.length - 2 : j === 1 % n ? 0 : b.length - 1;
+      } else {
+        sb = (n - j) % n;
+        sa = j === 0 ? a.length - 2 : k === 1 % n ? 0 : a.length - 1;
+      }
+      // The new face is appended when it is made, before either side is cut again.
+      const at = late.length;
+      late.push([]);
+      split(poly, rot(a, sa), out, late);
+      const own: number[][] = [];
+      split(poly, rot(b, sb), own, late);
+      late[at] = own[0]!;
+      return;
+    }
+    out.push(run);
+  };
+
+  // `BM_face_exists`: a rebuilt face whose vertices are those of a face already there — one the merge did not touch, or one rebuilt before
+  // it — is that face, and is not made again (an octahedron's apex welded onto the other apex leaves four faces, not eight).
+  const faceKey = (vs: readonly number[]): string => [...vs].sort((a, b) => a - b).join(",");
+  const seen = new Set<string>();
+  for (const poly of polys) if (!poly.some((v) => mapped(v) !== v)) seen.add(faceKey(poly));
+
+  const rebuild = (poly: number[], g: number, run: number[]): void => {
+    const n = run.length;
     const dedup: number[] = [];
     const corners: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const v = mapped(poly[i]!);
-      if (v === mapped(poly[(i + 1) % n]!)) continue; // the edge onward collapses
+    for (let k = 0; k < n; k++) {
+      const v = mapped(poly[run[k]!]!);
+      if (v === mapped(poly[run[(k + 1) % n]!]!)) continue; // the edge onward collapses
       dedup.push(v);
-      corners.push(i);
+      corners.push(run[k]!);
     }
     if (dedup.length < 3) return;
-    if (new Set(dedup).size !== dedup.length) return; // bowtie — drop
+    if (new Set(dedup).size !== dedup.length) return; // a vertex twice — `remdoubles_createface` bails out
+    const touched = poly.some((v) => mapped(v) !== v);
+    if (touched) {
+      const key = faceKey(dedup);
+      if (seen.has(key)) return;
+      seen.add(key);
+    }
     keptPolys.push(dedup);
     stated.push({ corners: corners.map((i) => [[g, i, 1] as const]), material: g });
+  };
+
+  const late: Array<[number[], number, number[]]> = [];
+  polys.forEach((poly, g) => {
+    const here: number[][] = [];
+    const after: number[][] = [];
+    split(poly, poly.map((_, i) => i), here, after);
+    for (const run of here) rebuild(poly, g, run);
+    for (const run of after) late.push([poly, g, run]);
   });
+  for (const [poly, g, run] of late) rebuild(poly, g, run);
 
   // `weld_verts` keeps every edge it merges the ends of: one whose faces all vanished (a sliver folded onto a line) stays as a wire
   // edge between the survivors — the same for the wire edges that were there (compat-backlog C84).
@@ -1365,18 +1445,16 @@ function mergeClusters(
   for (const poly of polys) poly.forEach((a, i) => keep(a, poly[(i + 1) % poly.length]!));
   for (const [a, b] of em.wireEdges ?? []) keep(a!, b!);
 
-  // Compact the vertex buffer to referenced verts only.
+  // Only the merged-away vertices go; the rest keep their order, a vertex on nothing included — `weld_verts` deletes the keys and nothing
+  // else (compat-backlog C96).
   const oldToNew = new Map<number, number>();
   const newPositions: number[] = [];
-  const idxOf = (v: number): number => {
-    let nv = oldToNew.get(v);
-    if (nv === undefined) {
-      nv = newPositions.length / 3;
-      oldToNew.set(v, nv);
-      newPositions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
-    }
-    return nv;
-  };
+  for (let v = 0; v < em.vertices.length; v++) {
+    if (mapped(v) !== v) continue;
+    oldToNew.set(v, newPositions.length / 3);
+    newPositions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
+  }
+  const idxOf = (v: number): number => oldToNew.get(v)!;
   const newPolys = keptPolys.map((poly) => poly.map(idxOf));
   const newWire = wire.map(([a, b]) => [idxOf(a), idxOf(b)]);
 
@@ -1490,6 +1568,8 @@ export function weldVerts(em: EditMesh, targetmap: ReadonlyMap<number, number>):
     targets.map((t) => [...byTarget.get(t)!]),
     // The target keeps its place; only the keys move.
     targets.map((t) => [P[t * 3]!, P[t * 3 + 1]!, P[t * 3 + 2]!] as const),
+    // …and the target is what survives, with its own vertex data, whatever its number (compat-backlog C96).
+    targets,
   );
 }
 

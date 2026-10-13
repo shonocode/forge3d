@@ -905,11 +905,13 @@ describe("mergeAtCenter / collapseEdges", () => {
     expect(em.positions[v * 3 + 2]).toBeCloseTo(-1, 5);
   });
 
-  it("merging non-adjacent verts keeps all faces", () => {
+  it("merging opposite corners keeps one of each pair of faces that come out the same", () => {
+    // Each of 6's triangles comes out as one of 0's — (1, 6, 5) as (1, 0, 5) — and `BM_face_exists` makes it that face, not a second copy
+    // (compat-backlog C96; the row `weld-verts-same-face` measures the octahedron's apexes). This read 12 before: six doubled faces.
     const em = buildEditMesh(makeCube())!;
     mergeAtCenter(em, new Set([0, 6]));
     expect(em.vertices).toHaveLength(7);
-    expect(em.faces).toHaveLength(12);
+    expect(em.faces).toHaveLength(6);
   });
 
   it("needs at least 2 verts", () => {
@@ -995,6 +997,66 @@ describe("mergeAtCenter / collapseEdges", () => {
     });
     // No vertex in the map is a terminal, so there is nothing to land on.
     expect(() => weldVerts(em, new Map([[0, 1], [1, 0]]))).toThrow(/cycle/);
+  });
+
+  // compat-backlog C96 — `bmo_weld_verts_exec`'s face rebuild. Rows `weld-verts-pentagon` / `-hexagon` / `-same-face` / `-target-above` /
+  // `-loose` measure the same against Blender 5.1.1.
+  /** A flat pentagon, vertices 0-4 in order. */
+  const pentagon = (): { positions: Float32Array; polys: number[][] } => {
+    const positions: number[] = [];
+    for (let i = 0; i < 5; i++) positions.push(Math.cos((i / 5) * 2 * Math.PI), 0, Math.sin((i / 5) * 2 * Math.PI));
+    return { positions: Float32Array.from(positions), polys: [[0, 1, 2, 3, 4]] };
+  };
+
+  it("weldVerts across a face cuts it first and keeps the side that is left (remdoubles_splitface)", () => {
+    // 2 → 0: the triangle 0-1-2 folds to an edge, the quad 2-3-4-0 becomes the triangle 0-3-4. It used to drop the face.
+    const em = meshFromData(pentagon());
+    weldVerts(em, new Map([[2, 0]]));
+    const out = meshToData(em);
+    expect(out.polys.map((p) => [...p].sort())).toEqual([[0, 2, 3]]); // 0, 3, 4 renumbered without 2
+    expect(out.edges?.map((e) => [...e].sort())).toEqual([[0, 1]]); // what is left of the triangle
+  });
+
+  it("weldVerts does not cut when the target is outside the face — the face is dropped", () => {
+    // 1 → 5 and 3 → 5 with 5 not in the pentagon: `remdoubles_createface` meets 5 twice and bails out.
+    const m = pentagon();
+    const em = meshFromData({ positions: Float32Array.from([...m.positions, 0, 1, 0]), polys: m.polys });
+    weldVerts(em, new Map([[1, 5], [3, 5]]));
+    expect(meshToData(em).polys).toEqual([]);
+  });
+
+  it("weldVerts reuses a face that is already there (BM_face_exists)", () => {
+    // An octahedron's -y apex onto the +y one: each lower face comes out as an upper one.
+    const em = meshFromData({
+      positions: Float32Array.from([1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1]),
+      polys: [[2, 4, 0], [2, 1, 4], [2, 5, 1], [2, 0, 5], [3, 0, 4], [3, 4, 1], [3, 1, 5], [3, 5, 0]],
+    });
+    weldVerts(em, new Map([[3, 2]]));
+    expect(meshToData(em).polys).toHaveLength(4);
+  });
+
+  it("weldVerts keeps the target, with its vertex groups, when it is numbered above the key", () => {
+    const em = meshFromData({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+      groups: new Map([["g", new Map([[0, 0.25], [3, 0.75]])]]),
+    });
+    weldVerts(em, new Map([[0, 3]]));
+    const out = meshToData(em);
+    // 3 survives as vertex 2, at its own place and with its own weight.
+    expect([...out.positions.slice(6, 9)]).toEqual([0, 1, 0]);
+    expect([...out.groups!.get("g")!]).toEqual([[2, 0.75]]);
+  });
+
+  it("weldVerts deletes the keys and nothing else: a vertex on nothing stays, in its place", () => {
+    const em = meshFromData({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 5, 5, 5]),
+      polys: [[0, 1, 2, 3]],
+    });
+    weldVerts(em, new Map([[1, 0]]));
+    const out = meshToData(em);
+    expect(out.positions.length / 3).toBe(4);
+    expect([...out.positions.slice(9, 12)]).toEqual([5, 5, 5]);
   });
 
   it("collapseEdges lands on the mean of the edge midpoints, not the vertex centroid", () => {
