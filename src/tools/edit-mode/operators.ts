@@ -1472,20 +1472,45 @@ function mergeClusters(
     const nb = oldToNew.get(mapped(b!));
     return na !== undefined && nb !== undefined && na !== nb ? seamKey(na, nb) : null;
   };
+  // Edges that land on one (Blender's `bmo_weld_verts_exec`, `bmo_removedoubles.cc` 255-286, compat-backlog C103):
+  // - the crease (custom data) is the kept edge's — the one whose ends both survive, which `BM_edge_exists` finds —
+  //   else the first source edge's in edge order (`BM_edge_create` with it as the example);
+  // - seam and sharp are header flags that `BM_elem_flag_merge_ex(e_new, e, BM_ELEM_HIDDEN)` ORs over every edge
+  //   merged in: the seam is the union, and sharp — stored as the absence of `BM_ELEM_SMOOTH` — the intersection.
+  // Before C103 sharp was the union and the crease the first in the map. Edge order is taken as the edges' first
+  // appearance round the faces, then the wire edges.
+  const owner = new Map<string, string>();
+  const order: string[] = [];
+  const listed = new Set<string>();
+  for (const poly of polys)
+    for (let i = 0; i < poly.length; i++) {
+      const k = seamKey(poly[i]!, poly[(i + 1) % poly.length]!);
+      if (!listed.has(k)) (listed.add(k), order.push(k));
+    }
+  for (const [a, b] of em.wireEdges ?? []) {
+    const k = seamKey(a!, b!);
+    if (!listed.has(k)) (listed.add(k), order.push(k));
+  }
+  const sources = new Map<string, string[]>();
+  for (const pass of [0, 1])
+    for (const key of order) {
+      const [a, b] = key.split("_").map(Number) as [number, number];
+      const kept = mapped(a) === a && mapped(b) === b;
+      if ((pass === 0) !== kept) continue;
+      const k = moveKey(key);
+      if (!k) continue;
+      if (!owner.has(k)) owner.set(k, key);
+      sources.set(k, [...(sources.get(k) ?? []), key]);
+    }
   const newSeams = new Set<string>();
-  for (const key of em.seams) {
-    const k = moveKey(key);
-    if (k) newSeams.add(k);
-  }
   const newCreases = new Map<string, number>();
-  for (const [key, w] of em.creases) {
-    const k = moveKey(key);
-    if (k && !newCreases.has(k)) newCreases.set(k, w);
-  }
   const newSharp = em.sharpEdges ? new Set<string>() : undefined;
-  for (const key of em.sharpEdges ?? []) {
-    const k = moveKey(key);
-    if (k) newSharp!.add(k);
+  for (const [k, src] of owner) {
+    const all = sources.get(k)!;
+    if (all.some((e) => em.seams.has(e))) newSeams.add(k);
+    const w = em.creases.get(src);
+    if (w !== undefined) newCreases.set(k, w);
+    if (all.every((e) => em.sharpEdges?.has(e))) newSharp?.add(k);
   }
 
   // The layers in two steps: the faces on the old numbering (corners as
