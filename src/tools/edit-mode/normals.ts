@@ -49,6 +49,14 @@ export interface AverageNormalsOptions {
    * `angle`. Default `plain`, which is Blender's default.
    */
   weight?: NormalWeight;
+  /**
+   * Blender's `weight` (an integer, 1–100, default 50): how much the strongest faces dominate. At 50 every face counts by
+   * its area / angle alone; above, each tier of weaker faces is divided by a further factor (100: only the strongest
+   * tier); below, the weaker ones gain. Read from `edbm_average_normals_exec` (compat-backlog C101).
+   */
+  influence?: number;
+  /** Blender's `threshold` (default 0.01): values closer than this are one tier. */
+  threshold?: number;
 }
 
 export interface SmoothNormalsOptions {
@@ -61,6 +69,15 @@ export interface PointNormalsOptions {
   target?: readonly [number, number, number];
   /** Blender's `invert`: point away from the target instead of at it. */
   invert?: boolean;
+  /** Blender's `align`: every corner along target − (the mean of the vertices), all parallel. */
+  align?: boolean;
+  /**
+   * Blender's `spherize`: each corner's current normal mixed with the direction from its vertex to the target,
+   * `normal·(1 − strength) + strength·unit(target − vertex)`. Takes precedence over `align`, as Blender's.
+   */
+  spherize?: boolean;
+  /** Blender's `spherize_strength`. Default 0.1. */
+  spherizeStrength?: number;
 }
 
 /**
@@ -119,6 +136,23 @@ export function faceArea(P: Float32Array, poly: readonly number[]): number {
     area += Math.hypot(n[0], n[1], n[2]) / 2;
   }
   return area;
+}
+
+/** `BM_face_calc_area`: half the length of the Newell vector, in float (`area_poly_v3`). */
+function newellArea(P: Float32Array, poly: readonly number[]): number {
+  const f = Math.fround;
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  let prev = poly[poly.length - 1]! * 3;
+  for (const v of poly) {
+    const c = v * 3;
+    nx = f(nx + f(f(P[prev + 1]! - P[c + 1]!) * f(P[prev + 2]! + P[c + 2]!)));
+    ny = f(ny + f(f(P[prev + 2]! - P[c + 2]!) * f(P[prev]! + P[c]!)));
+    nz = f(nz + f(f(P[prev]! - P[c]!) * f(P[prev + 1]! + P[c + 1]!)));
+    prev = c;
+  }
+  return f(f(Math.sqrt(f(f(f(nx * nx) + f(ny * ny)) + f(nz * nz)))) * 0.5);
 }
 
 /** The interior angle of `poly` at its corner `i`. */
@@ -240,25 +274,45 @@ export function splitNormals(data: MeshData): MeshData {
 }
 
 /**
- * Average the face normals at each vertex onto all of its corners, and clear
- * every sharp edge — Blender's `bpy.ops.mesh.merge_normals`.
+ * Average the corner normals at each vertex onto all of its corners, and clear
+ * every sharp edge — Blender's `bpy.ops.mesh.merge_normals` (`normals_merge`).
  *
- * The average is **plain** — not area- or angle-weighted. Measured on a fan
- * whose faces differ tenfold in area: the answer is the unweighted one to
- * 4e-5, which is float32.
+ * The average is **plain**, of each corner's **current** normal (`nloc`, read
+ * before the sharp edges go — the custom normal where there is one), over the
+ * fan the corner is in once they are gone: here every corner at the vertex.
+ * forge3d averaged the face normals until compat-backlog C101, which is the same
+ * answer where every corner shows its face normal (a flat-shaded mesh with no
+ * custom normals — what the first rows measured). A fan of one corner is left
+ * as it is (`MLNOR_SPACE_IS_SINGLE`); an average below `CLNORS_VALID_VEC_LEN`
+ * falls back to the fan's default normal (angle-weighted face normals).
  */
 export function mergeNormals(data: MeshData): MeshData {
-  const faceNs = data.polys.map((poly) => faceNormal(data.positions, poly));
+  const CLNORS_VALID_VEC_LEN = 1e-4;
+  const current = currentNormals(data);
   const acc = new Map<number, Vec3>();
-  for (const [f, poly] of data.polys.entries())
-    for (const v of poly) acc.set(v, add(acc.get(v) ?? [0, 0, 0], faceNs[f]!));
-  const out = data.polys.map((poly) => poly.map((v) => normalized(acc.get(v)!)));
+  const count = new Map<number, number>();
+  const fallback = new Map<number, Vec3>();
+  for (const [f, poly] of data.polys.entries()) {
+    const fn = faceNormal(data.positions, poly);
+    poly.forEach((v, i) => {
+      acc.set(v, add(acc.get(v) ?? [0, 0, 0], current[f]![i]!));
+      count.set(v, (count.get(v) ?? 0) + 1);
+      fallback.set(v, add(fallback.get(v) ?? [0, 0, 0], scale(fn, cornerAngle(data.positions, poly, i))));
+    });
+  }
+  const out = data.polys.map((poly, f) =>
+    poly.map((v, i): Vec3 => {
+      if (count.get(v)! === 1) return [...current[f]![i]!] as Vec3;
+      const sum = acc.get(v)!;
+      return Math.hypot(sum[0], sum[1], sum[2]) < CLNORS_VALID_VEC_LEN ? normalized(fallback.get(v)!) : normalized(sum);
+    }),
+  );
   return withNormals(data, out, null);
 }
 
 /**
  * Average the corner normals within each smooth group — Blender's
- * `bpy.ops.mesh.average_normals`.
+ * `bpy.ops.mesh.average_normals` (`edbm_average_normals_exec`).
  *
  * ```ts
  * averageNormals(mesh);                      // Blender's CUSTOM_NORMAL
@@ -266,24 +320,64 @@ export function mergeNormals(data: MeshData): MeshData {
  * averageNormals(mesh, { weight: "angle" }); // CORNER_ANGLE
  * ```
  *
+ * What gets weighted (compat-backlog C101): `plain` sums the corners' current
+ * (custom) normals; `area` and `angle` weight the **face** normal
+ * (`l->f->no`) by the face's area / the corner's angle — not the corner's
+ * current normal, which is the same only where every corner shows its face
+ * normal. The values go largest first; each time one is more than `threshold`
+ * from the value that opened the current tier, the tier rank goes up and its
+ * terms are divided by `weight^rank` (`influence`, mapped as Blender maps it).
+ * A corner alone in its fan (both its edges sharp) takes its face normal.
+ * The area is `BM_face_calc_area` — half the Newell vector — which a
+ * non-planar quad has less of than its two triangles summed.
+ *
  * Unlike {@link mergeNormals} this respects sharp edges and leaves them alone,
  * so on a mesh `splitNormals` has been over it changes nothing.
  */
 export function averageNormals(data: MeshData, options: AverageNormalsOptions = {}): MeshData {
   const weight = options.weight ?? "plain";
+  const absweight = options.influence ?? 50;
+  const threshold = options.threshold ?? 0.01;
+  const SHRT_MAX = 32767;
+  let tierWeight = absweight / 50;
+  if (absweight === 100) tierWeight = SHRT_MAX;
+  else if (absweight === 1) tierWeight = 1 / SHRT_MAX;
+  else if ((tierWeight - 1) * 25 > 1) tierWeight = (tierWeight - 1) * 25;
+  const fr = Math.fround;
   const current = currentNormals(data);
+  const faceNs = data.polys.map((poly) => faceNormal(data.positions, poly));
   const out = current.map((f) => f.map((n) => [...n] as Vec3));
   for (const group of smoothGroups(data)) {
+    if (group.length === 1) {
+      const [f, i] = group[0]!;
+      out[f]![i] = [...faceNs[f]!] as Vec3;
+      continue;
+    }
+    // `1 / area`, `1 / angle` or 1, in float; the heap gives the smallest first — the largest area / angle.
+    const items = group
+      .map(([f, i]) => {
+        const poly = data.polys[f]!;
+        const val =
+          weight === "plain" ? 1 : weight === "area" ? fr(1 / newellArea(data.positions, poly)) : fr(1 / fr(cornerAngle(data.positions, poly, i)));
+        return { f, i, val };
+      })
+      .sort((a, b) => a.val - b.val);
     let acc: Vec3 = [0, 0, 0];
-    for (const [f, i] of group) {
-      const poly = data.polys[f]!;
-      const w =
-        weight === "plain"
-          ? 1
-          : weight === "area"
-            ? faceArea(data.positions, poly)
-            : cornerAngle(data.positions, poly, i);
-      acc = add(acc, scale(current[f]![i]!, w));
+    let tier = 0;
+    let opened = items[0]!.val;
+    for (const { f, i, val } of items) {
+      // `compare_ff` in float, against the float threshold.
+      if (!(Math.abs(fr(opened - val)) <= fr(threshold))) {
+        tier++;
+        opened = val;
+      }
+      const term = weight === "plain" ? current[f]![i]! : faceNs[f]!;
+      acc = add(acc, scale(term, (1 / val) * (1 / Math.pow(tierWeight, tier))));
+    }
+    if (Math.hypot(acc[0], acc[1], acc[2]) < 1e-4) {
+      // `CLNORS_VALID_VEC_LEN`: the default normal of the fan.
+      acc = [0, 0, 0];
+      for (const [f, i] of group) acc = add(acc, scale(faceNs[f]!, cornerAngle(data.positions, data.polys[f]!, i)));
     }
     const n = normalized(acc);
     for (const [f, i] of group) out[f]![i] = [...n] as Vec3;
@@ -292,30 +386,48 @@ export function averageNormals(data: MeshData, options: AverageNormalsOptions = 
 }
 
 /**
- * Blend each corner normal toward the plain average at its vertex — Blender's
- * `bpy.ops.mesh.smooth_normals`.
+ * Blend each corner normal toward the sum at its vertex — Blender's
+ * `bpy.ops.mesh.smooth_normals` (`edbm_smooth_normals_exec`).
  *
- * `factor` 0 leaves it, 1 is the average. Measured on a cube at 0.5: the
- * corner comes back at (-0.325, -0.325, -0.888), which is the normalized
- * midpoint between the face normal and the diagonal.
+ * The sum is not the vertex's own corners: for each corner Blender adds the
+ * current normal of **every corner of every face round its vertex**
+ * (`BM_FACES_OF_VERT` × `BM_LOOPS_OF_FACE`) — a face counts once per corner,
+ * its corners at other vertices included, and sharp edges cut nothing
+ * (compat-backlog C101; forge3d summed the vertex's corners within each smooth
+ * group, the same answer on the flat fan and the cube the rows used). Then
+ * `normalize(current·(1 − factor) + sum·factor)`, a corner left alone when
+ * either vector is below `CLNORS_VALID_VEC_LEN`.
+ *
+ * `factor` 0 leaves it, 1 is the sum. Measured on a cube at 0.5: the
+ * corner comes back at (-0.325, -0.325, -0.888).
  */
 export function smoothNormals(data: MeshData, options: SmoothNormalsOptions = {}): MeshData {
   const factor = options.factor ?? 0.5;
+  const CLNORS_VALID_VEC_LEN = 1e-4;
   const current = currentNormals(data);
   const out = current.map((f) => f.map((n) => [...n] as Vec3));
-  for (const group of smoothGroups(data)) {
-    let acc: Vec3 = [0, 0, 0];
-    for (const [f, i] of group) acc = add(acc, current[f]![i]!);
-    const target = normalized(acc);
-    for (const [f, i] of group) {
+  // Per vertex: the sum over the faces using it (each once) of all their corners' normals.
+  const sumAt = new Map<number, Vec3>();
+  data.polys.forEach((poly, f) => {
+    let faceSum: Vec3 = [0, 0, 0];
+    for (const n of current[f]!) faceSum = add(faceSum, n);
+    for (const v of new Set(poly)) sumAt.set(v, add(sumAt.get(v) ?? [0, 0, 0], faceSum));
+  });
+  data.polys.forEach((poly, f) => {
+    poly.forEach((v, i) => {
+      const sum = sumAt.get(v)!;
+      if (Math.hypot(sum[0], sum[1], sum[2]) < CLNORS_VALID_VEC_LEN) return;
+      const target = normalized(sum);
       const n = current[f]![i]!;
-      out[f]![i] = normalized([
-        n[0] + (target[0] - n[0]) * factor,
-        n[1] + (target[1] - n[1]) * factor,
-        n[2] + (target[2] - n[2]) * factor,
-      ]);
-    }
-  }
+      const mixed: Vec3 = [
+        n[0] * (1 - factor) + target[0] * factor,
+        n[1] * (1 - factor) + target[1] * factor,
+        n[2] * (1 - factor) + target[2] * factor,
+      ];
+      if (Math.hypot(mixed[0], mixed[1], mixed[2]) < CLNORS_VALID_VEC_LEN) return;
+      out[f]![i] = normalized(mixed);
+    });
+  });
   return withNormals(data, out);
 }
 
@@ -327,14 +439,35 @@ export function smoothNormals(data: MeshData, options: SmoothNormalsOptions = {}
  * arguments (measured: a cube's corner at (-0.1, -0.1, -0.1) comes back
  * pointing at (+0.577, +0.577, +0.577)).
  *
- * The `MOUSE` mode and `spherize` are not offered: the first is an editor
- * interaction and the second has not been measured.
+ * `target` is in the mesh's own coordinates (Blender subtracts the object's
+ * location; the two agree for an object at the origin).
+ *
+ * `align` and `spherize` as `point_normals_apply` has them (compat-backlog C101):
+ * `spherize` first, then `align`, else the direction from the vertex; `invert`
+ * negates; a result shorter than `CLNORS_VALID_VEC_LEN` leaves the corner as it
+ * was. The `MOUSE` mode is not offered: it is an editor interaction.
  */
 export function pointNormals(data: MeshData, options: PointNormalsOptions = {}): MeshData {
   const target: Vec3 = [...(options.target ?? [0, 0, 0])] as Vec3;
   const sign = options.invert ? -1 : 1;
-  const out = data.polys.map((poly) =>
-    poly.map((v) => scale(normalized(sub(target, at(data.positions, v))), sign)),
+  const strength = options.spherizeStrength ?? 0.1;
+  const current = currentNormals(data);
+  // `bmesh_selected_verts_center_calc`: the mean of the (all, here) vertices.
+  const count = data.positions.length / 3;
+  let center: Vec3 = [0, 0, 0];
+  for (let v = 0; v < count; v++) center = add(center, at(data.positions, v));
+  center = scale(center, 1 / Math.max(1, count));
+  const out = data.polys.map((poly, f) =>
+    poly.map((v, i): Vec3 => {
+      let n: Vec3;
+      if (options.spherize) {
+        const toward = scale(normalized(sub(target, at(data.positions, v))), strength);
+        n = add(scale(current[f]![i]!, 1 - strength), toward);
+      } else if (options.align) n = sub(target, center);
+      else n = sub(target, at(data.positions, v));
+      n = scale(n, sign);
+      return Math.hypot(n[0], n[1], n[2]) >= 1e-4 ? normalized(n) : ([...current[f]![i]!] as Vec3);
+    }),
   );
   return withNormals(data, out);
 }
