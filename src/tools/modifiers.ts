@@ -1,4 +1,5 @@
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { state, status } from "../state";
@@ -32,6 +33,60 @@ function getGeometry(mesh: AbstractMesh): OriginalGeometry | null {
   };
 }
 
+// ── The mesh's other vertex buffers (compat-backlog C95) ──
+// The stack carries positions, normals, UVs and faces. A colour, skin (matricesIndices / Weights) or second UV buffer
+// is not carried: after a modifier that changes the vertex count it would stay at the old length, and Babylon throws
+// reading it (`getVerticesData`). So those buffers are dropped then, and come back only when the original geometry
+// itself is put back (the last modifier removed, an undo) — never onto evaluated geometry by count, since a modifier
+// that keeps the count may still reorder the vertices (Weld, Triangulate). Buffers that still fit are left as they
+// are, as before (weight paint on a mesh with a stack writes them) — which means a count-keeping modifier that reorders
+// leaves them in the old order while it is on (not fixed: carrying them needs the stack to carry the layer).
+
+/** The kinds `applyGeometry` writes. */
+const WRITTEN_KINDS = new Set<string>([VertexBuffer.PositionKind, VertexBuffer.NormalKind, VertexBuffer.UVKind]);
+
+/** Each original geometry's other buffers, as the mesh had them when it was captured. Held by the object, so undo keeps it. */
+const otherBuffersOf = new WeakMap<OriginalGeometry, Map<string, { data: Float32Array; size: number }>>();
+
+function captureOtherBuffers(mesh: AbstractMesh, geo: OriginalGeometry): void {
+  const kept = new Map<string, { data: Float32Array; size: number }>();
+  for (const kind of (mesh as Mesh).getVerticesDataKinds()) {
+    if (WRITTEN_KINDS.has(kind) || !fits(mesh, kind, geo.positions.length / 3)) continue;
+    kept.set(kind, { data: new Float32Array(mesh.getVerticesData(kind)!), size: mesh.getVertexBuffer(kind)!.getSize() });
+  }
+  if (kept.size) otherBuffersOf.set(geo, kept);
+}
+
+/**
+ * Whether a vertex buffer holds exactly `count` elements. Read off the raw data: `getVerticesData` returns
+ * `totalVertices × size` floats, so a buffer longer than the new count (after Decimate or Weld) would pass, and one
+ * shorter throws.
+ */
+function fits(mesh: AbstractMesh, kind: string, count: number): boolean {
+  const vb = mesh.getVertexBuffer(kind);
+  if (!vb) return false;
+  const raw = vb.getData();
+  if (raw) {
+    const length = Array.isArray(raw) ? raw.length : raw instanceof ArrayBuffer ? raw.byteLength / 4 : (raw as Float32Array).length;
+    return length === count * vb.getSize();
+  }
+  try {
+    const data = mesh.getVerticesData(kind);
+    return !!data && data.length === count * vb.getSize();
+  } catch {
+    return false;
+  }
+}
+
+/** What the user calls a buffer kind, for the status line. */
+function bufferLabel(kind: string): string {
+  if (kind === VertexBuffer.ColorKind) return "頂点カラー";
+  if (kind.startsWith("matrices")) return "スキンウェイト";
+  const uv = /^uv(\d)$/.exec(kind);
+  if (uv) return "UV" + uv[1];
+  return kind;
+}
+
 function applyGeometry(mesh: AbstractMesh, geo: OriginalGeometry): void {
   const vd = new VertexData();
   vd.positions = new Float32Array(geo.positions);
@@ -39,6 +94,25 @@ function applyGeometry(mesh: AbstractMesh, geo: OriginalGeometry): void {
   if (geo.uvs) vd.uvs = new Float32Array(geo.uvs);
   vd.indices = geo.indices.slice();
   vd.applyToMesh(mesh as Mesh, true);
+  const count = geo.positions.length / 3;
+  // The original put back: its buffers return where the mesh has none that fit.
+  for (const [kind, { data, size }] of otherBuffersOf.get(geo) ?? []) {
+    if (data.length === count * size && !fits(mesh, kind, count)) (mesh as Mesh).setVerticesData(kind, new Float32Array(data), true, size);
+  }
+  // Any buffer left at another length goes.
+  const dropped = new Set<string>();
+  for (const kind of (mesh as Mesh).getVerticesDataKinds()) {
+    if (WRITTEN_KINDS.has(kind) || fits(mesh, kind, count)) continue;
+    (mesh as Mesh).removeVerticesData(kind);
+    dropped.add(kind);
+  }
+  if (dropped.size) {
+    const orig = state.originalGeometryMap.get(mesh.uniqueId);
+    const back = orig ? otherBuffersOf.get(orig) : undefined;
+    const comesBack = [...dropped].every((k) => back?.has(k));
+    const names = [...new Set([...dropped].map(bufferLabel))].join("・");
+    status(`⚠ モディファイアは${names}を運ばないので外した` + (comesBack ? "（モディファイアを全部外すと戻る）" : ""));
+  }
   // The faces go with the triangles, so Edit Mode and CSG see quads.
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   if (geo.polys) meta[POLY_METADATA_KEY] = geo.polys.map((p) => [...p]);
@@ -51,7 +125,10 @@ function applyGeometry(mesh: AbstractMesh, geo: OriginalGeometry): void {
 function ensureOriginal(mesh: AbstractMesh): void {
   if (!state.originalGeometryMap.has(mesh.uniqueId)) {
     const geo = getGeometry(mesh);
-    if (geo) state.originalGeometryMap.set(mesh.uniqueId, geo);
+    if (geo) {
+      captureOtherBuffers(mesh, geo);
+      state.originalGeometryMap.set(mesh.uniqueId, geo);
+    }
   }
 }
 
