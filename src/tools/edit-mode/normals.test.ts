@@ -6,6 +6,7 @@ import {
   averageNormals,
   smoothNormals,
   pointNormals,
+  smoothGroups,
 } from "./normals";
 
 /**
@@ -168,5 +169,48 @@ describe("custom normals", () => {
     for (const [f, face] of out.normals!.entries())
       expect(face).toHaveLength(out.polys[f]!.length);
     expect(out.normals!.flat()).toHaveLength(24);
+  });
+});
+
+/**
+ * Where the fans stop (compat-backlog C106): an edge joins two faces' corners only when exactly two faces use it and
+ * they run it in opposite directions, as Blender's `BM_normals_loops_edges_tag` and `mesh_normals.cc` have it.
+ */
+describe("smooth groups at a fin and a flipped face (C106)", () => {
+  /** Groups at vertex `v`, as sets of faces. */
+  const groupsAt = (data: MeshData, v: number): number[][] =>
+    smoothGroups(data)
+      .filter((g) => data.polys[g[0]![0]]![g[0]![1]] === v)
+      .map((g) => g.map(([f]) => f).sort((a, b) => a - b));
+
+  it("an edge three faces use joins none of them", () => {
+    // Three quads on the edge 0-1.
+    const data: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, -1, 0, 0, -1, 0]),
+      polys: [[0, 1, 2, 3], [1, 0, 5, 4], [0, 1, 6, 7]],
+    };
+    expect(groupsAt(data, 0)).toEqual([[0], [1], [2]]);
+  });
+
+  it("an edge between faces wound the same way joins nothing; flipped back, it joins", () => {
+    const same: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0, 0, 2, 1, 0]),
+      polys: [[0, 1, 2, 3], [1, 2, 5, 4]],
+    };
+    expect(groupsAt(same, 1)).toEqual([[0], [1]]);
+    const opposite: MeshData = { ...same, polys: [[0, 1, 2, 3], [1, 4, 5, 2]] };
+    expect(groupsAt(opposite, 1)).toEqual([[0, 1]]);
+  });
+
+  it("mergeNormals averages within those fans, not across the fin", () => {
+    const data: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, -1, 0, 0, -1, 0]),
+      polys: [[0, 1, 2, 3], [1, 0, 5, 4], [0, 1, 6, 7]],
+    };
+    const out = mergeNormals(data);
+    // Every fan at vertex 0 is one corner, so each keeps its face's normal: +z, the fin's, −z. Joined across the fin,
+    // all three would be one average.
+    const at0 = out.polys.map((p, f) => out.normals![f]![p.indexOf(0)]!.map((x) => Math.round(x * 1000) / 1000 + 0));
+    expect(at0).toEqual([[0, 0, 1], [0, 1, 0], [0, 0, -1]]);
   });
 });

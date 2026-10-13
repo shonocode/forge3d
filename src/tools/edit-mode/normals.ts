@@ -202,6 +202,13 @@ export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<strin
  * vertex belong together when a path of non-sharp edges joins their faces
  * around that vertex.
  *
+ * An edge joins two faces only as Blender's `BM_normals_loops_edges_tag` lets
+ * it (compat-backlog C106): exactly two faces use it, and they run it in
+ * opposite directions (`l_a->v != l_b->v`; `mesh_normals.cc` marks the same
+ * edges sharp). An edge of three faces (a fin), or between a face and one wound
+ * the other way, joins nothing. (A vertex where two fans meet only at the point —
+ * a bowtie — was two groups already: no edge joins them.)
+ *
  * This is the part of the rule that is easy to miss, and the reason
  * `averageNormals` does nothing after `splitNormals`.
  */
@@ -215,15 +222,20 @@ export function smoothGroups(data: MeshData): [number, number][][] {
       if (list) list.push([f, i]);
       else cornersAt.set(v, [[f, i]]);
     }
-  // faces on each edge, to walk between them
-  const facesOnEdge = new Map<string, number[]>();
+  // faces on each edge, with the vertex each runs it from, to walk between them
+  const facesOnEdge = new Map<string, [number, number][]>();
   for (const [f, poly] of data.polys.entries())
     for (let i = 0; i < poly.length; i++) {
       const k = key(poly[i]!, poly[(i + 1) % poly.length]!);
       const list = facesOnEdge.get(k);
-      if (list) list.push(f);
-      else facesOnEdge.set(k, [f]);
+      if (list) list.push([f, poly[i]!]);
+      else facesOnEdge.set(k, [[f, poly[i]!]]);
     }
+  // The edges that join: two faces, opposite directions.
+  const joins = (k: string): number[] | null => {
+    const list = facesOnEdge.get(k);
+    return list && list.length === 2 && list[0]![1] !== list[1]![1] ? [list[0]![0], list[1]![0]] : null;
+  };
 
   const groups: [number, number][][] = [];
   for (const [v, corners] of cornersAt) {
@@ -246,7 +258,7 @@ export function smoothGroups(data: MeshData): [number, number][][] {
           if (a !== v && b !== v) continue;
           const k = key(a, b);
           if (sharp.has(k)) continue;
-          for (const other of facesOnEdge.get(k) ?? [])
+          for (const other of joins(k) ?? [])
             if (other !== f && byFace.has(other) && !seen.has(other)) {
               seen.add(other);
               queue.push(other);
@@ -279,7 +291,8 @@ export function splitNormals(data: MeshData): MeshData {
  *
  * The average is **plain**, of each corner's **current** normal (`nloc`, read
  * before the sharp edges go — the custom normal where there is one), over the
- * fan the corner is in once they are gone: here every corner at the vertex.
+ * fan the corner is in once they are gone (every corner at the vertex, but for
+ * bowtie vertices, and fins and flipped faces — compat-backlog C106).
  * forge3d averaged the face normals until compat-backlog C101, which is the same
  * answer where every corner shows its face normal (a flat-shaded mesh with no
  * custom normals — what the first rows measured). A fan of one corner is left
@@ -289,24 +302,22 @@ export function splitNormals(data: MeshData): MeshData {
 export function mergeNormals(data: MeshData): MeshData {
   const CLNORS_VALID_VEC_LEN = 1e-4;
   const current = currentNormals(data);
-  const acc = new Map<number, Vec3>();
-  const count = new Map<number, number>();
-  const fallback = new Map<number, Vec3>();
-  for (const [f, poly] of data.polys.entries()) {
-    const fn = faceNormal(data.positions, poly);
-    poly.forEach((v, i) => {
-      acc.set(v, add(acc.get(v) ?? [0, 0, 0], current[f]![i]!));
-      count.set(v, (count.get(v) ?? 0) + 1);
-      fallback.set(v, add(fallback.get(v) ?? [0, 0, 0], scale(fn, cornerAngle(data.positions, poly, i))));
-    });
+  const out = current.map((f) => f.map((n) => [...n] as Vec3));
+  // The fans once the sharp edges are cleared (C106: they still stop at fins, flipped faces and bowtie vertices).
+  for (const group of smoothGroups({ ...data, sharp: undefined })) {
+    if (group.length === 1) continue; // `MLNOR_SPACE_IS_SINGLE`
+    let sum: Vec3 = [0, 0, 0];
+    for (const [f, i] of group) sum = add(sum, current[f]![i]!);
+    if (Math.hypot(sum[0], sum[1], sum[2]) < CLNORS_VALID_VEC_LEN) {
+      sum = [0, 0, 0];
+      for (const [f, i] of group) {
+        const poly = data.polys[f]!;
+        sum = add(sum, scale(faceNormal(data.positions, poly), cornerAngle(data.positions, poly, i)));
+      }
+    }
+    const n = normalized(sum);
+    for (const [f, i] of group) out[f]![i] = [...n] as Vec3;
   }
-  const out = data.polys.map((poly, f) =>
-    poly.map((v, i): Vec3 => {
-      if (count.get(v)! === 1) return [...current[f]![i]!] as Vec3;
-      const sum = acc.get(v)!;
-      return Math.hypot(sum[0], sum[1], sum[2]) < CLNORS_VALID_VEC_LEN ? normalized(fallback.get(v)!) : normalized(sum);
-    }),
-  );
   return withNormals(data, out, null);
 }
 
