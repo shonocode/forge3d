@@ -1,6 +1,44 @@
 import { describe, expect, it } from "vitest";
 import type { MeshData } from "../lib/mesh";
-import { spin } from "./spin";
+import { screw, spin } from "./spin";
+
+// compat-backlog C99 — the parity rows `screw-bpy` / `-turns` / `-flat` measure these against Blender 5.1.1's `bpy.ops.mesh.screw`.
+describe("screw", () => {
+  const pts: [number, number][] = [[0, 0], [0.2, 0], [0.3, 0.15], [0.2, 0.3], [0, 0.3], [-0.1, 0.15]];
+  const chain = (at: (p: [number, number]) => number[], reversed = false): MeshData => ({
+    positions: Float32Array.from((reversed ? [...pts].reverse() : pts).flatMap(at)),
+    polys: [],
+    edges: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]],
+  });
+  const wire = { verts: [0, 1, 2, 3, 4, 5], edges: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]] as [number, number][] };
+  const upright = ([x, z]: [number, number]) => [x, 0, z];
+  const flat = ([x, y]: [number, number]) => [x, y, 0];
+  /** The output's vertices as a sorted list of rounded positions — the same helix whatever the numbering. */
+  const cloud = (m: MeshData): string[] =>
+    Array.from({ length: m.positions.length / 3 }, (_, i) => [...m.positions.slice(i * 3, i * 3 + 3)].map((x) => x.toFixed(4)).join(",")).sort();
+  const opts = { center: [0.6, 0, 0] as const, axis: [0, 0, 1] as const };
+
+  it("defaults to 9 steps and 1 turn: 10 copies of the 6-vertex chain, 9 × 5 quads", () => {
+    const out = screw(chain(upright), wire, opts);
+    expect(out.positions.length / 3).toBe(60);
+    expect(out.polys).toHaveLength(45);
+  });
+
+  it("climbs downward whichever end is numbered first — a climb up +Z is negated", () => {
+    expect(cloud(screw(chain(upright, true), wire, opts))).toEqual(cloud(screw(chain(upright), wire, opts)));
+  });
+
+  it("with the ends level the climb is not negated, so the numbering decides its direction", () => {
+    const o = { center: [0.6, 0, 0] as const, axis: [0, 1, 0] as const };
+    expect(cloud(screw(chain(flat, true), wire, o))).not.toEqual(cloud(screw(chain(flat), wire, o)));
+  });
+
+  it("refuses a selection that is not a string with two ends, and a zero axis", () => {
+    const loop = { verts: wire.verts, edges: [...wire.edges, [5, 0]] as [number, number][] };
+    expect(() => screw(chain(upright), loop, opts)).toThrow(/string of connected vertices/);
+    expect(() => screw(chain(upright), wire, { axis: [0, 0, 0] })).toThrow(/axis/);
+  });
+});
 
 // A wire profile: three points along x at y = 0, two edges, no face.
 function profile(): MeshData {

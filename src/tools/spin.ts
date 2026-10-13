@@ -436,3 +436,60 @@ export function spin(data: MeshData, geom: SpinGeom, opts: SpinOptions): MeshDat
   if (data.sharp || sharp.size) out.sharp = sharp;
   return out;
 }
+
+export interface ScrewOptions {
+  /** `center`. Default the origin. */
+  center?: readonly [number, number, number];
+  /** `axis`; normalised. Zero is refused ("Invalid/unset axis"). */
+  axis: readonly [number, number, number];
+  /** `steps`: steps per turn. Default 9. */
+  steps?: number;
+  /** `turns`. Default 1. */
+  turns?: number;
+}
+
+/**
+ * The editor's Screw — `MESH_OT_screw` (`edbm_screw_exec`,
+ * `editors/mesh/editmesh_extrude_screw.cc`, Blender 5.1.1): {@link spin} with
+ * a climb taken from the profile itself (compat-backlog C99).
+ *
+ * The profile is an open string of edges. Its two ends — the vertices with
+ * exactly one edge of `geom.edges`, taken in vertex-number order, v1 first —
+ * set the climb per step: `dvec = (v1 − v2) / steps`, negated when it points
+ * up the object's Z (the geometry's own +Z here, `space` being the identity).
+ * So a profile running up or down climbs downward either way, and one whose
+ * ends are level climbs from v2 towards v1 — which end is v1 is decided by the
+ * numbering. Then `spin` with `steps × turns` steps through `+360° × turns`
+ * (the editor's Spin passes its angle negated; Screw does not), no merge, no
+ * duplicate.
+ *
+ * Throws where Blender reports and changes nothing: an axis of zero, or not
+ * exactly two ends ("You have to select a string of connected vertices too").
+ * `geom` is what the editor's selection would be — the vertices, the edges
+ * between them and any faces.
+ */
+export function screw(data: MeshData, geom: SpinGeom, opts: ScrewOptions): MeshData {
+  const steps = opts.steps ?? 9;
+  const turns = opts.turns ?? 1;
+  if (opts.axis.every((x) => x === 0)) throw new Error("screw: Invalid/unset axis");
+  const valence = new Map<number, number>();
+  for (const [a, b] of geom.edges ?? []) {
+    valence.set(a, (valence.get(a) ?? 0) + 1);
+    valence.set(b, (valence.get(b) ?? 0) + 1);
+  }
+  const ends = [...valence].filter(([, n]) => n === 1).map(([v]) => v).sort((a, b) => a - b);
+  if (ends.length !== 2) throw new Error("screw: You have to select a string of connected vertices too");
+  const P = data.positions;
+  const [v1, v2] = ends as [number, number];
+  const inv = f(1 / steps);
+  const d = (k: number): number => f(f(P[v1 * 3 + k]! - P[v2 * 3 + k]!) * inv);
+  const up = d(2) > 0; // dot(object Z, dvec) > 0
+  const dvec: [number, number, number] = up ? [-d(0), -d(1), -d(2)] : [d(0), d(1), d(2)];
+  return spin(data, geom, {
+    ...(opts.center ? { center: opts.center } : {}),
+    axis: opts.axis,
+    dvec,
+    steps: turns * steps,
+    angle: f(f(360 * turns) * f(Math.PI / 180)),
+  });
+}

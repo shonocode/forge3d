@@ -96,7 +96,8 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   （最近点が辺・角に乗るとき、距離と着地を Blender の `shrinkwrap_snap_with_side` と同じに。行 `shrinkwrap-small-*`）、
   `selectSimilar` の頂点グループと頂点 crease、`collapse_uvs`（辺が鎖のとき、UV 島ごとに最小と最大の中点へ。行 `collapse-uvs-chain` / `-all` / `-boundary`）、
   編集モードの Weld / Merge / Collapse の面の作り直し（同じ面の隣でない2隅を溶接すると先に面を割る、同じ頂点の組になった面は1枚、
-  生き残りは target、孤立頂点は残る。行 `weld-verts-pentagon` ほか6本）。溶接で辺が重なるときの seam / crease / sharp の引き継ぎはまだ違う
+  生き残りは target、孤立頂点は残る。行 `weld-verts-pentagon` ほか6本）。溶接で辺が重なるときの seam / crease / sharp の引き継ぎはまだ違う。
+  編集モードの Screw 演算子（`screw()`、鎖の両端から climb を取る。行 `screw-bpy` / `-turns` / `-flat`）
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
 - **GUI**：Loop Cut の後のスライドはドラッグではなく Edge Slide の量で動かす。Delete はメニューが無く、選択モードで種類が決まる（点＝Vertices、辺＝Edges、面＝Faces）。ワイヤ辺は描くが選べない
 

@@ -612,6 +612,8 @@ export { bridgeSelection, type BridgeSelectionOptions } from "../tools/bridge-se
 
 // Spin over any geometry, about any axis (compat-backlog C5).
 export { spin, type SpinOptions, type SpinGeom } from "../tools/spin";
+// The editor's Screw: spin with the climb taken from the profile's two ends (compat-backlog C99).
+export { screw, type ScrewOptions } from "../tools/spin";
 
 // The Screw modifier (compat-backlog C6).
 export { screwModifier, type ScrewModifierOptions } from "../tools/screw-modifier";
