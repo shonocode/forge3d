@@ -100,8 +100,10 @@ Loop Cut、Delete の種類、Bridge の bpy 側、Spin、Screw、Connect、Merg
   編集モードの Screw 演算子（`screw()`、鎖の両端から climb を取る。行 `screw-bpy` / `-turns` / `-flat`）、
   スタックの途中で消えていた頂点 crease と Weighted Normal の面の強さ（Mirror・Array・Displace・Wave・Shrinkwrap を通してから Subdivision、
   Bevel の強さを Mirror・Triangulate・Edge Split・Solidify（両モード）・Decimate Planar を通してから Weighted Normal。行 `carry-*` の14本。
-  Complex Solidify は Blender と同じく頂点 crease を縁の辺の crease に入れ、縁があると結果から消す。Decimate（Collapse）・Boolean・Bevel・
-  Subdivision は頂点 crease を補間しないので落とす ― Subdivision は Blender では補間される、C89）
+  Complex Solidify は Blender と同じく頂点 crease を縁の辺の crease に入れ、縁があると結果から消す。Decimate（Collapse）・Boolean・Bevel は
+  頂点 crease を補間しないので落とす）、Subdivision の層（SIMPLE も CC と同じく材質・頂点グループ・色・crease・sharp・seam・面の強さ・
+  頂点 crease を運び、SIMPLE のワイヤはまっすぐな破片に。`use_creases` を切っても辺の crease は運ぶ。行 `subdiv-simple-layers` /
+  `-cc-layers` / `-simple-wire` / `-creases-off`、`carry-vcrease-subdiv`、C89）
 - **頂点グループ**：Warp・Wave・Cast など 11 のモディファイアが頂点グループを受けない
 - **GUI**：Loop Cut の後のスライドはドラッグではなく Edge Slide の量で動かす。Delete はメニューが無く、選択モードで種類が決まる（点＝Vertices、辺＝Edges、面＝Faces）。ワイヤ辺は描くが選べない
 

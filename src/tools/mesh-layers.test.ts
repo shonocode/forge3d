@@ -134,6 +134,9 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 })],
   ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials", "vertexCreases", "faceStrength"]],
   // Weights are all they write; everything else passes through (C88 review).
+  // Every layer but the custom normals (C29), as Blender's `subdiv_mesh.cc` (C89). SIMPLE leaves the wire edge out.
+  ["subsurfModifier", () => L.subsurfModifier(cube()), ALL.filter((k) => k !== "normals")],
+  ["simpleSubdivide", () => L.simpleSubdivide(cube(), 1), ALL.filter((k) => k !== "normals" && k !== "edges")],
   ["vertexWeightEdit", () => L.vertexWeightEdit(cube(), { group: "g" })],
   ["vertexWeightMix", () => L.vertexWeightMix(cube(), { groupA: "g" } as never)],
   ["dissolveLimitMesh", () => L.dissolveLimitMesh(cube(), { angleLimit: 0.1 })],
@@ -155,8 +158,6 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
 // New geometry whose layers need interpolation that is not ported: these
 // may drop a layer, whole. (Which ones they keep is listed so a change shows.)
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
-  // The vertex creases are interpolated into the result in Blender (`subdiv_mesh.cc`), not yet here (C89).
-  ["subsurfModifier", () => L.subsurfModifier(cube()), ["uvs", "groups", "materials", "creases", "seams", "sharp", "edges", "faceStrength"]],
   ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials", "faceStrength"]],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [
@@ -230,6 +231,23 @@ describe("the values follow their vertex or face", () => {
   it("transformMesh with a zero scale drops the custom normals instead of NaN", () => {
     const out = L.transformMesh(cube(), { scale: [1, 0, 1] });
     expect(out.normals).toBeUndefined();
+  });
+
+  it("Subdivision mixes the vertex creases and the colours inside the face (C89)", () => {
+    const quad: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+      polys: [[0, 1, 2, 3]],
+      vertexCreases: new Map([[0, 1], [1, 0.5]]),
+      colors: [[[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 1]]],
+    };
+    for (const out of [L.simpleSubdivide(quad, 1), L.subsurfModifier(quad, { levels: 1 })]) {
+      // The face point is vertex 4 (after the four corners); the edge 0-1's point the mean of its ends.
+      expect(out.vertexCreases!.get(4)).toBeCloseTo(0.375, 6);
+      const e01 = [...out.vertexCreases!].find(([v, c]) => v > 4 && Math.abs(c - 0.75) < 1e-6);
+      expect(e01).toBeDefined();
+      // Corner 2 of every child quad is the centre: the mean of the four colours.
+      for (const f of out.colors!) expect(f[2]).toEqual([0.5, 0.5, 0.5, 1]);
+    }
   });
 
   it("reorderSpatial moves each weight with its vertex", () => {

@@ -12,6 +12,10 @@
  *   for a vertex on an edge): its weight is the bilinear mix of that face's corners — which, level by level, is the average of the
  *   vertices it is made from — and it is in every group any corner of that face is in, a zero weight included.
  * - **UVs** are subdivided by `uvSmooth`, as `catmullClark` does.
+ * - **Colours** (and every other corner attribute) are mixed linearly inside the coarse face: a corner made at an edge is
+ *   the mean of the edge's two corners, one at the centre the mean of the face's (`subdiv_interpolate_corner_data`).
+ * - **Vertex creases** come out mixed like any float point attribute (`subdiv_mesh.cc` skips only `position` and the
+ *   vertex groups): an edge point is the mean of its ends, a face point the mean of the face's corners, absent counting 0.
  * - **Wire edges** (`edges`): their vertices are infinitely sharp for the surface (`subdiv_converter_mesh.cc` — a vertex
  *   where a wire meets the surface stays a corner). Each wire edge is cut into `2^levels` pieces whose points lie on the
  *   cubic B-spline through the edge and its neighbours (`mesh_interpolate_position_on_edge`) — the next vertex along when
@@ -22,8 +26,13 @@
  * - **Vertex creases** (`vertexCreases`, Blender's `crease_vert`) are OpenSubdiv's vertex sharpness (`10 · crease²`, with
  *   the two-edge rule added on top), under `useCreases` as the edge creases are.
  *
- * Not carried: vertex colours and custom normals (the latter are two angles in each corner's normal space — compat-backlog C29),
- * and the vertex creases themselves into the result.
+ * **`subdivisionType: "SIMPLE"`** (OpenSubdiv's bilinear scheme) keeps the shape — each face cut at its edge midpoints and
+ * its centre, level by level — and carries every layer above on the same path; its UVs are mixed linearly like the colours
+ * (compat-backlog C89). Its wire edges are cut into `2^levels` straight pieces, the ends left where they are.
+ *
+ * Edge creases are carried whatever `useCreases` says (Blender copies every edge attribute); the flag gates the shape.
+ *
+ * Not carried: custom normals (two angles in each corner's normal space — compat-backlog C29).
  */
 import type { MeshData } from "../lib/mesh";
 import { catmullClark, subdivideOnce, type CatmullClarkOptions } from "./edit-mode/subdivide";
@@ -39,14 +48,19 @@ export interface SubsurfModifierOptions extends Omit<CatmullClarkOptions, "blend
   limitSurface?: boolean;
   /** `use_creases`. Default on. */
   useCreases?: boolean;
+  /** `subdivision_type`. Default `CATMULL_CLARK`; `SIMPLE` cuts the faces without moving anything (compat-backlog C89). */
+  subdivisionType?: "CATMULL_CLARK" | "SIMPLE";
 }
 
 export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {}): MeshData {
   const level = Math.max(0, Math.floor(opts.levels ?? 1));
   const useCreases = opts.useCreases ?? true;
-  const { levels: _levels, useCreases: _use, ...cc } = opts;
+  // At level 0 both schemes leave the mesh as it is (the CC path below does that, wires included).
+  const simple = opts.subdivisionType === "SIMPLE" && level > 0;
+  const { levels: _levels, useCreases: _use, subdivisionType: _type, ...cc } = opts;
   void _levels;
   void _use;
+  void _type;
   const polys0 = data.polys.filter((p) => p.length >= 3);
   const keptFace = data.polys.map((p, i) => (p.length >= 3 ? i : -1)).filter((i) => i >= 0);
   // Wire edges: listed once, and only those no polygon uses.
@@ -65,17 +79,26 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   const sharpEnds = [...new Set(wires.flat())].filter((v) => faceVerts.has(v));
   const surfaceCreases =
     useCreases && data.creases ? (wires.length ? new Map([...data.creases].filter(([k]) => faceEdges.has(k))) : data.creases) : undefined;
-  const result = catmullClark(data.positions, polys0, level, surfaceCreases, data.uvs, {
-    ...cc,
-    limitSurface: opts.limitSurface ?? true,
-    blenderCreases: true,
-    ...(sharpEnds.length ? { infiniteSharpVertices: sharpEnds } : {}),
-    ...(useCreases && data.vertexCreases?.size ? { vertexCreases: data.vertexCreases } : {}),
-  });
-  const out: MeshData = { positions: result.positions, polys: result.polys };
-  if (result.uvs) out.uvs = result.uvs;
+  // SIMPLE's shape and polygons are made by the loop below, with the layers.
+  const result = simple
+    ? null
+    : catmullClark(data.positions, polys0, level, surfaceCreases, data.uvs, {
+        ...cc,
+        limitSurface: opts.limitSurface ?? true,
+        blenderCreases: true,
+        ...(sharpEnds.length ? { infiniteSharpVertices: sharpEnds } : {}),
+        ...(useCreases && data.vertexCreases?.size ? { vertexCreases: data.vertexCreases } : {}),
+      });
+  const out: MeshData = result ? { positions: result.positions, polys: result.polys } : { positions: data.positions, polys: polys0 };
+  if (result?.uvs) out.uvs = result.uvs;
   // Level 0 leaves the mesh as it is, wires included.
-  const wired = wires.length ? (level > 0 ? subdivideWires(data.positions, out.positions, wires, faceEdges, level) : { positions: out.positions, edges: wires.map((e) => [...e]), inner: [] }) : null;
+  // SIMPLE's wires are cut after the loop, on its positions.
+  let wired =
+    wires.length && !simple
+      ? level > 0
+        ? subdivideWires(data.positions, out.positions, wires, faceEdges, level)
+        : { positions: out.positions, edges: wires.map((e) => [...e]), inner: [] }
+      : null;
   if (wired) {
     out.positions = wired.positions;
     out.edges = wired.edges;
@@ -83,7 +106,8 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
 
   // The layers ride the topology level by level; only the shape of the refinement matters, so the positions are the input's.
   let polys = polys0;
-  let creases = useCreases && data.creases ? new Map(data.creases) : null;
+  // `crease_edge` is an edge attribute like any other: copied whatever `use_creases` says, which only gates the shape.
+  let creases = data.creases ? new Map(data.creases) : null;
   let seams = data.seams ? new Set(data.seams) : null;
   let sharp = data.sharp ? new Set(data.sharp) : null;
   let mats: number[] | null = data.materials && data.materials.length === data.polys.length ? keptFace.map((f) => data.materials![f]!) : null;
@@ -93,6 +117,15 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   let groups: Map<string, Map<number, number>> | null = data.groups ? new Map([...data.groups].map(([k, g]) => [k, new Map(g)])) : null;
   let positions = data.positions;
   let sigma = new Map<string, number>();
+  // SIMPLE's positions, in double from level to level as the bilinear refinement adds them.
+  let bilinear: number[] | null = simple ? Array.from(data.positions) : null;
+  // Corner layers mixed linearly in the coarse face: the colours always, the UVs in SIMPLE (CC's come from `catmullClark`).
+  const cornersOf = (layer: number[][][] | undefined): number[][][] | null =>
+    layer && layer.length === data.polys.length ? keptFace.map((f) => layer[f]!.map((c) => [...c])) : null;
+  let colors = cornersOf(data.colors);
+  let linearUVs = simple ? cornersOf(data.uvs) : null;
+  // Vertex creases as a float point attribute (absent = 0).
+  let vcreases: Map<number, number> | null = data.vertexCreases?.size ? new Map(data.vertexCreases) : null;
   // The coarse face each vertex-making element belongs to: a face's own number, an edge's lowest face.
   let faceOwner: number[] = polys.map((_, i) => i);
   let edgeOwner = new Map<string, number>();
@@ -135,6 +168,45 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
     creases = carry(creases) as Map<string, number> | null;
     seams = carry(seams) as Set<string> | null;
     sharp = carry(sharp) as Set<string> | null;
+    // Child quad `i` of a face is [corner i, edge i→i+1, centre, edge i−1→i] (`subdivideOnce`).
+    const splitCorners = (layer: number[][][]): number[][][] =>
+      layer.flatMap((c) => {
+        const n = c.length;
+        const centre = c[0]!.map((_, j) => c.reduce((s, x) => s + x[j]!, 0) / n);
+        const mid = (a: number[], b: number[]) => a.map((x, j) => (x + b[j]!) / 2);
+        return c.map((ci, i) => [[...ci], mid(ci, c[(i + 1) % n]!), [...centre], mid(c[(i - 1 + n) % n]!, ci)]);
+      });
+    if (colors) colors = splitCorners(colors);
+    if (linearUVs) linearUVs = splitCorners(linearUVs);
+    if (vcreases) {
+      const next = new Map(vcreases);
+      for (let f = 0; f < F; f++) {
+        const p = polys[f]!;
+        let sum = 0;
+        for (const v of p) sum += vcreases.get(v) ?? 0;
+        const c = Math.fround(sum / p.length);
+        if (c !== 0) next.set(V + f, c);
+      }
+      for (const [k, ep] of edgePoints) {
+        const [a, b] = k.split("_").map(Number) as [number, number];
+        const c = Math.fround(((vcreases.get(a) ?? 0) + (vcreases.get(b) ?? 0)) / 2);
+        if (c !== 0) next.set(ep, c);
+      }
+      vcreases = next;
+    }
+    if (bilinear) {
+      const P = bilinear;
+      const next = P.slice();
+      polys.forEach((p) => {
+        for (let k = 0; k < 3; k++) next.push(p.reduce((s, v) => s + P[v * 3 + k]!, 0) / p.length);
+      });
+      next.length = (V + F + edgePoints.size) * 3;
+      for (const [key, ep] of edgePoints) {
+        const [a, b] = key.split("_").map(Number) as [number, number];
+        for (let k = 0; k < 3; k++) next[ep * 3 + k] = (P[a * 3 + k]! + P[b * 3 + k]!) / 2;
+      }
+      bilinear = next;
+    }
     if (mats) mats = polys.flatMap((p, f) => p.map(() => mats![f]!));
     if (strength) strength = polys.flatMap((p, f) => p.map(() => strength![f]!));
     if (groups) {
@@ -185,6 +257,15 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
     polys = step.polys;
     sigma = step.creases;
   }
+  if (bilinear) {
+    out.positions = Float32Array.from(bilinear);
+    out.polys = polys;
+    if (wires.length) {
+      wired = subdivideWires(data.positions, out.positions, wires, faceEdges, level, true);
+      out.positions = wired.positions;
+      out.edges = wired.edges;
+    }
+  }
   // A wire edge's crease, seam and sharp go to each of its pieces, as a face edge's do.
   // A wire's inner vertex mixes its ends' groups by (1 − u, u) (`mix_deform_verts`), every group either end is in.
   if (wired && groups)
@@ -198,7 +279,7 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
     wires.forEach(([a, b], w) => {
       const k = seamKey(a, b);
       const pieces = out.edges!.slice(w * per, (w + 1) * per).map(([x, y]) => seamKey(x!, y!));
-      const c = useCreases ? data.creases?.get(k) : undefined;
+      const c = data.creases?.get(k);
       if (c !== undefined) for (const q of pieces) (creases ??= new Map()).set(q, c);
       if (data.seams?.has(k)) for (const q of pieces) (seams ??= new Set()).add(q);
       if (data.sharp?.has(k)) for (const q of pieces) (sharp ??= new Set()).add(q);
@@ -210,6 +291,17 @@ export function subsurfModifier(data: MeshData, opts: SubsurfModifierOptions = {
   if (mats) out.materials = mats;
   if (strength) out.faceStrength = strength;
   if (groups) out.groups = groups;
+  if (colors) out.colors = colors;
+  if (linearUVs) out.uvs = linearUVs;
+  if (vcreases) {
+    // A wire's inner vertex mixes its ends by (1 − u, u), as the groups do.
+    if (wired)
+      for (const { id, a, b, u } of wired.inner) {
+        const c = f(f(f(1 - u) * (vcreases.get(a) ?? 0)) + f(u * (vcreases.get(b) ?? 0)));
+        if (c !== 0) vcreases.set(id, c);
+      }
+    out.vertexCreases = vcreases;
+  }
   return out;
 }
 
@@ -238,6 +330,7 @@ function subdivideWires(
   wires: [number, number][],
   faceEdges: Set<string>,
   level: number,
+  linear = false,
 ): { positions: Float32Array; edges: number[][]; inner: { id: number; a: number; b: number; u: number }[] } {
   // `vert_to_edge_map` of the coarse mesh: every edge, the polygons' and the wires'.
   const edgesOf = new Map<number, [number, number][]>();
@@ -277,9 +370,12 @@ function subdivideWires(
     for (let i = 0; i < resolution; i++) {
       const u = f(i * inv);
       const w = bsplineWeights(u);
-      const co = [0, 1, 2].map((k) =>
-        f(f(f(f(pts[0]![k]! * w[0]) + f(pts[1]![k]! * w[1])) + f(pts[2]![k]! * w[2])) + f(pts[3]![k]! * w[3])),
-      );
+      // SIMPLE (`is_simple` in `mesh_interpolate_position_on_edge`): straight along the edge, `interpolate(a, b, u)`.
+      const co = linear
+        ? [0, 1, 2].map((k) => f(f(pts[1]![k]! * f(1 - u)) + f(pts[2]![k]! * u)))
+        : [0, 1, 2].map((k) =>
+            f(f(f(f(pts[0]![k]! * w[0]) + f(pts[1]![k]! * w[1])) + f(pts[2]![k]! * w[2])) + f(pts[3]![k]! * w[3])),
+          );
       const id = i === 0 ? a : i === resolution - 1 ? b : next++;
       if (i > 0 && i < resolution - 1) inner.push({ id, a, b, u });
       out[3 * id] = co[0]!;

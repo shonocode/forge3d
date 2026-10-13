@@ -78,13 +78,15 @@ describe("subsurfModifier", () => {
     expect(w.has(facePoint(4))).toBe(false);
   });
 
-  it("with useCreases off, ignores the creases", () => {
+  it("with useCreases off, the shape ignores the creases but they are still carried (C89, `subdiv-creases-off`)", () => {
     const data = cube();
     data.creases = new Map([["0_1", 1]]);
     const plain = subsurfModifier(cube(), { levels: 1, limitSurface: false });
     const off = subsurfModifier(data, { levels: 1, limitSurface: false, useCreases: false });
     expect(Array.from(off.positions)).toEqual(Array.from(plain.positions));
-    expect(off.creases).toBeUndefined();
+    // `crease_edge` is an edge attribute: Blender copies it to both child edges whatever `use_creases` says.
+    expect(off.creases?.size).toBe(2);
+    expect([...off.creases!.values()]).toEqual([1, 1]);
   });
 
   it("puts the vertices on the limit surface by default, as Blender's modifier does", () => {

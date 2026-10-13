@@ -258,49 +258,16 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
 
 /**
  * Blender's Subdivision "Simple": every face cut into quads at its edge
- * midpoints and its centre, the shape left as it was. UVs cut the same way,
- * per face, so seams stay seams. Matches the modifier with
- * `subdivision_type = SIMPLE` (OpenSubdiv's bilinear scheme) at levels 1 and 2,
- * UVs included — `subdiv-simple`, `subdiv-simple-uv` (compat-backlog B1).
+ * midpoints and its centre, the shape left as it was — `subsurfModifier` with
+ * `subdivisionType: "SIMPLE"`, which carries the layers (materials, vertex
+ * groups, colours, creases, sharp, seams, vertex creases) the way Blender's
+ * `subdiv_mesh.cc` does (compat-backlog C89). UVs are cut linearly per face,
+ * so seams stay seams. Matches the modifier with `subdivision_type = SIMPLE`
+ * at levels 1 and 2 — `subdiv-simple`, `subdiv-simple-uv`,
+ * `subdiv-simple-layers` (compat-backlog B1).
  */
 export function simpleSubdivide(s: MeshData, level: number): MeshData {
-  let positions = Array.from(s.positions);
-  let polys = s.polys.map((p) => [...p]);
-  let uvs = s.uvs?.map((f) => f.map((c) => [...c]));
-  for (let l = 0; l < level; l++) {
-    const mids = new Map<string, number>();
-    const mid = (a: number, b: number): number => {
-      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-      let m = mids.get(key);
-      if (m === undefined) {
-        m = positions.length / 3;
-        mids.set(key, m);
-        for (let k = 0; k < 3; k++) positions.push((positions[a * 3 + k]! + positions[b * 3 + k]!) / 2);
-      }
-      return m;
-    };
-    const nextPolys: number[][] = [];
-    const nextUVs: number[][][] | undefined = uvs ? [] : undefined;
-    polys.forEach((p, f) => {
-      const n = p.length;
-      const c = positions.length / 3;
-      for (let k = 0; k < 3; k++) positions.push(p.reduce((sum, v) => sum + positions[v * 3 + k]!, 0) / n);
-      const edge = p.map((v, i) => mid(v, p[(i + 1) % n]!));
-      const fu = uvs?.[f];
-      const cu = fu ? [fu.reduce((a, q) => a + q[0]!, 0) / n, fu.reduce((a, q) => a + q[1]!, 0) / n] : null;
-      const eu = fu ? fu.map((q, i) => [(q[0]! + fu[(i + 1) % n]![0]!) / 2, (q[1]! + fu[(i + 1) % n]![1]!) / 2]) : null;
-      for (let i = 0; i < n; i++) {
-        const prev = (i + n - 1) % n;
-        nextPolys.push([p[i]!, edge[i]!, c, edge[prev]!]);
-        if (nextUVs) nextUVs.push([[...fu![i]!], eu![i]!, cu!, eu![prev]!]);
-      }
-    });
-    polys = nextPolys;
-    uvs = nextUVs;
-  }
-  const out: MeshData = { positions: Float32Array.from(positions), polys };
-  if (uvs) out.uvs = uvs;
-  return out;
+  return subsurfModifier(s, { levels: level, subdivisionType: "SIMPLE" });
 }
 
 /**
