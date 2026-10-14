@@ -467,6 +467,7 @@ export * from "../tools/edit-mode/select-sets";
 export * from "../tools/edit-mode/select-path";
 export * from "../tools/edit-mode/select-similar";
 export * from "../tools/edit-mode/select-flat";
+export { selectSimilarRegion } from "../tools/edit-mode/region-match";
 export * from "../tools/edit-mode/edge-walkers";
 export * from "../tools/edit-mode/uv-pack";
 // Blender's two UV **modifiers**, which write the same per-corner layer the

@@ -24,8 +24,9 @@ licences, and where the ported code lives:
   `blenlib/intern/noise_c.cc`), the image texture (`render/intern/texture_image.cc`)
   the colour ramp (`blenkernel/intern/colorband.cc`, `key.cc`,
   `blenlib/intern/math_color.cc`), the k-d tree (`blenlib/BLI_kdtree.hh`), the simple heap
-  (`blenlib/intern/BLI_heap_simple.cc`) and the select-similar comparisons
-  (`editors/util/select_utils.cc`). Each ported function names its source file in
+  (`blenlib/intern/BLI_heap_simple.cc`), the select-similar comparisons
+  (`editors/util/select_utils.cc`) and the region matching behind Select Similar Region
+  (`bmesh/tools/bmesh_region_match.cc`). Each ported function names its source file in
   its JSDoc.
 
 ## Bullet Physics — `btConvexHullComputer`
