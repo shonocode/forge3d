@@ -21,12 +21,15 @@
  */
 import type { MeshData } from "../lib/mesh";
 import { f, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, heapInsert, heapPopMin, heapRemove, type V3, type Heap, type HeapNode } from "./blender-math";
-import { bmFromMesh, bmToMesh, liveEdges, liveFaces, edgeRotate, edgeRotateCheck, type BM, type BE } from "./bmesh-lite";
+import { bmFromMesh, bmLayers, bmToMesh, liveEdges, liveFaces, edgeRotate, edgeRotateCheck, type BM, type BE } from "./bmesh-lite";
+import { defined } from "./mesh-layers";
 import { rotateBeauty } from "./triangulate";
 
 export interface BmBeautifyOptions {
   /** `method`: 0 = area (default), 1 = angle. */
   method: "area" | "angle";
+  /** Told of each rotation: the edge made and the one it replaced (`BM_edge_create(…, e, …)` copies `e`'s data onto it). */
+  onRotate?: (made: BE, from: BE) => void;
   /** `VERT_RESTRICT_TAG`: only rotate an edge whose two far corners differ in `tag`. */
   restrictTag?: boolean;
   /** `EDGE_RESTRICT_DEGENERATE`: an area rotation may not make a flipped pair. */
@@ -100,8 +103,10 @@ export function bmBeautifyFill(bm: BM, edgeArray: BE[], opts: BmBeautifyOptions)
     let e: BE | null = heapPopMin(heap);
     const i = e.index;
     table[i] = null;
+    const from: BE = e;
     e = edgeRotate(bm, e);
     if (!e) continue;
+    opts.onRotate?.(e, from);
     states[i]!.add(`${edgePair(e)}|${facePair(e)}`);
     edgeArray[i] = e;
     e.index = i;
@@ -136,6 +141,37 @@ export function beautifyFill(data: MeshData, options: BeautifyFillOptions = {}):
   const edgeArray = liveEdges(bm).filter(
     (e) => edgeRotateCheck(e) && marked.has(e.l!.f) && marked.has(e.l!.rn!.f),
   );
-  bmBeautifyFill(bm, edgeArray, { method: options.method ?? "area", restrictDegenerate: true });
-  return bmToMesh(bm);
+  // Which input edge each edge is, so a rotated edge takes the flags of the one it replaced (compat-backlog C110).
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const source = new Map<BE, string>(liveEdges(bm).map((e) => [e, key(e.v1.index, e.v2.index)]));
+  bmBeautifyFill(bm, edgeArray, {
+    method: options.method ?? "area",
+    restrictDegenerate: true,
+    onRotate: (made, from) => {
+      const k = source.get(from);
+      if (k !== undefined) source.set(made, k);
+    },
+  });
+  // The layers: the loops keep their corner data and their face's (`bmLayers`), no vertex changes, and the edge flags
+  // follow `source`. Before C110 only positions and polygons came back.
+  const out = bmToMesh(bm);
+  Object.assign(out, defined(bmLayers(bm, data)));
+  if (data.groups) out.groups = new Map([...data.groups].map(([n, g]) => [n, new Map(g)]));
+  if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
+  const creases = new Map<string, number>();
+  const seams = new Set<string>();
+  const sharp = new Set<string>();
+  for (const e of liveEdges(bm)) {
+    const k = source.get(e);
+    if (k === undefined) continue;
+    const now = key(e.v1.index, e.v2.index);
+    const c = data.creases?.get(k);
+    if (c !== undefined) creases.set(now, c);
+    if (data.seams?.has(k)) seams.add(now);
+    if (data.sharp?.has(k)) sharp.add(now);
+  }
+  if (data.creases) out.creases = creases;
+  if (data.seams) out.seams = seams;
+  if (data.sharp) out.sharp = sharp;
+  return out;
 }

@@ -73,6 +73,7 @@
  * when dissolved, as Blender does (`decimate-unsubdiv-2`, 3/3).
  */
 import type { MeshData } from "../../lib/mesh";
+import { calcEdges } from "../bmesh-lite";
 
 export interface UnsubdivideOptions {
   /**
@@ -143,7 +144,27 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   const total = positions.length / 3;
   const removed = new Uint8Array(total);
 
+  // The edge flags, on the input's vertex numbers, pass by pass (compat-backlog C111). An edge that is left is a kept
+  // edge in Blender and keeps its flags; a new edge is either a fan's split diagonal — `BM_face_split` then
+  // `BM_elem_flag_merge_into(l_new->e, l->e, l->prev->e)`: the seam of either, sharp only if both, no crease — or the
+  // edge a two-edge vertex collapses into (`BM_vert_collapse_edge(v->e, v)`), which is the edge that was not `v->e`, with
+  // all its flags. `v->e` is taken as the vertex's earliest edge in Blender's edge order (`mesh_calc_edges`).
+  const creaseMap = new Map(data.creases ?? []);
+  const seamSet = new Set(data.seams ?? []);
+  const sharpSet = new Set(data.sharp ?? []);
+  // Each vertex's edges in its disk order (`bmesh_disk_edge_append`: the order the edges were made, the mesh's first —
+  // `mesh_calc_edges` — then the wires); `v->e` is the first still there.
+  const disk = new Map<number, string[]>();
+  const append = (a: number, b: number): void => {
+    for (const u of [a, b]) disk.set(u, [...(disk.get(u) ?? []), key(a, b)]);
+  };
+  const seen = new Set<string>();
+  for (const [a, b] of calcEdges(data.polys, data.polys.length < 1000 ? 1 : 8)) (seen.add(key(a, b)), append(a, b));
+  for (const e of wires) if (!seen.has(key(e[0]!, e[1]!))) append(e[0]!, e[1]!);
+
   for (let pass = 0; pass < iterations; pass++) {
+    const removedAs = new Map<number, Method>();
+    const startPolys = polys.map((p) => [...p]);
     // ── how each edge is used ─────────────────────────────────────────────
     const faceCount = new Map<string, number>();
     for (const poly of polys) {
@@ -355,6 +376,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
         wires = wires.filter((e) => e[0] !== v && e[1] !== v);
         wires.push([ends[0]!, ends[1]!]);
         removed[v] = 1;
+        removedAs.set(v, method);
         continue;
       }
 
@@ -370,6 +392,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       if (method === "chain") {
         for (const f of incident) without(f, v);
         removed[v] = 1;
+        removedAs.set(v, method);
         continue;
       }
 
@@ -427,11 +450,88 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       polys.push(ring);
       src.push(ringSrc);
       removed[v] = 1;
+      removedAs.set(v, method);
     }
     src = src.filter((_, f) => polys[f]!.length >= 3);
     mat = mat.filter((_, f) => polys[f]!.length >= 3);
     strength = strength.filter((_, f) => polys[f]!.length >= 3);
     polys = polys.filter((p) => p.length >= 3);
+
+    // The flags of the edges this pass made (see above), in the order Blender makes them: the dissolved vertices in index
+    // order, each one's edges as it makes them.
+    const before = new Set([...faceCount.keys(), ...[...wireAt].flatMap(([v, ns]) => ns.map((n) => key(v, n)))]);
+    const now = new Set<string>();
+    for (const p of polys) for (let i = 0; i < p.length; i++) now.add(key(p[i]!, p[(i + 1) % p.length]!));
+    for (const e of wires) now.add(key(e[0]!, e[1]!));
+    // `x`, `v`, `y` consecutive round a face (or along wires) as the pass began.
+    const between = (x: number, v: number, y: number): boolean =>
+      startPolys.some((p) => {
+        const i = p.indexOf(v);
+        if (i < 0) return false;
+        const a = p[(i - 1 + p.length) % p.length]!;
+        const b = p[(i + 1) % p.length]!;
+        return (a === x && b === y) || (a === y && b === x);
+      }) ||
+      ((wireAt.get(v)?.includes(x) ?? false) && (wireAt.get(v)?.includes(y) ?? false)) ||
+      // A boundary vertex: x and y are each on one of its two boundary edges, in different faces.
+      ((faceCount.get(key(x, v)) ?? 0) === 1 && (faceCount.get(key(v, y)) ?? 0) === 1);
+    const madeBy = new Map<number, string[]>();
+    for (const k of now) {
+      if (before.has(k)) continue;
+      const [x, y] = k.split("_").map(Number) as [number, number];
+      // Of the vertices removed this pass with x and y either side, the first dissolved — a quad with two of them is
+      // split at the first, and is a triangle by the time the second comes.
+      const makers = [...(neighbours.get(x) ?? [])].filter((n) => removedAs.has(n) && between(x, n, y));
+      if (makers.length === 0) continue;
+      const v = Math.min(...makers);
+      madeBy.set(v, [...(madeBy.get(v) ?? []), k]);
+    }
+    const isBoundary = (e: string): boolean => (faceCount.get(e) ?? 0) <= 1;
+    const other = (e: string, v: number): number => {
+      const [a, b] = e.split("_").map(Number) as [number, number];
+      return a === v ? b : a;
+    };
+    const drop = (v: number, e: string): void => {
+      const d = disk.get(v);
+      if (!d) return;
+      const i = d.indexOf(e);
+      if (i >= 0) d.splice(i, 1);
+    };
+    for (const v of [...removedAs.keys()].sort((a, b) => a - b)) {
+      for (const k of madeBy.get(v) ?? []) {
+        const [x, y] = k.split("_").map(Number) as [number, number];
+        const kx = key(x, v);
+        const ky = key(v, y);
+        if (removedAs.get(v) !== "fan" || (isBoundary(kx) && isBoundary(ky))) {
+          // `BM_vert_collapse_edge(v->e, v)`: `v->e` (the earliest of the two in v's disk) goes, the other is re-pointed
+          // to the far end of the one that went — appended to that vertex's disk — and keeps its flags.
+          const first = (disk.get(v) ?? []).find((e) => e === kx || e === ky) ?? kx;
+          const kept = first === kx ? ky : kx;
+          const z = other(kept, v);
+          const t = other(first, v);
+          const c = creaseMap.get(kept);
+          if (c !== undefined) creaseMap.set(k, c);
+          if (seamSet.has(kept)) seamSet.add(k);
+          if (sharpSet.has(kept)) sharpSet.add(k);
+          const dz = disk.get(z);
+          if (dz) {
+            const i = dz.indexOf(kept);
+            if (i >= 0) dz[i] = k;
+            else dz.push(k);
+          }
+          drop(t, first);
+          disk.set(t, [...(disk.get(t) ?? []), k]);
+        } else {
+          // A fan's split diagonal: `BM_elem_flag_merge_into` of the two edges at `v` — no crease.
+          if (seamSet.has(kx) || seamSet.has(ky)) seamSet.add(k);
+          if (sharpSet.has(kx) && sharpSet.has(ky)) sharpSet.add(k);
+          for (const u of [x, y]) disk.set(u, [...(disk.get(u) ?? []), k]);
+        }
+      }
+      // `v` goes with its edges.
+      for (const e of disk.get(v) ?? []) drop(other(e, v), e);
+      disk.delete(v);
+    }
   }
 
   // ── renumber, dropping the dissolved vertices ──────────────────────────
@@ -489,7 +589,19 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
     }
     return out;
   };
-  const sharp = remapEdges(data.sharp);
-  if (sharp) result.sharp = sharp;
+  if (data.sharp) result.sharp = remapEdges(sharpSet)!;
+  if (data.seams) result.seams = remapEdges(seamSet)!;
+  if (data.creases) {
+    const creases = new Map<string, number>();
+    const back = new Int32Array(total).fill(-1);
+    remap.forEach((n, o) => {
+      if (n >= 0) back[n] = o;
+    });
+    for (const k of remapEdges(new Set(creaseMap.keys()))!) {
+      const [a, b] = k.split("_").map(Number) as [number, number];
+      creases.set(k, creaseMap.get(key(back[a]!, back[b]!))!);
+    }
+    result.creases = creases;
+  }
   return result;
 }

@@ -133,6 +133,13 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ALL.filter((k) => k !== "edges")],
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 })],
   ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials", "vertexCreases", "faceStrength"]],
+  // Only wire edges are added; the faces are untouched, and a new vertex copies its source's data (C109).
+  ["extrudeVertIndiv", () => L.extrudeVertIndiv(cube(), [0, 6])],
+  ["edgenetPrepare", () => L.edgenetPrepare(cube())],
+  // The cube's wire edge 0-6 is used up splitting a face, so no wire edge is left.
+  ["faceSplitByEdges", () => L.faceSplitByEdges(cube()), ALL.filter((k) => k !== "edges")],
+  // Rotating edges keeps every layer; the rotated edge takes its predecessor's flags (C110).
+  ["beautifyFill", () => L.beautifyFill(L.triangulate(cube()))],
   // Weights are all they write; everything else passes through (C88 review).
   // Every layer but the custom normals (C29), as Blender's `subdiv_mesh.cc` (C89). SIMPLE leaves the wire edge out.
   ["subsurfModifier", () => L.subsurfModifier(cube()), ALL.filter((k) => k !== "normals")],

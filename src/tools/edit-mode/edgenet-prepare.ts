@@ -32,7 +32,7 @@
  * coordinates mirrored gains `(0,5)` and `(2,3)` instead; a T of three edges
  * is refused; and with three chains only the first two are bridged.
  */
-import type { MeshData } from "../../lib/mesh";
+import { withPositions, type MeshData } from "../../lib/mesh";
 
 export interface EdgenetPrepareOptions {
   /**
@@ -77,13 +77,8 @@ export function edgenetPrepare(data: MeshData, options: EdgenetPrepareOptions = 
   const chosen = all
     .map((e, i) => ({ e, i }))
     .filter(({ i }) => !options.edges || options.edges.has(i));
-  const keep = (): MeshData => ({
-    positions: Float32Array.from(data.positions),
-    polys: data.polys.map((p) => [...p]),
-    ...(data.edges ? { edges: all.map((e) => [...e]) } : {}),
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-  });
+  // Every layer stays: no face or vertex changes, only wire edges are added (compat-backlog C109).
+  const keep = (): MeshData => withPositions(data, Float32Array.from(data.positions));
   if (chosen.length === 0) return keep();
 
   // How many of the net's edges sit on each vertex.
@@ -190,12 +185,8 @@ export function edgenetPrepare(data: MeshData, options: EdgenetPrepareOptions = 
     out.push([a, b]);
   }
 
-  const result: MeshData = {
-    positions: Float32Array.from(data.positions),
-    polys: data.polys.map((p) => [...p]),
-  };
+  const result = withPositions(data, Float32Array.from(data.positions));
   if (out.length > 0) result.edges = out;
-  if (data.creases) result.creases = new Map(data.creases);
-  if (data.seams) result.seams = new Set(data.seams);
+  else delete result.edges;
   return result;
 }

@@ -11,7 +11,8 @@
  * `EditMesh`, because a half-edge structure is defined by faces and a wire
  * edge has none.
  */
-import type { MeshData } from "../../lib/mesh";
+import { withPositions, type MeshData } from "../../lib/mesh";
+import { carryFaceLayers, defined } from "../mesh-layers";
 
 /**
  * Add one loose vertex at `co` — Blender's `bmesh.ops.create_vert`. It goes
@@ -84,13 +85,16 @@ export function extrudeVertIndiv(
     edges.push([v, at]);
   });
 
-  return {
-    positions,
-    polys: data.polys.map((p) => [...p]),
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-    edges,
-  };
+  // Every layer stays (the faces are untouched), and each new vertex copies its source's data — `BM_vert_create(…, v, …)`,
+  // vertex groups and the vertex crease (compat-backlog C109).
+  const out = withPositions(data, positions);
+  out.edges = edges;
+  picked.forEach((v, i) => {
+    const at = count + i;
+    for (const g of out.groups?.values() ?? []) if (g.has(v)) g.set(at, g.get(v)!);
+    if (out.vertexCreases?.has(v)) out.vertexCreases.set(at, out.vertexCreases.get(v)!);
+  });
+  return out;
 }
 
 /**
@@ -200,6 +204,9 @@ export function faceSplitByEdges(data: MeshData): MeshData {
   const P = data.positions;
   let polys = data.polys.map((p) => [...p]);
   const leftover: number[][] = [];
+  // Where each face's corners come from: the input face, and per corner its corner (or corners, averaged) there.
+  let srcFace = polys.map((_, f) => f);
+  let srcCorners: (number | number[])[][] = polys.map((p) => p.map((_, i) => i));
 
   for (const wire of data.edges ?? []) {
     const [a, b] = wire as [number, number];
@@ -260,10 +267,18 @@ export function faceSplitByEdges(data: MeshData): MeshData {
       );
 
     const grown: number[] = [];
+    const grownSrc: (number | number[])[] = [];
+    const flat = (c: number | number[]): number[] => (typeof c === "number" ? [c] : c);
     for (let i = 0; i < ring.length; i++) {
       grown.push(ring[i]!);
+      grownSrc.push(srcCorners[target]![i]!);
       const added = inserts.get(i);
-      if (added) for (const { v } of added.sort((x, y) => x.t - y.t)) grown.push(v);
+      if (added)
+        for (const { v } of added.sort((x, y) => x.t - y.t)) {
+          grown.push(v);
+          // An end set into a boundary edge: the mean of that edge's two corners (Blender interpolates by position — not matched).
+          grownSrc.push([...flat(srcCorners[target]![i]!), ...flat(srcCorners[target]![(i + 1) % ring.length]!)]);
+        }
     }
 
     const ia = grown.indexOf(a);
@@ -279,14 +294,18 @@ export function faceSplitByEdges(data: MeshData): MeshData {
       leftover.push([...wire]);
       continue;
     }
+    const firstSrc = grownSrc.slice(lo, hi + 1);
+    const secondSrc = [...grownSrc.slice(hi), ...grownSrc.slice(0, lo + 1)];
     polys = [...polys.slice(0, target), first, second, ...polys.slice(target + 1)];
+    srcFace = [...srcFace.slice(0, target), srcFace[target]!, srcFace[target]!, ...srcFace.slice(target + 1)];
+    srcCorners = [...srcCorners.slice(0, target), firstSrc, secondSrc, ...srcCorners.slice(target + 1)];
   }
 
-  return {
-    positions: new Float32Array(P),
-    polys,
-    ...(data.creases ? { creases: new Map(data.creases) } : {}),
-    ...(data.seams ? { seams: new Set(data.seams) } : {}),
-    edges: leftover,
-  };
+  // The layers (compat-backlog C109): the two halves of a split face take its corners and its face data; no vertex is
+  // added, so the vertex layers stay as they are.
+  const out = withPositions(data, new Float32Array(P));
+  out.polys = polys;
+  out.edges = leftover;
+  Object.assign(out, carryFaceLayers(data, polys.map((_, f) => ({ face: srcFace[f]!, corners: srcCorners[f]! }))));
+  return defined(out);
 }
