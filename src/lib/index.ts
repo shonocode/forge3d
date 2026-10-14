@@ -318,6 +318,7 @@ export {
   facesFacing,
   extrudeFacesBy,
   extrudeRepeat,
+  extrudeRegion,
   extrudeManifold,
   insetFacesByWidth,
   insetIndividual,

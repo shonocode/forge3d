@@ -8,7 +8,8 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, extrudeFaces, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
+import { extrudeRegion } from "./face-transform";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -236,7 +237,8 @@ export function extrudeSelection(): void {
     return;
   }
   applyTopologyOp("Extrude " + mode, () => {
-    if (mode === "face") return extrudeFaces(em, sel);
+    // The E key: Blender's Extrude Region — the inside goes, a whole sheet closes into a solid (compat-backlog C107).
+    if (mode === "face") return extrudeRegion(em, sel);
     // Edge mode: fin extrusion. Result is face geometry, so switch the
     // overlay to face mode for the natural drag-to-shape follow-up.
     const newFaces = extrudeEdges(em, sel);

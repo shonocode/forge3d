@@ -298,7 +298,11 @@ export function extrudeRepeat(
     const keptFrom = bordersOutside ? [] : [...caps];
     const kept = keptFrom.map((f) => [...polysBefore[f]!].reverse());
 
+    const wiresBefore = new Set((em.wireEdges ?? []).map(([a, b]) => (a! < b! ? `${a}_${b}` : `${b}_${a}`)));
     caps = extrudeFaces(em, caps, { wallsFrom: "outside" });
+    // The operator passes the region's edges too, so its inside edges go with it (`bmo_extrude.cc` 347-411);
+    // `extrudeFaces` (faces only) leaves them as wire edges (compat-backlog C107).
+    if (em.wireEdges) em.wireEdges = em.wireEdges.filter(([a, b]) => wiresBefore.has(a! < b! ? `${a}_${b}` : `${b}_${a}`));
     if (kept.length > 0) {
       // The kept originals are the region's faces flipped
       // (`BM_face_normal_flip`): the same corners, in reverse. They are read
@@ -322,6 +326,9 @@ export function extrudeRepeat(
   // step's interior. Loose vertices that were loose before are the caller's
   // and stay.
   const used = usedVertices(em);
+  // A vertex a wire edge still holds stays: Blender keeps a vertex with any edge that was not extruded
+  // (`bmo_extrude.cc` 375-388) — the caller's wire edges inside the region.
+  for (const [a, b] of em.wireEdges ?? []) (used.add(a!), used.add(b!));
   const polys = toPolygons(em);
   const count = em.positions.length / 3;
   const remap = new Int32Array(count).fill(-1);
@@ -332,12 +339,55 @@ export function extrudeRepeat(
     remap[v] = positions.length / 3;
     positions.push(em.positions[v * 3]!, em.positions[v * 3 + 1]!, em.positions[v * 3 + 2]!);
   }
-  if (positions.length !== em.positions.length)
+  if (positions.length !== em.positions.length) {
     rebuildPolygons(em, Float32Array.from(positions), polys.map((p) => p.map((v) => remap[v]!)), {
       sameCorners: true,
       vertexMap: remap,
     });
+    // The edge-keyed layers and the wire edges follow the renumbering (`rebuildPolygons`' vertex map moves only the vertex
+    // layers); a key with an end that went goes too (compat-backlog C107 review).
+    const moveKey = (k: string): string | null => {
+      const [a, b] = k.split("_").map(Number) as [number, number];
+      const na = remap[a]!;
+      const nb = remap[b]!;
+      return na >= 0 && nb >= 0 ? (na < nb ? `${na}_${nb}` : `${nb}_${na}`) : null;
+    };
+    const moveSet = (s: ReadonlySet<string>): Set<string> => {
+      const out = new Set<string>();
+      for (const k of s) {
+        const n = moveKey(k);
+        if (n) out.add(n);
+      }
+      return out;
+    };
+    em.seams = moveSet(em.seams);
+    if (em.sharpEdges) em.sharpEdges = moveSet(em.sharpEdges);
+    const creases = new Map<string, number>();
+    for (const [k, w] of em.creases) {
+      const n = moveKey(k);
+      if (n) creases.set(n, w);
+    }
+    em.creases = creases;
+    if (em.wireEdges)
+      em.wireEdges = em.wireEdges.filter(([a, b]) => remap[a!]! >= 0 && remap[b!]! >= 0).map(([a, b]) => [remap[a!]!, remap[b!]!]);
+  }
   return caps;
+}
+
+/**
+ * Extrude a face region the way the E key does in face mode — Blender's `bpy.ops.mesh.extrude_region()`, which passes the
+ * region's edges along with its faces (compat-backlog C107). The new region is left where the old one was (move it with
+ * {@link moveFaces}); the walls copy the face across their edge; the region's inside edges and the vertices only they held
+ * go; a region that borders no outside face — a whole sheet, a whole shell — keeps its originals, flipped, and closes into
+ * a solid. One step of {@link extrudeRepeat}, which is Blender's: each of its steps is this operator.
+ *
+ * {@link extrudeFaces} is `bmesh.ops.extrude_face_region` with faces only: the inside is left as wire edges and the
+ * originals are always re-pointed.
+ *
+ * Returns the new region's faces.
+ */
+export function extrudeRegion(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
+  return extrudeRepeat(em, faces, { steps: 1, offset: [0, 0, 0] });
 }
 
 /** Vertices some face uses. */

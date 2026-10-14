@@ -69,10 +69,11 @@ export interface EditMesh {
    * what `MeshData.edges` was given.
    *
    * The consequence to know: an operator that **renumbers vertices** leaves
-   * these pointing at the old numbers. The operators here do not renumber
+   * these pointing at the old numbers. Most operators here do not renumber
    * (forge3d leaves orphaned vertices where Blender compacts, which is five
    * parity rows' worth of documented difference); the ones that do go through
-   * `compactMesh`, which remaps them.
+   * `compactMesh`, which remaps them, or remap them themselves (`extrudeRepeat` /
+   * `extrudeRegion` — with the seams, creases and sharp edges, compat-backlog C107).
    */
   wireEdges?: number[][];
   /**
