@@ -244,7 +244,7 @@ function OperatorsSection() {
       </div>
       <div className="sr">
         <label>
-          Inset Amount <span>{insetAmount.toFixed(2)}</span>
+          Inset Thickness <span>{insetAmount.toFixed(2)}</span>
         </label>
         <input
           type="range"
@@ -252,7 +252,7 @@ function OperatorsSection() {
           max={0.5}
           step={0.01}
           value={insetAmount}
-          aria-label="Inset Amount"
+          aria-label="Inset Thickness"
           onChange={(e) => {
             state.editConfig.insetAmount = +e.target.value;
             store.notify();

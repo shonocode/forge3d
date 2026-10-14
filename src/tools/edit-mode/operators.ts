@@ -2127,6 +2127,22 @@ export function triangulateEditFaces(em: EditMesh, selectedFaces: ReadonlySet<nu
   return made;
 }
 
+/**
+ * The I key's settings — `MESH_OT_inset`'s defaults (`editmesh_inset.cc` 597-625): one region, the boundary inset, the
+ * offset even, the corners interpolated, no depth, no outset, no edge rail. `bmesh.ops.inset_region` itself defaults
+ * `use_even_offset` and `use_interpolate` off; the operator turns them on (compat-backlog C108). Pass with a thickness:
+ * `insetRegion(em, faces, { ...INSET_OPERATOR_DEFAULTS, thickness })`.
+ */
+export const INSET_OPERATOR_DEFAULTS = {
+  useBoundary: true,
+  useEvenOffset: true,
+  useRelativeOffset: false,
+  useEdgeRail: false,
+  useInterpolate: true,
+  useOutset: false,
+  depth: 0,
+} as const satisfies Omit<InsetRegionOptions, "thickness">;
+
 /** Options for {@link insetRegion}, named as `bmesh.ops.inset_region` names them. */
 export interface InsetRegionOptions {
   /**

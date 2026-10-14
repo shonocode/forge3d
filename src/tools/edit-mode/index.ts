@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, insetFaces, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
+import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, insetRegion, INSET_OPERATOR_DEFAULTS, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
 import { extrudeRegion } from "./face-transform";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
@@ -291,7 +291,8 @@ export function insetSelection(): void {
     return;
   }
   const sel = new Set(state.editSelection.indices);
-  applyTopologyOp("Inset", () => insetFaces(em, sel, state.editConfig.insetAmount));
+  // The I key: Blender's Inset — one region, the amount a thickness in model units (compat-backlog C108).
+  applyTopologyOp("Inset", () => insetRegion(em, sel, { ...INSET_OPERATOR_DEFAULTS, thickness: state.editConfig.insetAmount }));
 }
 
 export function flipDiagonalSelection(): void {

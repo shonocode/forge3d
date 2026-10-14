@@ -159,6 +159,7 @@ export {
   insetFaces,
   type InsetFacesOptions,
   insetRegion,
+  INSET_OPERATOR_DEFAULTS,
   type InsetRegionOptions,
   bevelEdges,
   type BevelOptions,

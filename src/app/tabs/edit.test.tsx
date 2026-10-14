@@ -10,7 +10,7 @@ afterEach(cleanup);
 beforeEach(() => {
   state.editMesh = null;
   state.editSelection = { mode: "vertex", indices: new Set() };
-  state.editConfig.insetAmount = 0.2;
+  state.editConfig.insetAmount = 0.05;
   state.editConfig.bevelOffset = 15;
   state.editConfig.slideAmount = 0.25;
   state.editConfig.proportional = false;
@@ -82,7 +82,7 @@ describe("edit tab: Operators", () => {
     expect(screen.getByRole("button", { name: /^Select All/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Box Select/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear selection" })).toBeTruthy();
-    expect((screen.getByRole("slider", { name: "Inset Amount" }) as HTMLInputElement).value).toBe("0.2");
+    expect((screen.getByRole("slider", { name: "Inset Thickness" }) as HTMLInputElement).value).toBe("0.05");
     expect((screen.getByRole("slider", { name: "Bevel Offset %" }) as HTMLInputElement).value).toBe("15");
     expect((screen.getByRole("slider", { name: "Slide Amount" }) as HTMLInputElement).value).toBe("0.25");
     expect((screen.getByRole("slider", { name: "Crease Weight" }) as HTMLInputElement).value).toBe("1");

@@ -527,8 +527,9 @@ export const state = {
   editMesh: null as EditMesh | null,
   editSelection: { mode: "vertex", indices: new Set<number>() } as EditSelection,
   editConfig: {
-    /** Per-face inset interpolation toward centroid (0 = no inset, 0.5 = halfway). */
-    insetAmount: 0.2,
+    /** The I key's thickness, in model units — Blender's Inset `thickness` (one region, even offset; compat-backlog C108). */
+    // 0.05: as a thickness 0.2 crossed over on small parts; Blender starts at 0 and drags (C108).
+    insetAmount: 0.05,
     /** Bevel split factor along incident edges (0 = no bevel, must stay < 0.5). */
     bevelOffset: 15,
     /** Edge Slide factor per press: sign = side, magnitude = lerp toward the rail. */
