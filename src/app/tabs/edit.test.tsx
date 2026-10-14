@@ -85,7 +85,9 @@ describe("edit tab: Operators", () => {
     expect((screen.getByRole("slider", { name: "Inset Thickness" }) as HTMLInputElement).value).toBe("0.05");
     expect((screen.getByRole("slider", { name: "Bevel Offset %" }) as HTMLInputElement).value).toBe("15");
     expect((screen.getByRole("slider", { name: "Slide Amount" }) as HTMLInputElement).value).toBe("0.25");
-    expect((screen.getByRole("slider", { name: "Crease Weight" }) as HTMLInputElement).value).toBe("1");
+    const crease = screen.getByRole("slider", { name: "Crease" }) as HTMLInputElement;
+    // Blender's crease, 0..1 (compat-backlog C118).
+    expect([crease.value, crease.min, crease.max, crease.step]).toEqual(["1", "0", "1", "0.05"]);
   });
 });
 

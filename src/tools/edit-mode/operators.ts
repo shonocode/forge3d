@@ -1962,7 +1962,9 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
   if (level < 1) return new Set();
   const polys0 = toPolygons(em);
   const uvs = em.loopUVs?.length === polys0.length ? em.loopUVs : undefined;
-  const result = catmullClark(em.positions, polys0, level, em.creases, uvs);
+  // `em.creases` is Blender's crease, 0..1 (compat-backlog C118): OpenSubdiv gets `10 · c²`, as the Subdivision
+  // Surface modifier hands it (`subsurfModifier`), so crease 1 is a sharp edge at every level.
+  const result = catmullClark(em.positions, polys0, level, em.creases, uvs, { blenderCreases: true, vertexCreases: em.vertexCreases });
 
   // Replay the levels' bookkeeping — `subdivideOnce` numbers the new
   // vertices [old | face points | edge points in first-met order], and gives
@@ -1972,6 +1974,8 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
   let colors = em.loopColors?.length === polys0.length ? em.loopColors.map((f) => f.map((c) => [...c])) : undefined;
   let groups = em.vertexGroups ? new Map([...em.vertexGroups].map(([k, g]) => [k, new Map(g)])) : undefined;
   let V = em.positions.length / 3;
+  // Each crease goes to both child edges of its edge, unchanged, level by level (`subdiv_mesh.cc` copies edge attributes).
+  let creases = new Map(em.creases);
   for (let l = 0; l < level; l++) {
     const F = polys.length;
     const facePoint = (f: number): number => V + f;
@@ -1988,6 +1992,17 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
         }
       }
     });
+    {
+      const next = new Map<string, number>();
+      for (const [k, c] of creases) {
+        const ep = edgePoint.get(k);
+        if (ep === undefined) continue;
+        const [a, b] = k.split("_").map(Number) as [number, number];
+        next.set(seamKey(a, ep), c);
+        next.set(seamKey(ep, b), c);
+      }
+      creases = next;
+    }
     if (groups) {
       // Equal weights, and a member where any source is a member — a weight
       // of 0 included (measured, `subdiv-edit-layers`: Blender's subdivision
@@ -2065,9 +2080,9 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
   if (materials) em.faceMaterials = materials;
   if (faceStrength) em.faceStrength = faceStrength;
   if (groups) em.vertexGroups = groups;
-  // Carry the propagated (σ−1) creases onto the subdivided edges. Seams are
-  // dropped — their vertex-pair keys no longer name real edges after the split.
-  em.creases = result.creases;
+  // The creases on the child edges, as carried above. Seams are dropped — their vertex-pair keys no longer name real
+  // edges after the split.
+  em.creases = creases;
   return new Set();
 }
 

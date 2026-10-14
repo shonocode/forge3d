@@ -816,7 +816,12 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   const groupWeights = vg && !vg.empty ? vg.weights : null;
   // `shrinkwrap_calc_subdivided_positions`: where each vertex sits after the subdivision, used as the ray's origin.
   const subLevels = method === "project" && axes.length === 0 ? (projectOpts.subsurfLevels ?? 0) : 0;
-  const subPositions = subLevels > 0 ? catmullClark(data.positions, data.polys, subLevels, data.creases).positions : null;
+  // Blender sets `use_creases` there, so the creases are read as its 0..1 (compat-backlog C118).
+  const subPositions =
+    subLevels > 0
+      ? catmullClark(data.positions, data.polys, subLevels, data.creases, undefined, { blenderCreases: true, vertexCreases: data.vertexCreases })
+          .positions
+      : null;
   for (let v = 0; v < count; v++) {
     if (options.verts && !options.verts.has(v)) continue;
     const weight = groupWeights ? groupWeights[v]! : 1;

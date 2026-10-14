@@ -24,7 +24,7 @@ export interface MeshData {
   positions: Float32Array;
   /** One array of vertex indices per polygon, CCW. Triangles, quads, n-gons. */
   polys: number[][];
-  /** Catmull-Clark edge sharpness, keyed "minVertex_maxVertex". */
+  /** Edge creases — Blender's `crease_edge` (0..1, 1 a sharp edge at every level), keyed "minVertex_maxVertex". */
   creases?: Map<string, number>;
   /** UV seam edges, keyed "minVertex_maxVertex". */
   seams?: Set<string>;
@@ -245,9 +245,9 @@ export function meshToTriangles(em: EditMesh): { indices: number[]; triToFace: n
   return triangulateFaces(em);
 }
 
-/** Mark an edge as a Catmull-Clark crease. Sharpness sigma: 0 smooth, >=1 hard. */
-export function setCrease(data: MeshData, v1: number, v2: number, sharpness: number): void {
-  (data.creases ??= new Map()).set(seamKey(v1, v2), sharpness);
+/** Mark an edge as a crease — Blender's 0..1: 0 smooth, 1 sharp at every subdivision level (compat-backlog C118). */
+export function setCrease(data: MeshData, v1: number, v2: number, crease: number): void {
+  (data.creases ??= new Map()).set(seamKey(v1, v2), crease);
 }
 
 /** Mark an edge as a UV seam, which unwrapping will cut along. */
@@ -256,11 +256,11 @@ export function setSeam(data: MeshData, v1: number, v2: number): void {
 }
 
 /** Crease every edge of every polygon — the usual want for a hard-surface box. */
-export function creaseAll(data: MeshData, sharpness: number): void {
+export function creaseAll(data: MeshData, crease: number): void {
   const creases = (data.creases ??= new Map());
   for (const poly of data.polys) {
     for (let i = 0; i < poly.length; i++) {
-      creases.set(seamKey(poly[i]!, poly[(i + 1) % poly.length]!), sharpness);
+      creases.set(seamKey(poly[i]!, poly[(i + 1) % poly.length]!), crease);
     }
   }
 }

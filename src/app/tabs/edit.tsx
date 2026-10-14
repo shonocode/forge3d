@@ -174,7 +174,7 @@ const OPS: OpDef[] = [
   { label: "Bridge Loops", key: keyLabel("edit.bridge", "edit"), modes: ["edge"], run: (m) => m.bridgeSelection() },
   { label: "Mark Seam", key: "", modes: ["edge"], run: (m) => m.markSeamSelection() },
   { label: "Mark Crease", key: keyLabel("edit.markCrease", "edit"), modes: ["edge"], run: (m) => m.markCreaseSelection() },
-  { label: "Set Crease σ", key: keyLabel("edit.setCrease", "edit"), modes: ["edge"], run: (m) => m.setCreaseSelection() },
+  { label: "Set Crease", key: keyLabel("edit.setCrease", "edit"), modes: ["edge"], run: (m) => m.setCreaseSelection() },
   { label: "Tris to Quads", key: keyLabel("edit.trisToQuads", "edit"), modes: ["vertex", "edge", "face"], run: (m) => m.trisToQuadsSelection() },
   { label: "Quads to Tris", key: keyLabel("edit.quadsToTris", "edit"), modes: ["vertex", "edge", "face"], run: (m) => m.quadsToTrisSelection() },
   { label: "Subdivide (CC)", key: "", modes: ["vertex", "edge", "face"], run: (m) => m.subdivideSelection() },
@@ -329,15 +329,15 @@ function OperatorsSection() {
       </div>
       <div className="sr">
         <label>
-          Crease Weight <span>{creaseWeight.toFixed(1)}</span>
+          Crease <span>{creaseWeight.toFixed(2)}</span>
         </label>
         <input
           type="range"
           min={0}
-          max={4}
-          step={0.5}
+          max={1}
+          step={0.05}
           value={creaseWeight}
-          aria-label="Crease Weight"
+          aria-label="Crease"
           onChange={(e) => {
             state.editConfig.creaseWeight = +e.target.value;
             store.notify();

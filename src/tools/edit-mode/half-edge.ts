@@ -134,9 +134,9 @@ export interface EditMesh {
    */
   vertexCreases?: Map<number, number>;
   /**
-   * Edge sharpness for Catmull-Clark creases. Keyed by `seamKey(v1, v2)`
-   * (same vertex-pair scheme as `seams`), value = σ ≥ 0 (0 / absent = smooth,
-   * ≥ 1 = fully sharp). Only Subdivide reads these; other operators leave them
+   * Edge creases. Keyed by `seamKey(v1, v2)` (same vertex-pair scheme as
+   * `seams`), value = Blender's crease 0..1 (0 / absent = smooth, 1 = sharp at
+   * every subdivision level — compat-backlog C118). Only Subdivide reads these; other operators leave them
    * alone (a stale key simply matches no current edge and is ignored).
    */
   creases: Map<string, number>;
@@ -179,7 +179,7 @@ export function isSeam(em: EditMesh, he: number): boolean {
   return em.seams.has(seamKey(a, b));
 }
 
-/** Crease sharpness (σ) of the given half-edge's edge — 0 when not creased. */
+/** Crease (0..1) of the given half-edge's edge — 0 when not creased. */
 export function creaseOf(em: EditMesh, he: number): number {
   const a = edgeOrigin(em, he);
   const b = edgeEnd(em, he);

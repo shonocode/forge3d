@@ -151,19 +151,26 @@ describe("seam / crease metadata persistence (.forge3d v2)", () => {
     em.seams.add("0_3");
     em.seams.add("1_2");
     em.creases.set("0_1", 1);
-    em.creases.set("2_3", 2.5);
+    em.creases.set("2_3", 0.5);
     writePolyMetadata(em);
 
     const meta = em.source.metadata as Record<string, unknown>;
     expect(meta[SEAM_METADATA_KEY]).toEqual(["0_3", "1_2"]);
-    expect(meta[CREASE_METADATA_KEY]).toEqual([["0_1", 1], ["2_3", 2.5]]);
+    expect(meta[CREASE_METADATA_KEY]).toEqual([["0_1", 1], ["2_3", 0.5]]);
 
     // Fresh build off the SAME mesh (metadata carries polys + edge attrs).
     const em2 = buildEditMesh(em.source)!;
     expect(em2.faces).toHaveLength(6); // quads restored
     expect([...em2.seams].sort()).toEqual(["0_3", "1_2"]);
     expect(em2.creases.get("0_1")).toBe(1);
-    expect(em2.creases.get("2_3")).toBe(2.5);
+    expect(em2.creases.get("2_3")).toBe(0.5);
+  });
+
+  it("reads a sharpness saved before C118 (above 1) as a full crease", () => {
+    const em = makeQuadCubeEM();
+    em.creases.set("2_3", 2.5);
+    writePolyMetadata(em);
+    expect(buildEditMesh(em.source)!.creases.get("2_3")).toBe(1);
   });
 
   it("drops out-of-range or degenerate edge keys on restore", () => {

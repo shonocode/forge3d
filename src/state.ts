@@ -542,7 +542,7 @@ export const state = {
     proportional: false,
     /** Falloff radius (local units) for proportional editing. */
     proportionalRadius: 0.5,
-    /** Catmull-Clark crease sharpness applied by Mark Crease (σ ≥ 0; ≥1 = fully sharp). */
+    /** The crease Mark Crease / Set Crease write — Blender's 0..1, 1 a fully sharp edge (compat-backlog C118). */
     creaseWeight: 1,
     /** UV unwrap flattening: planar projection vs LSCM conformal. */
     unwrapMethod: "project" as "project" | "conformal",

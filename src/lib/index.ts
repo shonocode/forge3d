@@ -27,7 +27,8 @@
  * const em = meshFromData({ positions, polys });
  * extrudeFaces(em, new Set([topFace]));
  * const { positions: p, polys: f, creases } = meshToData(em);
- * const smooth = catmullClark(p, f, 2, creases);
+ * // `creases` are Blender's 0..1, so say so: `catmullClark` alone reads OpenSubdiv's sharpness.
+ * const smooth = catmullClark(p, f, 2, creases, undefined, { blenderCreases: true });
  * ```
  */
 
@@ -455,7 +456,9 @@ export { bridgeLoops, type BridgeLoopsOptions } from "../tools/bridge-loops";
 
 // ── Subdivision ────────────────────────────────────────────────────────────
 // Pure: positions + polygons + creases in, refined surface out. Semi-sharp
-// creases are how a box becomes a fillet with one parameter.
+// creases are how a box becomes a fillet with one parameter. `catmullClark`
+// reads a crease as OpenSubdiv's sharpness unless `blenderCreases` is set;
+// `MeshData.creases` is Blender's 0..1 (compat-backlog C118).
 export { catmullClark, type SubdivResult, type CatmullClarkOptions } from "../tools/edit-mode/subdivide";
 /** Blender's Subdivision Surface modifier on a mesh with its layers: creases in Blender's 0..1, edge flags, materials, groups, UVs. */
 export { subsurfModifier, type SubsurfModifierOptions } from "../tools/subsurf-modifier";

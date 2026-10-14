@@ -6,7 +6,7 @@ import { rebuildPolygons, triangulateFaces, type EditMesh } from "./half-edge";
 export const POLY_METADATA_KEY = "forge3dPolys";
 /** Metadata key holding UV seam edge keys (string[] of "min_max" vertex pairs). */
 export const SEAM_METADATA_KEY = "forge3dSeams";
-/** Metadata key holding Catmull-Clark creases ([key, σ] pairs). */
+/** Metadata key holding edge creases ([key, crease] pairs, Blender's 0..1 — compat-backlog C118). */
 export const CREASE_METADATA_KEY = "forge3dCreases";
 /** Metadata key holding UV Editor pin vertex indices (number[]). */
 export const UV_PIN_METADATA_KEY = "forge3dUVPins";
@@ -101,7 +101,8 @@ function restoreEdgeAttrs(source: Mesh, em: EditMesh, numV: number): void {
     for (const pair of rawCreases) {
       if (!Array.isArray(pair) || pair.length !== 2) continue;
       const [k, s] = pair as [unknown, unknown];
-      if (validEdgeKey(k, numV) && typeof s === "number" && s > 0) em.creases.set(k, s);
+      // Projects saved before C118 hold OpenSubdiv sharpness (0..4); a crease is 0..1, so anything above is fully sharp.
+      if (validEdgeKey(k, numV) && typeof s === "number" && s > 0) em.creases.set(k, Math.min(s, 1));
     }
   }
 }

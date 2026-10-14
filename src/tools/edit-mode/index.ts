@@ -487,8 +487,8 @@ export function markSeamSelection(): void {
 /**
  * Toggle Catmull-Clark crease markers on the selected edges (Edge mode).
  * Creased edges stay sharp under Subdivide; visualized as cyan lines. Weight
- * comes from `editConfig.creaseWeight` (σ ≥ 1 = fully sharp; a σ of 2 keeps the
- * edge sharp for two subdivision levels then relaxes).
+ * comes from `editConfig.creaseWeight` (Blender's 0..1; 1 = sharp at every
+ * subdivision level).
  */
 export function markCreaseSelection(): void {
   const em = state.editMesh;
@@ -522,9 +522,9 @@ export function markCreaseSelection(): void {
 }
 
 /**
- * Assign the Crease Weight slider value EXACTLY to the selected edges — unlike
- * Mark Crease (Shift+E, toggle) this overwrites their current σ, and σ = 0
- * clears the crease. The precision tool for per-edge sharpness.
+ * Assign the Crease slider value EXACTLY to the selected edges — unlike
+ * Mark Crease (Shift+E, toggle) this overwrites their current crease, and 0
+ * clears it. The precision tool for per-edge sharpness.
  */
 export function setCreaseSelection(): void {
   const em = state.editMesh;
@@ -534,13 +534,13 @@ export function setCreaseSelection(): void {
     return;
   }
   if (state.editSelection.indices.size === 0) {
-    status("⚠ Select edges to set crease σ");
+    status("⚠ Select edges to set the crease");
     return;
   }
-  const sigma = state.editConfig.creaseWeight;
+  const crease = state.editConfig.creaseWeight;
   const sel = new Set(state.editSelection.indices);
   const before = new Map(em.creases);
-  setCreases(em, sel, sigma);
+  setCreases(em, sel, crease);
   const after = new Map(em.creases);
   writeEdgeAttrMetadata(em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
@@ -555,8 +555,8 @@ export function setCreaseSelection(): void {
     undo() { restore(before); },
     redo() { restore(after); },
   });
-  status(sigma > 0
-    ? `Crease σ = ${sigma}: ${sel.size} edge(s)`
+  status(crease > 0
+    ? `Crease = ${crease}: ${sel.size} edge(s)`
     : `Crease cleared: ${sel.size} edge(s)`);
 }
 
@@ -1028,11 +1028,11 @@ export function handleEditModePointerDown(screenX: number, screenY: number, addi
     state.editSelection.indices.clear();
     state.editSelection.indices.add(picked);
   }
-  // Edge readout: surface the picked edge's crease σ so per-edge sharpness is
-  // inspectable (Set Crease σ / Crease Weight slider edits it).
+  // Edge readout: surface the picked edge's crease so it is inspectable (the
+  // Crease slider and Set Crease edit it).
   if (state.editSelection.mode === "edge") {
-    const sigma = creaseOf(em, picked);
-    if (sigma > 0) status(`Crease σ = ${sigma}`);
+    const crease = creaseOf(em, picked);
+    if (crease > 0) status(`Crease = ${crease}`);
   }
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   currentGizmo.refresh(em, state.editSelection);

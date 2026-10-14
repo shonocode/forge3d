@@ -68,7 +68,7 @@ export interface ProjectMeshEntry {
   editPolys?: number[][];
   /** UV seam edge keys ("min_max" vertex pairs) — see Mark Seam. */
   editSeams?: string[];
-  /** Catmull-Clark creases as [edgeKey, sharpness] pairs — see Mark Crease. */
+  /** Edge creases as [edgeKey, crease] pairs, Blender's 0..1 (files before compat-backlog C118 held 0..4; read clamped to 1) — see Mark Crease. */
   editCreases?: Array<[string, number]>;
   /** UV Editor pin vertex indices — held fixed by ⚓ Re-unwrap (LSCM). */
   editUVPins?: number[];
