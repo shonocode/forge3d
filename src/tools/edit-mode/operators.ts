@@ -8,7 +8,7 @@ import { selectEdgeRing } from "./edge-walk";
 import { carryEdgeFlags, subdivideEdges, type SubdivideFalloff } from "./refine";
 import { edgeringInterpolate, edgeringPlan, type EdgeringInterpolation } from "./edgering-interp";
 import { bevelMesh, type BevelOffsetType } from "../bevel/bevel";
-import { meshFromData, meshToData, type MeshData } from "../../lib/mesh";
+import { assignFromData, meshToData, type MeshData } from "../../lib/mesh";
 import { triangulate } from "../triangulate";
 import { joinTrianglePairs } from "./join-order";
 import { clipDegenerateEars } from "./degenerate-ears";
@@ -1700,6 +1700,13 @@ export function collapseEdges(em: EditMesh, selectedEdges: ReadonlySet<number>):
 // ── Bridge Edge Loops (F-M8) ───────────────────────────────────────────────
 
 /**
+ * **Not what the editor's Bridge runs any more** (compat-backlog C116): that is
+ * `bridgeEditSelection` (`tools/bridge-selection.ts`, the port of `bridge_loops`),
+ * which pairs the loops by Blender's least total distance and takes loops of
+ * different lengths, several loops and faces. This older version, kept with its
+ * tests, takes the rotation whose first pair is nearest — a twisted band where
+ * the two disagree (`squaresTurn`).
+ *
  * Connect two boundary edge loops with a band of REAL quads — Blender's
  * Bridge Edge Loops, V1 scope:
  *
@@ -2133,8 +2140,7 @@ export function triangulateEditFaces(em: EditMesh, selectedFaces: ReadonlySet<nu
   const key = (p: readonly number[]): string => [...p].sort((a, b) => a - b).join(",");
   const had = new Set(before.filter((p) => p.length === 3).map(key));
   const out = triangulate(meshToData(em), { ...(selectedFaces ? { faces: selectedFaces } : {}), dropDuplicates: true });
-  const source = em.source;
-  Object.assign(em, meshFromData(out), { source });
+  assignFromData(em, out);
   const made = new Set<number>();
   out.polys.forEach((p, f) => {
     if (p.length === 3 && !had.has(key(p))) made.add(f);
@@ -2243,8 +2249,7 @@ export function insetRegion(
   opts: InsetRegionOptions,
 ): Set<number> {
   const out = insetRegionMesh(meshToData(em), selectedFaces, opts);
-  const source = em.source;
-  Object.assign(em, meshFromData(out.mesh), { source });
+  assignFromData(em, out.mesh);
   return new Set(out.inner);
 }
 

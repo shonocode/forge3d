@@ -159,7 +159,7 @@ export const ACTION_TEXT: Record<ActionId, string> = {
   "edit.fill": "Fill（選んだ頂点・辺から面を張る）",
   "edit.vertexSlide": "Vertex Slide（頂点を辺に沿って滑らせる）",
   "edit.merge": "Merge（頂点をまとめる）",
-  "edit.bridge": "Bridge Loops（2 本の縁をつなぐ）",
+  "edit.bridge": "Bridge Loops（縁どうし、選んだ面なら穴どうしをつなぐ）",
   "edit.markCrease": "Crease（Subdivide で角を残す）の付け外し",
   "edit.setCrease": "Crease の強さを数値で指定",
   "edit.trisToQuads": "三角形を四角形にまとめる",

@@ -61,6 +61,11 @@ export interface BridgeLoopsOptions {
    * already there.
    */
   onEdgesOut?: (edges: [number, number][]) => void;
+  /**
+   * Called with `faces.out` (without `useMerge`), as output face indices: every face a pair made **or found in place**
+   * — what the operator selects afterwards (compat-backlog C116).
+   */
+  onFacesOut?: (faces: number[]) => void;
   /** Hash tables Blender used for the Mesh's edges — see `DecimateOptions.edgeTables`. */
   edgeTables?: number;
 }
@@ -309,9 +314,11 @@ function bridgeLoopPair(
   twistOffset: number,
   merge: { factor: number; out: Splice[] } | null = null,
   edgesOut: Set<BE> | null = null,
+  facesOut: Set<BF> | null = null,
 ): void {
   const tagOut = (x: BF): void => {
     if (edgesOut) for (const l of faceLoops(x)) edgesOut.add(l.e!);
+    facesOut?.add(x);
   };
   const eps = f(0.00001);
   const isClosed = a.closed && b.closed;
@@ -549,6 +556,7 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
     throw new Error("bridgeLoops: selected loops must have equal edge counts to merge");
   const merge = opts.useMerge ? { factor: opts.mergeFactor ?? 0.5, out: [] as Splice[] } : null;
   const edgesOut = opts.onEdgesOut && !merge ? new Set<BE>() : null;
+  const facesOut = opts.onFacesOut && !merge ? new Set<BF>() : null;
   if (loops.length > 2) {
     if (opts.usePairs) for (const el of loops) calcNormal(el);
     loops = calcOrder(loops, !!opts.usePairs);
@@ -559,17 +567,19 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
       if (opts.useCyclic && !merge && loops.length > 2) next = loops[0]!;
       else break;
     }
-    bridgeLoopPair(bm, loops[i]!, next, opts.twistOffset ?? 0, merge, edgesOut);
+    bridgeLoopPair(bm, loops[i]!, next, opts.twistOffset ?? 0, merge, edgesOut, facesOut);
     if (opts.usePairs) i++;
   }
   if (edgesOut && opts.onEdgesOut)
     opts.onEdgesOut(
       [...edgesOut].filter((e) => bm.edges.items[e.slot] === e).map((e) => [e.v1.index, e.v2.index] as [number, number]),
     );
-  // No vertex is made or removed, so the vertex groups and the old edges'
+  if (facesOut && opts.onFacesOut) opts.onFacesOut(liveFaces(bm).flatMap((x, i) => (facesOut.has(x) ? [i] : [])));
+  // No vertex is made or removed, so the vertex groups, the vertex creases (until C116 dropped) and the old edges'
   // flags stand as they are; the corners and slots follow `src`.
   const out: MeshData = { ...bmToMesh(bm), ...bmLayers(bm, data) };
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
+  if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   if (data.creases) out.creases = new Map(data.creases);
   if (data.seams) out.seams = new Set(data.seams);
   if (data.sharp) out.sharp = new Set(data.sharp);
@@ -601,6 +611,13 @@ export function bridgeLoops(data: MeshData, edges: readonly (readonly [number, n
         if (any) g.set(b.index, sum);
         else g.delete(b.index);
       }
+    // The vertex crease, a float point attribute: `(1 − factor)·a + factor·b` (absent = 0).
+    if (out.vertexCreases) {
+      const vc = out.vertexCreases;
+      const c = f(f((vc.get(a.index) ?? 0) * f(1 - factor)) + f((vc.get(b.index) ?? 0) * factor));
+      if (c) vc.set(b.index, c);
+      else vc.delete(b.index);
+    }
   }
   const root = (v: number): number => {
     let t = v;

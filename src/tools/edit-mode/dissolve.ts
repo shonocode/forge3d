@@ -13,7 +13,7 @@
  * Pure and headless — Vitest-pinned.
  */
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
-import { meshFromData, meshToData } from "../../lib/mesh";
+import { assignFromData, meshToData } from "../../lib/mesh";
 import { connectVertsPolys } from "./connect-pair";
 import type { V3 } from "../blender-math";
 import { dissolveLimitMesh, type DissolveDelimit } from "../dissolve-limit";
@@ -221,8 +221,7 @@ function mergeGroups(
     const gone = new Set(loose);
     const keep = new Set<number>();
     for (let v = 0; v < em.positions.length / 3; v++) if (!gone.has(v)) keep.add(v);
-    const source = em.source;
-    Object.assign(em, meshFromData(compactMesh(meshToData(em), keep)), { source });
+    assignFromData(em, compactMesh(meshToData(em), keep));
     report.vertsRemoved += loose.length;
   }
 }
@@ -400,8 +399,7 @@ export function dissolveLimit(
   const faces = em.faces.length;
   const verts = em.vertices.length;
   const out = dissolveLimitMesh(meshToData(em), opts);
-  const source = em.source;
-  Object.assign(em, meshFromData(out), { source });
+  assignFromData(em, out);
   report.merged += faces - em.faces.length;
   report.vertsRemoved += verts - em.vertices.length;
   return report;

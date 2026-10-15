@@ -8,7 +8,7 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, bridgeEdgeLoops, collapseEdges, edgeSlide, extrudeEdges, insetRegion, INSET_OPERATOR_DEFAULTS, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
+import { bevelEdges, collapseEdges, edgeSlide, extrudeEdges, insetRegion, INSET_OPERATOR_DEFAULTS, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
 import { extrudeRegion } from "./face-transform";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
@@ -18,6 +18,8 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces, usedVertices } from "./half-edge";
 import { deleteGeometryMapped, type DeleteContext, type DeleteGeom } from "../delete-geometry";
 import { edgeFaceAdd } from "./face-add";
+import { bridgeEditSelection } from "../bridge-selection";
+import { assignFromData, meshFromData, meshToData } from "../../lib/mesh";
 import { lastSelected, updateGizmo } from "../selection";
 import { store } from "../../store";
 
@@ -963,27 +965,31 @@ export function fillSelection(): void {
 }
 
 /**
- * Bridge two boundary edge loops with a quad band. Select all edges of both
- * loops (same vertex count) first — e.g. box-select both tube ends.
+ * Bridge Edge Loops — Blender's operator with its defaults (`bridgeEditSelection`, the port of `bridge_loops`; compat-backlog
+ * C116): two or more edge loops, of any lengths, joined by the pairing with the least total distance; or, with faces
+ * selected, the holes they leave (a tunnel). Any selection mode: vertices and edges select what they enclose, as
+ * Blender flushes them.
  */
 export function bridgeSelection(): void {
   const em = state.editMesh;
   if (!em) return;
-  if (state.editSelection.mode !== "edge") {
-    status("⚠ Bridge: edge mode only");
+  if (state.editSelection.indices.size === 0) {
+    status("⚠ Bridge: 2 つ以上の辺ループ（または面）を選択");
     return;
   }
-  if (state.editSelection.indices.size < 2) {
-    status("⚠ Bridge: 2 つの境界ループの辺をすべて選択");
+  const mode = state.editSelection.mode;
+  const ids = new Set(state.editSelection.indices);
+  const sel = mode === "vertex" ? { verts: ids } : mode === "edge" ? { edges: ids } : { faces: ids };
+  // Tried on a copy first: a refused bridge leaves the mesh, the selection and the undo history as they were, and the
+  // warning stays on the status line.
+  const trial = meshFromData(meshToData(em));
+  const result = bridgeEditSelection(trial, sel);
+  if (!result) {
+    status("⚠ Bridge: つなげる辺ループが 2 つ以上いる（面を選ぶとその穴どうし）");
     return;
   }
-  const sel = new Set(state.editSelection.indices);
   applyTopologyOp("Bridge Loops", () => {
-    const result = bridgeEdgeLoops(em, sel);
-    if (result.size === 0) {
-      status("⚠ Bridge: 同じ頂点数の境界ループ 2 本が必要（内部辺・分岐は不可）");
-      return new Set<number>();
-    }
+    assignFromData(em, meshToData(trial));
     state.editSelection.mode = "face";
     return result;
   });

@@ -25,7 +25,7 @@ import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh, 
 import { extrudeFaces } from "./operators";
 import { weldByMap } from "../remove-doubles";
 import { insetIndividualMesh, type InsetIndividualMeshOptions } from "../inset";
-import { meshFromData, meshToData } from "../../lib/mesh";
+import { assignFromData, meshToData } from "../../lib/mesh";
 
 /** Every distinct vertex used by the given faces. */
 function vertsOf(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
@@ -220,8 +220,7 @@ export function insetIndividual(
   opts: InsetIndividualMeshOptions,
 ): Set<number> {
   const out = insetIndividualMesh(meshToData(em), faces, opts);
-  const source = em.source;
-  Object.assign(em, meshFromData(out.mesh), { source });
+  assignFromData(em, out.mesh);
   return new Set(out.inner);
 }
 

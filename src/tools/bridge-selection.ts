@@ -4,10 +4,10 @@
  * Blender 5.1.1): `bridge_loops`, with the face-selection form in front and
  * `subdivide_edgering` behind.
  */
-import { meshFromData, meshToData, type MeshData } from "../lib/mesh";
+import { assignFromData, meshFromData, meshToData, type MeshData } from "../lib/mesh";
 import { bridgeLoops } from "./bridge-loops";
 import { deleteGeometryMapped } from "./delete-geometry";
-import { edgeEnd, edgeOrigin, forEachEdge, seamKey } from "./edit-mode/half-edge";
+import { canonicalEdge, edgeEnd, edgeOrigin, forEachEdge, seamKey, type EditMesh } from "./edit-mode/half-edge";
 import { subdivideEdgering } from "./edit-mode/operators";
 import type { EdgeringInterpolation } from "./edit-mode/edgering-interp";
 import type { SubdivideFalloff } from "./edit-mode/refine";
@@ -32,6 +32,11 @@ export interface BridgeSelectionOptions {
   profileShape?: SubdivideFalloff;
   /** `profile_shape_factor`. Default 0. */
   profileShapeFactor?: number;
+  /**
+   * Called with the faces the bridge made or found in place (`faces.out`, what the operator selects), as indices into
+   * the result — without `useMerge`, and only when no `cuts` follow (the cut renumbers them).
+   */
+  onFacesOut?: (faces: number[]) => void;
 }
 
 /**
@@ -112,6 +117,7 @@ export function bridgeSelection(
     useMerge: opts.useMerge ?? false,
     mergeFactor: opts.mergeFactor ?? 0.5,
     onEdgesOut: (e) => (edgesOut = e),
+    ...(opts.onFacesOut && Math.max(0, Math.floor(opts.cuts ?? 0)) === 0 ? { onFacesOut: opts.onFacesOut } : {}),
   });
   const cuts = Math.max(0, Math.floor(opts.cuts ?? 0));
   if (opts.useMerge || cuts === 0) return bridged;
@@ -133,3 +139,55 @@ export function bridgeSelection(
   });
   return meshToData(em);
 }
+
+/**
+ * {@link bridgeSelection} on an edit mesh, with the selection as the editor holds it (compat-backlog C116) — what the
+ * GUI's Bridge Edge Loops runs. Until 2026-10-15 the GUI called `bridgeEdgeLoops`, an older two-loop version that took the
+ * nearest first pair rather than Blender's least total distance and refused loops of different lengths and inner loops.
+ *
+ * - `edges`: edge ids (any half-edge of each); `faces`: face ids; `verts`: vertex ids. Blender's selection flush is done
+ *   here: a vertex selection selects the edges both of whose ends are selected, and the faces every corner of which
+ *   is; an edge selection, the faces every edge of which is. Selected faces turn the bridge into its face form (the
+ *   faces are replaced by a tunnel).
+ * - Returns the faces the bridge made or found in place (`faces.out`, which Blender selects — the whole tube when its
+ *   two rims are bridged, though nothing changes), or `null` when it could not bridge
+ *   (`bridgeLoops` refuses fewer than two loops, an odd number of loops to pair, or loops of different lengths to
+ *   merge), and then `em` is unchanged.
+ */
+export function bridgeEditSelection(
+  em: EditMesh,
+  selection: { verts?: ReadonlySet<number>; edges?: ReadonlySet<number>; faces?: ReadonlySet<number> },
+  opts: BridgeSelectionOptions = {},
+): Set<number> | null {
+  const data = meshToData(em);
+  const edges = new Map<string, [number, number]>();
+  for (const he of selection.edges ?? []) {
+    const c = canonicalEdge(em, he);
+    const a = edgeOrigin(em, c), b = edgeEnd(em, c);
+    edges.set(seamKey(a, b), [a, b]);
+  }
+  const verts = selection.verts;
+  if (verts?.size)
+    data.polys.forEach((p) =>
+      p.forEach((a, i) => {
+        const b = p[(i + 1) % p.length]!;
+        if (verts.has(a) && verts.has(b)) edges.set(seamKey(a, b), [a, b]);
+      }),
+    );
+  for (const e of data.edges ?? []) if (verts?.has(e[0]!) && verts.has(e[1]!)) edges.set(seamKey(e[0]!, e[1]!), [e[0]!, e[1]!]);
+  const faces = new Set(selection.faces ?? []);
+  // The flush up to faces: every edge of the face selected.
+  data.polys.forEach((p, f) => {
+    if (p.every((a, i) => edges.has(seamKey(a, p[(i + 1) % p.length]!)))) faces.add(f);
+  });
+  let made = new Set<number>();
+  let out: MeshData;
+  try {
+    out = bridgeSelection(data, { edges: [...edges.values()], faces: [...faces] }, { ...opts, onFacesOut: (f) => (made = new Set(f)) });
+  } catch {
+    return null;
+  }
+  assignFromData(em, out);
+  return made;
+}
+

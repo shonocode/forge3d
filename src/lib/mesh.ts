@@ -179,6 +179,23 @@ export function meshFromData(data: MeshData): EditMesh {
   return em;
 }
 
+/** The layers an edit mesh holds only when it has them — `meshFromData` sets each only when the data has it. */
+const OPTIONAL_LAYERS = [
+  "wireEdges", "loopUVs", "loopColors", "sharpEdges", "loopNormals", "faceMaterials", "vertexGroups", "faceStrength", "vertexCreases",
+] as const;
+
+/**
+ * Replace an edit mesh's contents with `data` in place, keeping its `source` — for operators that compute on
+ * `MeshData` and write back. Every layer is replaced, including the ones `data` lacks: `Object.assign` with
+ * {@link meshFromData} alone left those as they were, numbered for the old vertices and faces (compat-backlog C116 review).
+ */
+export function assignFromData(em: EditMesh, data: MeshData): void {
+  const source = em.source;
+  const fresh = meshFromData(data);
+  for (const k of OPTIONAL_LAYERS) delete em[k];
+  Object.assign(em, fresh, { source });
+}
+
 /** Read an editable mesh back out as plain arrays. */
 export function meshToData(
   em: EditMesh,
