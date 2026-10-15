@@ -8,6 +8,45 @@ export const POLY_METADATA_KEY = "forge3dPolys";
 export const SEAM_METADATA_KEY = "forge3dSeams";
 /** Metadata key holding edge creases ([key, crease] pairs, Blender's 0..1 — compat-backlog C118). */
 export const CREASE_METADATA_KEY = "forge3dCreases";
+/**
+ * Metadata key holding the surface vertex of each render vertex (number[], one per vertex): render vertices that are one
+ * vertex of the surface — split only for a normal or a UV — share a number, and coincident vertices with different numbers
+ * are different vertices (two parts that touch). Written by the modifier stack (`modifier-core.surfaceToRender`); dropped by
+ * a topology commit, after which the stack welds by position as before (compat-backlog C113).
+ */
+export const WELD_METADATA_KEY = "forge3dWeld";
+/**
+ * Metadata key holding {@link keysSignature} of the buffer the vertex-keyed lists (weld, creases, seams) were written for.
+ * A tool that rebuilds the buffer without knowing them (Weld Vertices, Shade, dyntopo) leaves them naming other vertices;
+ * the signature no longer matches and they are dropped on read (compat-backlog C112, C113). Absent (files before
+ * 2026-10-15): trusted, as before.
+ */
+export const KEYS_FOR_METADATA_KEY = "forge3dKeysFor";
+
+/**
+ * A fingerprint of a buffer's numbering: the vertex count and the index list (FNV-1a, 32 bit). Two buffers with the same
+ * signature number their vertices alike for every purpose the keyed lists need.
+ */
+export function keysSignature(vertexCount: number, indices: ArrayLike<number>): string {
+  let h = 0x811c9dc5;
+  const mix = (x: number): void => {
+    for (let s = 0; s < 32; s += 8) {
+      h ^= (x >>> s) & 0xff;
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+  };
+  mix(vertexCount);
+  mix(indices.length);
+  for (let i = 0; i < indices.length; i++) mix(indices[i]!);
+  return `${vertexCount}:${indices.length}:${h.toString(16)}`;
+}
+
+/** Whether the vertex-keyed lists on `meta` were written for this buffer (or carry no signature — older files). */
+export function keysFitBuffer(meta: Record<string, unknown> | null, vertexCount: number, indices: ArrayLike<number>): boolean {
+  const sig = meta?.[KEYS_FOR_METADATA_KEY];
+  return typeof sig !== "string" || sig === keysSignature(vertexCount, indices);
+}
+
 /** Metadata key holding UV Editor pin vertex indices (number[]). */
 export const UV_PIN_METADATA_KEY = "forge3dUVPins";
 
@@ -53,7 +92,7 @@ export function buildEditMesh(source: Mesh): EditMesh | null {
 
   // Edge attributes (seams / creases) are keyed by vertex pairs, valid
   // regardless of the polygon match, so restore them either way.
-  restoreEdgeAttrs(source, em, numV);
+  if (keysFitBuffer(source.metadata as Record<string, unknown> | null, numV, indices)) restoreEdgeAttrs(source, em, numV);
 
   const stored = readStoredPolys(source, numV);
   if (stored) {

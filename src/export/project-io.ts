@@ -32,7 +32,7 @@ import { refreshMaskVisual } from "../tools/sculpt";
 import { validateMorphDrivers } from "../tools/morph-driver";
 import { createLayer, toggleLayerVisibility, assignMeshToLayer } from "../tools/layers";
 import { openFileDialog } from "../ui/file-input";
-import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY, UV_PIN_METADATA_KEY } from "../tools/edit-mode/build";
+import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY, UV_PIN_METADATA_KEY, WELD_METADATA_KEY } from "../tools/edit-mode/build";
 import { store } from "../store";
 
 function sanitizeProjectName(name: string): string {
@@ -121,6 +121,8 @@ export function collectSidecar(): ProjectSidecar {
       if (Array.isArray(creases) && creases.length > 0) entry.editCreases = creases as Array<[string, number]>;
       const uvPins = meta[UV_PIN_METADATA_KEY];
       if (Array.isArray(uvPins) && uvPins.length > 0) entry.editUVPins = uvPins as number[];
+      const weld = meta[WELD_METADATA_KEY];
+      if (Array.isArray(weld) && weld.length > 0) entry.editWeld = weld as number[];
     }
 
     // Modifier stack + pre-modifier base geometry — GLB only holds the
@@ -136,6 +138,11 @@ export function collectSidecar(): ProjectSidecar {
           indices: origGeo.indices.slice(),
           ...(origGeo.polys ? { polys: origGeo.polys.map((p) => [...p]) } : {}),
           ...(origGeo.smoothAngle !== undefined ? { smoothAngle: origGeo.smoothAngle } : {}),
+          ...(origGeo.weld ? { weld: origGeo.weld.slice() } : {}),
+          // Written even when empty: a file without them is from before C112, whose mesh keys were the base's (below).
+          creases: (origGeo.creases ?? []).map(([k, c]) => [k, c] as [string, number]),
+          seams: (origGeo.seams ?? []).slice(),
+          ...(origGeo.uvPins ? { uvPins: origGeo.uvPins.slice() } : {}),
         },
         stack: mods.map((m) => ({ ...m })),
       };
@@ -144,7 +151,7 @@ export function collectSidecar(): ProjectSidecar {
     if (
       entry.proceduralGraph || entry.sculptMask || entry.layerName ||
       entry.paintLayers || entry.paintChannels ||
-      entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins ||
+      entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins || entry.editWeld ||
       entry.modifiers
     ) {
       meshes.push(entry);
@@ -312,8 +319,9 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
     // the next Edit Mode entry (buildEditMesh) restores quads / seams / creases.
     // build.ts validates polys against the index buffer and drops stale keys,
     // so a vertex-order mismatch degrades gracefully to triangles.
-    if (entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins) {
+    if (entry.editPolys || entry.editSeams || entry.editCreases || entry.editUVPins || entry.editWeld) {
       const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+      if (entry.editWeld) meta[WELD_METADATA_KEY] = entry.editWeld;
       if (entry.editPolys) meta[POLY_METADATA_KEY] = entry.editPolys;
       if (entry.editSeams) meta[SEAM_METADATA_KEY] = entry.editSeams;
       if (entry.editCreases) meta[CREASE_METADATA_KEY] = entry.editCreases;
@@ -347,7 +355,12 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
           stack.push(mod);
         }
         if (stack.length > 0 && numV >= 3 && indices.every((v) => v < numV)) {
-          const { polys, smoothAngle } = entry.modifiers.original;
+          const { polys, smoothAngle, weld, uvPins } = entry.modifiers.original;
+          // Before C112 (2026-10-15) the stack left Edit Mode's creases and seams on the mesh as they were — the base's.
+          const older = entry.modifiers.original.creases === undefined && entry.modifiers.original.seams === undefined;
+          const creases = older ? entry.editCreases : entry.modifiers.original.creases;
+          const seams = older ? entry.editSeams : entry.modifiers.original.seams;
+          const ints = (a: unknown): a is number[] => Array.isArray(a) && a.every((v) => Number.isInteger(v));
           state.originalGeometryMap.set(mesh.uniqueId, {
             positions,
             normals,
@@ -355,6 +368,13 @@ function restoreSidecar(sidecar: ProjectSidecar, imported: AbstractMesh[]): void
             indices,
             ...(Array.isArray(polys) ? { polys } : {}),
             ...(typeof smoothAngle === "number" && Number.isFinite(smoothAngle) ? { smoothAngle } : {}),
+            // Checked here, dropped one by one when malformed: `renderToSurface` range-checks the keys and the weld's length.
+            ...(ints(weld) ? { weld } : {}),
+            ...(Array.isArray(creases) && creases.every((p) => Array.isArray(p) && typeof p[0] === "string" && typeof p[1] === "number")
+              ? { creases: creases.map(([k, c]) => [k, Math.min(c, 1)] as [string, number]) }
+              : {}),
+            ...(Array.isArray(seams) && seams.every((k) => typeof k === "string") ? { seams } : {}),
+            ...(ints(uvPins) ? { uvPins } : {}),
           });
           state.modifierMap.set(mesh.uniqueId, stack);
         }

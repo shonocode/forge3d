@@ -1020,9 +1020,15 @@ function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
  * For Blender's answer — the same survivors as `remove_doubles`, loose edges
  * where a face collapsed — use {@link removeDoubles} (`remove-doubles.ts`).
  * This one is the generators' seam-closer and picks survivors its own way.
+ *
+ * `groups`, one number per vertex, keeps vertices of different groups apart
+ * however close they are — the editor's render buffer names each render
+ * vertex's surface vertex this way, so two parts that only touch stay two
+ * (compat-backlog C113). Absent: every vertex is one group.
  */
-export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
+export function weldMesh(data: MeshData, tolerance = 1e-4, groups?: ArrayLike<number>): MeshData {
   const count = data.positions.length / 3;
+  if (groups && groups.length !== count) throw new RangeError(`weldMesh: ${groups.length} groups for ${count} vertices`);
   const cell = Math.max(tolerance, 1e-9);
   const inv = 1 / cell;
 
@@ -1071,6 +1077,7 @@ export function weldMesh(data: MeshData, tolerance = 1e-4): MeshData {
         for (let dz = -1; dz <= 1; dz++) {
           for (const other of buckets.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
             if (other === v || claimedBy[other] !== -1) continue;
+            if (groups && groups[other] !== groups[v]) continue;
             const ox = data.positions[other * 3]! - x;
             const oy = data.positions[other * 3 + 1]! - y;
             const oz = data.positions[other * 3 + 2]! - z;

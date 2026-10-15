@@ -4,7 +4,17 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { state, status } from "../state";
 import type { Modifier, ModifierType, OriginalGeometry } from "../state";
-import { buildEditMesh, POLY_METADATA_KEY } from "./edit-mode/build";
+import {
+  buildEditMesh,
+  CREASE_METADATA_KEY,
+  KEYS_FOR_METADATA_KEY,
+  keysFitBuffer,
+  keysSignature,
+  POLY_METADATA_KEY,
+  SEAM_METADATA_KEY,
+  UV_PIN_METADATA_KEY,
+  WELD_METADATA_KEY,
+} from "./edit-mode/build";
 import { toPolygons } from "./edit-mode/half-edge";
 import { evaluateStack } from "./modifier-core";
 
@@ -22,14 +32,27 @@ function getGeometry(mesh: AbstractMesh): OriginalGeometry | null {
   // triangles — buildEditMesh drops the key when it is stale. Without it the
   // triangles go in bare and modifier-core rejoins Babylon's quad pairs.
   const built = mesh instanceof Mesh ? buildEditMesh(mesh) : null;
-  const hasPolys = !!(mesh.metadata as Record<string, unknown> | null)?.[POLY_METADATA_KEY];
+  const meta = (mesh.metadata ?? null) as Record<string, unknown> | null;
+  const hasPolys = !!meta?.[POLY_METADATA_KEY];
   const em = hasPolys ? built : null;
+  const count = positions.length / 3;
+  // Which render vertices are one surface vertex (C113), when the list was written for this very buffer: one of the
+  // right length but for a rebuilt buffer would keep apart vertices that are one, and open seams.
+  const fits = keysFitBuffer(meta, count, indices);
+  const weld = meta?.[WELD_METADATA_KEY];
+  const weldOk = fits && Array.isArray(weld) && weld.length === count && weld.every((w) => Number.isInteger(w));
+  // Edit Mode's creases and seams, as `buildEditMesh` read them back (range-checked, creases clamped to 0..1) — C112.
+  const pins = meta?.[UV_PIN_METADATA_KEY];
   return {
     positions: new Float32Array(positions),
     normals: normals ? new Float32Array(normals) : null,
     uvs: uvs ? new Float32Array(uvs) : null,
     indices: Array.from(indices),
     ...(em ? { polys: toPolygons(em) } : {}),
+    ...(weldOk ? { weld: [...(weld as number[])] } : {}),
+    ...(built?.creases.size ? { creases: [...built.creases] } : {}),
+    ...(built?.seams.size ? { seams: [...built.seams] } : {}),
+    ...(Array.isArray(pins) && pins.length ? { uvPins: (pins as unknown[]).filter((v): v is number => Number.isInteger(v)) } : {}),
   };
 }
 
@@ -117,6 +140,17 @@ function applyGeometry(mesh: AbstractMesh, geo: OriginalGeometry): void {
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   if (geo.polys) meta[POLY_METADATA_KEY] = geo.polys.map((p) => [...p]);
   else delete meta[POLY_METADATA_KEY];
+  // The keys on the vertices go with them: the evaluated buffer's own, or the base's when it is put back. Left as they
+  // were, they would name other vertices of the new buffer — an unrelated edge creased or seamed (compat-backlog C112).
+  const put = (key: string, value: unknown[] | undefined): void => {
+    if (value?.length) meta[key] = value.map((x) => (Array.isArray(x) ? [...x] : x));
+    else delete meta[key];
+  };
+  put(WELD_METADATA_KEY, geo.weld);
+  put(CREASE_METADATA_KEY, geo.creases);
+  put(SEAM_METADATA_KEY, geo.seams);
+  put(UV_PIN_METADATA_KEY, geo.uvPins);
+  meta[KEYS_FOR_METADATA_KEY] = keysSignature(count, geo.indices);
   mesh.metadata = meta;
 }
 

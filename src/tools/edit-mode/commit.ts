@@ -1,7 +1,7 @@
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { sourceMesh, toPolygons, triangulateFaces, type EditMesh } from "./half-edge";
-import { CREASE_METADATA_KEY, POLY_METADATA_KEY, SEAM_METADATA_KEY } from "./build";
+import { CREASE_METADATA_KEY, KEYS_FOR_METADATA_KEY, keysSignature, POLY_METADATA_KEY, SEAM_METADATA_KEY, WELD_METADATA_KEY } from "./build";
 import { transferAttribute, transferSkinWeights } from "./attribute-transfer";
 
 /**
@@ -85,8 +85,19 @@ export function writePolyMetadata(em: EditMesh): void {
   const mesh = sourceMesh(em);
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   meta[POLY_METADATA_KEY] = toPolygons(em);
+  // Edit Mode works on the render vertices and does not carry which of them are one surface vertex; after a topology
+  // change the old list would name the wrong vertices, so it goes (the stack then welds by position — compat-backlog C113).
+  delete meta[WELD_METADATA_KEY];
   writeEdgeAttrMetadataInto(em, meta);
+  signKeys(mesh, meta);
   mesh.metadata = meta;
+}
+
+/** Stamp the keyed lists with the buffer they now describe (see `KEYS_FOR_METADATA_KEY`). */
+function signKeys(mesh: ReturnType<typeof sourceMesh>, meta: Record<string, unknown>): void {
+  const indices = mesh.getIndices();
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  if (indices && positions) meta[KEYS_FOR_METADATA_KEY] = keysSignature(positions.length / 3, indices);
 }
 
 /**
@@ -97,6 +108,7 @@ export function writeEdgeAttrMetadata(em: EditMesh): void {
   const mesh = sourceMesh(em);
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   writeEdgeAttrMetadataInto(em, meta);
+  signKeys(mesh, meta);
   mesh.metadata = meta;
 }
 

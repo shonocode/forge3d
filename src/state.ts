@@ -251,6 +251,17 @@ export interface OriginalGeometry {
    */
   polys?: number[][];
   /**
+   * The surface vertex of each render vertex (`WELD_METADATA_KEY`): which render vertices are one vertex. Absent: welded by
+   * position (compat-backlog C113).
+   */
+  weld?: number[];
+  /** Edge creases on the render vertices, as Edit Mode's metadata holds them (`CREASE_METADATA_KEY`, Blender's 0..1 — C112). */
+  creases?: Array<[string, number]>;
+  /** UV seams on the render vertices (`SEAM_METADATA_KEY` — C112). */
+  seams?: string[];
+  /** UV Editor pins (`UV_PIN_METADATA_KEY`): kept with the base, not carried through the modifiers (C112). */
+  uvPins?: number[];
+  /**
    * The shading the result is drawn with, as an Auto Smooth angle (radians):
    * π smooth, ~0 flat. Read off the mesh's own normals when the stack is
    * first built (see `modifier-core.renderToSurface`); the Shade buttons

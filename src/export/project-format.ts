@@ -72,6 +72,8 @@ export interface ProjectMeshEntry {
   editCreases?: Array<[string, number]>;
   /** UV Editor pin vertex indices — held fixed by ⚓ Re-unwrap (LSCM). */
   editUVPins?: number[];
+  /** The surface vertex of each render vertex (`forge3dWeld`, compat-backlog C113). Absent: welded by position. */
+  editWeld?: number[];
   /**
    * Modifier stack (.forge3d v2): the GLB only holds the EVALUATED mesh, so
    * without this the stack collapses into baked geometry on reopen. `original`
@@ -91,6 +93,11 @@ export interface ProjectMeshEntry {
       polys?: number[][];
       /** Auto Smooth angle set by the Shade buttons. Absent = read off the normals. */
       smoothAngle?: number;
+      /** The base's surface vertex per render vertex, creases, seams and UV pins (compat-backlog C112, C113). Absent before 2026-10-15. */
+      weld?: number[];
+      creases?: Array<[string, number]>;
+      seams?: string[];
+      uvPins?: number[];
     };
     stack: Array<Record<string, unknown>>;
   };
@@ -344,6 +351,11 @@ export function validateSidecar(raw: unknown): ProjectSidecar {
     if (m.editUVPins !== undefined) {
       if (!Array.isArray(m.editUVPins) || !m.editUVPins.every((v) => Number.isInteger(v) && (v as number) >= 0)) {
         throw new Error("Sidecar: editUVPins must be an array of non-negative ints");
+      }
+    }
+    if (m.editWeld !== undefined) {
+      if (!Array.isArray(m.editWeld) || !m.editWeld.every((v) => Number.isInteger(v) && (v as number) >= 0)) {
+        throw new Error("Sidecar: editWeld must be an array of non-negative ints");
       }
     }
     if (m.modifiers !== undefined) {

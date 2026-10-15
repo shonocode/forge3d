@@ -219,6 +219,12 @@ describe("edit structure sidecar fields (half-edge V2 persistence)", () => {
     expect(() => validateSidecar(bad)).toThrow(/editCreases/);
   });
 
+  it("round-trips editWeld, and rejects one that is not a list of vertex numbers (compat-backlog C113)", () => {
+    const withWeld: ProjectSidecar = { ...SIDECAR, meshes: [{ name: "cube", editWeld: [0, 0, 1, 2] }] };
+    expect(unpackProject(packProject(withWeld, new Uint8Array([1]))).sidecar.meshes[0]!.editWeld).toEqual([0, 0, 1, 2]);
+    expect(() => validateSidecar({ ...SIDECAR, meshes: [{ name: "x", editWeld: [0, -1] }] })).toThrow(/editWeld/);
+  });
+
   it("rejects non-string editSeams entries", () => {
     const bad = { ...SIDECAR, meshes: [{ name: "x", editSeams: [12] }] };
     expect(() => validateSidecar(bad)).toThrow(/editSeams/);

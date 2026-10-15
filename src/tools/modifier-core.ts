@@ -17,11 +17,17 @@
  *
  * 1. `renderToSurface`: weld the render vertices (1e-6, which also closes
  *    Babylon's sphere seam — see `csg-core`), keep each corner's UV, and read
- *    off the shading the mesh was drawn with as an Auto Smooth angle;
+ *    off the shading the mesh was drawn with as an Auto Smooth angle. Where
+ *    the buffer names each render vertex's surface vertex (`weld`, written by
+ *    step 3), only vertices of the same surface vertex weld — two parts that
+ *    touch stay two (compat-backlog C113). The creases and seams Edit Mode
+ *    put on the render vertices come along onto the surface (C112);
  * 2. each enabled modifier, in order;
  * 3. `surfaceToRender`: corner normals under that angle, vertices split by
  *    position + UV + normal, faces fan-triangulated — so the faces go back
- *    onto the mesh as its polygon metadata and Edit Mode still sees quads.
+ *    onto the mesh as its polygon metadata and Edit Mode still sees quads —
+ *    with the surface vertex of each render vertex, and the creases and
+ *    seams onto every render edge of their surface edge.
  *
  * Pure; `modifiers.ts` is the Babylon side.
  */
@@ -63,6 +69,9 @@ function unit(n: V3): V3 {
 }
 
 const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** "min_max" — the edge key `MeshData` and Edit Mode use. */
+const seamKeyOf = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
 
 /**
  * The faces a render buffer stands for: its stored polygons when they fit,
@@ -143,6 +152,13 @@ function joinPair(P: ArrayLike<number>, a: number[], b: number[]): number[] | nu
  */
 export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smoothAngle: number } {
   const faces = facesOf(geo);
+  const n = geo.positions.length / 3;
+  // A list that no longer fits the buffer (another tool rebuilt it) says nothing; the weld is then by position alone.
+  const weld = geo.weld && geo.weld.length === n && geo.weld.every((w) => Number.isInteger(w)) ? geo.weld : undefined;
+  const edgeKeyOk = (k: string): boolean => {
+    const [a, b] = k.split("_").map(Number);
+    return Number.isInteger(a) && Number.isInteger(b) && a! >= 0 && b! >= 0 && a! < n && b! < n && a !== b;
+  };
   const U = geo.uvs;
   const N = geo.normals;
   // Each corner carries [u, v, nx, ny, nz] through the weld, which keeps the
@@ -150,7 +166,18 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
   const corners = faces.map((p) =>
     p.map((v) => [U ? U[v * 2]! : 0, U ? U[v * 2 + 1]! : 0, N ? N[v * 3]! : 0, N ? N[v * 3 + 1]! : 0, N ? N[v * 3 + 2]! : 0]),
   );
-  const welded = weldMesh({ positions: Float32Array.from(geo.positions), polys: faces, uvs: corners }, WELD_DIST);
+  const welded = weldMesh(
+    {
+      positions: Float32Array.from(geo.positions),
+      polys: faces,
+      uvs: corners,
+      // Ascending, so where two render copies of one edge differ the larger is the edge's (the weld keeps the last).
+      creases: new Map((geo.creases ?? []).filter(([k, c]) => edgeKeyOk(k) && c > 0).sort((x, y) => x[1] - y[1])),
+      seams: new Set((geo.seams ?? []).filter(edgeKeyOk)),
+    },
+    WELD_DIST,
+    weld,
+  );
   const layer = welded.uvs!;
 
   let smoothAngle = DEFAULT_SMOOTH_ANGLE;
@@ -190,6 +217,8 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
 
   const surface: MeshData = { positions: welded.positions, polys: welded.polys };
   if (U) surface.uvs = layer.map((f) => f.map((c) => [c[0]!, c[1]!]));
+  if (welded.creases?.size) surface.creases = welded.creases;
+  if (welded.seams?.size) surface.seams = welded.seams;
   return { surface, smoothAngle };
 }
 
@@ -200,7 +229,7 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
  * `polys` are the faces over the new vertices, fan-triangulated into
  * `indices` — the form `buildEditMesh` accepts as polygon metadata.
  */
-export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeometry & { polys: number[][] } {
+export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeometry & { polys: number[][]; weld: number[] } {
   const P = s.positions;
   const area = s.polys.map((p) => newell(P, p));
   const fn = area.map(unit);
@@ -217,6 +246,7 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const weld: number[] = [];
   const index = new Map<string, number>();
   const polys: number[][] = [];
   const indices: number[] = [];
@@ -239,6 +269,7 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
         index.set(key, j);
         positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
         normals.push(n[0], n[1], n[2]);
+        weld.push(v);
         if (s.uvs) uvs.push(uv ? uv[0]! : 0, uv ? uv[1]! : 0);
       }
       ring.push(j);
@@ -246,12 +277,28 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
     polys.push(ring);
     for (let k = 1; k + 1 < ring.length; k++) indices.push(ring[0]!, ring[k]!, ring[k + 1]!);
   });
+  // A surface edge is as many render edges as its ends were split into; each gets the edge's crease and seam.
+  const creases = new Map<string, number>();
+  const seams = new Set<string>();
+  s.polys.forEach((p, f) => {
+    const ring = polys[f]!;
+    for (let i = 0; i < p.length; i++) {
+      const surfaceKey = seamKeyOf(p[i]!, p[(i + 1) % p.length]!);
+      const renderKey = seamKeyOf(ring[i]!, ring[(i + 1) % ring.length]!);
+      const c = s.creases?.get(surfaceKey);
+      if (c !== undefined && c > 0) creases.set(renderKey, c);
+      if (s.seams?.has(surfaceKey)) seams.add(renderKey);
+    }
+  });
   return {
     positions: Float32Array.from(positions),
     normals: Float32Array.from(normals),
     uvs: s.uvs ? Float32Array.from(uvs) : null,
     indices,
     polys,
+    weld,
+    ...(creases.size ? { creases: [...creases] } : {}),
+    ...(seams.size ? { seams: [...seams] } : {}),
     smoothAngle,
   };
 }
@@ -414,7 +461,11 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
  * The whole stack: `mods` (disabled ones skipped) over the base geometry.
  * `upTo` stops after that many entries — Apply bakes the first ones only.
  */
-export function evaluateStack(base: OriginalGeometry, mods: readonly Modifier[], upTo = mods.length): OriginalGeometry & { polys: number[][] } {
+export function evaluateStack(
+  base: OriginalGeometry,
+  mods: readonly Modifier[],
+  upTo = mods.length,
+): OriginalGeometry & { polys: number[][]; weld: number[] } {
   const { surface, smoothAngle: read } = renderToSurface(base);
   const angle = base.smoothAngle ?? read;
   let s = surface;
