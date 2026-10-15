@@ -15,7 +15,7 @@ import { planeCut } from "./knife";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { creaseOf, edgeEnd, edgeOrigin, hasNonTriFaces, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces, usedVertices } from "./half-edge";
+import { canonicalEdge, creaseOf, edgeEnd, edgeOrigin, faceHalfEdges, faceVerts, forEachEdge, hasNonTriFaces, type EditMesh, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces, usedVertices } from "./half-edge";
 import { deleteGeometryMapped, type DeleteContext, type DeleteGeom } from "../delete-geometry";
 import { edgeFaceAdd } from "./face-add";
 import { bridgeEditSelection } from "../bridge-selection";
@@ -701,47 +701,110 @@ function syncManualApply(em: NonNullable<typeof state.editMesh>): void {
 }
 
 /**
- * Join adjacent coplanar triangles into quads (Blender's Tris to Quads).
- * Face-mode selection limits the scope; otherwise the whole mesh converts.
+ * The faces a selection selects, as Blender flushes it (`EDBM_selectmode_flush`): in face mode the faces themselves; in
+ * vertex mode every face all of whose corners are selected; in edge mode every face all of whose edges are.
  */
-export function trisToQuadsSelection(): void {
+export function selectedFacesFlushed(em: EditMesh, mode: "vertex" | "edge" | "face", ids: ReadonlySet<number>): Set<number> {
+  if (mode === "face") return new Set(ids);
+  const out = new Set<number>();
+  const edges = mode === "edge" ? new Set([...ids].map((he) => canonicalEdge(em, he))) : null;
+  for (let f = 0; f < em.faces.length; f++) {
+    const ok =
+      mode === "vertex"
+        ? faceVerts(em, f).every((v) => ids.has(v))
+        : faceHalfEdges(em, f).every((he) => edges!.has(canonicalEdge(em, he)));
+    if (ok) out.add(f);
+  }
+  return out;
+}
+
+/**
+ * Run a face operator on the faces a selection selects, as Blender's Tris to Quads and Triangulate do: the faces only
+ * (`faces=%hf`), and afterwards the select mode kept and its selection the old one plus the operator's output faces
+ * (`faces.out`, flushed) — so a region picked by vertices stays picked. Returns the new selection's ids in `mode`, or
+ * null when the operator changed nothing (`em` is then as it was). Edge ids come back canonical. Pure: the GUI runs it
+ * on a copy and writes the copy back inside its undo step (compat-backlog C117).
+ */
+export function convertSelectedFaces(
+  em: EditMesh,
+  mode: "vertex" | "edge" | "face",
+  ids: ReadonlySet<number>,
+  op: (em: EditMesh, faces: ReadonlySet<number>) => Set<number>,
+): Set<number> | null {
+  const faces = selectedFacesFlushed(em, mode, ids);
+  if (faces.size === 0) return null;
+  const pair = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const faceKey = (f: number): string => [...faceVerts(em, f)].sort((x, y) => x - y).join(",");
+  // The old selection, by vertices: the operators keep every vertex's number and renumber edges and faces.
+  const before =
+    mode === "vertex"
+      ? new Set([...ids].map(String))
+      : mode === "edge"
+        ? new Set([...ids].map((he) => pair(edgeOrigin(em, he), edgeEnd(em, he))))
+        : new Set([...ids].map(faceKey));
+  const out = op(em, faces);
+  if (out.size === 0) return null;
+  const sel = new Set<number>();
+  if (mode === "vertex") {
+    for (const v of ids) sel.add(v);
+    for (const f of out) for (const v of faceVerts(em, f)) sel.add(v);
+  } else if (mode === "edge") {
+    const fresh = new Set<string>();
+    for (const f of out) for (const he of faceHalfEdges(em, f)) fresh.add(pair(edgeOrigin(em, he), edgeEnd(em, he)));
+    forEachEdge(em, (he) => {
+      const k = pair(edgeOrigin(em, he), edgeEnd(em, he));
+      if (before.has(k) || fresh.has(k)) sel.add(canonicalEdge(em, he));
+    });
+  } else {
+    for (let f = 0; f < em.faces.length; f++) if (out.has(f) || before.has(faceKey(f))) sel.add(f);
+  }
+  return sel;
+}
+
+/** Tris to Quads / Triangulate from the GUI: tried on a copy, so a selection that changes nothing leaves all as it was. */
+function convertSelection(label: string, op: (em: EditMesh, faces: ReadonlySet<number>) => Set<number>, nothing: string): void {
   const em = state.editMesh;
   if (!em) return;
-  const sel =
-    state.editSelection.mode === "face" && state.editSelection.indices.size > 0
-      ? new Set(state.editSelection.indices)
-      : null;
-  applyTopologyOp("Tris to Quads", () => {
-    const result = trisToQuads(em, sel);
-    if (result.size === 0) {
-      status("⚠ Tris to Quads: 結合できる三角形ペアがない（共面 + 凸の四角形のみ）");
-      return new Set<number>();
-    }
-    state.editSelection.mode = "face";
-    return result;
+  const { mode, indices } = state.editSelection;
+  if (selectedFacesFlushed(em, mode, indices).size === 0) {
+    status(`⚠ ${label}: 面を選んでから（頂点・辺はそれが囲む面）`);
+    return;
+  }
+  const trial = meshFromData(meshToData(em));
+  const sel = convertSelectedFaces(trial, mode, indices, op);
+  if (!sel) {
+    status(`⚠ ${label}: ${nothing}`);
+    return;
+  }
+  applyTopologyOp(label, () => {
+    assignFromData(em, meshToData(trial));
+    return sel;
   });
 }
 
 /**
- * Fan-triangulate quads / n-gons back to triangles (Blender's Triangulate
- * Faces). Face-mode selection limits the scope; otherwise the whole mesh.
+ * Join adjacent coplanar triangles into quads (Blender's Tris to Quads) — on the selected faces only, as the operator
+ * runs `join_triangles faces=%hf`; vertices and edges select the faces they enclose. Nothing selected: nothing happens
+ * (compat-backlog C117; until 2026-10-15 anything but a face selection converted the whole mesh).
+ */
+export function trisToQuadsSelection(): void {
+  convertSelection("Tris to Quads", trisToQuadsOperator, "結合できる三角形ペアがない（共面 + 凸の四角形のみ）");
+}
+
+/**
+ * Tris to Quads with the operator's defaults: 40° face and shape thresholds — but with exactly two faces selected no
+ * limit at all (`edbm_tris_convert_to_quads_exec`, `is_face_pair` → 180°, "useful for one off joins while editing").
+ */
+export function trisToQuadsOperator(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
+  return faces.size === 2 ? trisToQuads(em, faces, 180, 180) : trisToQuads(em, faces);
+}
+
+/**
+ * Triangulate quads / n-gons (Blender's Triangulate Faces) — the selected faces only (`triangulate faces=%hf`), vertices
+ * and edges selecting the faces they enclose; nothing selected, nothing happens (compat-backlog C117).
  */
 export function quadsToTrisSelection(): void {
-  const em = state.editMesh;
-  if (!em) return;
-  const sel =
-    state.editSelection.mode === "face" && state.editSelection.indices.size > 0
-      ? new Set(state.editSelection.indices)
-      : null;
-  applyTopologyOp("Quads to Tris", () => {
-    const result = triangulateEditFaces(em, sel);
-    if (result.size === 0) {
-      status("⚠ Quads to Tris: 三角形化する多角形面がない");
-      return new Set<number>();
-    }
-    state.editSelection.mode = "face";
-    return result;
-  });
+  convertSelection("Quads to Tris", (m, faces) => triangulateEditFaces(m, faces), "三角形化する多角形面がない");
 }
 
 /**
