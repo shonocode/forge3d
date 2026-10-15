@@ -17,11 +17,18 @@ import { seamKey } from "./edit-mode/half-edge";
  * An output face made of input face `face`'s corners, `corners[i]` for
  * output corner `i` — or, where that is a list, the plain mean of those
  * corners (the Weld modifier's `mix_attributes` over the loops that collapse
- * onto one vertex).
+ * onto one vertex), or, with weights, their weighted sum (an interpolated
+ * corner — `CustomData_bmesh_interp`).
  */
 export interface FaceSource {
   face: number;
-  corners: readonly (number | readonly number[])[];
+  corners: readonly (number | readonly number[] | WeightedCorner)[];
+}
+
+/** A corner interpolated from the source face's corners `from`, by `w` (summing to 1). */
+export interface WeightedCorner {
+  from: readonly number[];
+  w: readonly number[];
 }
 
 /**
@@ -38,6 +45,11 @@ export function carryFaceLayers(
       ? sources.map((s) =>
           s.corners.map((c) => {
             if (typeof c === "number") return [...layer[s.face]![c]!];
+            if ("from" in c) {
+              const out = layer[s.face]![c.from[0]!]!.map(() => 0);
+              c.from.forEach((k, i) => layer[s.face]![k]!.forEach((x, j) => (out[j] = out[j]! + x * c.w[i]!)));
+              return out;
+            }
             const out = layer[s.face]![c[0]!]!.map(() => 0);
             for (const k of c) layer[s.face]![k]!.forEach((x, j) => (out[j] = out[j]! + x / c.length));
             return out;

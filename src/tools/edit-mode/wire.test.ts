@@ -300,11 +300,101 @@ describe("faceSplitByEdges", () => {
     expect(faceSplitByEdges(m).edges).toEqual([]);
   });
 
-  it("refuses two ends nearest the same boundary edge", () => {
-    // Blender answers a zero-area triangle there and the ring order that
-    // produces it does not follow the rule the other arrangements do.
+  it("gives Blender's zero-area triangle for two ends nearest the same boundary edge", () => {
+    // Blender (probe-split.py): (0,4,5,2,3) and (5,4,1). The ends go in one at a time: 4 into the bottom edge, then 5 —
+    // which may not join an edge that ends at 4, so it goes into the right edge (1,2) while standing on the bottom one.
+    // Until C115 this threw.
     const m = { ...withPoints([0.3, 0], [0.7, 0]), edges: [[4, 5]] };
-    expect(() => faceSplitByEdges(m)).toThrow(/same boundary edge/);
+    expect(shape(faceSplitByEdges(m))).toEqual([
+      [0, 4, 5, 2, 3],
+      [1, 5, 4],
+    ]);
+  });
+
+  // Chains (compat-backlog C115): Blender 5.1.1, rows `face-split-wires` (inputs `quadChain2`, `quadChain3`, `quadChainCorner`).
+  it("cuts once along a chain, joining only its ends to the boundary", () => {
+    // Blender: (0,1,6,5,4) (4,5,6,2,3). The middle vertex 5 is not an end, so it is not joined to the boundary — before
+    // C115 it was, and the quad came out as three faces.
+    const m = { ...withPoints([0.05, 0.3], [0.5, 0.62], [0.93, 0.41]), edges: [[4, 5], [5, 6]] };
+    const out = faceSplitByEdges(m);
+    expect(shape(out)).toEqual([
+      [0, 1, 6, 5, 4],
+      [2, 3, 4, 5, 6],
+    ]);
+    expect(out.edges).toEqual([]);
+  });
+
+  it("cuts along a chain of three edges, whichever way it is listed", () => {
+    // Blender: (0,4,5,6,7,3) (7,6,5,4,1,2).
+    const want = [
+      [0, 4, 5, 6, 7, 3],
+      [1, 2, 7, 6, 5, 4],
+    ];
+    const pts: Array<[number, number]> = [[0.31, 0.06], [0.42, 0.5], [0.61, 0.47], [0.72, 0.92]];
+    expect(shape(faceSplitByEdges({ ...withPoints(...pts), edges: [[4, 5], [5, 6], [6, 7]] }))).toEqual(want);
+    expect(shape(faceSplitByEdges({ ...withPoints(...pts), edges: [[7, 6], [5, 4], [6, 5]] }))).toEqual(want);
+  });
+
+  it("cuts along a chain from a corner to a floating end", () => {
+    // Blender: (0,1,5,4) (4,5,2,3,0).
+    const m = { ...withPoints([0.55, 0.38], [0.94, 0.63]), edges: [[0, 4], [4, 5]] };
+    expect(shape(faceSplitByEdges(m))).toEqual([
+      [0, 1, 5, 4],
+      [0, 4, 5, 2, 3],
+    ]);
+  });
+
+  it("mixes the corners the cut makes: an end along its edge, a vertex inside by mean value", () => {
+    // UV = position: any linear mix of the corners lands a corner's UV on its own position, so each new corner's UV says
+    // what it was mixed from — an end set into the left edge at y = 0.3 reads (0, 0.3), not the edge's middle.
+    const m: MeshData = {
+      ...withPoints([0.05, 0.3], [0.5, 0.62], [0.93, 0.41]),
+      edges: [[4, 5], [5, 6]],
+      uvs: [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+    };
+    const out = faceSplitByEdges(m);
+    const uvAt = new Map<number, number[]>();
+    out.polys.forEach((p, f) => p.forEach((v, i) => uvAt.set(v, out.uvs![f]![i]!)));
+    expect(uvAt.get(4)![0]).toBeCloseTo(0, 6);
+    expect(uvAt.get(4)![1]).toBeCloseTo(0.3, 6);
+    expect(uvAt.get(6)![0]).toBeCloseTo(1, 6);
+    expect(uvAt.get(6)![1]).toBeCloseTo(0.41, 6);
+    // The inner vertex is mixed over the face with the ends set in, which stand at their own positions (0.05, 0.3) but
+    // carry the UVs of where they joined the edge (0, 0.3) — so it reads near its position, not exactly. Blender's exact
+    // value is what `face-split-wires-layers` compares.
+    expect(Math.abs(uvAt.get(5)![0]! - 0.5)).toBeLessThan(0.01);
+    expect(Math.abs(uvAt.get(5)![1]! - 0.62)).toBeLessThan(0.01);
+    expect(uvAt.get(5)![0]).not.toBeCloseTo(0.5, 6);
+  });
+
+  it("leaves the wire when Blender's edge-net walk closes the face itself first (`gridLeaveWire`, Blender 5.1.1)", () => {
+    // A wire inside one quad of a 3 × 3 grid; its ends join the quad's top and right edges. Walking from the quad's first
+    // corner, the turn at the end on the top edge goes on round the boundary rather than along the wire, so the walk closes
+    // the quad itself, which already exists — and Blender looks no further: no face, the wire stays. Cutting it would give a
+    // triangle wound backwards.
+    const positions: number[] = [];
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) positions.push(x, y, 0);
+    positions.push(1.325602412223816, 0.6977723836898804, 0, 1.5023182511329651, 0.9669894933700561, 0);
+    const polys: number[][] = [];
+    for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) polys.push([y * 4 + x, y * 4 + x + 1, y * 4 + x + 5, y * 4 + x + 4]);
+    const out = faceSplitByEdges({ positions: new Float32Array(positions), polys, edges: [[16, 17]] });
+    expect(out.polys).toHaveLength(9);
+    expect(out.edges).toEqual([[16, 17]]);
+    // The ends are set in all the same: the quad and the one above it have vertex 17 on their shared edge.
+    expect(out.polys.filter((p) => p.includes(17))).toHaveLength(2);
+  });
+
+  it("sets an end into the shared edge of both faces round it — no T-junction (as `gridWire`)", () => {
+    // Two quads side by side; a wire in the left one from near its bottom to near the edge it shares with the right one.
+    const m: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 1, 1, 0, 2, 1, 0, 0.5, 0.1, 0, 0.9, 0.6, 0]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4]],
+      edges: [[6, 7]],
+    };
+    const out = faceSplitByEdges(m);
+    expect(out.polys).toHaveLength(3);
+    // The right quad has vertex 7 between 4 and 1, as Blender's `BM_edge_split` leaves it.
+    expect(shape({ ...out, polys: out.polys.filter((p) => p.includes(2)) })).toEqual([[1, 2, 5, 4, 7]]);
   });
 
   it("leaves a mesh with no wire edges exactly as it was", () => {
