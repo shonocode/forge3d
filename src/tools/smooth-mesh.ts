@@ -40,8 +40,10 @@ export interface SmoothMeshOptions {
  * const softer = smoothMesh(mesh, { factor: 0.5, iterations: 3 });
  * ```
  *
- * A vertex on no edge stays where it is. (Blender pulls it toward the origin —
- * its midpoint mean is an empty sum — which is not copied.)
+ * A vertex on no edge is pulled toward the origin, to `co · (1 − factor)` a
+ * pass: Blender mixes it with its midpoint sum, which is empty (`MOD_smooth.cc`
+ * skips the division, not the mix — compat-backlog C114; until 2026-10-15 it
+ * stayed where it was). One at vertex-group weight 0 still stays.
  */
 export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): MeshData {
   const factor = options.factor ?? 0.5;
@@ -89,9 +91,9 @@ export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): Mes
         if (vg[v]! <= 0) continue;
         fn = vg[v]! * factor;
       }
-      if (c === 0) continue;
+      // No edge: the sum stays zero and is mixed in as it is.
       for (let k = 0; k < 3; k++)
-        if (use[k]) P[v * 3 + k] = (1 - fn) * P[v * 3 + k]! + fn * (sum[v * 3 + k]! / c);
+        if (use[k]) P[v * 3 + k] = (1 - fn) * P[v * 3 + k]! + fn * (c > 0 ? sum[v * 3 + k]! / c : 0);
     }
   }
 

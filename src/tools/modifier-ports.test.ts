@@ -36,6 +36,16 @@ describe("smoothMesh (the Smooth modifier)", () => {
     };
     expect(xs(smoothMesh(chain, { factor: 1 }))).toEqual([0.5, 1.25, 2]);
   });
+
+  it("pulls a vertex on no edge toward the origin, co · (1 − factor) a pass (compat-backlog C114)", () => {
+    const loose: MeshData = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 5, 5, 5]), polys: [], edges: [[0, 1]] };
+    expect(Array.from(smoothMesh(loose, { factor: 0.5 }).positions.slice(6))).toEqual([2.5, 2.5, 2.5]);
+    expect(Array.from(smoothMesh(loose, { factor: 0.5, iterations: 2 }).positions.slice(6))).toEqual([1.25, 1.25, 1.25]);
+    // Only on the axes it smooths, and not at vertex-group weight 0.
+    expect(Array.from(smoothMesh(loose, { factor: 0.5, axes: { y: false } }).positions.slice(6))).toEqual([2.5, 5, 2.5]);
+    const grouped: MeshData = { ...loose, groups: new Map([["G", new Map([[0, 1], [1, 1]])]]) };
+    expect(Array.from(smoothMesh(grouped, { factor: 0.5, vertexGroup: "G" }).positions.slice(6))).toEqual([5, 5, 5]);
+  });
 });
 
 describe("offsetAlongNormals (the Displace modifier, no texture)", () => {
