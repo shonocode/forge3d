@@ -368,3 +368,71 @@ describe("faceAttributeFill", () => {
     expect(uAt(out, 0, 4)).toBe(3.0);
   });
 });
+
+// Every layer with math in one call, the colours as bytes (compat-backlog C119). Rows: `*-colors` beside each of the five.
+describe("the loop-data operators over every layer", () => {
+  /** grid2x2 with a byte colour per corner (whole multiples of 1/255). */
+  function colored(bytes: (f: number, i: number) => number): MeshData {
+    const m = grid2x2();
+    return { ...m, colors: m.polys.map((p, f) => p.map((_, i) => [bytes(f, i) / 255, 0, 0, 1])) };
+  }
+  const red = (m: MeshData, f: number, i: number): number => Math.round(m.colors![f]![i]![0]! * 255);
+
+  it("change the UVs and the colours by default; a named layer only that one", () => {
+    const m = colored((f, i) => 10 * f + i);
+    const all = averageVertLoopData(m, [4]);
+    const uvOnly = averageVertLoopData(m, [4], "uv");
+    // Vertex 4 is corner 2, 3, 1, 0 of faces 0..3: its reds 2, 13, 21, 30.
+    expect([red(all, 0, 2), red(all, 3, 0)]).toEqual([16, 16]); // 2·0.5 → 1, 30·0.5 → 15: 16 (the float midpoint is 16)
+    expect(all.uvs![0]![2]).toEqual(all.uvs![3]![0]);
+    expect(red(uvOnly, 0, 2)).toBe(2);
+  });
+
+  it("pointmerge: the byte mean truncates each share — 10, 11, 12, 13 give 10, not 11.5", () => {
+    // Vertex 4's corners: faces 0..3 at corners 2, 3, 1, 0.
+    const at4: Record<string, number> = { "0,2": 10, "1,3": 11, "2,1": 12, "3,0": 13 };
+    const m = colored((f, i) => at4[`${f},${i}`] ?? 0);
+    const out = pointmergeLoopData(m, [4], 4);
+    // 1/4 of each, truncated: 2 + 2 + 3 + 3.
+    for (const [k] of Object.entries(at4)) {
+      const [f, i] = k.split(",").map(Number) as [number, number];
+      expect(red(out, f, i)).toBe(10);
+    }
+  });
+
+  it("average: each half of the range truncated — 3 and 8 give 1 + 4 = 5", () => {
+    const at4: Record<string, number> = { "0,2": 3, "1,3": 8, "2,1": 5, "3,0": 6 };
+    const out = averageVertLoopData(colored((f, i) => at4[`${f},${i}`] ?? 0), [4]);
+    expect(red(out, 0, 2)).toBe(5);
+  });
+
+  it("collapse: colour islands by byte equality — one byte apart is a different island", () => {
+    // Edge 1-4. Face 0 holds 10 at vertex 1 and 20 at 4; face 1 holds 11 at 1 and 40 at 4. The two faces' corners at
+    // vertex 1 are one byte apart: as bytes they are not equal, so each face is its own island — 10 and 20 give
+    // 5 + 10 = 15, 11 and 40 give 5 + 20 = 25. The float colour's 0.001 would have joined them into one: 25 for all.
+    const at: Record<string, number> = { "0,1": 10, "0,2": 20, "1,0": 11, "1,3": 40 };
+    const out = collapseLoopData(colored((f, i) => at[`${f},${i}`] ?? 0), [[1, 4]]);
+    expect([red(out, 0, 1), red(out, 0, 2)]).toEqual([15, 15]);
+    expect([red(out, 1, 0), red(out, 1, 3)]).toEqual([25, 25]);
+  });
+
+  it("collapse leaves the colours of corners on no island exactly as they were", () => {
+    const m = grid2x2();
+    const odd = { ...m, colors: m.polys.map((p) => p.map(() => [0.123456, 0.5, 0.5, 1])) };
+    const out = collapseLoopData(odd, [[1, 4]]);
+    // Face 2 has no corner on edge 1-4.
+    expect(out.colors![2]![0]).toEqual([0.123456, 0.5, 0.5, 1]);
+  });
+
+  it("pointmerge with a snap vertex on no face changes nothing", () => {
+    const m = colored(() => 7);
+    const loose: MeshData = { ...m, positions: new Float32Array([...m.positions, 9, 9, 0]) };
+    expect(pointmergeLoopData(loose, [4], 9).colors).toEqual(m.colors);
+  });
+
+  it("with neither layer, leave the mesh as it was; a named layer that is missing throws", () => {
+    const bare: MeshData = { positions: grid2x2().positions, polys: grid2x2().polys };
+    expect(averageVertLoopData(bare, [4]).polys).toEqual(bare.polys);
+    expect(() => averageVertLoopData(bare, [4], "color")).toThrow(/no color layer/);
+  });
+});

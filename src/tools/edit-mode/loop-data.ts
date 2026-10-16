@@ -27,6 +27,57 @@ import type { MeshData } from "../../lib/mesh";
 /** Which layer an operator works on. Blender has a separate op per layer. */
 export type LoopLayer = "uv" | "color";
 
+/**
+ * The layers an operator that runs over **every layer with math** works on (`CustomData_layer_has_math`: the UVs and the
+ * colours; not the custom normals) — `"all"`, the default for `collapseLoopData`, `pointmergeLoopData` and
+ * `averageVertLoopData` (compat-backlog C119: until 2026-10-15 they did one layer, the UVs by default, where Blender's
+ * `collapse_uvs`, `pointmerge_facedata` and `average_vert_facedata` do both in one call). With `"all"` a mesh with neither
+ * layer is left as it is (Blender: `CustomData_has_math` false); a named layer that is missing throws.
+ */
+export type MathLayers = LoopLayer | "all";
+
+function layersFor(data: MeshData, which: MathLayers, who: string): Array<[LoopLayer, number[][][]]> {
+  if (which !== "all") return [[which, requireLayer(data, which, who)]];
+  const out: Array<[LoopLayer, number[][][]]> = [];
+  for (const layer of ["uv", "color"] as const) if (layerOf(data, layer)) out.push([layer, requireLayer(data, layer, who)]);
+  return out;
+}
+
+function withLayers(data: MeshData, values: ReadonlyArray<[LoopLayer, number[][][]]>): MeshData {
+  let out = withLayer(data, "uv", data.uvs ?? []);
+  if (!data.uvs) delete out.uvs;
+  for (const [layer, v] of values) out = withLayer(out, layer, v);
+  return out;
+}
+
+/**
+ * The colour layer is Blender's **byte** colour (`CD_PROP_BYTE_COLOR`, as `bmesh-carry`, `inset` and `decimate` take it):
+ * its math works on whole bytes — `layerMultiply_mloopcol` truncates, `layerAdd_mloopcol` wraps at 256,
+ * `layerEqual_mloopcol` is equality. Values here are 0..1; these move them to bytes and back.
+ */
+const toBytes = (c: readonly number[]): number[] => c.map((x) => Math.min(255, Math.max(0, Math.round(x * 255))));
+const fromBytes = (c: readonly number[]): number[] => c.map((x) => x / 255);
+
+/** `CustomData_data_multiply` on one value: float2 in float32, a byte colour truncated (`uchar = float * fac`). */
+function multiplyValue(layer: LoopLayer, v: readonly number[], fac: number): number[] {
+  return layer === "uv" ? v.map((x) => Math.fround(x * fac)) : v.map((x) => Math.trunc(Math.fround(x * fac)));
+}
+/** `CustomData_data_add`: float2 in float32, a byte colour wrapping at 256. */
+function addValue(layer: LoopLayer, a: readonly number[], b: readonly number[]): number[] {
+  return layer === "uv" ? a.map((x, k) => Math.fround(x + b[k]!)) : a.map((x, k) => (x + b[k]!) & 255);
+}
+/** The midpoint of the range as Blender takes it: min · 0.5 + max · 0.5, each step in the layer's own math. */
+function rangeMidpoint(layer: LoopLayer, values: readonly (readonly number[])[]): number[] {
+  const lo = [...values[0]!];
+  const hi = [...values[0]!];
+  for (const v of values)
+    for (let k = 0; k < lo.length; k++) {
+      lo[k] = Math.min(lo[k]!, v[k]!);
+      hi[k] = Math.max(hi[k]!, v[k]!);
+    }
+  return addValue(layer, multiplyValue(layer, lo, 0.5), multiplyValue(layer, hi, 0.5));
+}
+
 function layerOf(data: MeshData, layer: LoopLayer): number[][][] | undefined {
   return layer === "uv" ? data.uvs : data.colors;
 }
@@ -44,6 +95,9 @@ function withLayer(data: MeshData, layer: LoopLayer, value: number[][][]): MeshD
     ...(data.sharp ? { sharp: new Set(data.sharp) } : {}),
     ...(data.groups ? { groups: new Map([...data.groups].map(([k, g]) => [k, new Map(g)])) } : {}),
     ...(data.materials ? { materials: [...data.materials] } : {}),
+    // Face and vertex layers no loop-data operator touches (until C119 they were dropped).
+    ...(data.faceStrength ? { faceStrength: [...data.faceStrength] } : {}),
+    ...(data.vertexCreases ? { vertexCreases: new Map(data.vertexCreases) } : {}),
   };
   if (layer === "uv") base.uvs = value;
   else base.colors = value;
@@ -139,27 +193,6 @@ function cornersAt(data: MeshData, v: number): Array<[number, number]> {
   return out;
 }
 
-/** Component-wise mean of some corner values. */
-function meanOf(values: readonly (readonly number[])[]): number[] {
-  const width = values[0]!.length;
-  const out = new Array<number>(width).fill(0);
-  for (const value of values) for (let k = 0; k < width; k++) out[k]! += value[k]!;
-  return out.map((x) => x / values.length);
-}
-
-/** Component-wise midpoint of the range — **not** the mean. */
-function midpointOf(values: readonly (readonly number[])[]): number[] {
-  const width = values[0]!.length;
-  const lo = [...values[0]!];
-  const hi = [...values[0]!];
-  for (const value of values)
-    for (let k = 0; k < width; k++) {
-      if (value[k]! < lo[k]!) lo[k] = value[k]!;
-      if (value[k]! > hi[k]!) hi[k] = value[k]!;
-    }
-  return lo.map((x, k) => (x + hi[k]!) / 2);
-}
-
 /**
  * Flatten the seam along edges — Blender's `collapse_uvs` (`bmo_collapsecon_do_layer`).
  *
@@ -177,14 +210,24 @@ function midpointOf(values: readonly (readonly number[])[]): number[] {
  * (compat-backlog C97).
  *
  * `edges` are vertex pairs; order within a pair does not matter.
+ *
+ * Every layer with math by default (`layer = "all"`: the UVs and the byte colours, each its own way — see
+ * {@link MathLayers}; compat-backlog C119).
  */
 export function collapseLoopData(
   data: MeshData,
   edges: readonly (readonly number[])[],
-  layer: LoopLayer = "uv",
+  layer: MathLayers = "all",
 ): MeshData {
-  const current = requireLayer(data, layer, "collapseLoopData");
-  const values = current.map((corners) => corners.map((c) => [...c]));
+  // `bmo_collapse_uvs_exec`: `bmo_collapsecon_do_layer` once per layer with math, each with its own islands.
+  return withLayers(
+    data,
+    layersFor(data, layer, "collapseLoopData").map(([l, current]) => [l, collapseLayer(data, edges, l, current)]),
+  );
+}
+
+function collapseLayer(data: MeshData, edges: readonly (readonly number[])[], layer: LoopLayer, current: number[][][]): number[][][] {
+  const values = current.map((corners) => corners.map((c) => (layer === "uv" ? [...c] : toBytes(c))));
   const polys = data.polys;
   const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
   const marked = new Set(edges.map((e) => key(e[0]!, e[1]!)));
@@ -219,7 +262,8 @@ export function collapseLoopData(
   const edgeKey = (id: number): string => key(vert(id), vert(next(id)));
   const value = (id: number): number[] => values[faceOf[id]!]![cornerOf[id]!]!;
   const width = layer === "uv" ? 2 : 4;
-  // `layerEqual_propfloat2` (< 0.00001) and `layerEqual_propcol` (< 0.001), on squared distance.
+  // `layerEqual_propfloat2` (< 0.00001 on squared distance) and `layerEqual_mloopcol` (the bytes' squared differences
+  // < 0.001 — equal bytes).
   const limit = Math.fround(layer === "uv" ? 0.00001 : 0.001);
   const equal = (a: readonly number[], b: readonly number[]): boolean => {
     let sum = 0;
@@ -228,6 +272,7 @@ export function collapseLoopData(
   };
 
   const visited = new Set<number>();
+  const set = new Set<number>();
   for (let f = 0; f < polys.length; f++)
     for (let i = 0; i < polys[f]!.length; i++) {
       const start = base[f]! + i;
@@ -264,50 +309,68 @@ export function collapseLoopData(
         }
       }
 
-      const lo = [...value(island[0]!)];
-      const hi = [...lo];
-      for (const l of island)
-        for (let k = 0; k < width; k++) {
-          lo[k] = Math.min(lo[k]!, value(l)[k]!);
-          hi[k] = Math.max(hi[k]!, value(l)[k]!);
-        }
-      const middle = lo.map((x, k) => Math.fround(Math.fround(x * 0.5) + Math.fround(hi[k]! * 0.5)));
-      for (const l of island) values[faceOf[l]!]![cornerOf[l]!] = [...middle];
+      const middle = rangeMidpoint(layer, island.map(value));
+      for (const l of island) {
+        values[faceOf[l]!]![cornerOf[l]!] = [...middle];
+        set.add(l);
+      }
     }
-  return withLayer(data, layer, values);
+  if (layer === "uv") return values;
+  // Bytes back to 0..1 for the corners an island set; every other corner keeps the value it came with, unrounded.
+  return values.map((corners, f) => corners.map((c, i) => (set.has(base[f]! + i) ? fromBytes(c) : [...current[f]![i]!])));
 }
 
 /**
  * Give every corner at the chosen vertices one value, taken from `snap` —
- * Blender's `pointmerge_facedata`.
+ * Blender's `pointmerge_facedata`, over every layer with math (UVs and
+ * colours; `layer` narrows it).
  *
- * The value is the **mean** of the corners at `snap` alone, and it is written
- * to every corner at every vertex in `verts`. What the other vertices held
- * does not enter the average; they are written over.
+ * The value is made from the corners at `snap` alone and written to every
+ * corner at every vertex in `verts`; what the other vertices held does not
+ * enter it. It is **the mean, made as Blender makes it**
+ * (`bmo_pointmerge_facedata_exec`): each of `snap`'s corners multiplied by
+ * `1 / count` in place, then summed into the first — in float32 for UVs, and
+ * for byte colours each product truncated to a byte and the sum wrapping at
+ * 256, so four corners of 10, 11, 12, 13 give 10, not 11.5. A corner at
+ * `snap` that is not among `verts` keeps its scaled value and the first one
+ * the sum — "first" here in face and corner order; Blender's is the vertex's
+ * disk order, so which corner that is can differ (and, in UVs, the last bit
+ * of the float32 sum). A `snap` on no face changes nothing.
  *
- * Measured: on a 2×2 grid, snapping vertices 1 and 4 to vertex 4 gives every
- * one of those six corners 1.65, which is the mean of vertex 4's own four
- * (0.20, 1.30, 2.10, 3.00) and not of all six. Confirmed per component on a
- * set whose mean and midpoint differ in both: (0,1) (1,8) (2,9) (9,10) gives
- * (3, 7), the mean.
+ * Measured on UVs: on a 2×2 grid, snapping vertices 1 and 4 to vertex 4 gives
+ * every one of those six corners 1.65, the mean of vertex 4's own four (0.20,
+ * 1.30, 2.10, 3.00) and not of all six. Per component on a set whose mean and
+ * midpoint differ in both: (0,1) (1,8) (2,9) (9,10) gives (3, 7).
  */
 export function pointmergeLoopData(
   data: MeshData,
   verts: ReadonlySet<number> | readonly number[],
   snap: number,
-  layer: LoopLayer = "uv",
+  layer: MathLayers = "all",
 ): MeshData {
-  const current = requireLayer(data, layer, "pointmergeLoopData");
-  const next = current.map((corners) => corners.map((c) => [...c]));
-
   const source = cornersAt(data, snap);
-  if (source.length === 0)
-    throw new Error(`pointmergeLoopData: vertex ${snap} is on no polygon, so it has no value to give.`);
-  const value = meanOf(source.map(([f, i]) => current[f]![i]!));
-
-  for (const v of new Set(verts))
-    for (const [f, i] of cornersAt(data, v)) next[f]![i] = [...value];
-  return withLayer(data, layer, next);
+  // `if (!tot) return;` — a snap vertex on no face changes nothing (until C119 this threw).
+  if (source.length === 0) return withLayers(data, []);
+  const chosen = new Set(verts);
+  return withLayers(
+    data,
+    layersFor(data, layer, "pointmergeLoopData").map(([l, current]) => {
+      const read = (c: readonly number[]): number[] => (l === "uv" ? [...c] : toBytes(c));
+      const write = (c: readonly number[]): number[] => (l === "uv" ? [...c] : fromBytes(c));
+      const next = current.map((corners) => corners.map((c) => [...c]));
+      const fac = Math.fround(1 / source.length);
+      let sum: number[] = [];
+      source.forEach(([f, i], n) => {
+        const scaled = multiplyValue(l, read(current[f]![i]!), fac);
+        sum = n === 0 ? scaled : addValue(l, sum, scaled);
+        if (n > 0) next[f]![i] = write(scaled);
+      });
+      const [f0, i0] = source[0]!;
+      next[f0]![i0] = write(sum);
+      for (const v of chosen) for (const [f, i] of cornersAt(data, v)) next[f]![i] = write(sum);
+      return [l, next] as [LoopLayer, number[][][]];
+    }),
+  );
 }
 
 /**
@@ -330,22 +393,31 @@ export function pointmergeLoopData(
  * The difference from {@link pointmergeLoopData}, which is a mean, is the kind
  * of asymmetry worth not assuming away — the two were measured separately on
  * the same arrangement and answered differently.
+ *
+ * Every layer with math by default (`layer = "all"`: the UVs and the byte colours, each its own way — see
+ * {@link MathLayers}; compat-backlog C119).
  */
 export function averageVertLoopData(
   data: MeshData,
   verts: ReadonlySet<number> | readonly number[],
-  layer: LoopLayer = "uv",
+  layer: MathLayers = "all",
 ): MeshData {
-  const current = requireLayer(data, layer, "averageVertLoopData");
-  const next = current.map((corners) => corners.map((c) => [...c]));
-
   const touched: Array<[number, number]> = [];
   for (const v of new Set(verts)) touched.push(...cornersAt(data, v));
-  if (touched.length === 0) return withLayer(data, layer, next);
-
-  const value = midpointOf(touched.map(([f, i]) => current[f]![i]!));
-  for (const [f, i] of touched) next[f]![i] = [...value];
-  return withLayer(data, layer, next);
+  // `bmo_average_vert_facedata_exec`, once per layer with math: min · 0.5 + max · 0.5 in the layer's own math (a byte
+  // colour truncated at each half).
+  return withLayers(
+    data,
+    layersFor(data, layer, "averageVertLoopData").map(([l, current]) => {
+      const next = current.map((corners) => corners.map((c) => [...c]));
+      if (touched.length === 0) return [l, next] as [LoopLayer, number[][][]];
+      const read = (c: readonly number[]): number[] => (l === "uv" ? [...c] : toBytes(c));
+      const mid = rangeMidpoint(l, touched.map(([f, i]) => read(current[f]![i]!)));
+      const value = l === "uv" ? mid : fromBytes(mid);
+      for (const [f, i] of touched) next[f]![i] = [...value];
+      return [l, next] as [LoopLayer, number[][][]];
+    }),
+  );
 }
 
 /**
