@@ -493,3 +493,20 @@ describe("cast cuboid with a centre (compat-backlog C120)", () => {
     expect(out.positions[24]).toBeCloseTo(1.2, 6);
   });
 });
+
+describe("warp falloff none (compat-backlog C121)", () => {
+  const square = (): MeshData => ({ positions: new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0]), polys: [[0, 1, 2, 3]] });
+  const move = { from: { at: [0, 0, 0] as [number, number, number] }, to: { at: [1, 0, 0] as [number, number, number] } };
+
+  it("moves every vertex by the full transform, the radius not read — even a radius of 0", () => {
+    for (const radius of [0.5, 0]) {
+      const out = warp(square(), { ...move, radius, falloff: "none" });
+      expect(Array.from(out.positions)).toEqual([1, 0, 0, 11, 0, 0, 11, 10, 0, 1, 10, 0]);
+    }
+  });
+
+  it("is not constant: constant moves only what is inside the radius", () => {
+    const out = warp(square(), { ...move, radius: 0.5, falloff: "constant" });
+    expect(Array.from(out.positions)).toEqual([1, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0]);
+  });
+});

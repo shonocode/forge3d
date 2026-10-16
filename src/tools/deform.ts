@@ -618,12 +618,16 @@ export interface WarpOptions {
   /**
    * How far the influence reaches from `from`'s position — Blender's
    * `falloff_radius`. **Zero moves nothing at all**, which is measured and not
-   * what "no falloff" would suggest; for an unfaded move use a radius that
-   * covers the mesh with `falloff: "constant"`.
+   * what "no falloff" would suggest — except with `falloff: "none"`, which does
+   * not read the radius.
    */
   radius: number;
-  /** Which curve the influence follows. Default `"smooth"`, Blender's. */
-  falloff?: ProportionalFalloff;
+  /**
+   * Which curve the influence follows. Default `"smooth"`, Blender's. `"none"` is Blender's `NONE`: every vertex gets the
+   * full transform, the radius not read — not the same as `"constant"`, which is full strength only inside the radius
+   * (compat-backlog C121; until 2026-10-16 there was no `"none"`).
+   */
+  falloff?: ProportionalFalloff | "none";
   /**
    * Scales the influence — Blender's `strength`. Default 1. **Above 1 it
    * overshoots**: at 2 a vertex at the centre travels twice as far as `to`,
@@ -844,7 +848,8 @@ function compose(p: Affine, q: Affine): Affine {
  * inflates it.
  *
  * Topology never changes. Nothing outside the radius is touched at all, so no
- * selection is needed — the radius is the selection.
+ * selection is needed — the radius is the selection. (With `falloff: "none"`
+ * there is no radius: every vertex moves.)
  *
  * ## Measured, on Blender 5.1.1
  *
@@ -852,13 +857,15 @@ function compose(p: Affine, q: Affine): Affine {
  * M   = matrix(to) · matrix(from)⁻¹
  * d   = |p − position(from)|
  * w   = strength · falloffWeight(1 − d/radius)      when d < radius, else 0
+ *       strength                                    with falloff "none", whatever d
  * p' = p + w · (M·p − p)
  * ```
  *
  * The three that are not obvious:
  *
  * - **`radius: 0` moves nothing.** Not "no falloff" — every vertex comes back
- *   untouched.
+ *   untouched. Only `falloff: "none"` (Blender's NONE) does not read the radius
+ *   and moves everything at radius 0 too (compat-backlog C121).
  * - **`strength` is not clamped.** At 2 the centre travels twice as far as
  *   `to`; the weight is a plain multiplier on the interpolation. A negative one
  *   runs the transform backwards (see the code: the inverse, with the
@@ -866,7 +873,9 @@ function compose(p: Affine, q: Affine): Affine {
  * - **the distance is to `from`'s position only** — its rotation and scale
  *   change the transform but not the sphere the falloff is measured in.
  *
- * `use_volume_preserve` is not implemented.
+ * `use_volume_preserve` is `volumePreserve`: where the weight is below 1, the
+ * transform in `from`'s space is blended from the identity rather than the
+ * positions interpolated.
  */
 export function warp(data: MeshData, opts: WarpOptions): MeshData {
   const radius = opts.radius;
@@ -876,8 +885,9 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
   const P = data.positions;
   const out = new Float32Array(P);
   const same = deformed(data, out);
-  // Measured: zero is "nothing moves", not "everything moves".
-  if (!(radius > 0) || strength === 0) return same;
+  // Measured: zero is "nothing moves", not "everything moves" — unless the falloff is NONE, which never reads the radius.
+  const none = falloff === "none";
+  if ((!none && !(radius > 0)) || strength === 0) return same;
 
   const fromMat = affineOf(opts.from);
   const inv = invert(fromMat);
@@ -912,12 +922,12 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
     const y = P[k * 3 + 1]!;
     const z = P[k * 3 + 2]!;
     const d = Math.hypot(x - fx, y - fy, z - fz);
-    if (d >= radius) continue;
+    if (!none && d >= radius) continue;
 
     // `weight = vertex weight · strength`; a vertex with none is skipped before the falloff is read.
     const vertexWeight = groupWeights ? groupWeights[k]! : 1;
     if (vertexWeight <= 0) continue;
-    const w = strength * vertexWeight * falloffWeight(1 - d / radius, falloff);
+    const w = strength * vertexWeight * (none ? 1 : falloffWeight(1 - d / radius, falloff as ProportionalFalloff));
     if (w === 0) continue;
 
     if (opts.volumePreserve && w !== 1) {
