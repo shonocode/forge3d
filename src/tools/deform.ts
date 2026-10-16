@@ -60,7 +60,11 @@ export interface CastOptions {
    * axis.
    */
   size?: number;
-  /** The shape's centre. Blender uses the object origin. Default [0, 0, 0]. */
+  /**
+   * The shape's centre — Blender's control object's location in the mesh's space (with `use_transform` off). Default
+   * [0, 0, 0], the object origin (no control object). The cuboid's auto box takes this point itself in as well as the
+   * vertices' offsets from it, as Blender's does.
+   */
   at?: Vec3;
   /** Which axes may move. Blender's `use_x` / `use_y` / `use_z`. Default all. */
   axes?: { x?: boolean; y?: boolean; z?: boolean };
@@ -128,9 +132,12 @@ export function cast(data: MeshData, opts: CastOptions = {}): MeshData {
   // can, and does.
   const half: [number, number, number] = [size, size, size];
   if (shape === "cuboid" && (opts.size ?? 0) === 0) {
-    half[0] = 0;
-    half[1] = 0;
-    half[2] = 0;
+    // With a centre given (Blender's control object), the box takes the centre itself in too — `minmax_v3v3_v3(min, max,
+    // center)` before the vertices' offsets from it (MOD_cast.cc, compat-backlog C120): a centre at x = 5 makes the box at
+    // least 5 wide in x, whatever the mesh. Without one the centre is the origin, which adds nothing.
+    half[0] = Math.abs(cx);
+    half[1] = Math.abs(cy);
+    half[2] = Math.abs(cz);
     for (let v = 0; v < count; v++) {
       half[0] = Math.max(half[0], Math.abs(P[v * 3]! - cx));
       half[1] = Math.max(half[1], Math.abs(P[v * 3 + 1]! - cy));

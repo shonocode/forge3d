@@ -464,3 +464,32 @@ describe("warp with a negative strength (parity rows warp-negative*)", () => {
     expect(back.positions[1]!).toBeCloseTo(0, 5);
   });
 });
+
+describe("cast cuboid with a centre (compat-backlog C120)", () => {
+  // A 2 m cube moved to x = 5, the centre (Blender's control object) at (5, 0, 0) — the fifth audit's case.
+  const cube = (): MeshData => {
+    const positions: number[] = [];
+    for (const z of [-1, 1]) for (const y of [-1, 1]) for (const x of [-1, 1]) positions.push(5 + x, y, z);
+    return { positions: new Float32Array(positions), polys: [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] };
+  };
+
+  it("takes the centre itself into the auto box: the half-width in x is 5, not the cube's 1", () => {
+    const out = cast(cube(), { shape: "cuboid", factor: 1, at: [5, 0, 0] });
+    // A corner (±1, ±1, ±1) from the centre goes out until its first axis meets the box (5, 1, 1): y and z reach 1 at once,
+    // so it stays — while x alone would have been pushed to the face at 5.
+    expect(Array.from(out.positions.slice(0, 3))).toEqual([4, -1, -1]);
+    // A vertex on the x axis through the centre: only x can reach a face, and that face is 5 out.
+    const onAxis: MeshData = { positions: new Float32Array([...cube().positions, 6, 0, 0]), polys: cube().polys };
+    expect(Array.from(cast(onAxis, { shape: "cuboid", factor: 1, at: [5, 0, 0] }).positions.slice(24, 27))).toEqual([10, 0, 0]);
+  });
+
+  it("a centre inside the mesh's own box widens nothing", () => {
+    // The cube at the origin, the centre at (0.1, 0, 0): the offsets reach 1.1 in x, past the centre's own 0.1, so the box
+    // is (1.1, 1, 1) as without the rule. A vertex 0.5 along x from the centre goes to the face 1.1 out: x = 1.2.
+    const m = cube();
+    const origin: MeshData = { positions: m.positions.map((c, k) => (k % 3 === 0 ? c - 5 : c)), polys: m.polys };
+    const probe: MeshData = { positions: new Float32Array([...origin.positions, 0.6, 0, 0]), polys: origin.polys };
+    const out = cast(probe, { shape: "cuboid", factor: 1, at: [0.1, 0, 0] });
+    expect(out.positions[24]).toBeCloseTo(1.2, 6);
+  });
+});
