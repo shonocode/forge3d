@@ -298,9 +298,21 @@ export interface MirrorModifier extends BaseModifier {
 export interface ArrayModifier extends BaseModifier {
   type: "array";
   count: number;
+  /** The constant offset (`constant_offset_displace`), in model units — used when `useConstant`. */
   offsetX: number;
   offsetY: number;
   offsetZ: number;
+  /**
+   * `use_constant_offset`. Absent (a file from before 2026-10-16, compat-backlog C122): on — the only offset there was.
+   * A new Array has it off, as Blender's.
+   */
+  useConstant?: boolean;
+  /** `use_relative_offset`. Absent (an older file): off. A new Array has it on, as Blender's. */
+  useRelative?: boolean;
+  /** `relative_offset_displace`: steps of the mesh's own size per axis. Blender's default (1, 0, 0). */
+  relX?: number;
+  relY?: number;
+  relZ?: number;
 }
 
 /** Thickness along the normals — `solidify`. Positive grows inward. */

@@ -189,14 +189,23 @@ export function addModifier(mesh: AbstractMesh, type: ModifierType): Modifier | 
     case "mirror":
       mod = { id, type: "mirror", enabled: true, axis: "x", merge: true, mergeTolerance: 0.001 };
       break;
+    // Blender's defaults (`DNA_modifier_types.h`, compat-backlog C122): until 2026-10-16 the editor added an Array of 3 at a
+    // constant 2 along x, a Solidify 0.1 thick and a Decimate at half — each a different mesh from what Blender's Add
+    // Modifier gives.
     case "array":
-      mod = { id, type: "array", enabled: true, count: 3, offsetX: 2, offsetY: 0, offsetZ: 0 };
+      // 2 copies, one mesh-width apart along x (relative offset); the constant offset there but off.
+      mod = {
+        id, type: "array", enabled: true, count: 2,
+        useConstant: false, offsetX: 1, offsetY: 0, offsetZ: 0,
+        useRelative: true, relX: 1, relY: 0, relZ: 0,
+      };
       break;
     case "solidify":
-      mod = { id, type: "solidify", enabled: true, thickness: 0.1 };
+      mod = { id, type: "solidify", enabled: true, thickness: 0.01 };
       break;
     case "decimate":
-      mod = { id, type: "decimate", enabled: true, ratio: 0.5 };
+      // Ratio 1 keeps every face: added, it changes nothing until the ratio is turned down — as in Blender.
+      mod = { id, type: "decimate", enabled: true, ratio: 1 };
       break;
     case "smooth":
       // Blender's Smooth modifier defaults.

@@ -344,7 +344,7 @@ export const TAB_SECTIONS: Record<TabId, Section[]> = {
 export const MODIFIER_HELP: Record<ModifierType, { name: string; one: string }> = {
   subdivision: { name: "Subdivision", one: "面を細かく割る。「丸く」は角を丸め（Blender の既定どおり、極限面の位置に置く）、「割るだけ」は形を変えない" },
   mirror: { name: "Mirror", one: "選んだ軸の反対側に鏡写しを足す。真ん中の頂点は自分の鏡像とくっつき、.L / .R の頂点グループは鏡写し側で入れ替わる" },
-  array: { name: "Array", one: "同じ形を Offset ずつずらして Count 個並べる" },
+  array: { name: "Array", one: "同じ形をずらして Count 個並べる。Relative は形の大きさ単位、Constant は長さで" },
   solidify: { name: "Solidify", one: "面を法線の内側へ押し出して厚みをつける。マイナスで外側" },
   decimate: { name: "Decimate", one: "形をなるべく保ったまま面を減らす。Ratio は残す割合" },
   smooth: { name: "Smooth", one: "頂点を、つながった辺の中点の平均へ寄せて、でこぼこをならす。Factor 1 でも隣の平均まで半分。開いた板は縁の頂点も動く" },

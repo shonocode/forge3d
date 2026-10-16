@@ -434,8 +434,18 @@ export function applyModifierTo(s: MeshData, mod: Modifier): MeshData {
     case "mirror":
       // Blender's Mirror modifier: each vertex welds onto its own image only.
       return mirrorModifier(s, { axes: { [mod.axis]: true }, merge: mod.merge, mergeThreshold: mod.mergeTolerance });
-    case "array":
-      return arrayMesh(s, mod.count, [mod.offsetX, mod.offsetY, mod.offsetZ]);
+    case "array": {
+      // Constant and relative offsets add, as Blender's (`MOD_ARR_OFF_CONST | MOD_ARR_OFF_RELATIVE`). A file from before
+      // C122 has neither flag: constant only.
+      const constant = mod.useConstant ?? true;
+      const relative = mod.useRelative ?? false;
+      return arrayMesh(
+        s,
+        mod.count,
+        constant ? [mod.offsetX, mod.offsetY, mod.offsetZ] : [0, 0, 0],
+        relative ? { relative: [mod.relX ?? 1, mod.relY ?? 0, mod.relZ ?? 0] } : {},
+      );
+    }
     case "solidify":
       // Blender's Solidify modifier (Simple mode, its defaults: offset -1, even off, rim on).
       return solidifyModifier(s, { thickness: mod.thickness });

@@ -66,6 +66,17 @@ function Choice({ mesh, mod, k, options }: { mesh: AbstractMesh; mod: Modifier; 
   );
 }
 
+/** An on/off parameter of a modifier. */
+function Toggle({ mesh, mod, k, on, text }: { mesh: AbstractMesh; mod: Modifier; k: string; on: boolean; text: string }) {
+  return (
+    <div className="sr">
+      <button type="button" className={"abtn" + (on ? " bon on" : "")} aria-pressed={on} onClick={() => updateModifierParam(mesh, mod.id, { [k]: !on })}>
+        {text}
+      </button>
+    </div>
+  );
+}
+
 function Params({ mesh, mod }: { mesh: AbstractMesh; mod: Modifier }) {
   switch (mod.type) {
     case "subdivision":
@@ -77,15 +88,32 @@ function Params({ mesh, mod }: { mesh: AbstractMesh; mod: Modifier }) {
       );
     case "mirror":
       return <Choice mesh={mesh} mod={mod} k="axis" options={[["x", "X"], ["y", "Y"], ["z", "Z"]]} />;
-    case "array":
+    case "array": {
+      // Blender's two offsets (compat-backlog C122): relative, in steps of the mesh's own size, and constant, in units.
+      const relative = mod.useRelative ?? false;
+      const constant = mod.useConstant ?? true;
       return (
         <>
           <Slider mesh={mesh} mod={mod} k="count" text="Count" min={2} max={10} step={1} />
-          <Slider mesh={mesh} mod={mod} k="offsetX" text="Offset X" min={-5} max={5} step={0.1} />
-          <Slider mesh={mesh} mod={mod} k="offsetY" text="Offset Y" min={-5} max={5} step={0.1} />
-          <Slider mesh={mesh} mod={mod} k="offsetZ" text="Offset Z" min={-5} max={5} step={0.1} />
+          <Toggle mesh={mesh} mod={mod} k="useRelative" on={relative} text="Relative（形の大きさ単位）" />
+          {relative && (
+            <>
+              <Slider mesh={mesh} mod={{ ...mod, relX: mod.relX ?? 1 }} k="relX" text="Factor X" min={-3} max={3} step={0.05} />
+              <Slider mesh={mesh} mod={{ ...mod, relY: mod.relY ?? 0 }} k="relY" text="Factor Y" min={-3} max={3} step={0.05} />
+              <Slider mesh={mesh} mod={{ ...mod, relZ: mod.relZ ?? 0 }} k="relZ" text="Factor Z" min={-3} max={3} step={0.05} />
+            </>
+          )}
+          <Toggle mesh={mesh} mod={mod} k="useConstant" on={constant} text="Constant（長さで）" />
+          {constant && (
+            <>
+              <Slider mesh={mesh} mod={mod} k="offsetX" text="Offset X" min={-5} max={5} step={0.1} />
+              <Slider mesh={mesh} mod={mod} k="offsetY" text="Offset Y" min={-5} max={5} step={0.1} />
+              <Slider mesh={mesh} mod={mod} k="offsetZ" text="Offset Z" min={-5} max={5} step={0.1} />
+            </>
+          )}
         </>
       );
+    }
     case "solidify":
       return <Slider mesh={mesh} mod={mod} k="thickness" text="Thickness" min={-0.5} max={0.5} step={0.01} />;
     case "decimate":

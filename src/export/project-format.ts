@@ -131,7 +131,16 @@ export function validateModifierEntry(raw: unknown): import("../state").Modifier
       if (typeof m.count !== "number" || !Number.isFinite(m.count)) return null;
       if (typeof m.offsetX !== "number" || typeof m.offsetY !== "number" || typeof m.offsetZ !== "number") return null;
       const count = Math.min(10, Math.max(2, Math.round(m.count)));
-      return { id, type: "array", enabled: m.enabled, count, offsetX: m.offsetX, offsetY: m.offsetY, offsetZ: m.offsetZ };
+      // The offset flags and the relative offset (compat-backlog C122): absent in older files, which read as constant only.
+      const flag = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+      const rel = (v: unknown, d: number): number => (num(v) ? v : d);
+      const useConstant = flag(m.useConstant);
+      const useRelative = flag(m.useRelative);
+      return {
+        id, type: "array", enabled: m.enabled, count, offsetX: m.offsetX, offsetY: m.offsetY, offsetZ: m.offsetZ,
+        ...(useConstant !== undefined ? { useConstant } : {}),
+        ...(useRelative !== undefined ? { useRelative, relX: rel(m.relX, 1), relY: rel(m.relY, 0), relZ: rel(m.relZ, 0) } : {}),
+      };
     }
     case "solidify":
       if (!num(m.thickness)) return null;

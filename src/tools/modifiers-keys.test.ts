@@ -219,6 +219,13 @@ describe("the mesh's metadata (C112, C113)", () => {
     expect(base.seams).toBeUndefined();
   });
 
+  it("Add Modifier gives Blender's defaults (compat-backlog C122)", () => {
+    const box = MeshBuilder.CreateBox("d", { size: 1, updatable: true }, scene);
+    expect(addModifier(box, "array")).toMatchObject({ count: 2, useRelative: true, relX: 1, relY: 0, relZ: 0, useConstant: false });
+    expect(addModifier(box, "solidify")).toMatchObject({ thickness: 0.01 });
+    expect(addModifier(box, "decimate")).toMatchObject({ ratio: 1 });
+  });
+
   it("Edit Mode keeps the list over a move and drops it over a topology change", () => {
     const { box } = creasedBox();
     applyModifier(box, addModifier(box, "subdivision")!.id);

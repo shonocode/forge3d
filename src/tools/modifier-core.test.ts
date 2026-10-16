@@ -245,3 +245,27 @@ describe("transferUVs", () => {
     );
   });
 });
+
+describe("Array's two offsets (compat-backlog C122)", () => {
+  // A 2 × 1 × 1 box from x = 0 to 2.
+  const box = (): MeshData => ({
+    positions: new Float32Array([0, 0, 0, 2, 0, 0, 2, 1, 0, 0, 1, 0, 0, 0, 1, 2, 0, 1, 2, 1, 1, 0, 1, 1]),
+    polys: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]],
+  });
+  const maxX = (m: MeshData): number => Math.max(...Array.from(m.positions).filter((_, k) => k % 3 === 0));
+
+  it("as added (Blender's): 2 copies one mesh-width apart — the second ends at x = 4", () => {
+    const mod: Modifier = { id: "a", type: "array", enabled: true, count: 2, useConstant: false, offsetX: 1, offsetY: 0, offsetZ: 0, useRelative: true, relX: 1, relY: 0, relZ: 0 };
+    expect(maxX(applyModifierTo(box(), mod))).toBeCloseTo(4, 6);
+  });
+
+  it("both on: the offsets add (2 + 0.5 a step)", () => {
+    const mod: Modifier = { id: "a", type: "array", enabled: true, count: 3, useConstant: true, offsetX: 0.5, offsetY: 0, offsetZ: 0, useRelative: true, relX: 1, relY: 0, relZ: 0 };
+    expect(maxX(applyModifierTo(box(), mod))).toBeCloseTo(2 + 2 * 2.5, 6);
+  });
+
+  it("a file from before C122 (no flags) keeps its constant offset only", () => {
+    const mod: Modifier = { id: "a", type: "array", enabled: true, count: 3, offsetX: 2, offsetY: 0, offsetZ: 0 };
+    expect(maxX(applyModifierTo(box(), mod))).toBeCloseTo(2 + 2 * 2, 6);
+  });
+});

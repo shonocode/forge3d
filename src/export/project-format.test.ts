@@ -312,6 +312,15 @@ describe("modifier stack sidecar field (.forge3d v2)", () => {
 });
 
 describe("validateModifierEntry", () => {
+  it("keeps Array's offset flags and relative offset, and reads a file without them as before (compat-backlog C122)", () => {
+    expect(validateModifierEntry({ id: "a", type: "array", enabled: true, count: 2, offsetX: 1, offsetY: 0, offsetZ: 0, useConstant: false, useRelative: true, relX: 1.5, relY: 0, relZ: 0 })).toEqual({
+      id: "a", type: "array", enabled: true, count: 2, offsetX: 1, offsetY: 0, offsetZ: 0, useConstant: false, useRelative: true, relX: 1.5, relY: 0, relZ: 0,
+    });
+    expect(validateModifierEntry({ id: "a", type: "array", enabled: true, count: 3, offsetX: 2, offsetY: 0, offsetZ: 0 })).toEqual({
+      id: "a", type: "array", enabled: true, count: 3, offsetX: 2, offsetY: 0, offsetZ: 0,
+    });
+  });
+
   it("accepts well-formed subdivision / mirror / array entries", () => {
     // No mode: a file from before Catmull-Clark, read as the shape-keeping split it was.
     expect(validateModifierEntry({ id: "m", type: "subdivision", enabled: true, level: 2 })).toEqual({
