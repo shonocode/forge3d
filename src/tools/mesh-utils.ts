@@ -4,6 +4,8 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { shadeAutoSmooth } from "./auto-smooth";
+import { carryKeyedLists, readRenderTopology, restoreKeyedMetadata, snapshotKeyedMetadata } from "./edit-mode/build";
+import { fanTriangulate, seamKey } from "./edit-mode/half-edge";
 
 /** Default edge style for all meshes in the scene */
 export const DEFAULT_EDGE_COLOR = new Color4(0.2, 0.2, 0.35, 0.1);
@@ -47,6 +49,8 @@ export interface VertexSnapshot {
   uvs: Float32Array | null;
   matricesIndices: Float32Array | null;
   matricesWeights: Float32Array | null;
+  /** The vertex-keyed lists in the metadata (compat-backlog C125). */
+  keyed: Record<string, unknown>;
 }
 
 /** Capture current vertex data for undo */
@@ -65,6 +69,7 @@ export function snapshotVertexData(mesh: AbstractMesh): VertexSnapshot | null {
     uvs: uvs ? new Float32Array(uvs) : null,
     matricesIndices: mi ? new Float32Array(mi) : null,
     matricesWeights: mw ? new Float32Array(mw) : null,
+    keyed: snapshotKeyedMetadata(mesh),
   };
 }
 
@@ -81,6 +86,7 @@ export function restoreVertexData(mesh: AbstractMesh, snap: VertexSnapshot): voi
     vd.matricesWeights = new Float32Array(snap.matricesWeights);
   }
   vd.applyToMesh(m);
+  restoreKeyedMetadata(m, snap.keyed);
 }
 
 /** Recalculate normals from current geometry */
@@ -94,25 +100,34 @@ export function recalcNormals(mesh: AbstractMesh): boolean {
   return true;
 }
 
-/** Flip normals — negate all normals and reverse triangle winding */
+/**
+ * Flip normals — negate all normals and reverse triangle winding. The vertices keep their numbers, so the weld list,
+ * creases and seams stay and are signed for the rewound buffer; the polygons are reversed too — each keeps its first
+ * corner, so its fan is the reversed triangles (compat-backlog C125: until then the signature stopped matching and
+ * Edit Mode lost the weld and the quads).
+ */
 export function flipNormals(mesh: AbstractMesh): boolean {
   const normals = mesh.getVerticesData("normal");
   const indices = mesh.getIndices();
   if (!normals || !indices) return false;
+  const before = readRenderTopology(mesh as Mesh);
+  const polys = before?.polys?.map((p) => [p[0]!, ...p.slice(1).reverse()]) ?? null;
 
   // Negate normals
   const flipped = new Float32Array(normals.length);
   for (let i = 0; i < normals.length; i++) flipped[i] = -normals[i]!;
   (mesh as Mesh).setVerticesData("normal", flipped);
 
-  // Reverse winding order (swap indices in each triangle)
-  const newIndices = Array.from(indices);
-  for (let i = 0; i < newIndices.length; i += 3) {
-    const tmp = newIndices[i]!;
-    newIndices[i] = newIndices[i + 2]!;
-    newIndices[i + 2] = tmp;
-  }
+  // Reverse winding order (swap indices in each triangle, or fan the reversed polygons)
+  const newIndices = polys ? polys.flatMap(fanTriangulate) : Array.from(indices);
+  if (!polys)
+    for (let i = 0; i < newIndices.length; i += 3) {
+      const tmp = newIndices[i]!;
+      newIndices[i] = newIndices[i + 2]!;
+      newIndices[i + 2] = tmp;
+    }
   (mesh as Mesh).setIndices(newIndices);
+  if (before) carryKeyedLists(mesh as Mesh, { ...before, polys }, Array.from({ length: normals.length / 3 }, (_, v) => v));
   return true;
 }
 
@@ -169,11 +184,27 @@ export function weldVertices(mesh: AbstractMesh, tolerance = 0.001): boolean {
   }
 
   const m = mesh as Mesh;
+  const before = readRenderTopology(m);
   const vd = new VertexData();
   vd.positions = new Float32Array(newPos);
   if (normals) vd.normals = new Float32Array(newNor);
   vd.indices = newIndices;
   vd.applyToMesh(m);
+  // Nothing coincident is left to tell apart, so a weld list becomes one number per vertex; the creases and seams follow
+  // their ends, and the polygons when no corner of one merged into another (compat-backlog C125).
+  if (before) {
+    const creases = new Map<string, number>();
+    const seams = new Set<string>();
+    const key = (k: string): string => {
+      const [a, b] = k.split("_").map(Number) as [number, number];
+      return seamKey(remap[a]!, remap[b]!);
+    };
+    for (const [k, c] of before.creases) creases.set(key(k), Math.max(c, creases.get(key(k)) ?? 0));
+    for (const k of before.seams) seams.add(key(k));
+    const polys = before.polys?.map((p) => p.map((v) => remap[v]!)) ?? null;
+    const identity = Array.from({ length: newCount }, (_, v) => v);
+    carryKeyedLists(m, { weld: before.weld ? identity : null, creases, seams, polys }, identity);
+  }
   return true;
 }
 
@@ -196,6 +227,7 @@ export function applyShading(mesh: AbstractMesh, angleRad: number): boolean {
   const mi = mesh.getVerticesData("matricesIndices");
   const mw = mesh.getVerticesData("matricesWeights");
 
+  const before = readRenderTopology(mesh as Mesh);
   const r = shadeAutoSmooth(positions, Array.from(indices), angleRad);
 
   const vd = new VertexData();
@@ -226,6 +258,11 @@ export function applyShading(mesh: AbstractMesh, angleRad: number): boolean {
     vd.matricesWeights = outMW;
   }
   vd.applyToMesh(mesh as Mesh, true);
+  // The vertices it split are one vertex of the surface: each keeps the weld number of its source — or the source's own
+  // number when the buffer had no list, so what was apart before stays apart (compat-backlog C125; the CSG result comes
+  // through here too).
+  if (before)
+    carryKeyedLists(mesh as Mesh, { ...before, weld: before.weld ?? Array.from({ length: positions.length / 3 }, (_, v) => v) }, r.sourceVerts);
   return true;
 }
 

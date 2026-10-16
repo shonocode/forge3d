@@ -179,6 +179,30 @@ export function remapAttribute(
   return out;
 }
 
+/**
+ * Carry a render buffer's weld list (`forge3dWeld`: the surface vertex of each render vertex) through
+ * {@link refineWithinRadii}: the old vertices keep their numbers, and each new vertex takes one new number per pair of
+ * numbers it splits — the render copies of one edge (a UV or shading seam) split into render copies of one vertex
+ * (compat-backlog C125).
+ */
+export function remapWeld(weld: readonly number[], parents: ReadonlyArray<readonly [number, number]>): number[] {
+  const out = weld.slice();
+  let next = weld.reduce((m, x) => Math.max(m, x), -1) + 1;
+  const made = new Map<string, number>();
+  for (const [a, b] of parents) {
+    const wa = weld[a]!, wb = weld[b]!;
+    const k = wa < wb ? `${wa}_${wb}` : `${wb}_${wa}`;
+    if (!made.has(k)) made.set(k, next++);
+    out.push(made.get(k)!);
+  }
+  return out;
+}
+
+/** Carry a weld list through {@link collapseWithinRadii}: each survivor keeps its own number (compat-backlog C125). */
+export function remapWeldBySources(weld: readonly number[], sources: ReadonlyArray<readonly [number, number]>): number[] {
+  return sources.map(([o]) => weld[o]!);
+}
+
 // ── Edge collapse (decimation) ─────────────────────────────────────────────
 
 /** Edges shorter than `detail · COLLAPSE_FACTOR` are collapse candidates. */

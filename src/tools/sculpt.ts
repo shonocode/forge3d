@@ -6,10 +6,11 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status } from "../state";
 import type { BrushId } from "../state";
-import { collapseWithinRadii, refineWithinRadii, remapAttribute, remapAttributeBySources } from "./dyntopo";
+import { collapseWithinRadii, refineWithinRadii, remapAttribute, remapAttributeBySources, remapWeld, remapWeldBySources } from "./dyntopo";
 import { symmetricCenters } from "./sculpt-symmetry";
 import { createMask, paintMask } from "./sculpt-mask";
 import { applyDelta } from "./sculpt-delta";
+import { carryKeyedLists, readRenderTopology, restoreKeyedMetadata, snapshotKeyedMetadata, WELD_METADATA_KEY } from "./edit-mode/build";
 import type { SparseDelta } from "./sculpt-delta";
 
 export const BRUSHES = [
@@ -165,11 +166,23 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
     let uvs: Float32Array | null = null;
     const rawUV = mesh.getVerticesData(VertexBuffer.UVKind);
     if (rawUV) uvs = new Float32Array(rawUV);
+    // The weld list follows the new vertices (compat-backlog C125).
+    // Read once, on the first change (the buffer is still the old one until applyToMesh below) — not on every dab.
+    let weldRead = false;
+    let weld: number[] | null = null;
+    const readWeld = (): void => {
+      if (weldRead) return;
+      weldRead = true;
+      if (Array.isArray((mesh.metadata as Record<string, unknown> | null)?.[WELD_METADATA_KEY]))
+        weld = readRenderTopology(mesh as Mesh)?.weld?.slice() ?? null;
+    };
 
     const col = collapseWithinRadii(curPos, curIdx, centers, R, cfg.detail);
     if (col.changed) {
       if (uvs) uvs = remapAttributeBySources(uvs, col.sources, 2);
       if (mask) mask = remapAttributeBySources(mask, col.sources, 1);
+      readWeld();
+      if (weld) weld = remapWeldBySources(weld, col.sources);
       curPos = col.positions;
       curIdx = col.indices;
       topologyChanged = true;
@@ -179,6 +192,8 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
     if (res.changed) {
       if (uvs) uvs = remapAttribute(uvs, res.parents, 2);
       if (mask) mask = remapAttribute(mask, res.parents, 1);
+      readWeld();
+      if (weld) weld = remapWeld(weld, res.parents);
       curPos = res.positions;
       curIdx = res.indices;
       topologyChanged = true;
@@ -195,6 +210,8 @@ export function sculptAt(mesh: AbstractMesh, pick: PickingInfo): void {
       vd.normals = newNor;
       if (uvs) vd.uvs = uvs;
       vd.applyToMesh(mesh as Mesh, true);
+      // The creases, seams and polygons do not follow (the triangles changed); the weld list does.
+      carryKeyedLists(mesh as Mesh, weld ? { weld, creases: new Map(), seams: new Set(), polys: null } : null, Array.from({ length: newPos.length / 3 }, (_, v) => v));
       if (mask) state.sculptMaskMap.set(mesh.uniqueId, mask);
       pos = newPos as unknown as number[];
       nor = newNor as unknown as number[];
@@ -330,6 +347,8 @@ export interface GeoSnapshot {
   normals: Float32Array | null;
   uvs: Float32Array | null;
   mask: Float32Array | null;
+  /** The vertex-keyed lists in the metadata (weld, polygons, creases, seams and their signature — compat-backlog C125). */
+  keyed: Record<string, unknown>;
 }
 
 /** Capture the current geometry + mask of a mesh. Returns null if positions are missing. */
@@ -346,6 +365,7 @@ export function captureGeometry(mesh: AbstractMesh): GeoSnapshot | null {
     normals: nor ? new Float32Array(nor) : null,
     uvs: uvs ? new Float32Array(uvs) : null,
     mask: mask ? new Float32Array(mask) : null,
+    keyed: snapshotKeyedMetadata(mesh),
   };
 }
 
@@ -400,6 +420,7 @@ export function restoreGeometry(mesh: AbstractMesh, snap: GeoSnapshot): void {
   if (snap.normals) vd.normals = new Float32Array(snap.normals);
   if (snap.uvs) vd.uvs = new Float32Array(snap.uvs);
   vd.applyToMesh(mesh as Mesh, true);
+  restoreKeyedMetadata(mesh, snap.keyed);
   if (snap.mask) state.sculptMaskMap.set(mesh.uniqueId, new Float32Array(snap.mask));
   else state.sculptMaskMap.delete(mesh.uniqueId);
   refreshMaskVisual(mesh);

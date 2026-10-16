@@ -1,6 +1,6 @@
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { faceVerts, rebuildPolygons, triangulateFaces, type EditMesh } from "./half-edge";
+import { faceVerts, rebuildPolygons, seamKey, triangulateFaces, type EditMesh } from "./half-edge";
 import { meshFromData } from "../../lib/mesh";
 import { renderToSurface } from "../modifier-core";
 
@@ -185,6 +185,101 @@ export function writeSurfaceWeld(mesh: Mesh): void {
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   meta[WELD_METADATA_KEY] = Array.from(remap);
   meta[KEYS_FOR_METADATA_KEY] = keysSignature(pos.length / 3, indices);
+  mesh.metadata = meta;
+}
+
+const KEYED_METADATA = [WELD_METADATA_KEY, POLY_METADATA_KEY, CREASE_METADATA_KEY, SEAM_METADATA_KEY, KEYS_FOR_METADATA_KEY];
+
+/**
+ * A copy of the vertex-keyed lists in a mesh's metadata (weld, polygons, creases, seams and their signature), for an undo
+ * that puts a buffer back: without them the buffer comes back and the lists stay the rebuilt one's (compat-backlog C125).
+ */
+export function snapshotKeyedMetadata(mesh: { metadata: unknown }): Record<string, unknown> {
+  const meta = mesh.metadata as Record<string, unknown> | null;
+  return Object.fromEntries(KEYED_METADATA.flatMap((k) => (meta?.[k] === undefined ? [] : [[k, structuredClone(meta[k])]])));
+}
+
+/** Put back what {@link snapshotKeyedMetadata} copied — and remove the lists it did not have. */
+export function restoreKeyedMetadata(mesh: { metadata: unknown }, keyed: Record<string, unknown>): void {
+  const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+  for (const k of KEYED_METADATA) {
+    if (k in keyed) meta[k] = structuredClone(keyed[k]);
+    else delete meta[k];
+  }
+  mesh.metadata = meta;
+}
+
+/** The vertex-keyed lists of a render buffer, in its render vertex numbers (see {@link readRenderTopology}). */
+export interface KeyedLists {
+  weld: number[] | null;
+  creases: Map<string, number>;
+  seams: Set<string>;
+  polys: number[][] | null;
+}
+
+/**
+ * Carry the vertex-keyed lists of a buffer onto the buffer a tool rebuilt from it (compat-backlog C125), and sign them for
+ * the new one. `from[v]` is the old render vertex each new vertex `v` came from, or -1 for one made new (its weld number is
+ * then its own, past every old one; give it `weldOf` to say better). An edge of the new triangles whose ends came from the
+ * ends of a creased or seamed edge keeps the mark; a polygon keeps its corners through `from` when each old corner went to
+ * one new vertex (otherwise the polygons are left out, and Edit Mode reads triangles). `before` null (or without a weld
+ * list): the buffer had none and gets none.
+ */
+export function carryKeyedLists(
+  mesh: Mesh,
+  before: KeyedLists | null,
+  from: ArrayLike<number>,
+  weldOf?: (v: number) => number,
+): void {
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const indices = mesh.getIndices();
+  if (!pos || !indices) return;
+  const numV = pos.length / 3;
+  const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+  for (const k of [WELD_METADATA_KEY, SEAM_METADATA_KEY, CREASE_METADATA_KEY, POLY_METADATA_KEY]) delete meta[k];
+  if (before) {
+    if (before.weld) {
+      let next = before.weld.reduce((m, w) => Math.max(m, w), -1) + 1;
+      meta[WELD_METADATA_KEY] = Array.from({ length: numV }, (_, v) => (from[v]! >= 0 ? before.weld![from[v]!]! : weldOf ? weldOf(v) : next++));
+    }
+    const seams = new Set<string>();
+    const creases = new Map<string, number>();
+    if (before.seams.size || before.creases.size)
+      for (let t = 0; t < indices.length; t += 3)
+        for (let k = 0; k < 3; k++) {
+          const a = indices[t + k]!, b = indices[t + ((k + 1) % 3)]!;
+          if (from[a]! < 0 || from[b]! < 0) continue;
+          const old = seamKey(from[a]!, from[b]!);
+          if (before.seams.has(old)) seams.add(seamKey(a, b));
+          const c = before.creases.get(old);
+          if (c !== undefined) creases.set(seamKey(a, b), c);
+        }
+    if (seams.size) meta[SEAM_METADATA_KEY] = [...seams];
+    if (creases.size) meta[CREASE_METADATA_KEY] = [...creases];
+    if (before.polys) {
+      // The old fan's triangles are the new buffer's, in order; read each polygon's corners off its own triangles. A
+      // polygon whose corner went to two new vertices (a non-planar quad shaded flat) stays as its triangles.
+      const polys: number[][] = [];
+      let t = 0;
+      let ok = before.polys.reduce((s, p) => s + p.length - 2, 0) * 3 === indices.length;
+      for (const poly of ok ? before.polys : []) {
+        const corner = new Map<number, number>();
+        let whole = true;
+        for (let i = 1; i + 1 < poly.length; i++)
+          for (const [k, v] of [poly[0]!, poly[i]!, poly[i + 1]!].entries()) {
+            const n = indices[(t + i - 1) * 3 + k]!;
+            if (from[n] !== v) ok = false;
+            else if (corner.has(v) && corner.get(v) !== n) whole = false;
+            else corner.set(v, n);
+          }
+        if (whole) polys.push(poly.map((v) => corner.get(v)!));
+        else for (let i = 0; i < poly.length - 2; i++) polys.push([indices[(t + i) * 3]!, indices[(t + i) * 3 + 1]!, indices[(t + i) * 3 + 2]!]);
+        t += poly.length - 2;
+      }
+      if (ok) meta[POLY_METADATA_KEY] = polys;
+    }
+  }
+  meta[KEYS_FOR_METADATA_KEY] = keysSignature(numV, indices);
   mesh.metadata = meta;
 }
 
