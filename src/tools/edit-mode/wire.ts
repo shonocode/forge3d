@@ -197,7 +197,11 @@ function toSegment(
  *    (`BM_edge_split`), so the neighbour gets the vertex too. Order matters:
  *    one chain listed the other way can cut differently, as Blender's does.
  *    Then each face is split by its edge net.
- * 3. **The split** (`BM_face_split_edgenet`) walks the net from the face's
+ * 3. **Parts of the net that reach nothing** — a closed loop of wire inside the face, or a chain hanging off it by one
+ *    end — are joined to the rest by new edges first ({@link connectIslands}, `BM_face_split_edgenet_connect_islands`),
+ *    and after the split each joining edge that only parted two faces sharing just its ends is taken out again
+ *    ({@link joinRedundant}). Until 2026-10-16 (compat-backlog C124) those parts stayed as wire.
+ * 4. **The split** (`BM_face_split_edgenet`) walks the net from the face's
  *    first corner: at each vertex the pair of edges to close a face by, then a
  *    search that takes, at a fork, the largest turn about the face's normal
  *    first. A loop found is a new face, and its corners are searched from in
@@ -205,12 +209,14 @@ function toSegment(
  *    that is the first one found, **nothing is made and the wire stays**
  *    (`gridLeaveWire`: cutting there would give a triangle wound backwards).
  *
- * Measured against Blender 5.1.1 in `face-split-wires` (16 cases: chains,
+ * Measured against Blender 5.1.1 in `face-split-wires` (23 cases: chains,
  * corners, grids, a warped grid, an L-shaped face, a cube, wire left in
- * place, a chain over two faces whose ends do not compete) and on 178 inputs of the reviews — random
- * wires, chains, branches, several chains in a face, cubes, warped grids,
- * closed loops — of which 165 agree; the 13 that do not are all the first
- * limit below.
+ * place, a chain over two faces whose ends do not compete, closed loops,
+ * loops with a tail) and on 338 inputs of the reviews — random wires, chains,
+ * branches, several chains in a face, cubes, warped grids, closed and nested
+ * loops, loops with tails — of which 337 agree (C124; 165 of the first 178
+ * before it). The one that does not is a loop with a tail on a warped quad
+ * (the C124 review's x54), where the disk order below decides.
  *
  * The layers: an end set into an edge takes that edge's corners mixed by where
  * along it it lies, in every face it went into; a corner of a new face on a
@@ -219,13 +225,9 @@ function toSegment(
  *
  * ## What is not done
  *
- * - **`BM_face_split_edgenet_connect_islands`.** Blender joins a part of the
- *   net that does not reach the face's boundary to the boundary by new edges
- *   before splitting (and joins back the faces that makes needlessly); here
- *   such a part is left as wire. That is **every closed loop of wire drawn
- *   inside a face** (Blender makes four faces of a triangle loop in a quad;
- *   12 of 12 in the review's sample), and the rarer end that found no edge to
- *   go into (an end of a chain over two faces, joined to a corner).
+ * - The partial connect of `BM_face_split_edgenet_connect_islands` (a chain hanging off the boundary by one end) agreed
+ *   on the reviews' inputs (the C115 review's z51 among them), but no row holds a case of it alone: the one-face cases
+ *   reach the boundary at both ends, and z51 is a chain over two faces, whose answer depends on the face order below.
  * - **The order of the faces in step 2.** Blender goes through them in the
  *   order of a hash map of face pointers — set by where the faces happen to
  *   sit in memory, so not reproducible even by Blender: the same input gave
@@ -236,7 +238,10 @@ function toSegment(
  *   day, the other order on 79; a day later the two cases that tell them
  *   apart went the other way).
  * - **The disk order** of the edges round a vertex, which picks between equal
- *   choices in the walk, is the order the edges are met here, not BMesh's.
+ *   choices in the walk: the face's ring then the net, with what `BM_edge_split`
+ *   and `BM_vert_splice` do to it where an end is set in (an edge's first vertex
+ *   taken as its lower index, as the Mesh's edges have it — the other way agreed
+ *   on 157 of 160 against 159). The Mesh's own disks are not reproduced.
  *
  * Wire edges that are consumed become face edges and leave `edges`; ones that
  * are not stay.
@@ -248,6 +253,8 @@ export function faceSplitByEdges(data: MeshData): MeshData {
   const srcFace = polys.map((_, f) => f);
   const srcW: Map<number, number>[][] = polys.map((p) => p.map((_, i) => new Map([[i, 1]])));
   const wires = (data.edges ?? []).map((e) => [e[0]!, e[1]!] as [number, number]).filter(([a, b]) => a !== b);
+  /** Joining edges `connectIslands` made that no face took — left as wire, as Blender leaves them. */
+  const madeWires: number[][] = [];
   /** Whether wire edge `k` still has no face (`BM_edge_is_wire`). */
   const used = new Set<number>();
 
@@ -350,7 +357,29 @@ export function faceSplitByEdges(data: MeshData): MeshData {
     const edgesOf = (f: number): number[] => loose.filter((k) => faceOf.get(k) === f);
 
     /** Set `v` into the edge x–y of every face that has it, `t` of the way from x. */
-    const splice = (v: number, x: number, y: number, t: number): void => {
+    // The order of the edges round a vertex where an end is set in, as BMesh leaves it (C124 review): `BM_edge_split`
+    // splits the edge at its first vertex `tv` — the edge leaves `tv`'s disk and the piece to the new vertex is appended
+    // there; the other end keeps its place; `BM_vert_splice` then appends the new vertex's two edges (to the far end, then
+    // to `tv`) to the end's own disk. An original edge's first vertex is taken as its lower index (the Mesh's edges); a
+    // piece's as the split leaves it. `splitEdgenet` walks by these orders.
+    const edgeV1 = new Map<string, number>();
+    const diskOrder = new Map<number, number[]>();
+    const wireNeighbours = (u: number): number[] => wires.flatMap(([a, b]) => (a === u ? [b] : b === u ? [a] : []));
+    const defaultOrder = (u: number, f: number): number[] => {
+      const ring = polys[f]!;
+      const i = ring.indexOf(u);
+      const prev = ring[(i + ring.length - 1) % ring.length]!, next = ring[(i + 1) % ring.length]!;
+      return [...new Set([...(i === 0 ? [next, prev] : [prev, next]), ...wireNeighbours(u)])];
+    };
+    const splice = (v: number, x: number, y: number, t: number, f: number): void => {
+      const tv = edgeV1.get(edgeKey(x, y)) ?? Math.min(x, y);
+      const vOld = tv === x ? y : x;
+      diskOrder.set(tv, [...(diskOrder.get(tv) ?? defaultOrder(tv, f)).filter((n) => n !== vOld), v]);
+      const atOld = diskOrder.get(vOld);
+      if (atOld) diskOrder.set(vOld, atOld.map((n) => (n === tv ? v : n)));
+      diskOrder.set(v, [...(diskOrder.get(v) ?? wireNeighbours(v)).filter((n) => n !== vOld && n !== tv), vOld, tv]);
+      edgeV1.set(edgeKey(v, vOld), v);
+      edgeV1.set(edgeKey(tv, v), tv);
       polys.forEach((ring, g) => {
         for (let i = 0; i < ring.length; i++) {
           const j = (i + 1) % ring.length;
@@ -403,12 +432,25 @@ export function faceSplitByEdges(data: MeshData): MeshData {
           const x = ring[at]!, y = ring[(at + 1) % ring.length]!;
           // `bm_vert_in_faces_radial`: not when v is already on a face on the other side.
           if (facesWith(x, y).some((g) => g !== f && polys[g]!.includes(v))) continue;
-          splice(v, x, y, t);
+          splice(v, x, y, t, f);
         }
-    for (const f of faces) split(f, edgesOf(f), normals2[f]!);
+    for (const f of faces) {
+      // `bm_face_split_by_edges_island_connect`: the parts of the net that reach nothing joined in first
+      // (`BM_face_split_edgenet_connect_islands`, compat-backlog C124), the face split by it all, then each joining edge
+      // that only parted two faces sharing just its two ends taken out again, longest first (`BM_faces_join`).
+      const net = edgesOf(f);
+      const pairs = net.map((k) => wires[k]!);
+      const extra = connectIslands(P, polys[f]!, pairs, normals2[f]!);
+      const split0 = splitEdgenet(P, polys[f]!, srcW[f]!, [...pairs, ...extra], normals2[f]!, diskOrder);
+      // A joining edge no face took stays, as the wire Blender's `BM_edge_create` made it.
+      for (const e of extra) if (!split0.some((m) => hasEdge(m.verts, e))) madeWires.push([e[0], e[1]]);
+      const made = joinRedundant(P, split0, pairs, extra);
+      for (const k of net) if (made.some((m) => hasEdge(m.verts, wires[k]!))) used.add(k);
+      replace(f, made);
+    }
   }
 
-  const leftover = wires.filter((_, k) => !used.has(k)).map((e) => [...e]);
+  const leftover = [...wires.filter((_, k) => !used.has(k)).map((e) => [...e]), ...madeWires];
   // The layers (compat-backlog C109): the pieces of a split face take its corners and its face data, the corners the
   // cut made mixed from them; no vertex is added, so the vertex layers stay as they are.
   const corner = (m: Map<number, number>): number | WeightedCorner => {
@@ -423,6 +465,384 @@ export function faceSplitByEdges(data: MeshData): MeshData {
   out.edges = leftover;
   Object.assign(out, carryFaceLayers(data, polys.map((_, f) => ({ face: srcFace[f]!, corners: srcW[f]!.map(corner) }))));
   return defined(out);
+}
+
+/**
+ * `BM_face_split_edgenet_connect_islands` (`bmesh_polygon_edgenet.cc`, Blender 5.1.1), its partial connect with it: the
+ * new edges that join each part of an edge net that does not reach the face's boundary to the rest — so a closed loop
+ * of wire drawn inside a face can be cut out of it (compat-backlog C124). Returns the vertex pairs of the new edges, in
+ * the order Blender makes them.
+ *
+ * The face and its net, projected onto the face's plane (`axis_dominant_v3_to_m3`), fall into connected parts; the
+ * parts are sorted by their least vertex along x (then y); from the second on, each part's least vertex looks along −x
+ * and its greatest along +x (`bm_face_split_edgenet_find_connection`): the nearest edge of another part a ray hits, then
+ * that edge's ends — nearer first — until one can be reached without crossing an edge. A part that an earlier part
+ * already reached does not look back along −x.
+ *
+ * The partial connect (`bm_face_split_edgenet_partial_connect`) runs first: at a vertex of the net with three or more
+ * edges, the net edges that lead only to vertices the rest cannot reach without passing it — a chain hanging off the
+ * boundary by one end — are moved to a temporary copy of the vertex, so the chain is a part of its own and gets joined;
+ * after, the copy is spliced back, and a joining edge that became a double is dropped.
+ *
+ * Not ported: the collinear branch of `isect_seg_seg_v2_point_ex` (overlapping collinear segments).
+ */
+function connectIslands(
+  P0: ArrayLike<number>,
+  ring: readonly number[],
+  net: readonly (readonly [number, number])[],
+  normal: V3,
+): [number, number][] {
+  // `edge_arr`: the net, then the face's own edges from its first corner.
+  const edges: Array<[number, number]> = [...net.map(([a, b]) => [a, b] as [number, number])];
+  const netCount = edges.length;
+  for (let i = 0; i < ring.length; i++) edges.push([ring[i]!, ring[(i + 1) % ring.length]!]);
+
+  // ── USE_PARTIAL_CONNECT: temporary copies of delimiting vertices. ──
+  const positions = Array.from(P0);
+  const tempOf = new Map<number, number>(); // temp → original
+  const partial = (v: number): number => {
+    const at = edges.flatMap((e, k) => (e[0] === v || e[1] === v ? [k] : []));
+    if (at.length <= 2) return -1;
+    const faceEdge = [...at].reverse().find((k) => k >= netCount);
+    const first = edges[faceEdge ?? at[0]!]!;
+    const start = first[0] === v ? first[1] : first[0];
+    const reached = new Set<number>([v, start]);
+    const stack = [start];
+    while (stack.length) {
+      const u = stack.pop()!;
+      for (const [a, b] of edges) {
+        if (a !== u && b !== u) continue;
+        const o = a === u ? b : a;
+        if (!reached.has(o)) {
+          reached.add(o);
+          stack.push(o);
+        }
+      }
+    }
+    const delimit = at.filter((k) => {
+      if (k >= netCount) return false;
+      const e = edges[k]!;
+      return !reached.has(e[0] === v ? e[1] : e[0]);
+    });
+    if (!delimit.length) return -1;
+    const t = positions.length / 3;
+    positions.push(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+    for (const k of delimit) edges[k] = edges[k]!.map((x) => (x === v ? t : x)) as [number, number];
+    tempOf.set(t, tempOf.get(v) ?? v);
+    return t;
+  };
+  for (let i = 0; i < netCount; i++)
+    for (let j = 0; j < 2; j++) {
+      const v = edges[i]![j]!;
+      while (partial(v) !== -1) {
+        // `while (v_other = partial(v_delimit))`.
+      }
+    }
+  const P: ArrayLike<number> = tempOf.size ? positions : P0;
+  const orig = (v: number): number => tempOf.get(v) ?? v;
+
+  // The connected parts, the one holding the last edge (the face's boundary) first, then scanning back.
+  const at = new Map<number, number[]>();
+  edges.forEach(([a, b], k) => {
+    for (const v of [a, b]) (at.get(v) ?? at.set(v, []).get(v)!).push(k);
+  });
+  const edgeGroup = new Int32Array(edges.length).fill(-1);
+  const groups: Array<{ verts: number[]; edges: number[]; min: number; max: number; minAxis: [number, number]; maxAxis: [number, number]; hasPrev: boolean }> = [];
+  for (let k = edges.length - 1; k >= 0; k--) {
+    if (edgeGroup[k] !== -1) continue;
+    const g = groups.length;
+    const verts: number[] = [];
+    const members: number[] = [];
+    const seen = new Set<number>([edges[k]![0]]);
+    const stack = [edges[k]![0]];
+    while (stack.length) {
+      const v = stack.pop()!;
+      verts.push(v);
+      for (const e of at.get(v)!) {
+        if (edgeGroup[e] !== -1) continue;
+        edgeGroup[e] = g;
+        members.push(e);
+        const o = edges[e]![0] === v ? edges[e]![1] : edges[e]![0];
+        if (!seen.has(o)) {
+          seen.add(o);
+          stack.push(o);
+        }
+      }
+    }
+    groups.push({ verts, edges: members, min: -1, max: -1, minAxis: [Infinity, Infinity], maxAxis: [-Infinity, -Infinity], hasPrev: false });
+  }
+  if (groups.length === 1) return [];
+
+  // `axis_dominant_v3_to_m3`: x along `ortho_basis_v3v3_v3`'s first vector, y its second.
+  const [nx, ny, nz] = normal;
+  let n1: V3, n2: V3;
+  const f2 = nx * nx + ny * ny;
+  if (f2 > 1.1920929e-7) {
+    const d = 1 / Math.sqrt(f2);
+    n1 = [ny * d, -nx * d, 0];
+    n2 = [-nz * n1[1], nz * n1[0], nx * n1[1] - ny * n1[0]];
+  } else {
+    n1 = [nz < 0 ? -1 : 1, 0, 0];
+    n2 = [0, 1, 0];
+  }
+  const proj = (v: number, ref: readonly number[] = [0, 0, 0]): [number, number] => {
+    const x = P[v * 3]! - ref[0]!, y = P[v * 3 + 1]! - ref[1]!, z = P[v * 3 + 2]! - ref[2]!;
+    return [n1[0] * x + n1[1] * y + n1[2] * z, n2[0] * x + n2[1] * y + n2[2] * z];
+  };
+  const cmp = (a: readonly number[], b: readonly number[]): number => (a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : 0);
+  for (const g of groups) {
+    g.min = edges[g.edges[0]!]![0];
+    g.max = edges[g.edges[0]!]![1];
+    for (const e of g.edges)
+      for (const v of edges[e]!) {
+        const a = proj(v);
+        if (cmp(a, g.minAxis) === -1) {
+          g.min = v;
+          g.minAxis = a;
+        }
+        if (cmp(a, g.maxAxis) === 1) {
+          g.max = v;
+          g.maxAxis = a;
+        }
+      }
+  }
+  groups.sort((a, b) => cmp(a.minAxis, b.minAxis) || cmp(a.maxAxis, b.maxAxis));
+
+  // The vertices in part order, each part a range; 2D coordinates relative to the face's first corner.
+  const ref = [P[ring[0]! * 3]!, P[ring[0]! * 3 + 1]!, P[ring[0]! * 3 + 2]!];
+  const index = new Map<number, number>();
+  const groupOf: number[] = [];
+  const co: Array<[number, number]> = [];
+  const verts: number[] = [];
+  groups.forEach((g, gi) => {
+    for (const e of g.edges)
+      for (const v of edges[e]!)
+        if (!index.has(v)) {
+          index.set(v, verts.length);
+          verts.push(v);
+          groupOf.push(gi);
+          co.push(proj(v, ref));
+        }
+  });
+  const C = (v: number): [number, number] => co[index.get(v)!]!;
+  const cross = (a: readonly number[], b: readonly number[]): number => a[0]! * b[1]! - a[1]! * b[0]!;
+
+  /** `isect_seg_seg_v2_point_ex` with the edge's ends not the segment's (`edge_isect_verts_point_2d`), its non-collinear branch. */
+  const isectSeg = (e: readonly [number, number], va: number, vb: number): [number, number] | null => {
+    if (e[0] === va || e[1] === va || e[0] === vb || e[1] === vb) return null;
+    const v0 = C(va), v1 = C(vb), v2 = C(e[0]), v3 = C(e[1]);
+    const bias = 1e-4;
+    const s10 = [v1[0] - v0[0], v1[1] - v0[1]], s32 = [v3[0] - v2[0], v3[1] - v2[1]], s30 = [v3[0] - v0[0], v3[1] - v0[1]];
+    const d = cross(s10, s32);
+    if (d === 0) return null;
+    const u = cross(s30, s32) / d;
+    let v = cross(s10, s30) / d;
+    if (!(u >= -bias && u <= 1 + bias && v >= -bias && v <= 1 + bias)) return null;
+    const vi: [number, number] = [v0[0] + s10[0]! * u, v0[1] + s10[1]! * u];
+    v = ((s32[0]! * (vi[0] - v2[0])) + (s32[1]! * (vi[1] - v2[1]))) / (s32[0]! ** 2 + s32[1]! ** 2);
+    return v >= -bias && v <= 1 + bias ? vi : null;
+  };
+  /** `isect_ray_seg_v2`: the distance along a unit `dir` from `o` to the segment, or null. */
+  const isectRay = (o: [number, number], dir: [number, number], e: readonly [number, number]): number | null => {
+    const v0 = [C(e[0])[0] - o[0], C(e[0])[1] - o[1]], v1 = [C(e[1])[0] - o[0], C(e[1])[1] - o[1]];
+    const s10 = [v1[0]! - v0[0]!, v1[1]! - v0[1]!];
+    const det = cross(dir, s10);
+    if (det === 0) return null;
+    const w = cross(v0, v1);
+    const p = [(dir[0] * w) / det, (dir[1] * w) / det];
+    const t = (p[0]! * dir[0] + p[1]! * dir[1]) / (dir[0] ** 2 + dir[1] ** 2);
+    if (!(t >= 0)) return null;
+    const h = [v1[0]! - p[0]!, v1[1]! - p[1]!];
+    const u = (s10[0]! * h[0]! + s10[1]! * h[1]!) / (s10[0]! ** 2 + s10[1]! ** 2);
+    return u >= 0 && u <= 1 ? t : null;
+  };
+
+  const made: Array<[number, number]> = [];
+  let range: [number, number] = [0, 0];
+  const inRange = (v: number): boolean => {
+    const i = index.get(v)!;
+    return i >= range[0] && i < range[1];
+  };
+  /** `test_edges_isect_2d_ray`. */
+  const rayHit = (o: number, sign: 1 | -1): readonly [number, number] | null => {
+    const oc = C(o);
+    let best = Infinity;
+    let hit: readonly [number, number] | null = null;
+    for (const e of edges) {
+      const t = isectRay(oc, [sign, 0], e);
+      if (t === null || !(t < best && t > 0) || e[0] === o || e[1] === o || inRange(e[0])) continue;
+      best = t;
+      hit = e;
+    }
+    if (hit)
+      for (const e of made) {
+        const t = isectRay(oc, [sign, 0], e);
+        if (t !== null && e[0] !== o && e[1] !== o && t < best) {
+          best = t;
+          hit = e;
+        }
+      }
+    return hit;
+  };
+  /** `test_edges_isect_2d_vert`: the nearest edge crossing the segment `o`–`other`, or null when it is clear. */
+  const segHit = (o: number, other: number): readonly [number, number] | null => {
+    const oc = C(o), pc = C(other);
+    const dist0 = Math.hypot(pc[0] - oc[0], pc[1] - oc[1]);
+    let best = dist0;
+    let hit: readonly [number, number] | null = null;
+    const factor = (p: readonly number[]): number => {
+      const u = [pc[0] - oc[0], pc[1] - oc[1]], h = [p[0]! - oc[0], p[1]! - oc[1]];
+      const dd = u[0]! ** 2 + u[1]! ** 2;
+      return dd > 0 ? (u[0]! * h[0]! + u[1]! * h[1]!) / dd : 0;
+    };
+    for (const e of edges) {
+      const vi = isectSeg(e, o, other);
+      if (!vi) continue;
+      const dist = dist0 * factor(vi);
+      if (dist < best && dist > 0 && !inRange(e[0])) {
+        best = dist;
+        hit = e;
+      }
+    }
+    if (!hit) {
+      let tBest = 1;
+      for (const e of made) {
+        const vi = isectSeg(e, o, other);
+        if (!vi) continue;
+        const t = factor(vi);
+        if (t < tBest) {
+          tBest = t;
+          hit = e;
+        }
+      }
+    }
+    return hit;
+  };
+  /** `bm_face_split_edgenet_find_connection`: the vertex `o` joins, or -1. */
+  const findConnection = (o: number, sign: 1 | -1): number => {
+    let hit = rayHit(o, sign);
+    if (!hit) return -1;
+    const blocked = new Set<number>();
+    const search: number[] = [];
+    let other: number | undefined;
+    let fallback: number | undefined;
+    const ox = C(o)[0];
+    for (;;) {
+      const [a, b] = hit!;
+      const d2 = (v: number): number => (C(v)[0] - C(o)[0]) ** 2 + (C(v)[1] - C(o)[1]) ** 2;
+      // The nearer end is pushed last, so taken first.
+      for (const v of d2(a) > d2(b) ? [a, b] : [b, a])
+        if (!blocked.has(v) && (sign > 0 ? C(v)[0] > ox : C(v)[0] < ox)) {
+          search.push(v);
+          blocked.add(v);
+        }
+      fallback = other;
+      other = search.pop();
+      if (other === undefined) break;
+      hit = segHit(o, other);
+      if (!hit) break;
+    }
+    if (other === undefined) other = fallback;
+    return other === undefined ? -1 : other;
+  };
+  const exists = (a: number, b: number): boolean =>
+    edges.some(([x, y]) => (x === a && y === b) || (x === b && y === a)) || made.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+
+  // `bm_vert_partial_connect_check_overlap`: never join a temporary copy to the vertex it was split from.
+  const overlap = (a: number, b: number): boolean => tempOf.get(a) === b || tempOf.get(b) === a;
+  let end = groups[0]!.verts.length;
+  for (let gi = 1; gi < groups.length; gi++) {
+    const g = groups[gi]!;
+    range = [end, end + new Set(g.edges.flatMap((e) => edges[e]!)).size];
+    end = range[1];
+    if (!g.hasPrev) {
+      const other = findConnection(g.min, -1);
+      if (other !== -1 && !overlap(g.min, other) && !exists(g.min, other)) made.push([g.min, other]);
+    }
+    const other = findConnection(g.max, 1);
+    if (other !== -1) {
+      if (!overlap(g.max, other) && !exists(g.max, other)) made.push([g.max, other]);
+      groups[groupOf[index.get(other)!]!]!.hasPrev = true;
+    }
+  }
+  if (!tempOf.size) return made;
+  // The copies spliced back: the new edges on the original vertices, any that became a loop or a double dropped.
+  // Blender splices, then walks the new edges in order and kills each while it has a double, the last moved into its
+  // slot (`BM_edge_find_double`, `BM_edge_kill`) — which reorders what is left, and the order is what the join walks.
+  const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`);
+  const have = new Set([...net.map(([a, b]) => key(a, b)), ...ring.map((v, i) => key(v, ring[(i + 1) % ring.length]!))]);
+  const list = made.map(([a, b]) => [orig(a), orig(b)] as [number, number]);
+  const double = (k: number): boolean => {
+    const [x, y] = list[k]!;
+    return have.has(key(x, y)) || list.some(([p, q], j) => j !== k && key(p, q) === key(x, y));
+  };
+  for (let i = 0; i < list.length; i++) {
+    let stop = false;
+    while (double(i)) {
+      const last = list.pop()!;
+      if (i === list.length) {
+        stop = true;
+        break;
+      }
+      list[i] = last;
+    }
+    if (stop) break;
+  }
+  return list.filter(([x, y]) => x !== y);
+}
+
+/** Whether a face ring runs along the edge a–b, either way. */
+function hasEdge(ring: readonly number[], [a, b]: readonly [number, number]): boolean {
+  return ring.some((v, i) => {
+    const w = ring[(i + 1) % ring.length]!;
+    return (v === a && w === b) || (v === b && w === a);
+  });
+}
+
+/**
+ * The joining edges of {@link connectIslands} that only parted two faces sharing nothing but their two ends, taken out
+ * again by joining the faces — longest first (`bm_edge_sort_length_cb`), as Blender does after the split
+ * (`BM_face_share_vert_count == 2`, `BM_faces_join`). The joined face keeps the first face's place and every corner its
+ * weights.
+ */
+function joinRedundant(
+  P: ArrayLike<number>,
+  made: Array<{ verts: number[]; w: Map<number, number>[]; netUsed: Set<readonly [number, number]> }>,
+  net: readonly (readonly [number, number])[],
+  extra: readonly (readonly [number, number])[],
+): Array<{ verts: number[]; w: Map<number, number>[]; netUsed: Set<readonly [number, number]> }> {
+  const len2 = ([a, b]: readonly [number, number]): number =>
+    (P[a * 3]! - P[b * 3]!) ** 2 + (P[a * 3 + 1]! - P[b * 3 + 1]!) ** 2 + (P[a * 3 + 2]! - P[b * 3 + 2]!) ** 2;
+  const faces = [...made];
+  // `qsort(edge_arr, edge_arr_len - e_link_len, …)` sorts the array's FIRST `extra.length` entries — the start of the
+  // net, not the new edges — longest first; the loop then takes the entries from `net.length` on. So the joining edges
+  // are tried in the order they were made, unless there are more of them than net edges (C124 review).
+  const arr = [...net, ...extra];
+  arr.splice(0, extra.length, ...arr.slice(0, extra.length).sort((x, y) => len2(y) - len2(x)));
+  for (const e of arr.slice(net.length)) {
+    const on = faces.flatMap((m, k) => (hasEdge(m.verts, e) ? [k] : []));
+    if (on.length !== 2) continue;
+    const [i, j] = on as [number, number];
+    const A = faces[i]!, B = faces[j]!;
+    if (A.verts.filter((v) => B.verts.includes(v)).length !== 2) continue;
+    // A runs x→y along the edge, B y→x: A from y round to x, then B's corners strictly between x and y.
+    const ia = A.verts.findIndex((v, k) => (v === e[0] || v === e[1]) && (A.verts[(k + 1) % A.verts.length] === e[0] || A.verts[(k + 1) % A.verts.length] === e[1]));
+    const x = A.verts[ia]!, y = A.verts[(ia + 1) % A.verts.length]!;
+    const rot = <T>(arr: T[], k: number): T[] => [...arr.slice(k), ...arr.slice(0, k)];
+    const a = rot(A.verts, (ia + 1) % A.verts.length);
+    const aw = rot(A.w, (ia + 1) % A.verts.length);
+    const ib = B.verts.indexOf(x);
+    const b = rot(B.verts, ib);
+    const bw = rot(B.w, ib);
+    const yAt = b.indexOf(y);
+    faces[i] = {
+      verts: [...a, ...b.slice(1, yAt)],
+      w: [...aw, ...bw.slice(1, yAt)],
+      netUsed: new Set([...A.netUsed, ...B.netUsed]),
+    };
+    faces.splice(j, 1);
+  }
+  return faces;
 }
 
 /** `Σ w[i] · maps[i]` over the source corners. */
@@ -504,6 +924,8 @@ function splitEdgenet(
   ringW: readonly Map<number, number>[],
   net: readonly (readonly [number, number])[],
   normal: V3,
+  /** The neighbours of a vertex in its disk order where BMesh's differs from the ring-then-net default (see above). */
+  diskOrder?: ReadonlyMap<number, readonly number[]>,
 ): Array<{ verts: number[]; w: Map<number, number>[]; netUsed: Set<readonly [number, number]> }> {
   interface Edge { a: number; b: number; net: readonly [number, number] | null; loops: Array<{ face: number; from: number }> }
   const edges: Edge[] = [];
@@ -525,6 +947,16 @@ function splitEdgenet(
     add({ a: e[0], b: e[1], net: e, loops: [] });
   }
   const other = (e: number, v: number): number => (edges[e]!.a === v ? edges[e]!.b : edges[e]!.a);
+  if (diskOrder)
+    for (const [v, d] of disk) {
+      const order = diskOrder.get(v);
+      if (!order) continue;
+      const rank = (e: number): number => {
+        const r = order.indexOf(other(e, v));
+        return r < 0 ? Infinity : r;
+      };
+      d.sort((p, q) => rank(p) - rank(q) || p - q);
+    }
   /** `v->e`: where each vertex's disk starts, set by the walk. */
   const vE = new Map<number, number>();
   const diskFrom = (v: number): number[] => {

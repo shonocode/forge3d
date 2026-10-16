@@ -397,6 +397,16 @@ describe("faceSplitByEdges", () => {
     expect(shape({ ...out, polys: out.polys.filter((p) => p.includes(2)) })).toEqual([[1, 2, 5, 4, 7]]);
   });
 
+  it("cuts a closed loop of wire out of the face it lies in (connect_islands, compat-backlog C124)", () => {
+    // Blender (row `face-split-wires`, `quadLoopTri`): the triangle becomes a face of its own and the quad around it is
+    // cut by joining edges into faces round it — three faces, no wire left. Until C124 the loop stayed as wire.
+    const m = { ...withPoints([0.3, 0.3], [0.72, 0.36], [0.47, 0.71]), edges: [[4, 5], [5, 6], [6, 4]] };
+    const out = faceSplitByEdges(m);
+    expect(out.polys).toHaveLength(3);
+    expect(out.edges).toEqual([]);
+    expect(out.polys.some((p) => p.length === 3 && [4, 5, 6].every((v) => p.includes(v)))).toBe(true);
+  });
+
   it("leaves a mesh with no wire edges exactly as it was", () => {
     const m = withPoints();
     const out = faceSplitByEdges(m);
