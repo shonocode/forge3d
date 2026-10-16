@@ -115,8 +115,10 @@ export function transferAttribute(
   oldAttr: ArrayLike<number>,
   newPos: ArrayLike<number>,
   comps: number,
+  /** Sample every vertex, none copied by index — a renumbered buffer (see {@link transferSkinWeights}). */
+  sampleAll = false,
 ): Float32Array {
-  const oldVertCount = oldPos.length / 3;
+  const oldVertCount = sampleAll ? 0 : oldPos.length / 3;
   const newVertCount = newPos.length / 3;
   const out = new Float32Array(newVertCount * comps);
   const copyCount = Math.min(oldVertCount, newVertCount) * comps;
@@ -147,8 +149,13 @@ export function transferSkinWeights(
   oldMatricesIndices: ArrayLike<number>,
   oldMatricesWeights: ArrayLike<number>,
   newPos: ArrayLike<number>,
+  /**
+   * Sample every vertex, none copied by index — for a buffer renumbered rather than grown (Edit Mode's commit since
+   * compat-backlog C123). A vertex that sits where an old one did reads that one's weights exactly.
+   */
+  sampleAll = false,
 ): { matricesIndices: Float32Array; matricesWeights: Float32Array } {
-  const oldVertCount = oldPos.length / 3;
+  const oldVertCount = sampleAll ? 0 : oldPos.length / 3;
   const newVertCount = newPos.length / 3;
   const mi = new Float32Array(newVertCount * 4);
   const mw = new Float32Array(newVertCount * 4);

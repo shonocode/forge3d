@@ -2,8 +2,8 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status, isMobile, type ComponentMode } from "../../state";
-import { buildEditMesh } from "./build";
-import { commitTopology, writeEdgeAttrMetadata, writePolyMetadata } from "./commit";
+import { buildEditMesh, refreshLoopUVs } from "./build";
+import { commitTopology, restoreRender, snapshotRender, writeEdgeAttrMetadata } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
@@ -12,10 +12,8 @@ import { bevelEdges, collapseEdges, edgeSlide, extrudeEdges, insetRegion, INSET_
 import { extrudeRegion } from "./face-transform";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
-import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { canonicalEdge, creaseOf, edgeEnd, edgeOrigin, faceHalfEdges, faceVerts, forEachEdge, hasNonTriFaces, type EditMesh, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, triangulateFaces, usedVertices } from "./half-edge";
+import { canonicalEdge, creaseOf, edgeEnd, edgeOrigin, faceHalfEdges, faceVerts, forEachEdge, hasNonTriFaces, type EditMesh, rebuildHalfEdges, rebuildPolygons, sourceMesh, toIndexArray, toPolygons, usedVertices } from "./half-edge";
 import { deleteGeometryMapped, type DeleteContext, type DeleteGeom } from "../delete-geometry";
 import { edgeFaceAdd } from "./face-add";
 import { bridgeEditSelection } from "../bridge-selection";
@@ -77,6 +75,17 @@ export function enterEditMode(mesh: AbstractMesh): void {
   updateGizmo();
   store.notify();
   status(isMobile() ? "Edit Mode — Editボタンで戻れる、1/2/3 をパネルから選択" : "Edit Mode — Tab to exit, 1/2/3 for V/E/F");
+}
+
+/**
+ * After something outside Edit Mode rewrote the UVs of the mesh being edited — the UV editor's Apply, its undo and redo —
+ * read them back onto the EditMesh's corners (compat-backlog C123: it holds the UVs per corner, so the next commit would
+ * otherwise write the old ones back). In place: the EditMesh, the selection and every history entry that holds it stay
+ * valid. No-op unless `mesh` is the one being edited.
+ */
+export function reloadEditMesh(mesh: AbstractMesh): void {
+  if (!state.editMesh || state.editMesh.source !== mesh) return;
+  refreshLoopUVs(state.editMesh);
 }
 
 export function exitEditMode(): void {
@@ -161,18 +170,14 @@ export function clearComponentSelection(): void {
 function applyTopologyOp(label: string, op: () => Set<number>): void {
   if (!state.editMesh || !currentOverlay || !currentGizmo) return;
   const em = state.editMesh;
-  // Snapshot POLYGONS (not triangles) so undo/redo restores quads / n-gons.
-  // Seams / creases are edge-attribute maps that some ops mutate (Merge remaps
-  // seams; Subdivide propagates creases), so snapshot them too.
-  const before = {
-    positions: new Float32Array(em.positions),
-    polys: toPolygons(em),
-    seams: new Set(em.seams),
-    creases: new Map(em.creases),
-    wires: (em.wireEdges ?? []).map((e) => [...e]),
-    selection: new Set(state.editSelection.indices),
-    mode: state.editSelection.mode,
-  };
+  // A topology commit renumbers the render buffer; per-target position buffers cannot follow (C123 review).
+  if (sourceMesh(em).morphTargetManager?.numTargets) {
+    status(`⚠ ${label}: このメッシュにはモーフターゲットがある ― 先に外す`);
+    return;
+  }
+  // The whole EditMesh, every layer with it (UVs per corner, colours, groups, flags — compat-backlog C123: until then
+  // the positions, polygons, seams, creases and wires only, so an undo re-read the UVs off whatever the buffer held).
+  const before = { data: meshToData(em), render: snapshotRender(em), selection: new Set(state.editSelection.indices), mode: state.editSelection.mode };
   const newSel = op();
   state.editSelection.indices = newSel;
   commitTopology(em);
@@ -180,45 +185,21 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
   currentGizmo.refresh(em, state.editSelection);
   store.notify();
 
-  const after = {
-    positions: new Float32Array(em.positions),
-    polys: toPolygons(em),
-    seams: new Set(em.seams),
-    creases: new Map(em.creases),
-    wires: (em.wireEdges ?? []).map((e) => [...e]),
-    selection: new Set(state.editSelection.indices),
-  };
+  const after = { data: meshToData(em), render: snapshotRender(em), selection: new Set(state.editSelection.indices), mode: state.editSelection.mode };
   const overlayRef = currentOverlay;
   const gizmoRef = currentGizmo;
-  const restoreEdgeAttrs = (seams: Set<string>, creases: Map<string, number>, wires: number[][]): void => {
-    em.seams = new Set(seams);
-    em.creases = new Map(creases);
-    em.wireEdges = wires.map((e) => [...e]);
+  const restore = (snap: typeof after): void => {
+    if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
+    assignFromData(em, snap.data);
+    // The buffer exactly as it was — not rendered again, which would number its vertices afresh.
+    restoreRender(em, snap.render);
+    state.editSelection.indices = new Set(snap.selection);
+    state.editSelection.mode = snap.mode;
+    rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
+    gizmoRef.refresh(em, state.editSelection);
+    store.notify();
   };
-  state.history.push({
-    label,
-    undo() {
-      if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
-      rebuildPolygons(em, new Float32Array(before.positions), before.polys);
-      restoreEdgeAttrs(before.seams, before.creases, before.wires);
-      state.editSelection.indices = new Set(before.selection);
-      state.editSelection.mode = before.mode;
-      commitTopology(em);
-      rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
-      gizmoRef.refresh(em, state.editSelection);
-          store.notify();
-    },
-    redo() {
-      if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
-      rebuildPolygons(em, new Float32Array(after.positions), after.polys);
-      restoreEdgeAttrs(after.seams, after.creases, after.wires);
-      state.editSelection.indices = new Set(after.selection);
-      commitTopology(em);
-      rebuildOverlay(state.scene, overlayRef, em, state.editSelection);
-      gizmoRef.refresh(em, state.editSelection);
-          store.notify();
-    },
-  });
+  state.history.push({ label, undo: () => restore(before), redo: () => restore(after) });
   status(`${label} — ${newSel.size} selected`);
 }
 
@@ -563,14 +544,9 @@ export function setCreaseSelection(): void {
 }
 
 /**
- * Run Smart UV Project on the active EditMesh, rebuild the Babylon mesh with
- * the new UVs (vertex count grows: each face becomes 3 unique verts in V1),
- * and re-enter Edit Mode on the rebuilt geometry.
- *
- * Skin weights survive the rebuild: each rebuilt vertex knows its source
- * vertex (`UnwrapResult.sourceVerts`), so MatricesIndices/Weights are copied
- * across. Morph targets still abort — their per-target position buffers
- * cannot survive a vertex-count change.
+ * Run Smart UV Project on the active EditMesh: the UVs go onto its face corners and the topology commit splits the render
+ * buffer along the islands' edges (the EditMesh keeps its vertices). Skin weights are sampled across by the commit. Morph
+ * targets abort — their per-target position buffers cannot survive the render vertex count changing.
  */
 export function unwrapMesh(): void {
   const em = state.editMesh;
@@ -580,125 +556,23 @@ export function unwrapMesh(): void {
     status("⚠ Unwrap: mesh has morph targets — clear them first");
     return;
   }
-
-  // Snapshot for undo.
-  const beforePos = new Float32Array(em.positions);
-  const beforeIdxRaw = mesh.getIndices() ?? [];
-  const beforeIdx: number[] = Array.from(beforeIdxRaw);
-  const beforePolys = toPolygons(em);
-  const beforeUV = mesh.getVerticesData(VertexBuffer.UVKind);
-  const beforeUVCopy = beforeUV ? new Float32Array(beforeUV) : null;
-  const beforeMIRaw = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind);
-  const beforeMWRaw = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind);
-  const beforeMI = beforeMIRaw ? new Float32Array(beforeMIRaw) : null;
-  const beforeMW = beforeMWRaw ? new Float32Array(beforeMWRaw) : null;
-  const beforeSel = new Set(state.editSelection.indices);
-  const beforeMode = state.editSelection.mode;
-
   const result = smartUVProject(em, { method: state.editConfig.unwrapMethod });
-
-  // Carry skin weights across the rebuild: copy each source vert's 4 influences.
-  let afterMI: Float32Array | null = null;
-  let afterMW: Float32Array | null = null;
-  if (beforeMI && beforeMW) {
-    const n = result.sourceVerts.length;
-    afterMI = new Float32Array(n * 4);
-    afterMW = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) {
-      const src = result.sourceVerts[i]! * 4;
-      for (let k = 0; k < 4; k++) {
-        afterMI[i * 4 + k] = beforeMI[src + k]!;
-        afterMW[i * 4 + k] = beforeMW[src + k]!;
-      }
-    }
-  }
-
-  // Apply to Babylon mesh.
-  const vd = new VertexData();
-  vd.positions = new Float32Array(result.positions);
-  vd.indices = result.indices.slice();
-  vd.uvs = new Float32Array(result.uvs);
-  const normals = new Float32Array(result.positions.length);
-  VertexData.ComputeNormals(result.positions, result.indices, normals);
-  vd.normals = normals;
-  if (afterMI && afterMW) {
-    vd.matricesIndices = afterMI;
-    vd.matricesWeights = afterMW;
-  }
-  vd.applyToMesh(mesh, true);
-
-  // Rebuild EditMesh + overlay (polygon-preserving: quads survive unwrap).
-  rebuildPolygons(em, new Float32Array(result.positions), result.polys);
-  syncManualApply(em);
-  // After the rebuild, the previous selection's component IDs are stale.
-  state.editSelection.indices.clear();
-  rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-  currentGizmo.refresh(em, state.editSelection);
-  store.notify();
-
-  const afterPos = new Float32Array(em.positions);
-  const afterIdx = result.indices.slice();
-  const afterUV = new Float32Array(result.uvs);
-
-  state.history.push({
-    label: "Unwrap",
-    undo() {
-      const m = sourceMesh(em);
-      const vd2 = new VertexData();
-      vd2.positions = new Float32Array(beforePos);
-      vd2.indices = beforeIdx.slice();
-      if (beforeUVCopy) vd2.uvs = new Float32Array(beforeUVCopy);
-      if (beforeMI && beforeMW) {
-        vd2.matricesIndices = new Float32Array(beforeMI);
-        vd2.matricesWeights = new Float32Array(beforeMW);
-      }
-      const n2 = new Float32Array(beforePos.length);
-      VertexData.ComputeNormals(beforePos, beforeIdx, n2);
-      vd2.normals = n2;
-      vd2.applyToMesh(m, true);
-      rebuildPolygons(em, new Float32Array(beforePos), beforePolys);
-      syncManualApply(em);
-      state.editSelection.indices = new Set(beforeSel);
-      state.editSelection.mode = beforeMode;
-      if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-      if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
-      store.notify();
-    },
-    redo() {
-      const m = sourceMesh(em);
-      const vd2 = new VertexData();
-      vd2.positions = new Float32Array(afterPos);
-      vd2.indices = afterIdx.slice();
-      vd2.uvs = new Float32Array(afterUV);
-      if (afterMI && afterMW) {
-        vd2.matricesIndices = new Float32Array(afterMI);
-        vd2.matricesWeights = new Float32Array(afterMW);
-      }
-      const n2 = new Float32Array(afterPos.length);
-      VertexData.ComputeNormals(afterPos, afterIdx, n2);
-      vd2.normals = n2;
-      vd2.applyToMesh(m, true);
-      rebuildPolygons(em, new Float32Array(afterPos), result.polys);
-      syncManualApply(em);
-      state.editSelection.indices.clear();
-      if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-      if (currentGizmo && state.editMesh === em) currentGizmo.refresh(em, state.editSelection);
-      store.notify();
-    },
+  // The result is the input's faces, grouped by island, over split vertices (`faces` names each): each corner's UV is the
+  // UV of its vertex there, and goes onto that face's corner. The commit splits the render buffer by them (compat-backlog
+  // C123: until then this wrote its own buffer and renumbered the EditMesh to it, the seams and creases left on the old
+  // numbers). The corners are in the face's own order — `faceVerts`, which the unwrap read them in.
+  const uvs: number[][][] = em.faces.map((_, f) => faceVerts(em, f).map(() => [0, 0]));
+  result.polys.forEach((p, k) => {
+    uvs[result.faces[k]!] = p.map((v) => [result.uvs[v * 2]!, result.uvs[v * 2 + 1]!]);
   });
-
+  applyTopologyOp("Unwrap", () => {
+    em.loopUVs = uvs;
+    return new Set<number>();
+  });
   const methodLabel = state.editConfig.unwrapMethod === "conformal" ? "Conformal (LSCM)" : "Project";
   status(`Unwrap [${methodLabel}]: ${em.vertices.length} verts, ${em.faces.length} faces`);
 }
 
-/**
- * Re-sync the EditMesh render mapping + polygon metadata after a manual
- * VertexData apply (paths that bypass commitTopology, e.g. Unwrap).
- */
-function syncManualApply(em: NonNullable<typeof state.editMesh>): void {
-  em.triToFace = triangulateFaces(em).triToFace;
-  writePolyMetadata(em);
-}
 
 /**
  * The faces a selection selects, as Blender flushes it (`EDBM_selectmode_flush`): in face mode the faces themselves; in

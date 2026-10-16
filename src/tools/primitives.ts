@@ -3,6 +3,8 @@ import { Vector4 } from "@babylonjs/core/Maths/math.vector";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { writeSurfaceWeld } from "./edit-mode/build";
 import { state, status } from "../state";
 import { selectMesh, updateGizmo } from "./selection";
 import { applyDefaultEdges } from "./mesh-utils";
@@ -90,6 +92,8 @@ export function addPrimitive(type: PrimType): AbstractMesh | null {
       }
     }
   } catch (e) { console.warn("Normal computation:", e); }
+  // Which render vertices are one corner (a box: 24 for 8) — Edit Mode welds only what this list says (compat-backlog C123).
+  if (m instanceof Mesh) writeSurfaceWeld(m);
 
   addShadowCaster(m);
   registerMeshForShading(m);

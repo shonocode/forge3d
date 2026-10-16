@@ -226,7 +226,7 @@ describe("the mesh's metadata (C112, C113)", () => {
     expect(addModifier(box, "decimate")).toMatchObject({ ratio: 1 });
   });
 
-  it("Edit Mode keeps the list over a move and drops it over a topology change", () => {
+  it("Edit Mode keeps the list over a move and writes a new one for the buffer a topology commit makes (C123)", () => {
     const { box } = creasedBox();
     applyModifier(box, addModifier(box, "subdivision")!.id);
     const weld = meta(box)[WELD_METADATA_KEY];
@@ -235,7 +235,10 @@ describe("the mesh's metadata (C112, C113)", () => {
     commitPositions(em);
     expect(meta(box)[WELD_METADATA_KEY]).toBe(weld);
     commitTopology(em);
-    expect(meta(box)[WELD_METADATA_KEY]).toBeUndefined();
+    // Edit Mode works on the welded surface (until C123 it could not say which render vertices were one, and dropped it).
+    const now = meta(box)[WELD_METADATA_KEY] as number[];
+    expect(now).toHaveLength(box.getTotalVertices());
+    expect(new Set(now).size).toBe(em.vertices.length);
   });
 
   it("Apply keeps them on the applied buffer, and its undo gives the box's back", () => {

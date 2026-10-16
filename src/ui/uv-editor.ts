@@ -21,6 +21,7 @@ import {
 } from "../tools/edit-mode/uv-edit";
 import { computeLSCM } from "../tools/edit-mode/lscm";
 import { UV_PIN_METADATA_KEY } from "../tools/edit-mode/build";
+import { reloadEditMesh } from "../tools/edit-mode/index";
 
 /**
  * 2D UV editor (F-M9) — full-screen overlay with a canvas view of the UV
@@ -738,17 +739,21 @@ export function openUVEditor(): void {
     const pinsAfter = pins.size > 0 ? [...pins].sort((a, b) => a - b) : null;
     mesh.updateVerticesData(VertexBuffer.UVKind, final);
     writePins(pinsAfter);
+    // Open in Edit Mode, the EditMesh holds the UVs per corner: it is rebuilt from the mesh (compat-backlog C123).
+    reloadEditMesh(mesh);
     state.history.push({
       label: "Edit UVs",
       undo() {
         if (mesh.isDisposed()) return;
         mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(before));
         writePins(pinsBefore);
+        reloadEditMesh(mesh);
       },
       redo() {
         if (mesh.isDisposed()) return;
         mesh.updateVerticesData(VertexBuffer.UVKind, new Float32Array(final));
         writePins(pinsAfter);
+        reloadEditMesh(mesh);
       },
     });
     close();

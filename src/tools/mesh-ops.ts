@@ -1026,7 +1026,13 @@ function orientToFrame(data: MeshData, tangent: Vec3, up: Vec3): MeshData {
  * vertex's surface vertex this way, so two parts that only touch stay two
  * (compat-backlog C113). Absent: every vertex is one group.
  */
-export function weldMesh(data: MeshData, tolerance = 1e-4, groups?: ArrayLike<number>): MeshData {
+export function weldMesh(
+  data: MeshData,
+  tolerance = 1e-4,
+  groups?: ArrayLike<number>,
+  /** Called with the output vertex of each input vertex (compat-backlog C123: Edit Mode keeps it to write back). */
+  onRemap?: (remap: Int32Array) => void,
+): MeshData {
   const count = data.positions.length / 3;
   if (groups && groups.length !== count) throw new RangeError(`weldMesh: ${groups.length} groups for ${count} vertices`);
   const cell = Math.max(tolerance, 1e-9);
@@ -1105,6 +1111,7 @@ export function weldMesh(data: MeshData, tolerance = 1e-4, groups?: ArrayLike<nu
     }
     remap[v] = id;
   }
+  onRemap?.(remap);
 
   // A corner that welds onto its neighbour is dropped with its UV, so the
   // layer stays shaped like the surviving polygons.

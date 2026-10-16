@@ -34,8 +34,10 @@ export interface UnwrapResult {
   /** Fan-triangulated render indices (what Babylon consumes). */
   indices: number[];
   uvs: Float32Array;
-  /** Rebuilt polygon list — same faces as the input, remapped vert ids. */
+  /** Rebuilt polygon list — the input's faces over remapped vert ids, **grouped by island** (not in the input's order). */
   polys: number[][];
+  /** The input face each of `polys` is (compat-backlog C123: Edit Mode puts each poly's UVs back on its own face). */
+  faces: number[];
   /** Original vertex index each rebuilt vertex was split from (per-vertex attribute carry-over). */
   sourceVerts: number[];
 }
@@ -275,6 +277,7 @@ function assembleWelded(em: EditMesh, islands: Island[]): UnwrapResult {
   const indices: number[] = [];
   const uvs: number[] = [];
   const polys: number[][] = [];
+  const faces: number[] = [];
   const sourceVerts: number[] = [];
 
   for (const island of islands) {
@@ -301,6 +304,7 @@ function assembleWelded(em: EditMesh, islands: Island[]): UnwrapResult {
         poly.push(out);
       }
       polys.push(poly);
+      faces.push(f);
       indices.push(...fanTriangulate(poly));
     }
   }
@@ -310,6 +314,7 @@ function assembleWelded(em: EditMesh, islands: Island[]): UnwrapResult {
     indices,
     uvs: new Float32Array(uvs),
     polys,
+    faces,
     sourceVerts,
   };
 }

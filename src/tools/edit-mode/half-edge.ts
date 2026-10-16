@@ -53,6 +53,16 @@ export interface EditMesh {
   /** Local-space positions, length = vertices.length * 3, mutable. */
   positions: Float32Array;
   /**
+   * The Edit Mode vertex of each render vertex of `source` (compat-backlog C123) — set when built from a Babylon mesh,
+   * whose render buffer splits a vertex at a UV or shading seam. `commitPositions` writes the render positions through it;
+   * `commitTopology` replaces it. Absent: the render buffer is the Edit Mode vertices one for one.
+   */
+  renderWeld?: number[];
+  /** The Auto Smooth angle (radians) the render buffer is drawn with — read off its normals when built, kept on commit. */
+  smoothAngle?: number;
+  /** Which way the render buffer's normals point against the faces' winding (`renderToSurface`): −1 Babylon's, +1 glTF's. */
+  normalSign?: 1 | -1;
+  /**
    * Edges marked as UV seams. Keyed by `seamKey(v1, v2)` = "min_max" of the
    * two vertex indices, NOT by half-edge index — this lets seams survive
    * topology rebuilds (extrude / bevel / etc.) as long as the endpoint

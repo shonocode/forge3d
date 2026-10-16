@@ -45,6 +45,9 @@ import { triangulateModifier } from "./triangulate";
 /** Distance within which render vertices are the same surface point. */
 const WELD_DIST = 1e-6;
 
+/** A buffer drawn flat everywhere: Shade Flat's angle (radians). */
+const FLAT_ANGLE = 0.02;
+
 /** Used when the mesh carries no normals to read the shading from. */
 export const DEFAULT_SMOOTH_ANGLE = (30 * Math.PI) / 180;
 
@@ -150,9 +153,17 @@ function joinPair(P: ArrayLike<number>, a: number[], b: number[]): number[] | nu
  * sharp one, so re-shading the result reproduces what the mesh looked like —
  * a box stays crisp, a sphere stays smooth. No sharp edge at all reads as π.
  */
-export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smoothAngle: number } {
+export function renderToSurface(geo: OriginalGeometry): {
+  surface: MeshData;
+  smoothAngle: number;
+  remap: ArrayLike<number>;
+  /** Which way the buffer's normals point against its faces' winding (see {@link surfaceToRender}). */
+  normalSign: 1 | -1;
+} {
   const faces = facesOf(geo);
   const n = geo.positions.length / 3;
+  /** The surface vertex of each render vertex. */
+  let remap: ArrayLike<number> = [];
   // A list that no longer fits the buffer (another tool rebuilt it) says nothing; the weld is then by position alone.
   const weld = geo.weld && geo.weld.length === n && geo.weld.every((w) => Number.isInteger(w)) ? geo.weld : undefined;
   const edgeKeyOk = (k: string): boolean => {
@@ -177,10 +188,16 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
     },
     WELD_DIST,
     weld,
+    (r) => (remap = r),
   );
   const layer = welded.uvs!;
 
   let smoothAngle = DEFAULT_SMOOTH_ANGLE;
+  // Babylon's own meshes (MeshBuilder) are wound so that the outward normal is the negative of the right-handed Newell
+  // normal — the scene is left-handed; a glTF import (and so every reopened project) sits under a mirrored root with its
+  // winding the other way, the outward normal the positive one. Read off the buffer's normals: which way most corners
+  // point against their face's Newell normal (compat-backlog C123). No normals: Babylon's.
+  let normalSign: 1 | -1 = -1;
   if (N) {
     const fn = welded.polys.map((p) => unit(newell(welded.positions, p)));
     const edges = new Map<string, Array<[number, number]>>();
@@ -212,14 +229,20 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
       if (same) maxSmooth = Math.max(maxSmooth, dihedral);
       else minSharp = Math.min(minSharp, dihedral);
     }
-    smoothAngle = minSharp === Infinity ? Math.PI : maxSmooth < minSharp ? (maxSmooth + minSharp) / 2 : minSharp * 0.999;
+    // No smooth edge at all (a box drawn flat): flat — Shade Flat's angle — rather than halfway to the flattest sharp edge,
+    // which put a box at 45° and so drew a 45° bevel smooth (C123 review).
+    smoothAngle =
+      minSharp === Infinity ? Math.PI : maxSmooth === 0 ? FLAT_ANGLE : maxSmooth < minSharp ? (maxSmooth + minSharp) / 2 : minSharp * 0.999;
+    let agree = 0;
+    welded.polys.forEach((p, f) => p.forEach((_, i) => (agree += dot(nAt(f, i), fn[f]!))));
+    normalSign = agree >= 0 ? 1 : -1;
   }
 
   const surface: MeshData = { positions: welded.positions, polys: welded.polys };
   if (U) surface.uvs = layer.map((f) => f.map((c) => [c[0]!, c[1]!]));
   if (welded.creases?.size) surface.creases = welded.creases;
   if (welded.seams?.size) surface.seams = welded.seams;
-  return { surface, smoothAngle };
+  return { surface, smoothAngle, remap, normalSign };
 }
 
 /**
@@ -229,7 +252,12 @@ export function renderToSurface(geo: OriginalGeometry): { surface: MeshData; smo
  * `polys` are the faces over the new vertices, fan-triangulated into
  * `indices` — the form `buildEditMesh` accepts as polygon metadata.
  */
-export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeometry & { polys: number[][]; weld: number[] } {
+export function surfaceToRender(
+  s: MeshData,
+  smoothAngle: number,
+  /** +1: normals along the faces' right-handed Newell normals; −1 (default): against them, Babylon's own meshes' way. */
+  normalSign: 1 | -1 = -1,
+): OriginalGeometry & { polys: number[][]; weld: number[] } {
   const P = s.positions;
   const area = s.polys.map((p) => newell(P, p));
   const fn = area.map(unit);
@@ -268,7 +296,9 @@ export function surfaceToRender(s: MeshData, smoothAngle: number): OriginalGeome
         j = positions.length / 3;
         index.set(key, j);
         positions.push(P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!);
-        normals.push(n[0], n[1], n[2]);
+        // The sign the input buffer's own normals had (`renderToSurface`'s `normalSign`): Babylon's meshes −, glTF imports
+        // +. Until 2026-10-16 the stack always wrote +, and a Babylon primitive with a modifier was lit from inside.
+        normals.push(normalSign * n[0], normalSign * n[1], normalSign * n[2]);
         weld.push(v);
         if (s.uvs) uvs.push(uv ? uv[0]! : 0, uv ? uv[1]! : 0);
       }
@@ -476,12 +506,12 @@ export function evaluateStack(
   mods: readonly Modifier[],
   upTo = mods.length,
 ): OriginalGeometry & { polys: number[][]; weld: number[] } {
-  const { surface, smoothAngle: read } = renderToSurface(base);
+  const { surface, smoothAngle: read, normalSign } = renderToSurface(base);
   const angle = base.smoothAngle ?? read;
   let s = surface;
   for (let i = 0; i < upTo && i < mods.length; i++) {
     const m = mods[i]!;
     if (m.enabled) s = applyModifierTo(s, m);
   }
-  return surfaceToRender(s, angle);
+  return surfaceToRender(s, angle, normalSign);
 }

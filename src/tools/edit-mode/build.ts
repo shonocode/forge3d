@@ -1,6 +1,8 @@
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { rebuildPolygons, triangulateFaces, type EditMesh } from "./half-edge";
+import { faceVerts, rebuildPolygons, triangulateFaces, type EditMesh } from "./half-edge";
+import { meshFromData } from "../../lib/mesh";
+import { renderToSurface } from "../modifier-core";
 
 /** Metadata key holding the polygon (quad / n-gon) structure — see build/commit. */
 export const POLY_METADATA_KEY = "forge3dPolys";
@@ -11,8 +13,9 @@ export const CREASE_METADATA_KEY = "forge3dCreases";
 /**
  * Metadata key holding the surface vertex of each render vertex (number[], one per vertex): render vertices that are one
  * vertex of the surface — split only for a normal or a UV — share a number, and coincident vertices with different numbers
- * are different vertices (two parts that touch). Written by the modifier stack (`modifier-core.surfaceToRender`); dropped by
- * a topology commit, after which the stack welds by position as before (compat-backlog C113).
+ * are different vertices (two parts that touch). Written by the modifier stack (`modifier-core.surfaceToRender`), by Edit
+ * Mode's topology commit (C123) and by forge3d's primitives as they are made (`writeSurfaceWeld`). Without one the stack
+ * welds by position (C113) and Edit Mode welds nothing (C123).
  */
 export const WELD_METADATA_KEY = "forge3dWeld";
 /**
@@ -51,70 +54,156 @@ export function keysFitBuffer(meta: Record<string, unknown> | null, vertexCount:
 export const UV_PIN_METADATA_KEY = "forge3dUVPins";
 
 /**
- * Build an EditMesh from a Babylon Mesh.
- *
- * Time complexity: O(F) where F is the face count.
- *
- * Returns null if the mesh has no position data or no indices — callers
- * should fall back gracefully (typically by refusing to enter Edit Mode).
- *
- * Polygon restore (V2): if `mesh.metadata.forge3dPolys` holds a polygon list
- * whose fan triangulation matches the CURRENT index buffer exactly, the
- * EditMesh is rebuilt with those quads / n-gons. Any mismatch (sculpt dyntopo,
- * modifiers, decimate, … changed the triangles since the last commit) discards
- * the stale metadata and falls back to a triangle build. The equality check is
- * O(F) and makes stale-metadata corruption structurally impossible.
- *
- * Caveat: assumes vertices that share a 3D position but appear at different
- * indices are intentionally distinct (UV seams, normal seams). The edge-twin
- * lookup is keyed by **vertex index** — not position — which means seam-split
- * edges will appear as boundaries even when the surface is closed. V1 accepts
- * this; weld in advance if it matters.
+ * What a Babylon mesh's metadata says about its render buffer, in **render vertex** numbers: the polygons (when the stored
+ * list still fan-triangulates to the current index buffer — a stale one is dropped from the metadata, as before), the
+ * creases and seams (when their signature fits the buffer), and the surface vertex of each render vertex (`forge3dWeld`,
+ * when it fits). The modifier stack and CSG read this; Edit Mode builds on it (compat-backlog C123).
  */
-export function buildEditMesh(source: Mesh): EditMesh | null {
+export function readRenderTopology(source: Mesh): {
+  polys: number[][] | null;
+  creases: Map<string, number>;
+  seams: Set<string>;
+  weld: number[] | null;
+} | null {
   const posData = source.getVerticesData(VertexBuffer.PositionKind);
   const indices = source.getIndices();
   if (!posData || !indices) return null;
+  const numV = posData.length / 3;
+  const meta = (source.metadata ?? null) as Record<string, unknown> | null;
+  const fits = keysFitBuffer(meta, numV, indices);
 
-  const positions = new Float32Array(posData);
-  const numV = positions.length / 3;
-
-  const em: EditMesh = {
-    source,
-    vertices: [],
-    faces: [],
-    halfEdges: [],
-    positions,
-    seams: new Set<string>(),
-    creases: new Map<string, number>(),
-    triToFace: [],
+  // Edge attributes (seams / creases) are keyed by vertex pairs, valid regardless of the polygon match.
+  const scratch: EditMesh = {
+    source, vertices: [], faces: [], halfEdges: [], positions: new Float32Array(posData), seams: new Set<string>(),
+    creases: new Map<string, number>(), triToFace: [],
   };
+  if (fits) restoreEdgeAttrs(source, scratch, numV);
 
-  // Edge attributes (seams / creases) are keyed by vertex pairs, valid
-  // regardless of the polygon match, so restore them either way.
-  if (keysFitBuffer(source.metadata as Record<string, unknown> | null, numV, indices)) restoreEdgeAttrs(source, em, numV);
-
+  let polys: number[][] | null = null;
   const stored = readStoredPolys(source, numV);
   if (stored) {
-    rebuildPolygons(em, positions, stored);
-    const tri = triangulateFaces(em);
-    if (sameIndices(tri.indices, indices)) {
-      em.triToFace = tri.triToFace;
-      return em;
-    }
+    rebuildPolygons(scratch, scratch.positions, stored);
+    if (sameIndices(triangulateFaces(scratch).indices, indices)) polys = stored.map((p) => [...p]);
     // Stale — the index buffer changed since the polys were written.
-    dropStoredPolys(source);
+    else dropStoredPolys(source);
   }
+  const rawWeld = meta?.[WELD_METADATA_KEY];
+  const weld =
+    fits && Array.isArray(rawWeld) && rawWeld.length === numV && rawWeld.every((w) => Number.isInteger(w)) ? (rawWeld as number[]) : null;
+  return { polys, creases: scratch.creases, seams: scratch.seams, weld };
+}
 
-  const numF = indices.length / 3;
-  const triPolys: number[][] = new Array(numF);
-  for (let f = 0; f < numF; f++) {
-    triPolys[f] = [indices[f * 3]!, indices[f * 3 + 1]!, indices[f * 3 + 2]!];
-  }
-  rebuildPolygons(em, positions, triPolys);
-  em.triToFace = new Array<number>(numF);
-  for (let f = 0; f < numF; f++) em.triToFace[f] = f;
+/**
+ * Build an EditMesh from a Babylon Mesh — on its **surface**, not its render buffer (compat-backlog C123).
+ *
+ * A render buffer splits a vertex wherever a UV or the shading parts (a box drawn flat is 24 render vertices for 8
+ * corners). Until 2026-10-16 Edit Mode took the render vertices as its own, so dragging a corner of a box tore it open and
+ * every seam showed as a boundary. Now the render vertices are welded first — those the buffer's `forge3dWeld` list names
+ * as one; without a list none, as before (see `weld:` below) — and Edit Mode works on the welded vertices, with the UVs
+ * per face corner (`loopUVs`) and the shading kept as an Auto Smooth angle read off the normals. `commitTopology` splits
+ * it back. `renderWeld` keeps the surface vertex of each render vertex, so a move (`commitPositions`) writes the render
+ * buffer without rebuilding it.
+ *
+ * The faces: the stored polygons when they still match the index buffer (as before), else the render triangles one face
+ * each. Creases and seams come off the metadata onto the surface edges.
+ *
+ * Returns null if the mesh has no position data or no indices — callers should fall back gracefully (typically by
+ * refusing to enter Edit Mode).
+ */
+export function buildEditMesh(source: Mesh): EditMesh | null {
+  const topo = readRenderTopology(source);
+  if (!topo) return null;
+  const positions = new Float32Array(source.getVerticesData(VertexBuffer.PositionKind)!);
+  const indices = Array.from(source.getIndices()!);
+  const normals = source.getVerticesData(VertexBuffer.NormalKind);
+  const uvs = source.getVerticesData(VertexBuffer.UVKind);
+  const polys = topo.polys ?? Array.from({ length: indices.length / 3 }, (_, t) => [indices[t * 3]!, indices[t * 3 + 1]!, indices[t * 3 + 2]!]);
+  const { surface, smoothAngle, remap, normalSign } = renderToSurface({
+    positions,
+    normals: normals ? new Float32Array(normals) : null,
+    uvs: uvs ? new Float32Array(uvs) : null,
+    indices,
+    polys,
+    // Only what the buffer's own list says is one vertex is welded; without a list every render vertex is its own. A
+    // position weld would fuse separate parts that touch (C113) and a plane's two sides; Blender imports a glTF unwelded
+    // too. forge3d's primitives write a list when made (`writeSurfaceWeld`), the modifier stack and Edit Mode's commit
+    // whenever they write a buffer.
+    weld: topo.weld ?? Array.from({ length: positions.length / 3 }, (_, r) => r),
+    creases: [...topo.creases],
+    seams: [...topo.seams],
+  });
+  const em = meshFromData(surface);
+  em.source = source;
+  em.renderWeld = Array.from(remap);
+  em.smoothAngle = smoothAngle;
+  em.normalSign = normalSign;
+  // The render buffer is not rewritten until a topology commit, so a picked render triangle is found by its corners: the
+  // face holding all three of their surface vertices.
+  em.triToFace = renderTrianglesToFaces(em, indices);
   return em;
+}
+
+/**
+ * Read the mesh's UV buffer back onto the EditMesh's face corners, through `renderWeld` and `triToFace` — for a buffer
+ * whose UVs were rewritten in place (the UV editor). Without a UV buffer the corners lose theirs.
+ */
+export function refreshLoopUVs(em: EditMesh): void {
+  const mesh = em.source;
+  const weld = em.renderWeld;
+  if (!mesh || !weld) return;
+  const uv = mesh.getVerticesData(VertexBuffer.UVKind);
+  const indices = mesh.getIndices();
+  if (!uv || !indices) {
+    delete em.loopUVs;
+    return;
+  }
+  const out = em.faces.map((_, f) => faceVerts(em, f).map(() => [0, 0]));
+  for (let t = 0; t * 3 + 2 < indices.length; t++) {
+    const f = em.triToFace[t] ?? -1;
+    if (f < 0) continue;
+    const verts = faceVerts(em, f);
+    for (let k = 0; k < 3; k++) {
+      const r = indices[t * 3 + k]!;
+      const i = verts.indexOf(weld[r]!);
+      if (i >= 0) out[f]![i] = [uv[r * 2]!, uv[r * 2 + 1]!];
+    }
+  }
+  em.loopUVs = out;
+}
+
+/**
+ * Write the surface vertex of each render vertex for a buffer made without one — welded by position (1e-6) — with the
+ * signature of the buffer. forge3d's primitives call it as they are made: a Babylon box is 24 render vertices for 8
+ * corners, and Edit Mode, which welds only what the list says (C123), then edits the 8.
+ */
+export function writeSurfaceWeld(mesh: Mesh): void {
+  const pos = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const indices = mesh.getIndices();
+  if (!pos || !indices) return;
+  const tris = Array.from({ length: indices.length / 3 }, (_, t) => [indices[t * 3]!, indices[t * 3 + 1]!, indices[t * 3 + 2]!]);
+  const { remap } = renderToSurface({ positions: new Float32Array(pos), normals: null, uvs: null, indices: Array.from(indices), polys: tris });
+  const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
+  meta[WELD_METADATA_KEY] = Array.from(remap);
+  meta[KEYS_FOR_METADATA_KEY] = keysSignature(pos.length / 3, indices);
+  mesh.metadata = meta;
+}
+
+/** For each render triangle, the Edit Mode face over its three corners' surface vertices (-1 for one welded flat). */
+export function renderTrianglesToFaces(em: EditMesh, indices: ArrayLike<number>): number[] {
+  const weld = em.renderWeld!;
+  const facesAt = new Map<number, number[]>();
+  for (let f = 0; f < em.faces.length; f++)
+    for (const v of faceVerts(em, f)) (facesAt.get(v) ?? facesAt.set(v, []).get(v)!).push(f);
+  const out: number[] = [];
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const [a, b, c] = [weld[indices[t]!]!, weld[indices[t + 1]!]!, weld[indices[t + 2]!]!];
+    const f = (facesAt.get(a) ?? []).find((g) => {
+      const vs = faceVerts(em, g);
+      return vs.includes(b) && vs.includes(c);
+    });
+    out.push(f ?? -1);
+  }
+  return out;
 }
 
 /** True iff an "a_b" edge key references two distinct in-range vertices. */

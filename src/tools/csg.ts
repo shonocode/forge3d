@@ -8,8 +8,7 @@ import { applyDefaultEdges, applyShading } from "./mesh-utils";
 import { addShadowCaster, removeShadowCaster } from "../viewport/shadows";
 import { registerMeshForShading } from "../viewport/shading";
 import { assignToActiveLayer } from "./layers";
-import { buildEditMesh } from "./edit-mode/build";
-import { toPolygons } from "./edit-mode/half-edge";
+import { readRenderTopology } from "./edit-mode/build";
 import { booleanBuffers, type RenderBuffer, type RenderResult } from "./csg-core";
 import type { BooleanOperation } from "./boolean/boolean";
 import { store } from "../store";
@@ -36,12 +35,14 @@ function worldBuffer(mesh: Mesh): RenderBuffer | null {
     out[i + 1] = v.y;
     out[i + 2] = v.z;
   }
-  const em = buildEditMesh(mesh);
+  // The faces in render vertex numbers, when the stored list still matches the buffer (compat-backlog C123: Edit Mode's
+  // own mesh is the welded surface, which is not this buffer's numbering).
+  const topo = readRenderTopology(mesh);
   return {
     positions: out,
     indices: Array.from(idx),
     uvs: mesh.getVerticesData(VertexBuffer.UVKind),
-    polys: em ? toPolygons(em) : undefined,
+    polys: topo?.polys ?? undefined,
   };
 }
 
