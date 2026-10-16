@@ -205,9 +205,9 @@ function toSegment(
  *    that is the first one found, **nothing is made and the wire stays**
  *    (`gridLeaveWire`: cutting there would give a triangle wound backwards).
  *
- * Measured against Blender 5.1.1 in `face-split-wires` (18 cases: chains,
+ * Measured against Blender 5.1.1 in `face-split-wires` (16 cases: chains,
  * corners, grids, a warped grid, an L-shaped face, a cube, wire left in
- * place, chains over two faces) and on 178 inputs of the reviews — random
+ * place, a chain over two faces whose ends do not compete) and on 178 inputs of the reviews — random
  * wires, chains, branches, several chains in a face, cubes, warped grids,
  * closed loops — of which 165 agree; the 13 that do not are all the first
  * limit below.
@@ -227,11 +227,14 @@ function toSegment(
  *   12 of 12 in the review's sample), and the rarer end that found no edge to
  *   go into (an end of a chain over two faces, joined to a corner).
  * - **The order of the faces in step 2.** Blender goes through them in the
- *   order of a hash map of face pointers, which is not reproducible; it
- *   matters only when ends of edges on different faces compete for one edge.
- *   Here they go from the last face to the first — the order that agreed with
- *   Blender on the second review's random grids (81 of 82, against 79 the
- *   other way); a fit, not Blender's rule.
+ *   order of a hash map of face pointers — set by where the faces happen to
+ *   sit in memory, so not reproducible even by Blender: the same input gave
+ *   the other order after nothing but the harness script had grown
+ *   (2026-10-16). It matters only when ends of edges on different faces
+ *   compete for one edge. Here they go from the last face to the first, an
+ *   arbitrary choice (it agreed on 81 of the second review's 82 inputs that
+ *   day, the other order on 79; a day later the two cases that tell them
+ *   apart went the other way).
  * - **The disk order** of the edges round a vertex, which picks between equal
  *   choices in the walk, is the order the edges are met here, not BMesh's.
  *
@@ -341,8 +344,8 @@ export function faceSplitByEdges(data: MeshData): MeshData {
       const f = nearestFace(P, polys, [(P[a * 3]! + P[b * 3]!) / 2, (P[a * 3 + 1]! + P[b * 3 + 1]!) / 2, (P[a * 3 + 2]! + P[b * 3 + 2]!) / 2]);
       if (f >= 0) faceOf.set(k, f);
     }
-    // Blender: the order of a hash map of face pointers — not reproducible. Last to first agreed with it on the review's
-    // random grids (81 of 82, against 79 first to last); a fit, not its rule (see "What is not done").
+    // Blender: the order of a hash map of face pointers — not reproducible, not even by Blender run to run of another script.
+    // Last to first is an arbitrary choice (see "What is not done").
     const faces = [...new Set(faceOf.values())].sort((x, y) => y - x);
     const edgesOf = (f: number): number[] => loose.filter((k) => faceOf.get(k) === f);
 
