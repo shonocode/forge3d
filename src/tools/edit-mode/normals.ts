@@ -39,6 +39,7 @@
  * expressible here because `MeshData.sharp` arrived on 2026-09-23.
  */
 import type { MeshData } from "../../lib/mesh";
+import { mathNormalize, meshFaceNormal, safeAcosApprox, sub as subF, dot as dotF, type V3 } from "../blender-math";
 
 export type NormalWeight = "plain" | "area" | "angle";
 
@@ -171,9 +172,61 @@ function faceNormalsPerCorner(data: MeshData): Vec3[][] {
   });
 }
 
-/** The layer as it stands: the stored one if there is one, else face normals. */
+/**
+ * The normal each corner shows with no custom normal — `normals_calc_corners` without one: per smooth fan
+ * ({@link smoothGroups}), `accumulate_fan_normal`, the face normals (`face_normals_true`, Newell in float) weighted by
+ * `safe_acos_approx` of the corner's two edges and normalised; a fan of one corner keeps its face's normal. A flat face's
+ * corners are fans of one (`MeshData.sharpFaces`, compat-backlog C29a).
+ */
+export function fanNormals(data: MeshData): Vec3[][] {
+  const P = data.positions;
+  const PV: V3[] = Array.from({ length: P.length / 3 }, (_, v) => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]);
+  const faceN = data.polys.map((poly) => meshFaceNormal(PV, poly) as Vec3);
+  const out: Vec3[][] = data.polys.map((poly, f) => poly.map(() => [...faceN[f]!] as Vec3));
+  const weight = (f: number, i: number): number => {
+    const poly = data.polys[f]!;
+    const v = PV[poly[i]!]!;
+    const dp = mathNormalize(subF(PV[poly[(i - 1 + poly.length) % poly.length]!]!, v));
+    const dn = mathNormalize(subF(PV[poly[(i + 1) % poly.length]!]!, v));
+    return safeAcosApprox(dotF(dp, dn));
+  };
+  for (const group of smoothGroups(data, { flatFaces: true })) {
+    if (group.length === 1) continue;
+    let sum: Vec3 = [0, 0, 0];
+    for (const [f, i] of group) sum = add(sum, scale(faceN[f]!, weight(f, i)));
+    const n = normalized(sum);
+    for (const [f, i] of group) out[f]![i] = [...n] as Vec3;
+  }
+  return out;
+}
+
+/**
+ * One normal per vertex from the corners' — Blender's `mix_normals_corner_to_vert`: each corner's normal weighted by
+ * `safe_acos_approx` of its two edges, summed, normalised. What `Mesh::vert_normals()` gives once the mesh has corner
+ * normals (a `custom_normal` layer), which Weighted Normal fills its untouched vertices with (compat-backlog C29a).
+ */
+export function mixCornerNormals(data: MeshData, corner: readonly (readonly Vec3[])[]): Vec3[] {
+  const P = data.positions;
+  const PV: V3[] = Array.from({ length: P.length / 3 }, (_, v) => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]);
+  const sum: Vec3[] = PV.map(() => [0, 0, 0]);
+  data.polys.forEach((poly, f) =>
+    poly.forEach((v, i) => {
+      const dp = mathNormalize(subF(PV[poly[(i - 1 + poly.length) % poly.length]!]!, PV[v]!));
+      const dn = mathNormalize(subF(PV[poly[(i + 1) % poly.length]!]!, PV[v]!));
+      sum[v] = add(sum[v]!, scale(corner[f]![i]!, safeAcosApprox(dotF(dp, dn))));
+    }),
+  );
+  return sum.map((s) => normalized(s));
+}
+
+/**
+ * The layer as it stands: the stored one if there is one, else what each corner shows without one. With
+ * `MeshData.sharpFaces` that is {@link fanNormals} (compat-backlog C29a). **Without it, the face normals** — every face
+ * flat, which is not what `sharpFaces`' absence means elsewhere (every face smooth): it is what the operators here were
+ * measured against, a mesh read from an OBJ without `s` lines (Blender makes every face flat), and kept so.
+ */
 export function currentNormals(data: MeshData): Vec3[][] {
-  if (!data.normals) return faceNormalsPerCorner(data);
+  if (!data.normals) return data.sharpFaces && data.sharpFaces.length === data.polys.length ? fanNormals(data) : faceNormalsPerCorner(data);
   return data.normals.map((face) => face.map((n) => [n[0]!, n[1]!, n[2]!] as Vec3));
 }
 
@@ -193,6 +246,7 @@ export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<strin
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.materials) out.materials = [...data.materials];
   if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+  if (data.sharpFaces) out.sharpFaces = [...data.sharpFaces];
   if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   return out;
 }
@@ -211,9 +265,17 @@ export function withNormals(data: MeshData, normals: Vec3[][], sharp?: Set<strin
  *
  * This is the part of the rule that is easy to miss, and the reason
  * `averageNormals` does nothing after `splitNormals`.
+ *
+ * **Flat faces, two rules** (`MeshData.sharpFaces`, compat-backlog C29a). The corner-normal fans — what a corner shows,
+ * and the spaces custom normals live in — stop at one: Blender makes both edges of each of its corners sharp
+ * (`calc_connecting_edge_info`, `mesh_normals.cc` 1062), so every corner of it is a group of one. Pass `flatFaces`
+ * for those. The edit-mode normal tools (Average, Smooth, Point) walk `BM_normals_loops_edges_tag`, which reads the
+ * edge's flag and the winding and **not the faces** (`bmesh_mesh_normals.cc` 325): their groups cross flat faces —
+ * measured, Average on a cube with two flat faces gives each vertex one normal on all three of its faces.
  */
-export function smoothGroups(data: MeshData): [number, number][][] {
+export function smoothGroups(data: MeshData, opts: { flatFaces?: boolean } = {}): [number, number][][] {
   const sharp = data.sharp ?? new Set<string>();
+  const flat = opts.flatFaces && data.sharpFaces && data.sharpFaces.length === data.polys.length ? data.sharpFaces : null;
   // corner id -> [face, index]; and the faces at each vertex
   const cornersAt = new Map<number, [number, number][]>();
   for (const [f, poly] of data.polys.entries())
@@ -234,7 +296,9 @@ export function smoothGroups(data: MeshData): [number, number][][] {
   // The edges that join: two faces, opposite directions.
   const joins = (k: string): number[] | null => {
     const list = facesOnEdge.get(k);
-    return list && list.length === 2 && list[0]![1] !== list[1]![1] ? [list[0]![0], list[1]![0]] : null;
+    if (!list || list.length !== 2 || list[0]![1] === list[1]![1]) return null;
+    if (flat && (flat[list[0]![0]] || flat[list[1]![0]])) return null;
+    return [list[0]![0], list[1]![0]];
   };
 
   const groups: [number, number][][] = [];
@@ -282,7 +346,8 @@ export function splitNormals(data: MeshData): MeshData {
   const sharp = new Set(data.sharp ?? []);
   for (const poly of data.polys)
     for (let i = 0; i < poly.length; i++) sharp.add(key(poly[i]!, poly[(i + 1) % poly.length]!));
-  return withNormals(data, faceNormalsPerCorner(data), sharp);
+  // `normals_split_merge(do_merge = false)` shades every selected face flat too (`mesh_set_smooth_faces`, C29a).
+  return { ...withNormals(data, faceNormalsPerCorner(data), sharp), sharpFaces: data.polys.map(() => true) };
 }
 
 /**
@@ -303,8 +368,10 @@ export function mergeNormals(data: MeshData): MeshData {
   const CLNORS_VALID_VEC_LEN = 1e-4;
   const current = currentNormals(data);
   const out = current.map((f) => f.map((n) => [...n] as Vec3));
-  // The fans once the sharp edges are cleared (C106: they still stop at fins, flipped faces and bowtie vertices).
-  for (const group of smoothGroups({ ...data, sharp: undefined })) {
+  // The fans once the sharp edges are cleared and the faces made smooth — `normals_split_merge(do_merge = true)` does
+  // both before merging, after reading the current normals (C106: the fans still stop at fins, flipped faces and bowtie
+  // vertices; C29a: the faces).
+  for (const group of smoothGroups({ ...data, sharp: undefined, sharpFaces: undefined })) {
     if (group.length === 1) continue; // `MLNOR_SPACE_IS_SINGLE`
     let sum: Vec3 = [0, 0, 0];
     for (const [f, i] of group) sum = add(sum, current[f]![i]!);
@@ -318,7 +385,9 @@ export function mergeNormals(data: MeshData): MeshData {
     const n = normalized(sum);
     for (const [f, i] of group) out[f]![i] = [...n] as Vec3;
   }
-  return withNormals(data, out, null);
+  const merged = withNormals(data, out, null);
+  if (merged.sharpFaces) merged.sharpFaces = data.polys.map(() => false);
+  return merged;
 }
 
 /**

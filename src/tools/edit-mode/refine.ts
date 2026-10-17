@@ -1487,7 +1487,7 @@ export function addFaces(em: EditMesh, positions: Float32Array, out: number[][],
   );
   rebuildPolygons(em, positions, out, { faces: stated });
   if (!fill) return;
-  const has = em.loopUVs || em.loopColors || em.loopNormals || em.faceMaterials;
+  const has = em.loopUVs || em.loopColors || em.loopNormals || em.faceMaterials || em.faceSharp;
   if (!has) return;
   const made: number[] = [];
   for (let i = start; i < out.length; i++) made.push(i);
@@ -1499,6 +1499,7 @@ export function addFaces(em: EditMesh, positions: Float32Array, out: number[][],
       ...(em.loopColors ? { colors: em.loopColors } : {}),
       ...(em.loopNormals ? { normals: em.loopNormals } : {}),
       ...(em.faceMaterials ? { materials: em.faceMaterials } : {}),
+      ...(em.faceSharp ? { sharpFaces: em.faceSharp } : {}),
     },
     made,
   );
@@ -1506,4 +1507,5 @@ export function addFaces(em: EditMesh, positions: Float32Array, out: number[][],
   if (em.loopColors) em.loopColors = filled.colors;
   if (em.loopNormals) em.loopNormals = filled.normals;
   if (em.faceMaterials) em.faceMaterials = filled.materials;
+  if (em.faceSharp) em.faceSharp = filled.sharpFaces;
 }

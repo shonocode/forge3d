@@ -445,6 +445,8 @@ export function solidifyModifier(data: MeshData, opts: SolidifyModifierOptions =
   // The face strength is copied from the same face, with no offset (C88).
   if (data.faceStrength && data.faceStrength.length === data.polys.length)
     out.faceStrength = src.map(({ face }) => data.faceStrength![keptFace[face]!]!);
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+    out.sharpFaces = src.map(({ face }) => data.sharpFaces![keptFace[face]!]!);
   // Vertex creases: the copies copy, like the groups (C88).
   if (data.vertexCreases) {
     const c = new Map(data.vertexCreases);

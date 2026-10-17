@@ -575,10 +575,12 @@ export function separateSelected(
     const used = new Uint8Array(count);
     const polys: number[][] = [];
     const materials: number[] = [];
+    const sharpFaces: boolean[] = [];
     data.polys.forEach((p, f) => {
       if (!keep(f)) return;
       polys.push([...p]);
       materials.push(data.materials?.[f] ?? 0);
+      sharpFaces.push(data.sharpFaces?.[f] ?? false);
       for (const v of p) used[v] = 1;
     });
     const loose = keepLooseEdges ? (data.edges ?? []).map((e) => [...e]) : [];
@@ -603,6 +605,7 @@ export function separateSelected(
       polys: polys.map((p) => p.map((v) => remap[v]!)),
       ...(loose.length > 0 ? { edges: loose.map((e) => e.map((v) => remap[v]!)) } : {}),
       ...(data.materials ? { materials } : {}),
+      ...(data.sharpFaces && data.sharpFaces.length === data.polys.length ? { sharpFaces } : {}),
     };
   };
   return {

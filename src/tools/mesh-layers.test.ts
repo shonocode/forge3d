@@ -36,15 +36,16 @@ function cube(): MeshData {
     materials: polys.map((_, f) => f % 2),
     vertexCreases: new Map([[0, 0.5], [6, 1]]),
     faceStrength: polys.map((_, f) => (f % 3) * 16384 - 16384),
+    sharpFaces: polys.map((_, f) => f % 3 === 0),
   };
 }
 
 type Layer =
   | "uvs" | "colors" | "normals" | "groups" | "materials" | "creases" | "seams" | "sharp" | "edges"
-  | "vertexCreases" | "faceStrength";
+  | "vertexCreases" | "faceStrength" | "sharpFaces";
 const ALL: Layer[] = [
   "uvs", "colors", "normals", "groups", "materials", "creases", "seams", "sharp", "edges",
-  "vertexCreases", "faceStrength",
+  "vertexCreases", "faceStrength", "sharpFaces",
 ];
 
 /** Present and shaped for these faces, absent, or (the failure) stale. */
@@ -55,7 +56,7 @@ function state(out: MeshData, k: Layer): "ok" | "absent" | "stale" {
     if (!l || l.length === 0) return "absent";
     return l.length === F && l.every((f, i) => f.length === out.polys[i]!.length) ? "ok" : "stale";
   }
-  if (k === "materials" || k === "faceStrength") {
+  if (k === "materials" || k === "faceStrength" || k === "sharpFaces") {
     const m = out[k];
     if (!m || m.length === 0) return "absent";
     return m.length === F ? "ok" : "stale";
@@ -127,12 +128,12 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
   ["meshFromData / meshToData", () => L.meshToData(L.meshFromData(cube()))],
   // The wire edge is not a hull edge.
   ["convexHull", () => L.convexHull(cube()), ALL.filter((k) => k !== "edges")],
-  ["unsubdivide", () => L.unsubdivide(cube()), ["uvs", "colors", "normals", "materials", "edges", "faceStrength"]],
+  ["unsubdivide", () => L.unsubdivide(cube()), ["uvs", "colors", "normals", "materials", "edges", "faceStrength", "sharpFaces"]],
   ["bisectPlane", () => L.bisectPlane(cube(), { planeCo: [0, 0, 0], planeNo: [1, 0, 0] } as never)],
   // The wire edge 0-6 crosses to the side that goes.
   ["symmetrize", () => L.symmetrize(cube(), { direction: "-X" }), ALL.filter((k) => k !== "edges")],
   ["solidify", () => L.solidify(cube(), { thickness: 0.1 })],
-  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials", "vertexCreases", "faceStrength"]],
+  ["wireframe", () => L.wireframe(cube(), { thickness: 0.05 }), ["uvs", "colors", "normals", "groups", "materials", "vertexCreases", "faceStrength", "sharpFaces"]],
   // Only wire edges are added; the faces are untouched, and a new vertex copies its source's data (C109).
   ["extrudeVertIndiv", () => L.extrudeVertIndiv(cube(), [0, 6])],
   ["edgenetPrepare", () => L.edgenetPrepare(cube())],
@@ -165,7 +166,7 @@ const CARRY: Array<[string, () => MeshData, Layer[]?]> = [
 // New geometry whose layers need interpolation that is not ported: these
 // may drop a layer, whole. (Which ones they keep is listed so a change shows.)
 const DROPS: Array<[string, () => MeshData, Layer[]]> = [
-  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials", "faceStrength"]],
+  ["decimateCollapse", () => L.decimateCollapse(cube(), { ratio: 0.5 }), ["uvs", "colors", "groups", "materials", "faceStrength", "sharpFaces"]],
   ["remesh", () => L.remesh(cube(), { mode: "blocks" } as never), []],
   [
     "booleanMesh",
@@ -174,13 +175,13 @@ const DROPS: Array<[string, () => MeshData, Layer[]]> = [
         operation: "union",
         parts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
       } as never),
-    ["uvs", "colors", "groups", "materials", "faceStrength"],
+    ["uvs", "colors", "groups", "materials", "faceStrength", "sharpFaces"],
   ],
   // Custom normals are compat-backlog C35 (Bevel's `harden_normals`); the edge layers are carried since C17.
-  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges", "faceStrength"]],
+  ["bevelMesh", () => L.bevelMesh(cube(), { offset: 0.1 } as never).mesh, ["uvs", "colors", "groups", "materials", "edges", "faceStrength", "sharpFaces"]],
   // Custom normals are compat-backlog C29.
-  ["solidifyModifier", () => L.solidifyModifier(cube(), { thickness: 0.1 }), ["uvs", "colors", "groups", "materials", "creases", "seams", "sharp", "edges", "vertexCreases", "faceStrength"]],
-  ["wireframeModifier", () => L.wireframeModifier(cube(), { thickness: 0.05 }), ["uvs", "colors", "groups", "materials", "vertexCreases", "faceStrength"]],
+  ["solidifyModifier", () => L.solidifyModifier(cube(), { thickness: 0.1 }), ["uvs", "colors", "groups", "materials", "creases", "seams", "sharp", "edges", "vertexCreases", "faceStrength", "sharpFaces"]],
+  ["wireframeModifier", () => L.wireframeModifier(cube(), { thickness: 0.05 }), ["uvs", "colors", "groups", "materials", "vertexCreases", "faceStrength", "sharpFaces"]],
 ];
 
 describe("MeshData layers through the operators", () => {

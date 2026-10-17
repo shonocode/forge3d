@@ -208,6 +208,8 @@ function booleanLayers(
   // An int face attribute, from the same input face as the slot (C88).
   if (data.faceStrength && data.faceStrength.length === data.polys.length)
     out.faceStrength = faces.map((f) => data.faceStrength![f.face]!);
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+    out.sharpFaces = faces.map((f) => data.sharpFaces![f.face]!);
   if (data.groups) {
     out.groups = new Map(
       [...data.groups].map(([name, g]) => [

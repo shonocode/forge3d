@@ -4480,6 +4480,13 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     const names: BevelFaceKind[] = ["orig", "vert", "edge", "recon"];
     const faceKind = live.map((f) => names[p.faceKind.get(f) ?? FKind.ORIG]!);
     if (data.materials || p.matNr >= 0) mesh.materials = live.map((f) => faceMat.get(f) ?? 0);
+    // The flat flag of the face each face copied its attributes from (`BM_elem_attrs_copy` in `bev_create_ngon`), flat for
+    // one made with no example (C29a).
+    if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+      mesh.sharpFaces = live.map((f) => {
+        const o = p.faceOrig.get(f);
+        return o !== undefined ? data.sharpFaces![o]! : true;
+      });
     // `bevel_set_weighted_normal_face_strength`: with the mode on, the weighted-normal strength layer is set by the face's
     // kind — new vertex faces weak, new edge faces medium (modes new and up), rebuilt faces strong (affected and up),
     // untouched ones strong (all). A face it does not set keeps what the face it came from had (0 where there was no layer).

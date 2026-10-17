@@ -12,7 +12,8 @@
  *
  * Pure and headless — Vitest-pinned.
  */
-import { rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { edgeOrigin, rebuildPolygons, seamKey, toPolygons, type EditMesh } from "./half-edge";
+import { calcEdges } from "../bmesh-lite";
 import { assignFromData, meshToData } from "../../lib/mesh";
 import { connectVertsPolys } from "./connect-pair";
 import type { V3 } from "../blender-math";
@@ -75,8 +76,27 @@ function mergeGroups(
   useVerts: boolean,
   report: DissolveReport,
   dropLoose = false,
+  /** The face each group's joined face copies its face data from (material, strength, flat flag), by group. */
+  example?: ReadonlyMap<number, number>,
 ): void {
   const polys = toPolygons(em);
+  const faceData = {
+    faceMaterials: em.faceMaterials?.length === polys.length ? [...em.faceMaterials] : undefined,
+    faceStrength: em.faceStrength?.length === polys.length ? [...em.faceStrength] : undefined,
+    faceSharp: em.faceSharp?.length === polys.length ? [...em.faceSharp] : undefined,
+  };
+  const newExample: (number | undefined)[] = [];
+  /** Write each joined face's face data from its group's example face, once the faces are rebuilt. */
+  const applyExamples = (outCount: number): void => {
+    if (!example) return;
+    const first = outCount - newExample.length;
+    newExample.forEach((src, j) => {
+      if (src === undefined) return;
+      if (faceData.faceMaterials && em.faceMaterials?.length === outCount) em.faceMaterials[first + j] = faceData.faceMaterials[src]!;
+      if (faceData.faceStrength && em.faceStrength?.length === outCount) em.faceStrength[first + j] = faceData.faceStrength[src]!;
+      if (faceData.faceSharp && em.faceSharp?.length === outCount) em.faceSharp[first + j] = faceData.faceSharp[src]!;
+    });
+  };
   const byGroup = new Map<number, number[]>();
   for (const [face, g] of groups) {
     const list = byGroup.get(g);
@@ -89,7 +109,7 @@ function mergeGroups(
   /** Endpoints of the edges that were dissolved — what `useVerts` acts on. */
   const interior = new Set<number>();
 
-  for (const [, faces] of byGroup) {
+  for (const [g, faces] of byGroup) {
     if (faces.length < 2) continue;
 
     // Edges used once inside the group are its border; the rest are internal
@@ -123,6 +143,7 @@ function mergeGroups(
     for (const f of faces) consumed.add(f);
     report.merged += faces.length - 1;
     newPolys.push(loop);
+    newExample.push(example?.get(g));
 
     for (const [key, n] of uses) {
       if (n < 2) continue; // border, not dissolved
@@ -204,11 +225,13 @@ function mergeGroups(
         out.map((poly) => poly.map((v) => remap[v]!)),
         { sameCorners: true, vertexMap: remap },
       );
+      applyExamples(out.length);
       return;
     }
   }
 
   rebuildPolygons(em, em.positions, out, { joins: true });
+  applyExamples(out.length);
   // `BM_faces_join(do_del)`: a vertex inside the region left with no edge goes with the edges it held (the middle of a
   // 2×2 block). Only those — a vertex loose before the dissolve stays (compat-backlog C98, `edge-face-add-block`).
   // Only for `dissolveFaces`: the renumbering would shift the vertex selection `dissolveVerts` goes on to use.
@@ -332,22 +355,46 @@ export function dissolveEdges(
     parent.set(ra, rb);
   };
 
+  // Blender joins the faces on each edge in turn, in edge order (`bmo_dissolve_edges_exec`'s last loop), and a joined face
+  // copies its face data from `faces[0]` = `e->l->f` (`BM_faces_join_pair`): the face whose loop was added to the edge
+  // **last** (`bmesh_radial_loop_append` sets `e->l`). Read from a Mesh that is the higher-numbered face; once joined, the
+  // newest face. Replayed here to know each joined face's example (compat-backlog C29a — the material slot rides with it).
+  const polys = toPolygons(em);
+  const order = new Map<string, number>();
+  calcEdges(polys, polys.length < 1000 ? 1 : 8).forEach(([a, b], i) => order.set(`${a}_${b}`, i));
+  const picked = [...selectedEdges]
+    .map((he) => {
+      const h = em.halfEdges[he];
+      if (!h || h.twin < 0) return null; // boundary: nothing on the other side
+      const a = edgeOrigin(em, he);
+      const b = edgeOrigin(em, h.twin);
+      return { f1: h.face, f2: em.halfEdges[h.twin]!.face, at: order.get(a < b ? `${a}_${b}` : `${b}_${a}`) ?? Infinity };
+    })
+    .filter((x): x is { f1: number; f2: number; at: number } => x !== null)
+    .sort((x, y) => x.at - y.at);
+  const born = new Map<number, number>(); // root -> when its face was made
+  const source = new Map<number, number>(); // root -> the input face its data came from
+  let clock = polys.length;
+
   let any = false;
-  for (const he of selectedEdges) {
-    const h = em.halfEdges[he];
-    if (!h || h.twin < 0) continue; // boundary: nothing on the other side
-    const f1 = h.face;
-    const f2 = em.halfEdges[h.twin]!.face;
+  for (const { f1, f2 } of picked) {
     if (f1 === f2) continue;
-    if (parent.get(f1) === undefined) parent.set(f1, f1);
-    if (parent.get(f2) === undefined) parent.set(f2, f2);
+    if (parent.get(f1) === undefined) (parent.set(f1, f1), born.set(f1, f1), source.set(f1, f1));
+    if (parent.get(f2) === undefined) (parent.set(f2, f2), born.set(f2, f2), source.set(f2, f2));
+    const r1 = find(f1);
+    const r2 = find(f2);
+    if (r1 === r2) continue;
+    const from = born.get(r1)! > born.get(r2)! ? source.get(r1)! : source.get(r2)!;
     union(f1, f2);
+    const r = find(f1);
+    born.set(r, clock++);
+    source.set(r, from);
     any = true;
   }
   if (!any) return report;
 
   for (const f of parent.keys()) groups.set(f, find(f));
-  mergeGroups(em, groups, opts.useVerts ?? false, report);
+  mergeGroups(em, groups, opts.useVerts ?? false, report, false, source);
   return report;
 }
 
@@ -476,6 +523,9 @@ export function dissolveVerts(
   const groups = new Map<number, number>();
   for (const f of parent.keys()) groups.set(f, find(f));
   const slots = em.faceMaterials?.length === polys.length ? joinedSlots(polys, selectedVerts, em.faceMaterials) : null;
+  // The flat flag rides the same joins (C29a): the joined face's source face, read through the slots as face numbers.
+  const flatOf = em.faceSharp?.length === polys.length ? em.faceSharp : null;
+  const flatFrom = flatOf ? joinedSlots(polys, selectedVerts, polys.map((_, f) => f)) : null;
   mergeGroups(em, groups, false, report);
 
   // Merging alone is not the operation. Two things are left, and both were
@@ -507,6 +557,20 @@ export function dissolveVerts(
     kept.push(trimmed);
   }
   rebuildPolygons(em, em.positions, kept, {});
+  if (flatOf && flatFrom && em.faceSharp?.length === kept.length) {
+    const byEdge = new Map<string, number>();
+    polys.forEach((p, f) => p.forEach((a, i) => byEdge.set(`${a}_${p[(i + 1) % p.length]}`, f)));
+    kept.forEach((p, k) => {
+      for (let i = 0; i < p.length; i++) {
+        const f = byEdge.get(`${p[i]}_${p[(i + 1) % p.length]}`);
+        const src = f !== undefined ? flatFrom.get(f) : undefined;
+        if (src !== undefined) {
+          em.faceSharp![k] = flatOf[src]!;
+          break;
+        }
+      }
+    });
+  }
   // The joined faces' slots, as Blender's pairwise joins leave them.
   if (slots && em.faceMaterials?.length === kept.length) {
     const byEdge = new Map<string, number>();

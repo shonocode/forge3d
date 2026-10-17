@@ -97,6 +97,7 @@ function withLayer(data: MeshData, layer: LoopLayer, value: number[][][]): MeshD
     ...(data.materials ? { materials: [...data.materials] } : {}),
     // Face and vertex layers no loop-data operator touches (until C119 they were dropped).
     ...(data.faceStrength ? { faceStrength: [...data.faceStrength] } : {}),
+    ...(data.sharpFaces ? { sharpFaces: [...data.sharpFaces] } : {}),
     ...(data.vertexCreases ? { vertexCreases: new Map(data.vertexCreases) } : {}),
   };
   if (layer === "uv") base.uvs = value;
@@ -494,6 +495,11 @@ export function faceAttributeFillAll(
     // takes that face's new slot.
     for (const [g, from] of plan.faceFrom) m[g] = m[from]!;
     out.materials = m;
+  }
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length) {
+    const s = [...data.sharpFaces];
+    for (const [g, from] of plan.faceFrom) s[g] = s[from]!;
+    out.sharpFaces = s;
   }
   if (useNormals) {
     // `use_normals`: a filled face that runs a shared edge the same way as the face it was filled from is

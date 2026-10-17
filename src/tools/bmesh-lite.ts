@@ -1292,11 +1292,11 @@ export function bmFromMesh(data: MeshData, opts: { edgeTables?: number; vertNorm
 export function bmLayers(
   bm: BM,
   data: MeshData,
-): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> {
+): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength" | "sharpFaces"> {
   const flat: [number, number][] = [];
   data.polys.forEach((p, f) => p.forEach((_, k) => flat.push([f, k])));
   const faces = liveFaces(bm);
-  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> = {};
+  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength" | "sharpFaces"> = {};
   const layer = (src: number[][][] | undefined, blank: number): number[][][] | undefined => {
     if (!src || src.length !== data.polys.length) return undefined;
     const width = src.find((x) => x.length > 0)?.[0]?.length ?? 2;
@@ -1318,6 +1318,9 @@ export function bmLayers(
   // An int face attribute, from the same source face as the slot (compat-backlog C88).
   if (data.faceStrength && data.faceStrength.length === data.polys.length)
     out.faceStrength = faces.map((x) => (x.src >= 0 ? data.faceStrength![x.src]! : 0));
+  // The flat flag (C29a): a face made from nothing is flat — a new `BMFace` has no `BM_ELEM_SMOOTH`.
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+    out.sharpFaces = faces.map((x) => (x.src >= 0 ? data.sharpFaces![x.src]! : true));
   return out;
 }
 

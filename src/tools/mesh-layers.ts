@@ -38,8 +38,8 @@ export interface WeightedCorner {
 export function carryFaceLayers(
   data: MeshData,
   sources: readonly FaceSource[],
-): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> {
-  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength"> = {};
+): Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength" | "sharpFaces"> {
+  const out: Pick<MeshData, "uvs" | "colors" | "normals" | "materials" | "faceStrength" | "sharpFaces"> = {};
   const corner = (layer: number[][][] | undefined) =>
     layer && layer.length === data.polys.length
       ? sources.map((s) =>
@@ -73,6 +73,9 @@ export function carryFaceLayers(
     data.faceStrength && data.faceStrength.length === data.polys.length
       ? sources.map((s) => data.faceStrength![s.face]!)
       : undefined;
+  // `sharp_face`, a bool face attribute, the same way (C29a).
+  out.sharpFaces =
+    data.sharpFaces && data.sharpFaces.length === data.polys.length ? sources.map((s) => data.sharpFaces![s.face]!) : undefined;
   return out;
 }
 

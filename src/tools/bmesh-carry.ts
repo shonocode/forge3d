@@ -189,6 +189,9 @@ export function saveMesh(bm: BM, c: Carry, data: MeshData): { mesh: MeshData; at
   if (c.has.nor) out.normals = layer((d) => d.nor, 0, width(data.normals, 3));
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faces.map((x) => (x.src >= 0 ? data.materials![x.src]! : 0));
+  // The flat flag (C29a): a face made from nothing is flat — a new `BMFace` has no `BM_ELEM_SMOOTH`.
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+    out.sharpFaces = faces.map((x) => (x.src >= 0 ? data.sharpFaces![x.src]! : true));
   const remap = new Map<BV, number>();
   for (const v of bm.verts) if (v) remap.set(v, remap.size);
   if (data.groups) {

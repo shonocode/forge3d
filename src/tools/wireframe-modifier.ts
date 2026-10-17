@@ -378,6 +378,8 @@ export function wireframeModifier(data: MeshData, opts: WireframeModifierOptions
   // The face strength is copied from the face, with no offset; a vertex's crease from its source vertex (C88).
   if (data.faceStrength && data.faceStrength.length === data.polys.length)
     result.faceStrength = src.map(({ face }) => data.faceStrength![keptFace[face]!]!);
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length)
+    result.sharpFaces = src.map(({ face }) => data.sharpFaces![keptFace[face]!]!);
   if (data.vertexCreases) {
     const c = data.vertexCreases;
     const nc = new Map<number, number>();

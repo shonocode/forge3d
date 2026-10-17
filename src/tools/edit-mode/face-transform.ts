@@ -691,6 +691,7 @@ function automergeAndSplit(em: EditMesh, moved: ReadonlySet<number>): Set<number
       ...(materials ? { materials: [...materials] } : {}),
       ...(em.vertexGroups ? { groups: em.vertexGroups } : {}),
       ...(em.faceStrength?.length === polys.length ? { faceStrength: [...em.faceStrength] } : {}),
+      ...(em.faceSharp?.length === polys.length ? { sharpFaces: [...em.faceSharp] } : {}),
       ...(em.vertexCreases ? { vertexCreases: em.vertexCreases } : {}),
     },
     (v) => target[v]!,
@@ -701,10 +702,12 @@ function automergeAndSplit(em: EditMesh, moved: ReadonlySet<number>): Set<number
   em.loopNormals = undefined;
   em.faceMaterials = undefined;
   em.faceStrength = undefined;
+  em.faceSharp = undefined;
   em.vertexGroups = undefined;
   em.vertexCreases = undefined;
   rebuildPolygons(em, welded.positions, welded.polys);
   if (welded.faceStrength) em.faceStrength = welded.faceStrength;
+  if (welded.sharpFaces) em.faceSharp = welded.sharpFaces;
   if (welded.vertexCreases) em.vertexCreases = welded.vertexCreases;
   if (welded.uvs) em.loopUVs = welded.uvs;
   if (welded.colors) em.loopColors = welded.colors;

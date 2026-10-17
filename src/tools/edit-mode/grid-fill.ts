@@ -539,11 +539,15 @@ function gridLayers(
   const corners: [CornerRef, number][][][] = [];
   // The polygon's slot for BL, TL, BR, TR — the order Blender fills them in.
   const slot = flip ? [0, 1, 3, 2] : [0, 3, 1, 2];
+  // The rim face each new face copies its face data from (`BM_elem_attrs_copy(bm, l_tmp->f, f)`, `bmo_fill_grid.cc` 382):
+  // the x rim's when there is one, else the y rim's, else none.
+  const example: number[] = [];
   for (let x = 0; x < xtot - 1; x++)
     for (let y = 0; y < ytot - 1; y++) {
       const face: [CornerRef, number][][] = [[], [], [], []];
       const bx = xa[x];
       const by = ya[y];
+      example.push(bx ? bx[0]![0] : by ? by[0]![0] : -1);
       if (bx || by) {
         let i = 0;
         for (let xs = 0; xs < 2; xs++)
@@ -591,6 +595,11 @@ function gridLayers(
   if (normals) layers.normals = normals;
   if (mesh.materials && mesh.materials.length === mesh.polys.length)
     layers.materials = [...mesh.materials, ...new Array<number>(added).fill(0)];
+  // The flat flag (C29a): the rim face's, as above, and flat with no rim face (a new `BMFace` has no `BM_ELEM_SMOOTH`).
+  // `use_smooth` would then set it smooth (444): `bmesh.ops.grid_fill`'s default is off; the editor's Grid Fill votes it
+  // from the faces around — not ported. Not measured by a row.
+  if (mesh.sharpFaces && mesh.sharpFaces.length === mesh.polys.length)
+    layers.sharpFaces = [...mesh.sharpFaces, ...example.map((f) => (f >= 0 ? mesh.sharpFaces![f]! : true))];
   if (mesh.sharp) layers.sharp = new Set(mesh.sharp);
   if (mesh.groups) {
     // Each interior vertex mixes its four boundary points' groups —

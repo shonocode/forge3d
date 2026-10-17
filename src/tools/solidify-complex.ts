@@ -1574,6 +1574,7 @@ export function solidifyComplex(data: MeshData, opts: SolidifyComplexOptions = {
   // the groups' sources, but only without a rim: with one they went into the rim's edge creases above, and Blender drops them.
   if (data.faceStrength && data.faceStrength.length === polys.length)
     out.faceStrength = outFaces.map((fc) => data.faceStrength![fc.srcFace]!);
+  if (data.sharpFaces && data.sharpFaces.length === polys.length) out.sharpFaces = outFaces.map((fc) => data.sharpFaces![fc.srcFace]!);
   if (data.vertexCreases && !doRim) {
     const vc = new Map<number, number>();
     for (let nv = 0; nv < newVertsNum; nv++) {

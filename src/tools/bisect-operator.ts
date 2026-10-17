@@ -183,6 +183,8 @@ export function bisectOperator(data: MeshData, opts: BisectOperatorOptions): Mes
   if (colors) filled.colors = colors;
   if (normals) filled.normals = normals;
   if (cut.materials && cut.materials.length === oldCount) filled.materials = order.map((f) => (f < oldCount ? cut.materials![f]! : 0));
+  // A fill face is made with no example face, so it is flat (no `BM_ELEM_SMOOTH`, C29a).
+  if (cut.sharpFaces && cut.sharpFaces.length === oldCount) filled.sharpFaces = order.map((f) => (f < oldCount ? cut.sharpFaces![f]! : true));
   // A wire edge the fill made a face of is a wire edge no more.
   if (cut.edges) {
     const used = new Set<string>();

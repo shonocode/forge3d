@@ -499,6 +499,7 @@ export function bevelEdges(
   if (em.faceMaterials?.length) data.materials = em.faceMaterials;
   if (em.vertexGroups?.size) data.groups = em.vertexGroups;
   if (em.faceStrength?.length) data.faceStrength = em.faceStrength;
+  if (em.faceSharp?.length) data.sharpFaces = em.faceSharp;
   if (em.vertexCreases?.size) data.vertexCreases = em.vertexCreases;
   if (em.wireEdges?.length) data.edges = em.wireEdges;
   if (em.seams.size) data.seams = em.seams;
@@ -521,6 +522,7 @@ export function bevelEdges(
   delete em.faceMaterials;
   delete em.vertexGroups;
   delete em.faceStrength;
+  delete em.faceSharp;
   delete em.vertexCreases;
   delete em.loopNormals;
   delete em.sharpEdges;
@@ -529,6 +531,7 @@ export function bevelEdges(
   if (out.materials) em.faceMaterials = out.materials;
   if (out.groups) em.vertexGroups = out.groups;
   if (out.faceStrength) em.faceStrength = out.faceStrength;
+  if (out.sharpFaces) em.faceSharp = out.sharpFaces;
   if (out.vertexCreases) em.vertexCreases = out.vertexCreases;
   em.wireEdges = (out.edges ?? []).map((e) => [...e]);
   // The edge layers come back keyed by the new vertex numbers: `bevelMesh`
@@ -2072,12 +2075,14 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
 
   const materials = em.faceMaterials?.length === polys0.length ? parent.map((f) => em.faceMaterials![f]!) : undefined;
   const faceStrength = em.faceStrength?.length === polys0.length ? parent.map((f) => em.faceStrength![f]!) : undefined;
+  const faceSharp = em.faceSharp?.length === polys0.length ? parent.map((f) => em.faceSharp![f]!) : undefined;
   // Laid down after the rebuild: every face is new, so it would drop them all.
   em.loopUVs = undefined;
   em.loopColors = undefined;
   em.loopNormals = undefined;
   em.faceMaterials = undefined;
   em.faceStrength = undefined;
+  em.faceSharp = undefined;
   em.vertexGroups = undefined;
   // What the subdivided vertices' creases are is not measured: dropped (C88).
   em.vertexCreases = undefined;
@@ -2086,6 +2091,7 @@ export function subdivideCatmullClark(em: EditMesh, level: number): Set<number> 
   if (colors) em.loopColors = colors;
   if (materials) em.faceMaterials = materials;
   if (faceStrength) em.faceStrength = faceStrength;
+  if (faceSharp) em.faceSharp = faceSharp;
   if (groups) em.vertexGroups = groups;
   // The creases on the child edges, as carried above. Seams are dropped — their vertex-pair keys no longer name real
   // edges after the split.

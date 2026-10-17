@@ -36,6 +36,22 @@ export interface MeshData {
    */
   faceStrength?: number[];
   /**
+   * Faces shaded **flat**, one per polygon — Blender's `sharp_face` (compat-backlog C29a). A flat face's corners take its
+   * own normal, and a smooth fan around a vertex stops at it (`mesh_normals.cc`: sharp faces make their edges sharp).
+   *
+   * **Absent means every face smooth**, as a Blender mesh without the attribute — and as forge3d has always shaded. Carried
+   * like {@link materials}: a face keeps its source face's flag. A face an operator makes from nothing is flat where the
+   * operator is a BMesh one (a new `BMFace` has no `BM_ELEM_SMOOTH`, `bmesh_core.cc` 493) and smooth where it works on the
+   * Mesh (an attribute's default). Only carried when present, so a mesh without it stays without it — except where an
+   * operator sets it, as Blender's does: Split Normals makes every face flat.
+   *
+   * **One reader takes absence the other way:** `currentNormals` (the normal a corner shows with no custom normal) reads
+   * a mesh without the layer as every face flat — what the normal operators were measured against before C29a. So a
+   * mesh joined from a part with the layer and a part without (`mergeMeshes` gives the latter `false`) shows smooth fans
+   * on that part where it showed face normals.
+   */
+  sharpFaces?: boolean[];
+  /**
    * Edges marked **sharp**, keyed "minVertex_maxVertex" — Blender's
    * `use_edge_sharp`, the flag that stops a smooth shade from being carried
    * across an edge.
@@ -171,6 +187,7 @@ export function meshFromData(data: MeshData): EditMesh {
   if (data.materials && data.materials.length === data.polys.length) em.faceMaterials = [...data.materials];
   if (data.groups) em.vertexGroups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.faceStrength && data.faceStrength.length === data.polys.length) em.faceStrength = [...data.faceStrength];
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length) em.faceSharp = [...data.sharpFaces];
   if (data.vertexCreases) em.vertexCreases = new Map(data.vertexCreases);
 
   const tri = triangulateFaces(em);
@@ -181,7 +198,7 @@ export function meshFromData(data: MeshData): EditMesh {
 
 /** The layers an edit mesh holds only when it has them — `meshFromData` sets each only when the data has it. */
 const OPTIONAL_LAYERS = [
-  "wireEdges", "loopUVs", "loopColors", "sharpEdges", "loopNormals", "faceMaterials", "vertexGroups", "faceStrength", "vertexCreases",
+  "wireEdges", "loopUVs", "loopColors", "sharpEdges", "loopNormals", "faceMaterials", "vertexGroups", "faceStrength", "faceSharp", "vertexCreases",
 ] as const;
 
 /**
@@ -199,11 +216,12 @@ export function assignFromData(em: EditMesh, data: MeshData): void {
 /** Read an editable mesh back out as plain arrays. */
 export function meshToData(
   em: EditMesh,
-): Required<Omit<MeshData, "faceStrength" | "vertexCreases">> & Pick<MeshData, "faceStrength" | "vertexCreases"> {
+): Required<Omit<MeshData, "faceStrength" | "sharpFaces" | "vertexCreases">> & Pick<MeshData, "faceStrength" | "sharpFaces" | "vertexCreases"> {
   return {
     // Only when present — absent is what every reader already takes as
     // "none", and an empty `faceStrength` would read as one shaped for no faces.
     ...(em.faceStrength ? { faceStrength: [...em.faceStrength] } : {}),
+    ...(em.faceSharp ? { sharpFaces: [...em.faceSharp] } : {}),
     ...(em.vertexCreases ? { vertexCreases: new Map(em.vertexCreases) } : {}),
     positions: new Float32Array(em.positions),
     polys: toPolygons(em),
@@ -247,6 +265,7 @@ export function withPositions(data: MeshData, positions: Float32Array): MeshData
   if (data.groups) out.groups = new Map([...data.groups].map(([k, g]) => [k, new Map(g)]));
   if (data.materials) out.materials = [...data.materials];
   if (data.faceStrength) out.faceStrength = [...data.faceStrength];
+  if (data.sharpFaces) out.sharpFaces = [...data.sharpFaces];
   if (data.vertexCreases) out.vertexCreases = new Map(data.vertexCreases);
   return out;
 }

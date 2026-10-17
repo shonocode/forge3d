@@ -309,6 +309,7 @@ export function screwModifier(data: MeshData, opts: ScrewModifierOptions = {}): 
   // The bands.
   const out: number[][] = [];
   const materials: number[] = [];
+  const sharpFaces: boolean[] = [];
   const uvs: number[][][] = [];
   const colors: number[][][] = [];
   const normals: number[][][] = [];
@@ -357,6 +358,9 @@ export function screwModifier(data: MeshData, opts: ScrewModifierOptions = {}): 
       }
       out.push(poly);
       materials.push(mat);
+      // A band from a wire edge takes `use_flat_shading` = !Smooth Shading, which is on by default (asked of Blender
+      // 5.1.1: `use_smooth_shade` True) and not an option here — so smooth (C29a, `MOD_screw.cc` 884).
+      sharpFaces.push(hasPoly ? (data.sharpFaces?.[faceOrig] ?? false) : false);
       // Corners 0–3 take A, B, B, A before the face is reordered.
       const src = [loopA, loopB, loopB, loopA];
       if (hasUVs) {
@@ -394,6 +398,7 @@ export function screwModifier(data: MeshData, opts: ScrewModifierOptions = {}): 
   let result: MeshData = { positions, polys: out };
   if (wire.length) result.edges = wire;
   if (data.materials && data.materials.length === data.polys.length) result.materials = materials;
+  if (data.sharpFaces && data.sharpFaces.length === data.polys.length) result.sharpFaces = sharpFaces;
   if (hasUVs) result.uvs = uvs;
   if (hasColors) result.colors = colors;
   if (hasNormals) result.normals = normals;

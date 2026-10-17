@@ -135,10 +135,12 @@
  * unit tests compare angles for the same reason.
  */
 import type { MeshData } from "../../lib/mesh";
-import { f as fl, meshFaceAngles, meshFaceArea, meshFaceNormal, mathNormalize, safeAcosApprox, sub as subF, dot as dotF, type V3 } from "../blender-math";
+import { f as fl, meshFaceAngles, meshFaceArea, meshFaceNormal, type V3 } from "../blender-math";
 import {
   currentNormals,
   faceNormal,
+  fanNormals,
+  mixCornerNormals,
   smoothGroups,
   withNormals,
   type Vec3,
@@ -361,7 +363,7 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   // apex still agree.
   const itemOf: number[][] = data.polys.map((poly) => poly.map(() => 0));
   if (options.keepSharp) {
-    for (const [g, group] of smoothGroups(data).entries())
+    for (const [g, group] of smoothGroups(data, { flatFaces: true }).entries())
       for (const [f, i] of group) itemOf[f]![i] = g;
   } else {
     for (const [f, poly] of data.polys.entries())
@@ -371,30 +373,22 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   // The normal a corner has before any weighting: what `normals_calc_corners` gives its smooth fan —
   // `accumulate_fan_normal`, the Mesh's face normals weighted by `safe_acos_approx` of the corner's edges, normalised;
   // a fan of one corner keeps its face normal (C104 review).
-  let defaults: Map<string, Vec3> | null = null;
-  const fanWeight = (gf: number, gi: number): number => {
-    const poly = data.polys[gf]!;
-    const v = PV[poly[gi]!]!;
-    const dp = mathNormalize(subF(PV[poly[(gi - 1 + poly.length) % poly.length]!]!, v));
-    const dn = mathNormalize(subF(PV[poly[(gi + 1) % poly.length]!]!, v));
-    return safeAcosApprox(dotF(dp, dn));
-  };
+  // Shared with `currentNormals` since compat-backlog C29a ({@link fanNormals}, whose fans stop at flat faces). With
+  // `keepSharp` (`normals_corner_custom_set`) a zero is filled with the corner's normal; one item per vertex goes through
+  // `normals_corner_custom_set_from_verts`, which fills it with the vertex's — `mix_normals_corner_to_vert` of the corner
+  // normals ({@link mixCornerNormals}): on a cube with two flat faces, 2 × the smooth fan's normal + the flat face's.
+  let defaults: Vec3[][] | null = null;
   const defaultNormal = (f: number, i: number): Vec3 => {
     if (!defaults) {
-      defaults = new Map();
-      for (const group of smoothGroups(data)) {
-        if (group.length === 1) {
-          const [gf, gi] = group[0]!;
-          defaults.set(`${gf}_${gi}`, normals[gf]!);
-          continue;
-        }
-        let sum: Vec3 = [0, 0, 0];
-        for (const [gf, gi] of group) sum = add(sum, scale(normals[gf]!, fanWeight(gf, gi)));
-        const n = normalized(sum);
-        for (const [gf, gi] of group) defaults.set(`${gf}_${gi}`, n);
+      const fans = fanNormals(data);
+      if (options.keepSharp) defaults = fans;
+      else {
+        // The corners as they stand — a custom normal where the mesh has one (`corner_normals()` reads them).
+        const byVertex = mixCornerNormals(data, data.normals && data.normals.length === data.polys.length ? (data.normals as Vec3[][]) : fans);
+        defaults = data.polys.map((poly) => poly.map((v) => byVertex[v]!));
       }
     }
-    return defaults.get(`${f}_${i}`) ?? normals[f]!;
+    return defaults[f]![i]!;
   };
 
   // `apply_weights_vertex_normal`: every contribution, largest first (the

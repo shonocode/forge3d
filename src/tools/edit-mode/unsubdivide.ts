@@ -134,6 +134,8 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   // The face strength rides with the material: both are face data the joined face copies from one face (C88).
   const hasStrength = data.faceStrength !== undefined && data.faceStrength.length === data.polys.length;
   let strength: number[] = data.polys.map((_, f) => (hasStrength ? data.faceStrength![f]! : 0));
+  const hasFlat = data.sharpFaces !== undefined && data.sharpFaces.length === data.polys.length;
+  let flat: boolean[] = data.polys.map((_, f) => (hasFlat ? data.sharpFaces![f]! : false));
   const without = (f: number, v: number): void => {
     const keep = polys[f]!.map((x) => x !== v);
     polys[f] = polys[f]!.filter((_, i) => keep[i]);
@@ -439,6 +441,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
       // (measured, `unsubdivide-layers` on `bodyMats`).
       mat.push(mat[Math.max(...incident)]!);
       strength.push(strength[Math.max(...incident)]!);
+      flat.push(flat[Math.max(...incident)]!);
 
       for (const f of incident) {
         if (polys[f]!.length > 3) without(f, v);
@@ -455,6 +458,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
     src = src.filter((_, f) => polys[f]!.length >= 3);
     mat = mat.filter((_, f) => polys[f]!.length >= 3);
     strength = strength.filter((_, f) => polys[f]!.length >= 3);
+    flat = flat.filter((_, f) => polys[f]!.length >= 3);
     polys = polys.filter((p) => p.length >= 3);
 
     // The flags of the edges this pass made (see above), in the order Blender makes them: the dissolved vertices in index
@@ -564,6 +568,7 @@ export function unsubdivide(data: MeshData, options: UnsubdivideOptions = {}): M
   if (normals) result.normals = normals;
   if (hasMats) result.materials = mat;
   if (hasStrength) result.faceStrength = strength;
+  if (hasFlat) result.sharpFaces = flat;
   if (data.groups) {
     result.groups = new Map(
       [...data.groups].map(([name, g]) => [

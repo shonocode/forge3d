@@ -138,6 +138,11 @@ export interface EditMesh {
    */
   faceStrength?: number[];
   /**
+   * `MeshData.sharpFaces`, one per face, following the faces as {@link faceMaterials} does — Blender's `sharp_face`
+   * (compat-backlog C29a). A face made with no source face is flat: a new `BMFace` has no `BM_ELEM_SMOOTH`.
+   */
+  faceSharp?: boolean[];
+  /**
    * `MeshData.vertexCreases`, by vertex — Blender's `crease_vert`, a float point attribute: a vertex keeps its value, a
    * made one takes its origins' weighted sum (`layerInterp_propfloat`, an absent vertex counting 0), and a new vertex
    * with no known origin drops the layer, as {@link vertexGroups} does (compat-backlog C88).
@@ -487,7 +492,7 @@ export interface LayerCarry {
 
 const LAYER_KEYS = ["loopUVs", "loopColors", "loopNormals"] as const;
 /** The per-face layers: a face takes its source face's value. */
-const FACE_KEYS = ["faceMaterials", "faceStrength"] as const;
+const FACE_KEYS = ["faceMaterials", "faceStrength", "faceSharp"] as const;
 
 /**
  * Carry the per-corner layers from `oldPolys` to `newPolys`. Returns, per
@@ -736,15 +741,16 @@ function carryLayers(
   // joined face whose sources disagree takes its first corner's face —
   // `BM_faces_join` keeps its `faces[0]`'s, and which face the caller put
   // first is not reproduced here. Not measured. The face strength (an int
-  // face attribute) follows the same face (C88).
+  // face attribute) follows the same face (C88), and so does the flat flag (C29a), which is set on a face with none.
   for (const k of liveFace) {
-    const old = em[k]!;
-    em[k] = failed
+    const old = em[k]! as readonly (number | boolean)[];
+    const blank = k === "faceSharp" ? true : 0;
+    (em as Record<(typeof FACE_KEYS)[number], (number | boolean)[] | undefined>)[k] = failed
       ? undefined
       : sources.map((face, i) => {
           const stated = explicitMaterial.get(i);
-          if (stated !== undefined) return stated < 0 ? 0 : (old[stated] ?? 0);
-          return old[face[0]![0]![0]] ?? 0;
+          if (stated !== undefined) return stated < 0 ? blank : (old[stated] ?? blank);
+          return old[face[0]![0]![0]] ?? blank;
         });
   }
 
