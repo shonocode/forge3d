@@ -141,10 +141,18 @@ describe("dissolveEdges keeps the face Blender's join keeps", () => {
 });
 
 describe("Weighted Normal's untouched corners", () => {
-  it("one item per vertex: a vertex outside the group keeps the mix of its corner normals (`custom_set_from_verts`)", () => {
+  it("with a vertex group, a corner outside it keeps its corner normal (`normals_corner_custom_set`)", () => {
     const m = cube();
     m.groups = new Map([["g", new Map([1, 2, 3, 4, 5, 6, 7].map((v) => [v, 1] as [number, number]))]]);
     const out = weightedNormal(m, { vertexGroup: "g" });
+    const fans = fanNormals(m);
+    out.polys.forEach((p, f) => p.forEach((v, i) => v === 0 && expect(close(out.normals![f]![i]!, fans[f]![i]!, 1e-4)).toBe(true)));
+  });
+
+  it("with neither group nor keepSharp, a vertex nothing weighted takes the mix of its corner normals (`from_verts`)", () => {
+    // Every face below weak with face influence on: no item gets a weighted normal.
+    const m = { ...cube(), faceStrength: [-20000, -20000, -20000, -20000, -20000, -20000] };
+    const out = weightedNormal(m, { faceInfluence: true });
     const want = mixCornerNormals(m, fanNormals(m))[0]!;
     out.polys.forEach((p, f) => p.forEach((v, i) => v === 0 && expect(close(out.normals![f]![i]!, want, 1e-4)).toBe(true)));
   });

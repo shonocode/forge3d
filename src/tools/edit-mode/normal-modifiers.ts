@@ -374,14 +374,15 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   // `accumulate_fan_normal`, the Mesh's face normals weighted by `safe_acos_approx` of the corner's edges, normalised;
   // a fan of one corner keeps its face normal (C104 review).
   // Shared with `currentNormals` since compat-backlog C29a ({@link fanNormals}, whose fans stop at flat faces). With
-  // `keepSharp` (`normals_corner_custom_set`) a zero is filled with the corner's normal; one item per vertex goes through
-  // `normals_corner_custom_set_from_verts`, which fills it with the vertex's — `mix_normals_corner_to_vert` of the corner
-  // normals ({@link mixCornerNormals}): on a cube with two flat faces, 2 × the smooth fan's normal + the flat face's.
+  // `keepSharp` or a vertex group (`has_vgroup`), the corner normals are the base and `normals_corner_custom_set` writes
+  // them — a corner nothing weighted keeps its own; with neither, `normals_corner_custom_set_from_verts` fills it with the
+  // vertex's — `mix_normals_corner_to_vert` of the corner normals ({@link mixCornerNormals}): on a cube with two flat
+  // faces, 2 × the smooth fan's normal + the flat face's (`MOD_weighted_normal.cc` 315-366).
   let defaults: Vec3[][] | null = null;
   const defaultNormal = (f: number, i: number): Vec3 => {
     if (!defaults) {
       const fans = fanNormals(data);
-      if (options.keepSharp) defaults = fans;
+      if (options.keepSharp || members !== null) defaults = fans;
       else {
         // The corners as they stand — a custom normal where the mesh has one (`corner_normals()` reads them).
         const byVertex = mixCornerNormals(data, data.normals && data.normals.length === data.polys.length ? (data.normals as Vec3[][]) : fans);
