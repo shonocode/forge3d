@@ -292,6 +292,19 @@ export {
   type NormalMixMode,
   type NormalEditOptions,
 } from "../tools/edit-mode/normal-modifiers";
+// How Blender **stores** that layer: two int16 per corner against the corner's normal space, the smooth fans those spaces
+// belong to, and what `normals_split_custom_set` keeps (compat-backlog C29b).
+export {
+  cornerFans,
+  cornerFanSpace,
+  customNormalToData,
+  customDataToNormal,
+  setCustomNormals,
+  decodeCustomNormals,
+  type CornerFans,
+  type CornerSpace,
+} from "../tools/edit-mode/normal-space";
+export { fanNormals } from "../tools/edit-mode/normals";
 
 // ── Per-face-corner data ───────────────────────────────────────────────────
 // UVs and vertex colours live per **corner**, not per vertex — that is what

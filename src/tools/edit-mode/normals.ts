@@ -173,7 +173,9 @@ function faceNormalsPerCorner(data: MeshData): Vec3[][] {
 }
 
 /**
- * The normal each corner shows with no custom normal — `normals_calc_corners` without one: per smooth fan
+ * The normal each corner shows with no custom normal — `normals_calc_corners` without one, **to within a few float32
+ * steps**: it sums in doubles and in {@link smoothGroups}' order. `cornerFans` (`normal-space.ts`) is the exact port,
+ * fan order and float32 included; this one is what the normal operators were measured with. Per smooth fan
  * ({@link smoothGroups}), `accumulate_fan_normal`, the face normals (`face_normals_true`, Newell in float) weighted by
  * `safe_acos_approx` of the corner's two edges and normalised; a fan of one corner keeps its face's normal. A flat face's
  * corners are fans of one (`MeshData.sharpFaces`, compat-backlog C29a).
