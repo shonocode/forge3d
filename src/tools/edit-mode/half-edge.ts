@@ -143,6 +143,11 @@ export interface EditMesh {
    */
   faceSharp?: boolean[];
   /**
+   * Set while `loopNormals` holds custom normals as their **stored pairs** `[a, b, 0]` (`normal-space.throughStoredNormals`,
+   * compat-backlog C29c): the carry then treats them as Blender treats `CD_PROP_INT16_2D` — copied, never mixed.
+   */
+  loopNormalsArePairs?: boolean;
+  /**
    * `MeshData.vertexCreases`, by vertex — Blender's `crease_vert`, a float point attribute: a vertex keeps its value, a
    * made one takes its origins' weighted sum (`layerInterp_propfloat`, an absent vertex counting 0), and a new vertex
    * with no known origin drops the layer, as {@link vertexGroups} does (compat-backlog C88).
@@ -706,8 +711,27 @@ function carryLayers(
   // angles in the corner's own normal space. Copied corners keep theirs;
   // an interpolated one drops the layer rather than invent a direction.
   const interpolated = !failed && sources.some((f) => f.some((s) => s.length > 1 || (s.length === 1 && s[0]![2] !== 1)));
+  const pairs = em.loopNormalsArePairs === true;
+  /**
+   * A stored pair is not interpolated (Blender has no `interp` for `CD_PROP_INT16_2D`): a corner keeps the loop it was
+   * made from. One on a split edge copies the loop before it in the face (`bm_loop_create(..., l->f, l, ...)` in
+   * `bmesh_kernel_split_edge_make_vert`) — the old face's corner where the edge starts, however many cuts; one made from
+   * more than an edge's two ends holds the default, zero.
+   */
+  const pairOf = (src: readonly (readonly [number, number, number])[]): number[] => {
+    const old = em.loopNormals!;
+    if (src.length === 1) return [...old[src[0]![0]]![src[0]![1]]!];
+    if (src.length === 2 && src[0]![0] === src[1]![0]) {
+      const [g, a] = src[0]!;
+      const b = src[1]![1];
+      const n = oldPolys[g]!.length;
+      if ((a + 1) % n === b) return [...old[g]![a]!];
+      if ((b + 1) % n === a) return [...old[g]![b]!];
+    }
+    return [0, 0, 0];
+  };
   for (const k of live) {
-    if (failed || (k === "loopNormals" && interpolated && !carry?.normalsAsVectors)) {
+    if (failed || (k === "loopNormals" && interpolated && !carry?.normalsAsVectors && !pairs)) {
       em[k] = undefined;
       continue;
     }
@@ -718,6 +742,7 @@ function carryLayers(
         // A corner made with no example holds the layer's default: 0, and
         // white for a colour (`layerDefault_mloopcol`).
         if (src.length === 0) return new Array<number>(layerWidth).fill(k === "loopColors" ? 1 : 0);
+        if (k === "loopNormals" && pairs) return pairOf(src);
         const width = old[src[0]![0]]![src[0]![1]]!.length;
         const out = new Array<number>(width).fill(0);
         for (const [g, c, w] of src) {

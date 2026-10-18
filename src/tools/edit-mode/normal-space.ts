@@ -14,7 +14,8 @@
  * const shown = decodeCustomNormals({ ...mesh, sharp }, clnors); // what Blender then shows per corner
  * ```
  */
-import type { MeshData } from "../../lib/mesh";
+import { meshToData, type MeshData } from "../../lib/mesh";
+import { toPolygons as toPolygonsOf, type EditMesh } from "./half-edge";
 import { f, dot, sub, cross, mathNormalize, meshFaceNormal, safeAcosApprox, type V3 } from "../blender-math";
 
 /** A fan's normal space — `CornerNormalSpace`. `alpha` and `beta` 0 mark one Blender could not build. */
@@ -366,4 +367,90 @@ export function decodeCustomNormals(data: MeshData, clnors: readonly (readonly [
   const shown = cornerFans(data, clnors).normals;
   let c = 0;
   return data.polys.map((p) => p.map(() => [...shown[c++]!]));
+}
+
+/**
+ * Run an operator on `em` as Blender runs one on custom normals (compat-backlog C29c): the corner normals stored as their
+ * pairs first (`setCustomNormals`, keeping the sharp edges it adds — Blender's mesh holds them), the pairs carried with
+ * the corners through `run` as the operator carries any corner data, then read back in the fans of the new shape. So a
+ * reversed face, a split one or a corner moved to another fan shows what Blender shows, not the vector it had.
+ *
+ * The pairs ride in `loopNormals` as `[a, b, 0]` while `run` goes, with `loopNormalsArePairs` set so the corner carry
+ * copies them and never mixes them (Blender has no interpolation for `CD_PROP_INT16_2D`: the loop a corner was made
+ * from keeps its pair).
+ *
+ * **The sharp edges laying the normals down adds stay** — Blender's mesh holds them (`normals_split_custom_set` marks
+ * them), so a mesh whose `normals` disagree inside a smooth fan comes out with them in `sharp`.
+ *
+ * **Within one int16 step, not exact.** Blender holds the pairs; `MeshData.normals` holds the vectors they read as, and
+ * re-encoding a decoded vector can land one step (~1e-4 rad) off the pair it came from.
+ */
+export function throughStoredNormals<T>(em: EditMesh, run: () => T): T {
+  if (!em.loopNormals) return run();
+  const data = meshToData(em);
+  if (!shapedNormals(data)) return run();
+  const before = { loopNormals: em.loopNormals, sharpEdges: em.sharpEdges, polys: JSON.stringify(data.polys) };
+  const putBack = (): void => {
+    em.loopNormals = before.loopNormals;
+    if (before.sharpEdges) em.sharpEdges = before.sharpEdges;
+    else delete em.sharpEdges;
+  };
+  const { clnors, sharp } = setCustomNormals(data, data.normals);
+  let c = 0;
+  em.loopNormals = data.polys.map((p) =>
+    p.map(() => {
+      const d = clnors[c++]!;
+      return [d[0], d[1], 0];
+    }),
+  );
+  if (sharp.size > 0) em.sharpEdges = sharp;
+  em.loopNormalsArePairs = true;
+  let result: T;
+  try {
+    result = run();
+  } catch (e) {
+    // An operator that throws before touching the mesh leaves it as it was — vectors, not pairs.
+    delete em.loopNormalsArePairs;
+    putBack();
+    throw e;
+  }
+  delete em.loopNormalsArePairs;
+  // Nothing changed shape (an operator that found nothing to do): the vectors as they were, not re-read a step off.
+  if (JSON.stringify(toPolygonsOf(em)) === before.polys && em.positions.length === data.positions.length && em.positions.every((x, i) => x === data.positions[i])) {
+    putBack();
+    return result;
+  }
+  if (em.loopNormals) {
+    const out = meshToData(em);
+    const pairs = out.normals.flatMap((face) => face.map((n) => [Math.round(n[0]!), Math.round(n[1]!)] as [number, number]));
+    em.loopNormals = decodeCustomNormals(out, pairs);
+  }
+  return result;
+}
+
+/** {@link throughStoredNormals} for an operator on `MeshData`: `run` gets the pairs as `normals` and its output is read back. */
+export function throughStoredNormalsData(data: MeshData, run: (packed: MeshData) => MeshData): MeshData {
+  if (!shapedNormals(data)) return run(data);
+  const { clnors, sharp } = setCustomNormals(data, data.normals!);
+  let c = 0;
+  const packed = data.polys.map((p) =>
+    p.map(() => {
+      const d = clnors[c++]!;
+      return [d[0], d[1], 0];
+    }),
+  );
+  const out = run({ ...data, normals: packed, ...(sharp.size > 0 ? { sharp } : {}) });
+  if (!out.normals || out.normals.length !== out.polys.length) return out;
+  const pairs = out.normals.flatMap((face) => face.map((n) => [Math.round(n[0]!), Math.round(n[1]!)] as [number, number]));
+  return { ...out, normals: decodeCustomNormals(out, pairs) };
+}
+
+/** Custom normals shaped like the faces, corner for corner, on a mesh with faces — the only kind the wrappers encode. */
+function shapedNormals(data: MeshData): boolean {
+  return (
+    data.polys.length > 0 &&
+    !!data.normals &&
+    data.normals.length === data.polys.length &&
+    data.normals.every((face, f) => face.length === data.polys[f]!.length)
+  );
 }

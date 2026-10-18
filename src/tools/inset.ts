@@ -22,6 +22,7 @@
  * Pure and headless.
  */
 import type { MeshData } from "../lib/mesh";
+import { throughStoredNormalsData } from "./edit-mode/normal-space";
 import { f, sub, dot, cross, normalizeInPlace, FLT_EPSILON, type V3 } from "./blender-math";
 import {
   diskEdges,
@@ -228,6 +229,14 @@ export function insetIndividualMesh(
   faces: Iterable<number>,
   opts: InsetIndividualMeshOptions,
 ): InsetResult {
+  // Custom normals as their stored pairs through the inset, read in the new faces' fans (compat-backlog C29c).
+  let result!: InsetResult;
+  const picked = [...faces];
+  const mesh = throughStoredNormalsData(data, (d) => (result = insetIndividualRaw(d, picked, opts)).mesh);
+  return { ...result, mesh };
+}
+
+function insetIndividualRaw(data: MeshData, faces: Iterable<number>, opts: InsetIndividualMeshOptions): InsetResult {
   const { bm, c, byInput } = load(data);
   const thickness = f(opts.thickness);
   const depth = f(opts.depth ?? 0);
@@ -341,6 +350,14 @@ function mixedFaceTag(l: BL | null): BL | null {
  * `use_even_offset` and `use_interpolate` on).
  */
 export function insetRegionMesh(data: MeshData, faces: Iterable<number>, opts: InsetRegionMeshOptions): InsetResult {
+  // Custom normals as their stored pairs through the inset, read in the new faces' fans (compat-backlog C29c).
+  let result!: InsetResult;
+  const picked = [...faces];
+  const mesh = throughStoredNormalsData(data, (d) => (result = insetRegionRaw(d, picked, opts)).mesh);
+  return { ...result, mesh };
+}
+
+function insetRegionRaw(data: MeshData, faces: Iterable<number>, opts: InsetRegionMeshOptions): InsetResult {
   const { bm, c, byInput } = load(data);
   const useOutset = !!opts.useOutset;
   const useBoundary = !!opts.useBoundary && !useOutset;

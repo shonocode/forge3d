@@ -17,6 +17,7 @@
  * Exact ties in the heap are not imitated (`BLI_heapsimple` against the
  * `BLI_heap` port here).
  */
+import { throughStoredNormals } from "./normal-space";
 import { meshVertNormals, f, sub, dot, cross, normalizeInPlace, newell, faceNormalCalc, FLT_EPSILON, heapInsert, heapPopMin, type Heap, type V3 } from "../blender-math";
 import { bmFromMesh, diskEdges, radialLoops, loopsOfVert, otherVert, type BV, type BE, type BL, type BF } from "../bmesh-lite";
 import { rebuildPolygons, seamKey, toPolygons, type EditMesh, type VertexOrigin } from "./half-edge";
@@ -664,7 +665,8 @@ function connectPairOnce(em: EditMesh, a: number, b: number, mode: "op" | "edbm"
  */
 export function connectVertPair(em: EditMesh, a: number, b: number): Set<number> {
   if (a === b) throw new Error(`connectVertPair: ${a} and ${b} are the same vertex`);
-  return connectPairOnce(em, a, b, "op");
+  // The split face's corners keep their stored pairs and read them in the new fans (compat-backlog C29c).
+  return throughStoredNormals(em, () => connectPairOnce(em, a, b, "op"));
 }
 
 /**

@@ -4,7 +4,10 @@
  */
 import { describe, it, expect } from "vitest";
 import type { MeshData } from "../../lib/mesh";
-import { cornerFans, cornerFanSpace, customDataToNormal, customNormalToData, decodeCustomNormals, setCustomNormals } from "./normal-space";
+import { cornerFans, cornerFanSpace, customDataToNormal, customNormalToData, decodeCustomNormals, setCustomNormals, throughStoredNormals } from "./normal-space";
+import { meshFromData, meshToData } from "../../lib/mesh";
+import { rebuildPolygons } from "./half-edge";
+import { reverseFaces } from "./operators";
 
 /** The parity `cube` (unit, centred), faces 0 and 3 flat as `--tag-sharp-faces` lays them down. */
 function cube(): MeshData {
@@ -113,5 +116,64 @@ describe("the spaces", () => {
     const held: [number, number][] = [[0, 0], [0, 0], [0, 0], [7, 9], [0, 0], [0, 0]];
     const { clnors } = setCustomNormals(m, [m.polys[0]!.map(() => [0, 0, 1])], held);
     expect(clnors[3]).toEqual([7, 9]);
+  });
+});
+
+describe("operators through the stored pairs (compat-backlog C29c)", () => {
+  it("reverse faces: each corner keeps its pair, read in the flipped face's space", () => {
+    const m = cube();
+    const { clnors, sharp } = setCustomNormals(m, tagged(m));
+    const shown = decodeCustomNormals({ ...m, sharp }, clnors);
+    const em = meshFromData({ ...m, sharp, normals: shown });
+    reverseFaces(em, new Set([0, 1, 2, 3, 4, 5]));
+    const out = meshToData(em);
+    // The same pairs, moved with their vertices into the reversed rings, read in the reversed mesh.
+    let c = 0;
+    const byVertex = m.polys.map((p) => new Map(p.map((v) => [v, clnors[c++]!] as const)));
+    const flipped = out.polys.flatMap((p, f) => p.map((v) => byVertex[f]!.get(v)!));
+    const want = decodeCustomNormals({ ...m, polys: out.polys, sharp }, flipped);
+    // Within one int16 step: the operator re-derives the pairs from the vectors it was given (see throughStoredNormals).
+    out.normals.forEach((face, f) => face.forEach((n, i) => expect(angle(n, want[f]![i]!)).toBeLessThan(2e-4)));
+    // And not the vectors it had: a flipped face's corner turns.
+    expect(out.normals.some((face, f) => face.some((n, i) => angle(n, shown[f]![out.polys[f]!.length - 1 - i]!) > 0.01))).toBe(true);
+  });
+
+  it("a corner made on a split edge copies the pair where the edge starts, and is not mixed", () => {
+    const em = meshFromData({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0, 0]),
+      polys: [[0, 1, 2, 3]],
+      normals: [[[11, 1, 0], [22, 2, 0], [33, 3, 0], [44, 4, 0]]],
+    });
+    em.loopNormalsArePairs = true;
+    rebuildPolygons(em, em.positions, [[0, 4, 1, 2, 3]], { origins: new Map([[4, { from: [0, 1], w: [0.5, 0.5] }]]) });
+    expect(em.loopNormals![0]![1]).toEqual([11, 1, 0]);
+  });
+
+  it("throughStoredNormals leaves a mesh without custom normals alone", () => {
+    const em = meshFromData(cube());
+    let ran = false;
+    throughStoredNormals(em, () => (ran = true));
+    expect(ran).toBe(true);
+    expect(em.loopNormals).toBeUndefined();
+    expect(em.loopNormalsArePairs).toBeUndefined();
+  });
+
+  it("an operator that throws leaves the vectors as they were — not the pairs", () => {
+    const m = cube();
+    const em = meshFromData({ ...m, normals: tagged(m) });
+    const before = JSON.stringify(em.loopNormals);
+    expect(() => throughStoredNormals(em, () => {
+      throw new Error("no");
+    })).toThrow("no");
+    expect(JSON.stringify(em.loopNormals)).toBe(before);
+    expect(em.loopNormalsArePairs).toBeUndefined();
+  });
+
+  it("an operator that changes nothing leaves the vectors exactly", () => {
+    const m = cube();
+    const em = meshFromData({ ...m, normals: tagged(m) });
+    const before = JSON.stringify(em.loopNormals);
+    throughStoredNormals(em, () => undefined);
+    expect(JSON.stringify(em.loopNormals)).toBe(before);
   });
 });

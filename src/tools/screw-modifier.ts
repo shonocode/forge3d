@@ -6,6 +6,7 @@ import type { MeshData } from "../lib/mesh";
 import { f } from "./blender-math";
 import { calcEdges } from "./bmesh-lite";
 import { weldByMap } from "./remove-doubles";
+import { throughStoredNormalsData } from "./edit-mode/normal-space";
 
 export interface ScrewModifierOptions {
   /** `axis`: the local axis turned about. Default `Z`. */
@@ -78,6 +79,11 @@ interface VertConnect {
  * smooth shading (MeshData has no per-face shading flag).
  */
 export function screwModifier(data: MeshData, opts: ScrewModifierOptions = {}): MeshData {
+  // Custom normals: the stored pairs are copied to every band corner and read in its own space (compat-backlog C29c).
+  return throughStoredNormalsData(data, (d) => screwModifierRaw(d, opts));
+}
+
+function screwModifierRaw(data: MeshData, opts: ScrewModifierOptions): MeshData {
   const axis = { X: 0, Y: 1, Z: 2 }[opts.axis ?? "Z"];
   const [other1, other2] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
   const iter = Math.max(1, Math.floor(opts.iterations ?? 1));

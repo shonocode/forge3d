@@ -9,6 +9,7 @@
  * interpolation, which is not ported (compat-backlog A6 / A7), and they drop
  * those layers **whole** — never a layer shaped for other faces.
  */
+import { cornerFans } from "./edit-mode/normal-space";
 import { describe, it, expect } from "vitest";
 import * as L from "../lib/index";
 import { rebuildPolygons } from "./edit-mode/half-edge";
@@ -229,10 +230,34 @@ describe("the values follow their vertex or face", () => {
     const out = L.mergeMeshes([plain, cube()]);
     expect(out.uvs).toHaveLength(12);
     expect(out.uvs![0]).toEqual([[0, 0], [0, 0], [0, 0], [0, 0]]);
-    // Blender fills the part without normals with "automatic", which depends
-    // on a smooth / flat flag MeshData does not carry — so the layer goes
-    // (`join-custom-normals`, compat-backlog A9).
-    expect(out.normals).toBeUndefined();
+    // Blender fills the part without normals with "automatic" — the pair 0, read in the joined mesh's fans: the corner's
+    // own fan normal (`join-custom-normals`, compat-backlog C29c; until then the layer went, A9).
+    expect(out.normals).toHaveLength(12);
+    const fans = cornerFans({ ...out, normals: undefined }).normals;
+    let c = 0;
+    for (let f = 0; f < 6; f++) for (const n of out.normals![f]!) expect(n).toEqual(fans[c++]);
+  });
+
+  it("mergeMeshes: a part's custom normals that disagree inside a smooth fan survive the join (the edges they need come too)", () => {
+    // Flat custom normals (each corner its face's) on a cube with every face smooth and no sharp edge: laying them down
+    // marks every edge sharp, and the joined mesh must keep those edges or the cube comes back smooth (review of C29c).
+    const c0 = cube();
+    const P = c0.positions;
+    const faceNormal = (p: number[]): number[] => {
+      const a = [P[p[1]! * 3]! - P[p[0]! * 3]!, P[p[1]! * 3 + 1]! - P[p[0]! * 3 + 1]!, P[p[1]! * 3 + 2]! - P[p[0]! * 3 + 2]!];
+      const b = [P[p[2]! * 3]! - P[p[0]! * 3]!, P[p[2]! * 3 + 1]! - P[p[0]! * 3 + 1]!, P[p[2]! * 3 + 2]! - P[p[0]! * 3 + 2]!];
+      const n = [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!];
+      const l = Math.hypot(n[0]!, n[1]!, n[2]!);
+      return n.map((x) => x / l);
+    };
+    const hard = { positions: P, polys: c0.polys, normals: c0.polys.map((p) => p.map(() => faceNormal(p))) };
+    const plain = { positions: P, polys: c0.polys };
+    const out = L.mergeMeshes([hard, plain]);
+    for (let f = 0; f < 6; f++)
+      for (const n of out.normals![f]!) {
+        const want = hard.normals[f]![0]!;
+        expect(Math.acos(Math.min(1, n[0]! * want[0]! + n[1]! * want[1]! + n[2]! * want[2]!))).toBeLessThan(2e-4);
+      }
     expect(() => L.mirrorMesh(plain, "x")).not.toThrow();
   });
 

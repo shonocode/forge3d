@@ -25,6 +25,7 @@ import { bulletConvexHull } from "./hull/bullet-hull";
 import { meshFromData, meshToData } from "../lib/mesh";
 import { trisToQuads } from "./edit-mode/operators";
 import { calcEdges } from "./bmesh-lite";
+import { cornerFans, customNormalToData, decodeCustomNormals, setCustomNormals } from "./edit-mode/normal-space";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
 function remapKeys<T>(
@@ -54,8 +55,10 @@ function remapKeys<T>(
  * afterwards if you meant them to fuse.
  *
  * UVs are carried when any part has them; a part without UVs gets (0, 0) at
- * every corner so the layer stays shaped like `polys`. Custom normals are
- * carried only when every part has them.
+ * every corner so the layer stays shaped like `polys`. Custom normals: when
+ * only some parts have them, the others' corners are Blender's "automatic"
+ * (`join_normals`, the stored pair 0) and every part is read back in the
+ * joined mesh's fans, with the sharp edges laying them down adds (C29c).
  */
 export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   let total = 0;
@@ -82,15 +85,18 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const uvs: number[][][] | undefined = has("uvs") ? [] : undefined;
   const colors: number[][][] | undefined = has("colors") ? [] : undefined;
   // Blender's join fills a part without custom normals with "automatic"
-  // (`short2(0)` in `join_normals`): the corner's own normal, which Blender
-  // reads off the face's smooth / flat flag and the sharp edges. A mesh here
-  // without normals means "work them out from the geometry" and carries no
-  // smooth / flat flag, so there is no value to write that would not bake a
-  // shading in — the layer goes unless every part has one. Measured on flat
-  // inputs, where "automatic" is the face normal (`join-custom-normals`,
-  // `kind: "different"`, compat-backlog A9); found by review.
-  const normals: number[][][] | undefined =
-    parts.length > 0 && parts.every((p) => shaped(p, "normals")) ? [] : undefined;
+  // (`short2(0)` in `join_normals`): the corner's own normal, read off the
+  // faces' smooth / flat flag and the sharp edges of the joined mesh. With
+  // the stored pairs (compat-backlog C29c) that is exact: the parts with
+  // normals as their pairs, the others zero, read back once joined — below.
+  // Until C29c the layer went unless every part had one (A9).
+  const cornerShaped = (p: MeshData): boolean => shaped(p, "normals") && p.normals!.every((f, i) => f.length === p.polys[i]!.length);
+  const mixedNormals =
+    parts.some((p) => shaped(p, "normals")) &&
+    !parts.every((p) => shaped(p, "normals")) &&
+    parts.every((p) => !shaped(p, "normals") || cornerShaped(p));
+  const normals: number[][][] | undefined = parts.length > 0 && parts.some((p) => shaped(p, "normals")) ? [] : undefined;
+  const pairs: [number, number][] = [];
   const sharp: Set<string> | undefined = has("sharp") ? new Set() : undefined;
   const edges: number[][] | undefined = has("edges") ? [] : undefined;
   const groups: Map<string, Map<number, number>> | undefined = has("groups") ? new Map() : undefined;
@@ -100,8 +106,16 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const vertexCreases: Map<number, number> | undefined = has("vertexCreases") ? new Map() : undefined;
   let cursor = 0;
 
+  const addedSharp = new Set<string>();
   for (const part of parts) {
     const base = cursor / 3;
+    if (mixedNormals) {
+      if (shaped(part, "normals")) {
+        const set = setCustomNormals(part, part.normals!);
+        pairs.push(...set.clnors);
+        remapKeys(set.sharp, base, (k) => addedSharp.add(k));
+      } else for (const poly of part.polys) for (const _ of poly) pairs.push([0, 0]);
+    }
     positions.set(part.positions, cursor);
     cursor += part.positions.length;
     for (const poly of part.polys) polys.push(poly.map((v) => v + base));
@@ -110,7 +124,7 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
     part.polys.forEach((poly, f) => {
       uvs?.push(shaped(part, "uvs") ? part.uvs![f]!.map((c) => [...c]) : poly.map(() => [0, 0]));
       colors?.push(shaped(part, "colors") ? part.colors![f]!.map((c) => [...c]) : poly.map(() => [0, 0, 0, 0]));
-      normals?.push(part.normals![f]!.map((c) => [...c]));
+      if (!mixedNormals) normals?.push(part.normals![f]!.map((c) => [...c]));
       // Slots are concatenated as numbers. Blender's join renumbers them by
       // the material in each slot, which `MeshData` does not carry.
       materials?.push(shaped(part, "materials") ? part.materials![f]! : 0);
@@ -133,7 +147,7 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   const out: MeshData = { positions, polys, creases, seams };
   if (uvs) out.uvs = uvs;
   if (colors) out.colors = colors;
-  if (normals) out.normals = normals;
+  if (normals && !mixedNormals) out.normals = normals;
   if (sharp) out.sharp = sharp;
   if (edges) out.edges = edges;
   if (groups) out.groups = groups;
@@ -141,6 +155,10 @@ export function mergeMeshes(parts: readonly MeshData[]): MeshData {
   if (faceStrength) out.faceStrength = faceStrength;
   if (sharpFaces) out.sharpFaces = sharpFaces;
   if (vertexCreases) out.vertexCreases = vertexCreases;
+  if (mixedNormals) {
+    if (addedSharp.size > 0) out.sharp = new Set([...(out.sharp ?? []), ...addedSharp]);
+    out.normals = decodeCustomNormals(out, pairs);
+  }
   return out;
 }
 
@@ -366,6 +384,57 @@ export function mirrorModifier(data: MeshData, opts: MirrorModifierOptions = {})
 }
 
 function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bisect: boolean, flip: boolean): MeshData {
+  if (!data.normals || data.normals.length !== data.polys.length) return mirrorOnAxisRaw(data, k, opts, bisect, flip);
+  // Custom normals (compat-backlog C29c), as `BKE_mesh_mirror_apply_mirror_on_axis_for_modifier` has them
+  // (`mesh_mirror.cc` 379-429): stored as pairs; the bisect's cut corners copy theirs; on the result before the weld each
+  // source corner's normal is read, mirrored (the inverse transpose — the axis negated, not renormalised) onto its image
+  // corner and stored there in that corner's own space; the weld then joins the fans, and the pairs are read back.
+  const { clnors, sharp } = setCustomNormals(data, data.normals);
+  let c = 0;
+  const packed: MeshData = {
+    ...data,
+    normals: data.polys.map((p) => p.map(() => [clnors[c]![0], clnors[c++]![1], 0])),
+    ...(sharp.size > 0 ? { sharp } : {}),
+  };
+  const pairsOf = (m: MeshData): [number, number][] =>
+    m.normals!.flatMap((face) => face.map((n) => [Math.round(n[0]!), Math.round(n[1]!)] as [number, number]));
+  return mirrorOnAxisRaw(packed, k, opts, bisect, flip, (src, joined) => {
+    // The source corners read on the result (both halves, not yet welded — the image's placeholder pairs are in their
+    // own fans and not used).
+    const shown = decodeCustomNormals(joined, pairsOf(joined)).slice(0, src.polys.length);
+    const fans = cornerFans({ ...joined, normals: undefined });
+    let corner = 0;
+    for (const p of src.polys) corner += p.length;
+    const image = src.polys.map((_p, f) => {
+      const n = shown[f]!.map((v) => [...v]);
+      for (const v of n) v[k] = -v[k]!;
+      return n.length ? [n[0]!, ...n.slice(1).reverse()] : n;
+    });
+    const fsrc = src.polys.length;
+    const normals = joined.normals!.map((face, f) =>
+      f < fsrc
+        ? face
+        : face.map((_, i) => {
+            const space = fans.spaces[fans.fanOf[corner++]!]!;
+            const d = customNormalToData(space, image[f - fsrc]![i]!);
+            return [d[0], d[1], 0];
+          }),
+    );
+    return { ...joined, normals };
+  }, (out) => ({ ...out, normals: decodeCustomNormals(out, pairsOf(out)) }));
+}
+
+function mirrorOnAxisRaw(
+  data: MeshData,
+  k: number,
+  opts: MirrorModifierOptions,
+  bisect: boolean,
+  flip: boolean,
+  /** With stored pairs in `normals`: the joined halves before the weld, given the (bisected) source. */
+  onJoined?: (src: MeshData, joined: MeshData) => MeshData,
+  /** With stored pairs: the welded result, to read them back. */
+  onDone?: (out: MeshData) => MeshData,
+): MeshData {
   let src = data;
   if (bisect) {
     // `BKE_mesh_mirror_bisect_on_mirror_plane_for_modifier`: the plane's
@@ -374,7 +443,7 @@ function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bi
     const t = opts.bisectThreshold ?? 0.001;
     const s = flip ? 1 : -1;
     const planeNo: Vec3 = [k === 0 ? s : 0, k === 1 ? s : 0, k === 2 ? s : 0];
-    src = bisectPlane(src, { planeCo: [0, 0, 0], planeNo, dist: t, clearOuter: true });
+    src = bisectPlane(src, { planeCo: [0, 0, 0], planeNo, dist: t, clearOuter: true, normalsArePairs: !!onJoined });
     const P = Float32Array.from(src.positions);
     // `plane_point_test_v3`: on the plane is strictly within the threshold.
     for (let v = 0; v < P.length / 3; v++) if (Math.abs(P[v * 3 + k]!) < t) P[v * 3 + k] = 0;
@@ -382,8 +451,8 @@ function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bi
   }
   const n = src.positions.length / 3;
   const scale: Vec3 = [k === 0 ? -1 : 1, k === 1 ? -1 : 1, k === 2 ? -1 : 1];
-  const reflected = transformMesh(src, { scale });
-  const joined = mergeMeshes([src, reflected]);
+  const reflected = transformMesh(onJoined ? { ...src, normals: src.normals?.map((f) => f.map(() => [0, 0, 1])) } : src, { scale });
+  let joined = mergeMeshes([src, reflected]);
   const faces0 = src.polys.length;
 
   // UVs of the copy.
@@ -419,6 +488,9 @@ function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bi
       }
     }
   }
+  // Blender reads the normals once the merged vertices sit at their midpoints (`mid_v3_v3v3` before the custom-normal
+  // block of `mesh_mirror.cc`).
+  if (onJoined) joined = onJoined(src, withPositions(joined, P));
   let result = withPositions(joined, P);
 
   // Vertex groups: the copy's sides trade names; a welded original holds both.
@@ -464,8 +536,9 @@ function mirrorOnAxis(data: MeshData, k: number, opts: MirrorModifierOptions, bi
     }
   }
 
-  if (!target.some((t, i) => t !== i)) return result;
-  return weldByMap(result, (v) => target[v]!, "array");
+  const done = onDone ?? ((m: MeshData): MeshData => m);
+  if (!target.some((t, i) => t !== i)) return done(result);
+  return done(weldByMap(result, (v) => target[v]!, "array"));
 }
 
 export interface ArrayMeshOptions {
@@ -1738,6 +1811,12 @@ export interface BisectPlaneOptions {
    * vertex), and wire edges are not input. Default everything.
    */
   faces?: ReadonlySet<number>;
+  /**
+   * Internal (compat-backlog C29c): `normals` holds stored custom-normal pairs (`normal-space.ts`), which a cut corner
+   * copies from the corner its edge starts at — `BM_edge_split` makes the new loop from the one before it, and
+   * `CD_PROP_INT16_2D` is never interpolated — instead of mixing.
+   */
+  normalsArePairs?: boolean;
 }
 
 /** What {@link bisectPlane} knows besides the mesh: the edges Blender's `geom_cut.out` holds. */
@@ -2149,7 +2228,17 @@ export function bisectPlane(data: MeshData, opts: BisectPlaneOptions, report?: B
   if (uvs) out.uvs = uvs;
   const colors = corner(data.colors);
   if (colors) out.colors = colors;
-  const normals = corner(data.normals);
+  const normals = opts.normalsArePairs
+    ? data.normals && data.normals.length === data.polys.length
+      ? faceSrc.map(({ face, corners }) =>
+          corners.map((cn) => {
+            const n = data.polys[face]!.length;
+            const from = cn.length === 1 || (cn[0]! + 1) % n === cn[1] ? cn[0]! : cn[1]!;
+            return [...data.normals![face]![from]!];
+          }),
+        )
+      : undefined
+    : corner(data.normals);
   if (normals) out.normals = normals;
   if (data.materials && data.materials.length === data.polys.length)
     out.materials = faceSrc.map(({ face }) => data.materials![face]!);

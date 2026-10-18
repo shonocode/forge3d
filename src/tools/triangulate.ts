@@ -20,6 +20,7 @@
  */
 import { withPositions, type MeshData } from "../lib/mesh";
 import { carryFaceLayers, type FaceSource } from "./mesh-layers";
+import { throughStoredNormalsData } from "./edit-mode/normal-space";
 import { polyfill } from "./boolean/polyfill";
 import {
   f, FLT_EPSILON, FLT_MAX, sub, dot, cross, lenSq, normalizeInPlace, newell,
@@ -363,16 +364,20 @@ export function triangulate(data: MeshData, opts: TriangulateOptions = {}): Mesh
  * n-gons `BEAUTY`, `min_vertices` 4 — and a new triangle that repeats one
  * already there is dropped (`dropDuplicates`).
  *
- * Custom normals are carried as vectors, which is the modifier with
- * `keep_custom_normals` on. With it off (the default) Blender keeps each
- * corner's two stored angles and reads them in the triangle's own normal
- * space, so a corner of a bent quad turns (compat-backlog C29).
+ * Custom normals: with `keepCustomNormals` off (Blender's default) each corner
+ * keeps its two stored angles and reads them in the triangle's own normal
+ * space, so a corner of a bent quad turns (compat-backlog C29c,
+ * {@link throughStoredNormalsData}); on, they are carried as the vectors they
+ * were (`keep_custom_normals`).
  *
  * ```ts
  * triangulateModifier(mesh);                           // the modifier as added
  * triangulateModifier(mesh, { minVertices: 5 });       // n-gons only
  * ```
  */
-export function triangulateModifier(data: MeshData, opts: TriangulateOptions = {}): MeshData {
-  return triangulate(data, { quadMethod: "shortEdge", ngonMethod: "beauty", minVertices: 4, dropDuplicates: true, ...opts });
+export function triangulateModifier(data: MeshData, opts: TriangulateOptions & { keepCustomNormals?: boolean } = {}): MeshData {
+  const { keepCustomNormals = false, ...rest } = opts;
+  const run = (d: MeshData): MeshData =>
+    triangulate(d, { quadMethod: "shortEdge", ngonMethod: "beauty", minVertices: 4, dropDuplicates: true, ...rest });
+  return keepCustomNormals ? run(data) : throughStoredNormalsData(data, run);
 }

@@ -20,6 +20,7 @@ import {
   type BE, type BF, type BL, type BM, type BV,
 } from "./bmesh-lite";
 import { seamKey } from "./edit-mode/half-edge";
+import { throughStoredNormalsData } from "./edit-mode/normal-space";
 
 export interface SpinOptions {
   /** `cent`. Default the origin. */
@@ -302,12 +303,16 @@ const mul = (m: number[][], v: readonly number[]): V3 =>
  * flags, corners and material; a wall's corners and material come from the
  * face across the edge it grew from; a new side edge takes seam and sharp
  * from the face-held edges at its new vertex (`USE_EDGE_REGION_FLAGS`).
- * **Custom normals are copied as the vectors they were** — a turned copy's
- * do not turn. Blender stores them as angles in each corner's own space, so
- * there they turn with it (`spin-geom-custom-normals`, recorded different).
- * `space` (the object matrix) is not taken: the geometry is in its own space.
+ * **Custom normals are copied as their stored pairs** and read in each copy's
+ * own space, so a turned copy's turn with it, as Blender's (compat-backlog C29c,
+ * `throughStoredNormalsData`). `space` (the object matrix) is not taken: the
+ * geometry is in its own space.
  */
 export function spin(data: MeshData, geom: SpinGeom, opts: SpinOptions): MeshData {
+  return throughStoredNormalsData(data, (d) => spinRaw(d, geom, opts));
+}
+
+function spinRaw(data: MeshData, geom: SpinGeom, opts: SpinOptions): MeshData {
   const bm = bmFromMesh(data);
   const byIndex = new Map<number, BV>();
   for (const v of bm.verts) if (v) byIndex.set(v.index, v);

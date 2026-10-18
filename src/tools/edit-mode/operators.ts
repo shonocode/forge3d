@@ -14,6 +14,7 @@ import { joinTrianglePairs } from "./join-order";
 import { clipDegenerateEars } from "./degenerate-ears";
 import { bmFromMesh, bmToMesh, edgeExists, edgeFacePair, edgeRotate, edgeRotateCheck, isManifold, liveFaces, radialLoops, type BE } from "../bmesh-lite";
 import { f as f32, heapInsert, heapPopMin, FLT_MAX, sub as bsub, dot as bdot, cross as bcross, normalizeInPlace, type Heap, type V3 } from "../blender-math";
+import { throughStoredNormals } from "./normal-space";
 import { insetRegionMesh } from "../inset";
 
 /**
@@ -590,6 +591,16 @@ export function loopCut(
   em: EditMesh,
   seedEdge: number,
   opts: LoopCutOptions = {},
+  info?: { innerEdges?: Set<number> },
+): Set<number> {
+  // The cut corners copy their stored pairs from the corner each split edge starts at, read in the new fans (C29c).
+  return throughStoredNormals(em, () => loopCutRaw(em, seedEdge, opts, info));
+}
+
+function loopCutRaw(
+  em: EditMesh,
+  seedEdge: number,
+  opts: LoopCutOptions,
   info?: { innerEdges?: Set<number> },
 ): Set<number> {
   if (!em.halfEdges[seedEdge]) return new Set();
@@ -2276,9 +2287,13 @@ export function insetRegion(
 export function reverseFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Set<number> {
   if (selectedFaces.size === 0) return new Set();
 
-  const polys = toPolygons(em);
-  const out = polys.map((poly, f) => (selectedFaces.has(f) ? [...poly].reverse() : poly));
-  rebuildPolygons(em, em.positions, out, {});
+  // Each corner keeps its stored pair (`bmesh_kernel_loop_reverse` moves the loops, not their data), read in the flipped
+  // face's space (compat-backlog C29c).
+  throughStoredNormals(em, () => {
+    const polys = toPolygons(em);
+    const out = polys.map((poly, f) => (selectedFaces.has(f) ? [...poly].reverse() : poly));
+    rebuildPolygons(em, em.positions, out, {});
+  });
   return new Set(selectedFaces);
 }
 
