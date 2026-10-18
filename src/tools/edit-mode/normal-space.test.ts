@@ -13,6 +13,8 @@ import { setSharpnessByAngle } from "./sharpness";
 import { fanNormals, mixCornerNormals } from "./normals";
 import { textureDisplace } from "../displace";
 import { weightedNormal } from "./normal-modifiers";
+import { moveFaces, offsetFaces } from "./face-transform";
+import { transformMesh } from "../mesh-ops";
 
 /** The parity `cube` (unit, centred), faces 0 and 3 flat as `--tag-sharp-faces` lays them down. */
 function cube(): MeshData {
@@ -256,6 +258,42 @@ describe("custom normals on operators that move vertices and change edges (compa
     const out = weightedNormal({ ...m, normals }, { vertexGroup: "g" });
     out.polys.forEach((p, f) => p.forEach((v, i) => v === 0 && expect(angle(out.normals![f]![i]!, normals[f]![i]!)).toBeLessThan(2e-4)));
     expect(out.sharp && out.sharp.size).toBeGreaterThan(0);
+  });
+});
+
+describe("edit-mode vertex moves and transforms (compat-backlog C29e)", () => {
+  it("an operator built on another (offsetFaces → moveFaces) encodes once: the normals come back as normals", () => {
+    const m = cube();
+    const data = { ...m, normals: tagged(m) };
+    const em = meshFromData(data);
+    // Pushed out, then slid sideways (a shear of the sides — 0.285 rad of turn, well over the tolerance).
+    offsetFaces(em, new Set([1]), 0.3);
+    moveFaces(em, new Set([1]), 0.3, 0, 0);
+    // The input's pairs read in the moved shape — what one encode / decode gives.
+    const want = withMovedPositions(data, em.positions).normals!;
+    em.loopNormals!.forEach((face, f) => face.forEach((n, i) => expect(angle(n, want[f]![i]!)).toBeLessThan(2e-4)));
+    expect(em.loopNormalsArePairs).toBeUndefined();
+  });
+
+  it("transformMesh with a non-uniform scale reads the stored pairs in the scaled shape — not the inverse transpose", () => {
+    const m = cube();
+    const data = { ...m, normals: tagged(m) };
+    const out = transformMesh(data, { scale: [2, 0.5, 1] });
+    const want = withMovedPositions(data, out.positions).normals!;
+    out.normals!.forEach((face, f) => face.forEach((n, i) => expect(angle(n, want[f]![i]!)).toBeLessThan(1e-6)));
+  });
+
+  it("transformMesh with a rotation and one scale turns the vectors exactly and adds no sharp edge", () => {
+    const m = cube();
+    const data = { ...m, normals: tagged(m) };
+    const out = transformMesh(data, { rotate: [0, 0, Math.PI / 2], scale: [2, 2, 2] });
+    expect(out.sharp).toBeUndefined();
+    out.normals!.forEach((face, f) =>
+      face.forEach((n, i) => {
+        const was = data.normals[f]![i]!;
+        expect(angle(n, [-was[1]!, was[0]!, was[2]!])).toBeLessThan(1e-6);
+      }),
+    );
   });
 });
 

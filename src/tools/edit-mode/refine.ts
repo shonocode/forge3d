@@ -18,6 +18,7 @@
  *
  * Pure and headless — Vitest-pinned.
  */
+import { throughStoredNormals } from "./normal-space";
 import { scanfillTriangles } from "./triangle-fill";
 import { faceNormalCalc, meshVertNormals } from "../blender-math";
 import { bmFromMesh, calcEdges, diskEdges, liveEdges, otherVert, type BE, type BV } from "../bmesh-lite";
@@ -1109,8 +1110,14 @@ export interface SmoothVertOptions {
  *
  * The axes are **off** unless asked for (the bmesh operator's slots): a call with no `useAxis*` moves nothing. The Edit Mode tool
  * (`bpy.ops.mesh.vertices_smooth`) has all three on and a `repeat` count (compat-backlog C79).
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
  */
-export function smoothVert(
+export function smoothVert(em: EditMesh, selectedVerts: ReadonlySet<number>, opts: SmoothVertOptions): void {
+  return throughStoredNormals(em, () => smoothVertRaw(em, selectedVerts, opts));
+}
+
+function smoothVertRaw(
   em: EditMesh,
   selectedVerts: ReadonlySet<number>,
   opts: SmoothVertOptions,

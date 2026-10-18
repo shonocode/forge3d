@@ -21,6 +21,7 @@
  *
  * Pure and headless — Vitest-pinned.
  */
+import { throughStoredNormals } from "./normal-space";
 import { faceVerts, facePolyNormal, rebuildPolygons, toPolygons, type EditMesh, type ExplicitFace, type VertexOrigin } from "./half-edge";
 import { extrudeFaces } from "./operators";
 import { weldByMap } from "../remove-doubles";
@@ -34,8 +35,15 @@ function vertsOf(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
   return out;
 }
 
-/** Translate every vertex of `faces` by a vector. Shared vertices move once. */
-export function moveFaces(
+/** Translate every vertex of `faces` by a vector. Shared vertices move once.
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
+ */
+export function moveFaces(em: EditMesh, faces: ReadonlySet<number>, dx: number, dy: number, dz: number): void {
+  return throughStoredNormals(em, () => moveFacesRaw(em, faces, dx, dy, dz));
+}
+
+function moveFacesRaw(
   em: EditMesh,
   faces: ReadonlySet<number>,
   dx: number,
@@ -92,8 +100,14 @@ export function averageNormal(em: EditMesh, faces: ReadonlySet<number>): [number
  * Negative pushes in — a recessed panel, a sunken worktop drainer. The whole
  * selection moves as one rigid piece along one averaged direction, so a ring
  * of coplanar faces stays coplanar.
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
  */
 export function offsetFaces(em: EditMesh, faces: ReadonlySet<number>, distance: number): void {
+  return throughStoredNormals(em, () => offsetFacesRaw(em, faces, distance));
+}
+
+function offsetFacesRaw(em: EditMesh, faces: ReadonlySet<number>, distance: number): void {
   if (faces.size === 0 || distance === 0) return;
   const n = averageNormal(em, faces);
   moveFaces(em, faces, n[0] * distance, n[1] * distance, n[2] * distance);
@@ -106,8 +120,14 @@ export function offsetFaces(em: EditMesh, faces: ReadonlySet<number>, distance: 
  * tapers it. Together they turn a bare `extrudeFaces` into a limb segment —
  * push along the normal, narrow towards the tip — which is the shape of every
  * arm, leg and finger grown out of a body cage.
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
  */
 export function scaleFaces(em: EditMesh, faces: ReadonlySet<number>, factor: number): void {
+  return throughStoredNormals(em, () => scaleFacesRaw(em, faces, factor));
+}
+
+function scaleFacesRaw(em: EditMesh, faces: ReadonlySet<number>, factor: number): void {
   const verts = vertsOf(em, faces);
   if (verts.size === 0 || factor === 1) return;
 

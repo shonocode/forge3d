@@ -318,7 +318,11 @@ export function facePolyNormal(em: EditMesh, f: number): [number, number, number
   return [nx, ny, nz];
 }
 
-/** Set the world-local position of a vertex (used by gizmo drag). */
+/**
+ * Set the world-local position of a vertex. Positions only: custom normals (`loopNormals`) are left as the vectors they
+ * were — around a series of moves, `storeNormals` before and `readStoredNormals` after read them in the moved shape as
+ * Blender does (compat-backlog C29e; the gizmo drag does that).
+ */
 export function setVertexPosition(em: EditMesh, v: number, x: number, y: number, z: number): void {
   em.positions[v * 3] = x;
   em.positions[v * 3 + 1] = y;

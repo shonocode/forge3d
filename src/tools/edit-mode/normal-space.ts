@@ -386,7 +386,8 @@ export function decodeCustomNormals(data: MeshData, clnors: readonly (readonly [
  * re-encoding a decoded vector can land one step (~1e-4 rad) off the pair it came from.
  */
 export function throughStoredNormals<T>(em: EditMesh, run: () => T): T {
-  if (!em.loopNormals) return run();
+  // Already carrying the pairs (an operator built on another): the outer call reads them back.
+  if (!em.loopNormals || em.loopNormalsArePairs) return run();
   const data = meshToData(em);
   if (!shapedNormals(data)) return run();
   const before = { loopNormals: em.loopNormals, sharpEdges: em.sharpEdges, polys: JSON.stringify(data.polys) };
@@ -467,4 +468,25 @@ export function withMovedPositions(data: MeshData, positions: Float32Array): Mes
   if (positions.length === data.positions.length && positions.every((x, i) => x === data.positions[i])) return out;
   const { clnors, sharp } = setCustomNormals(data, data.normals!);
   return { ...out, ...(sharp.size > 0 ? { sharp } : {}), normals: decodeCustomNormals({ ...out, sharp }, clnors) };
+}
+
+/** The custom normals of `em` as stored pairs, for an operator that moves vertices over many steps (a gizmo drag). */
+export interface StoredNormals {
+  pairs: [number, number][];
+  sharp: Set<string>;
+}
+
+/** Store `em`'s custom normals as their pairs in its current shape — null when it has none (compat-backlog C29e). */
+export function storeNormals(em: EditMesh): StoredNormals | null {
+  if (!em.loopNormals) return null;
+  const data = meshToData(em);
+  if (!shapedNormals(data)) return null;
+  const { clnors, sharp } = setCustomNormals(data, data.normals);
+  return { pairs: clnors, sharp };
+}
+
+/** Read {@link storeNormals}' pairs in `em`'s shape now, into `loopNormals` (and the sharp edges laying them down added). */
+export function readStoredNormals(em: EditMesh, stored: StoredNormals): void {
+  if (stored.sharp.size > 0) em.sharpEdges = new Set(stored.sharp);
+  em.loopNormals = decodeCustomNormals({ ...meshToData(em), sharp: stored.sharp }, stored.pairs);
 }

@@ -25,7 +25,7 @@ import { bulletConvexHull } from "./hull/bullet-hull";
 import { meshFromData, meshToData } from "../lib/mesh";
 import { trisToQuads } from "./edit-mode/operators";
 import { calcEdges } from "./bmesh-lite";
-import { cornerFans, customNormalToData, decodeCustomNormals, setCustomNormals } from "./edit-mode/normal-space";
+import { cornerFans, customNormalToData, decodeCustomNormals, setCustomNormals, withMovedPositions } from "./edit-mode/normal-space";
 
 /** Shift every crease / seam key by `base`, appending into `out`. */
 function remapKeys<T>(
@@ -224,9 +224,20 @@ export function transformMesh(data: MeshData, opts: TransformOptions): MeshData 
     placed.polys = placed.polys.map(flip);
     for (const k of ["uvs", "colors", "normals"] as const) placed[k] = placed[k]?.map(flip);
   }
-  // A custom normal turns with the surface: the inverse transpose of the
-  // linear part, which for rotate · scale is rotate · (1 / scale).
+  // A custom normal turns with the surface. Without a flip, as Blender's: the stored pairs read in the moved shape
+  // (compat-backlog C29e) — under a non-uniform scale that is not the inverse transpose. With one (the faces turned
+  // over too), the inverse transpose of the linear part, which for rotate · scale is rotate · (1 / scale).
   if (placed.normals && s.some((k) => k === 0)) delete placed.normals;
+  // A similarity (one scale for every axis) turns every fan's space rigidly, so the inverse transpose below is exactly
+  // what the pairs read as; only a non-uniform scale needs them read in the new shape.
+  const uniform = Math.abs(Math.abs(s[0]) - Math.abs(s[1])) < 1e-12 && Math.abs(Math.abs(s[1]) - Math.abs(s[2])) < 1e-12;
+  const shaped = !!placed.normals && placed.normals.length === placed.polys.length && placed.normals.every((f, i) => f.length === placed.polys[i]!.length);
+  if (placed.normals && !flipped && !uniform && shaped) {
+    const moved = withMovedPositions(data, placed.positions);
+    placed.normals = moved.normals;
+    if (moved.sharp) placed.sharp = moved.sharp;
+    return placed;
+  }
   if (placed.normals)
     placed.normals = placed.normals.map((f) =>
       f.map(([nx, ny, nz]) => {

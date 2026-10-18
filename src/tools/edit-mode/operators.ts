@@ -1139,8 +1139,14 @@ function flipDiagonal(em: EditMesh, edgeHE: number, v1: number, v2: number): Set
  * quads there are no diagonals, so the rails are simply the ring edges.)
  *
  * Returns the (canonicalized) input edge set — still valid, nothing rebuilt.
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
  */
 export function edgeSlide(em: EditMesh, selectedEdges: ReadonlySet<number>, t: number): Set<number> {
+  return throughStoredNormals(em, () => edgeSlideRaw(em, selectedEdges, t));
+}
+
+function edgeSlideRaw(em: EditMesh, selectedEdges: ReadonlySet<number>, t: number): Set<number> {
   const canonical = new Set<number>();
   for (const he of selectedEdges) canonical.add(canonicalEdge(em, he));
   if (canonical.size === 0 || t === 0) return canonical;
@@ -1877,8 +1883,14 @@ export function bridgeEdgeLoops(em: EditMesh, selectedEdges: ReadonlySet<number>
  *
  * Returns `{mover}` on success, empty set when the two verts don't share an
  * edge (nothing written).
+ *
+ * Custom normals stay their stored pairs and are read in the moved shape (compat-backlog C29e).
  */
 export function vertexSlide(em: EditMesh, anchor: number, mover: number, t: number): Set<number> {
+  return throughStoredNormals(em, () => vertexSlideRaw(em, anchor, mover, t));
+}
+
+function vertexSlideRaw(em: EditMesh, anchor: number, mover: number, t: number): Set<number> {
   if (anchor === mover) return new Set();
   let adjacent = false;
   for (let i = 0; i < em.halfEdges.length && !adjacent; i++) {

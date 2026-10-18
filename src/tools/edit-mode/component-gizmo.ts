@@ -6,6 +6,7 @@ import { ScaleGizmo } from "@babylonjs/core/Gizmos/scaleGizmo";
 import { UtilityLayerRenderer } from "@babylonjs/core/Rendering/utilityLayerRenderer";
 import type { Scene } from "@babylonjs/core/scene";
 import { commitPositions } from "./commit";
+import { readStoredNormals, storeNormals, type StoredNormals } from "./normal-space";
 import { faceVerts, edgeOrigin, edgeEnd, type EditMesh } from "./half-edge";
 import { refreshOverlayPositions, type EditOverlay } from "./overlay";
 import { computeFalloffWeights } from "./proportional";
@@ -72,6 +73,10 @@ export function createComponentGizmo(
   // baseline (avoids drift from floating-point accumulation).
   let dragSnapshot: Float32Array | null = null;
   let dragWeights: Map<number, number> | null = null;
+  // Custom normals, if the mesh has them: stored as pairs at the start, read in the moved shape each tick — as
+  // Blender's transform leaves the pairs and reads them in the new shape (compat-backlog C29e).
+  let dragNormals: StoredNormals | null = null;
+  let dragNormalsBefore: number[][][] | undefined;
   let dragStartLocal = new Vector3();
   let dragCentroid = new Vector3();
 
@@ -83,6 +88,8 @@ export function createComponentGizmo(
     rotationGizmo.snapDistance = sc.rotationEnabled ? (sc.rotationIncrement * Math.PI) / 180 : 0;
     scaleGizmo.snapDistance = sc.scaleEnabled ? sc.scaleIncrement : 0;
     dragSnapshot = new Float32Array(em.positions);
+    dragNormalsBefore = em.loopNormals?.map((f) => f.map((c) => [...c]));
+    dragNormals = storeNormals(em);
     const affected = computeAffectedVertices(em, sel);
     const cfg = state.editConfig;
     dragWeights = cfg.proportional
@@ -137,6 +144,7 @@ export function createComponentGizmo(
         em.positions[v * 3 + 2] = dragCentroid.z + (dragSnapshot[v * 3 + 2]! - dragCentroid.z) * sz;
       }
     }
+    if (dragNormals) readStoredNormals(em, dragNormals);
     commitPositions(em);
     refreshOverlayPositions(scene, overlay, em, sel);
   };
@@ -145,6 +153,8 @@ export function createComponentGizmo(
     if (!dragSnapshot || !dragWeights) return;
     const before = dragSnapshot;
     const after = new Float32Array(em.positions);
+    const normalsBefore = dragNormalsBefore;
+    const normalsAfter = em.loopNormals?.map((f) => f.map((c) => [...c]));
     const affected = [...dragWeights.keys()];
     const editMesh = em;
     // Skip undo if nothing actually moved.
@@ -164,6 +174,7 @@ export function createComponentGizmo(
             editMesh.positions[v * 3 + 1] = before[v * 3 + 1]!;
             editMesh.positions[v * 3 + 2] = before[v * 3 + 2]!;
           }
+          if (normalsBefore) editMesh.loopNormals = normalsBefore.map((f) => f.map((c) => [...c]));
           commitPositions(editMesh);
           refreshOverlayPositions(scene, overlay, editMesh, sel);
           recenterProxy(proxy, editMesh, sel);
@@ -175,6 +186,7 @@ export function createComponentGizmo(
             editMesh.positions[v * 3 + 1] = after[v * 3 + 1]!;
             editMesh.positions[v * 3 + 2] = after[v * 3 + 2]!;
           }
+          if (normalsAfter) editMesh.loopNormals = normalsAfter.map((f) => f.map((c) => [...c]));
           commitPositions(editMesh);
           refreshOverlayPositions(scene, overlay, editMesh, sel);
           recenterProxy(proxy, editMesh, sel);
@@ -184,6 +196,7 @@ export function createComponentGizmo(
     }
     dragSnapshot = null;
     dragWeights = null;
+    dragNormals = null;
     proxy.rotationQuaternion!.copyFrom(Quaternion.Identity());
     proxy.scaling.copyFromFloats(1, 1, 1);
     recenterProxy(proxy, em, sel);
