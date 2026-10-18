@@ -106,9 +106,10 @@
  * * **`subsurf_levels`** (it moves the ray origin to the vertex's Catmull-Clark limit position; compat-backlog C39).
  *   `cull_face` and `use_invert_cull` are offered since 2026-10-05 (compat-backlog C23): see `ShrinkwrapProjectOptions`.
  */
+import { withMovedPositions } from "./normal-space";
 import { catmullClark } from "./subdivide";
 import { vertexGroupWeights } from "../mesh-layers";
-import { withPositions, type MeshData } from "../../lib/mesh";
+import type { MeshData } from "../../lib/mesh";
 import { closestPointOnTriangleBary } from "./attribute-transfer";
 import {
   buildTriGrid,
@@ -850,7 +851,7 @@ export function shrinkwrap(data: MeshData, options: ShrinkwrapOptions): MeshData
   }
 
   // Positions only, as `BKE_modifier_deform_verts`: every layer is carried (C88).
-  return withPositions(data, positions);
+  return withMovedPositions(data, positions);
 }
 
 /** Where the vertex ends up, given the hit and the mode. */

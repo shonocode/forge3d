@@ -74,7 +74,8 @@
  * solve is double (Eigen's sparse LU on the normal equations, here
  * preconditioned conjugate gradients on the same system).
  */
-import { withPositions, type MeshData } from "../../lib/mesh";
+import { withMovedPositions } from "./normal-space";
+import type { MeshData } from "../../lib/mesh";
 import { f, sub, dot, cross, type V3 } from "../blender-math";
 import { bmFromMesh, diskEdges, faceLoops, isBoundary, liveEdges, liveFaces, loopsOfVert, type BM, type BV } from "../bmesh-lite";
 import { ngonTriangles } from "../triangulate";
@@ -144,7 +145,7 @@ export function smoothLaplacianVert(data: MeshData, opts: SmoothLaplacianOptions
   const count = data.positions.length / 3;
   const slot = [...new Set(opts.verts ?? Array.from({ length: count }, (_, i) => i))].filter((v) => v >= 0 && v < count);
   const out = solveOnce(data, slot, lambdaFactor, lambdaBorder, use, preserveVolume, opts.tolerance ?? 1e-13, opts.maxIterations ?? 20000);
-  return withPositions(data, out);
+  return withMovedPositions(data, out);
 }
 
 /** Options of {@link smoothLaplacianSelection}: `bpy.ops.mesh.vertices_smooth_laplacian`'s. */
@@ -174,7 +175,8 @@ export interface SmoothLaplacianSelectionOptions {
  * selected it scales every rim vertex by `1 / (1 + 2·5e-5)` toward the origin.
  */
 export function smoothLaplacianSelection(data: MeshData, opts: SmoothLaplacianSelectionOptions = {}): MeshData {
-  let out = data;
+  // The custom normals are read in the final shape once — Blender keeps the stored pairs across the passes.
+  let out: MeshData = { ...data, normals: undefined };
   const verts = opts.verts ? [...opts.verts] : undefined;
   for (let i = 0; i < Math.max(1, Math.floor(opts.repeat ?? 1)); i++)
     out = smoothLaplacianVert(out, {
@@ -186,7 +188,7 @@ export function smoothLaplacianSelection(data: MeshData, opts: SmoothLaplacianSe
       preserveVolume: opts.preserveVolume ?? true,
       verts,
     });
-  return out;
+  return withMovedPositions(data, out.positions);
 }
 
 /** One `bmo_smooth_laplacian_vert_exec`. */

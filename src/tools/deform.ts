@@ -11,7 +11,8 @@
  *
  * Pure and headless.
  */
-import { withPositions, type MeshData } from "../lib/mesh";
+import { withMovedPositions } from "./edit-mode/normal-space";
+import type { MeshData } from "../lib/mesh";
 import { vertexGroupWeights } from "./mesh-layers";
 import type { Vec3 } from "./generate";
 import { falloffWeight, type ProportionalFalloff } from "./edit-mode/proportional";
@@ -40,7 +41,7 @@ function perpendicular(axis: DeformAxis): [number, number] {
  */
 function deformed(data: MeshData, positions: Float32Array): MeshData {
   // The corners are the same corners: every layer still applies.
-  return withPositions(data, positions);
+  return withMovedPositions(data, positions);
 }
 
 export interface CastOptions {
@@ -884,10 +885,10 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
 
   const P = data.positions;
   const out = new Float32Array(P);
-  const same = deformed(data, out);
+  const same = (): MeshData => deformed(data, out);
   // Measured: zero is "nothing moves", not "everything moves" — unless the falloff is NONE, which never reads the radius.
   const none = falloff === "none";
-  if ((!none && !(radius > 0)) || strength === 0) return same;
+  if ((!none && !(radius > 0)) || strength === 0) return same();
 
   const fromMat = affineOf(opts.from);
   const inv = invert(fromMat);
@@ -943,5 +944,6 @@ export function warp(data: MeshData, opts: WarpOptions): MeshData {
     }
   }
 
-  return same;
+  // Built again now that the vertices have moved: the custom normals are read in the moved shape (C29d).
+  return deformed(data, out);
 }

@@ -211,14 +211,19 @@ export function mixCornerNormals(data: MeshData, corner: readonly (readonly Vec3
   const P = data.positions;
   const PV: V3[] = Array.from({ length: P.length / 3 }, (_, v) => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!]);
   const sum: Vec3[] = PV.map(() => [0, 0, 0]);
+  const used = new Uint8Array(PV.length);
   data.polys.forEach((poly, f) =>
     poly.forEach((v, i) => {
+      // `face_find_corner_from_vert`: a face that repeats the vertex counts its first corner there only.
+      if (poly.indexOf(v) !== i) return;
+      used[v] = 1;
       const dp = mathNormalize(subF(PV[poly[(i - 1 + poly.length) % poly.length]!]!, PV[v]!));
       const dn = mathNormalize(subF(PV[poly[(i + 1) % poly.length]!]!, PV[v]!));
       sum[v] = add(sum[v]!, scale(corner[f]![i]!, safeAcosApprox(dotF(dp, dn))));
     }),
   );
-  return sum.map((s) => normalized(s));
+  // A vertex in no face: its position, normalised (`mix_normals_corner_to_vert`, `mesh_normals.cc` 237-239).
+  return sum.map((s, v) => (used[v] ? normalized(s) : (mathNormalize(PV[v]!) as Vec3)));
 }
 
 /**

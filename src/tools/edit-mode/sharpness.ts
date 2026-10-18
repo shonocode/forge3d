@@ -33,6 +33,8 @@
  *   had. Selecting only a boundary edge of a 90-degree fold marks nothing.
  */
 import type { MeshData } from "../../lib/mesh";
+import { throughStoredNormalsData } from "./normal-space";
+import { fanNormals } from "./normals";
 
 export interface SetSharpnessByAngleOptions {
   /** The limit, in radians. Blender's default is 30 degrees. */
@@ -84,6 +86,20 @@ export function setSharpnessByAngle(
   data: MeshData,
   options: SetSharpnessByAngleOptions = {},
 ): MeshData {
+  // With custom normals, the operator changes only the edges' flag (`editmesh_set_sharpness_by_angle.cc` 50-61): the
+  // stored pairs stay and are read in the new fans (compat-backlog C29d).
+  if (shapedNormals(data)) return throughStoredNormalsData(data, (d) => setSharpnessByAngleRaw(d, options));
+  return setSharpnessByAngleRaw(data, options);
+}
+
+/** A custom-normal layer shaped like the faces — `meshToData`'s `normals: []` is none. */
+function shapedNormals(data: MeshData): boolean {
+  return (
+    data.polys.length > 0 && !!data.normals && data.normals.length === data.polys.length && data.normals.every((f, i) => f.length === data.polys[i]!.length)
+  );
+}
+
+function setSharpnessByAngleRaw(data: MeshData, options: SetSharpnessByAngleOptions): MeshData {
   const limit = options.angle ?? (30 * Math.PI) / 180;
   const extend = options.extend ?? false;
   const P = data.positions;
@@ -132,12 +148,11 @@ export function setSharpnessByAngle(
   // degrees, with no edge marked, `has_custom_normals` stays false. That is
   // the condition used here; the case of a mesh that already had sharp edges
   // and gains none is not measured.
-  if (sharp.size > 0)
-    out.normals = data.polys.map((poly) => {
-      const n = faceNormal(P, poly);
-      return poly.map(() => [...n]);
-    });
-  if (data.normals && sharp.size === 0) out.normals = data.normals.map((f) => f.map((c) => [...c]));
+  // A mesh with custom normals keeps them (its stored pairs, read in the new fans by the wrapper above). One without
+  // gets the layer "automatic" (the pair 0): each corner its fan's normal in the new fans — the face normal on a flat
+  // face, as first measured (compat-backlog C29d: on smooth faces it is the fan's).
+  if (shapedNormals(data)) out.normals = data.normals!.map((f) => f.map((c) => [...c]));
+  else if (sharp.size > 0) out.normals = fanNormals({ ...out, ...(data.sharpFaces ? { sharpFaces: data.sharpFaces } : {}) });
   if (data.creases) out.creases = new Map(data.creases);
   if (data.seams) out.seams = new Set(data.seams);
   if (data.edges) out.edges = data.edges.map((e) => [...e]);

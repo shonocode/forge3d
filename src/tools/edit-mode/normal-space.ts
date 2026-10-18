@@ -14,7 +14,7 @@
  * const shown = decodeCustomNormals({ ...mesh, sharp }, clnors); // what Blender then shows per corner
  * ```
  */
-import { meshToData, type MeshData } from "../../lib/mesh";
+import { meshToData, withPositions, type MeshData } from "../../lib/mesh";
 import { toPolygons as toPolygonsOf, type EditMesh } from "./half-edge";
 import { f, dot, sub, cross, mathNormalize, meshFaceNormal, safeAcosApprox, type V3 } from "../blender-math";
 
@@ -453,4 +453,18 @@ function shapedNormals(data: MeshData): boolean {
     data.normals.length === data.polys.length &&
     data.normals.every((face, f) => face.length === data.polys[f]!.length)
   );
+}
+
+/**
+ * {@link withPositions} for an operator that only **moves vertices** (the deform modifiers, Displace, Smooth, Laplacian,
+ * Shrinkwrap, Planar): the custom normals turn with the surface, as Blender's — the stored pairs stay, and are read in
+ * the moved shape's fans (compat-backlog C29d). `withPositions` alone copies the vectors as they were.
+ */
+export function withMovedPositions(data: MeshData, positions: Float32Array): MeshData {
+  const out = withPositions(data, positions);
+  if (!shapedNormals(data)) return out;
+  // Nothing moved: the vectors as they were, not re-read a step off.
+  if (positions.length === data.positions.length && positions.every((x, i) => x === data.positions[i])) return out;
+  const { clnors, sharp } = setCustomNormals(data, data.normals!);
+  return { ...out, ...(sharp.size > 0 ? { sharp } : {}), normals: decodeCustomNormals({ ...out, sharp }, clnors) };
 }

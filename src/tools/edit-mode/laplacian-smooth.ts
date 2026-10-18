@@ -53,6 +53,7 @@
 import type { MeshData } from "../../lib/mesh";
 import { bicgstab, type Row } from "./laplacian";
 import { vertexGroupWeights } from "../mesh-layers";
+import { withMovedPositions } from "./normal-space";
 
 export interface LaplacianSmoothOptions {
   /** Blender's `iterations` — passes over the same matrix. Default 1. */
@@ -96,11 +97,8 @@ export function laplacianSmooth(data: MeshData, opts: LaplacianSmoothOptions = {
   const P = Float32Array.from(data.positions);
   const n = P.length / 3;
   const polys = data.polys.filter((p) => p.length >= 3);
-  const out = (): MeshData => ({
-    ...data,
-    positions: P,
-    polys: data.polys.map((p) => [...p]),
-  });
+  // Every layer carried; custom normals read in the moved shape (C29d).
+  const out = (): MeshData => withMovedPositions(data, P);
   if (!use.some(Boolean) || n === 0) return out();
 
   // Blender's edges: every face edge once, then the wire edges.

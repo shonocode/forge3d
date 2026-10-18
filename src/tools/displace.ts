@@ -31,6 +31,8 @@
  *
  * Pure and headless.
  */
+import { withMovedPositions } from "./edit-mode/normal-space";
+import { mixCornerNormals, type Vec3 as NVec3 } from "./edit-mode/normals";
 import { withPositions, type MeshData } from "../lib/mesh";
 import { vertexGroupWeights } from "./mesh-layers";
 import type { Vec3 } from "./generate";
@@ -148,7 +150,7 @@ export function displace(data: MeshData, opts: DisplaceOptions): MeshData {
     }
   }
 
-  return withPositions(data, out);
+  return withMovedPositions(data, out);
 }
 
 /**
@@ -174,7 +176,7 @@ export function offsetAlongNormals(data: MeshData, distance: number): MeshData {
   const out = new Float32Array(data.positions.length);
   for (let v = 0; v < P.length; v++)
     for (let k = 0; k < 3; k++) out[v * 3 + k] = f(P[v]![k]! + f(normals[v]![k]! * d));
-  return withPositions(data, out);
+  return withMovedPositions(data, out);
 }
 
 export interface TextureDisplaceOptions {
@@ -188,7 +190,7 @@ export interface TextureDisplaceOptions {
    * Blender's `direction`. Default `"normal"`. `"rgbToXyz"` moves each axis by
    * its own colour channel (a grey texture moves all three alike).
    */
-  direction?: "normal" | "x" | "y" | "z" | "rgbToXyz";
+  direction?: "normal" | "customNormal" | "x" | "y" | "z" | "rgbToXyz";
   /**
    * Blender's `texture_coords`. `"local"` (default) reads the texture at the
    * vertex; `"uv"` at `(2u − 1, 2v − 1, 0)` from the first face corner that
@@ -268,7 +270,15 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
         })
       : textureCoords(data, P, opts.coords === "uv" ? "uv" : "local");
   const globalSpace = opts.space === "global";
-  const normals = direction === "normal" ? meshVertNormals(P, data.polys) : null;
+  // `CUSTOM_NORMAL`: `Mesh::vert_normals()` — with custom normals the corners' mixed into each vertex
+  // (`mix_normals_corner_to_vert`), without them the plain ones (`MOD_displace.cc` 297-301, compat-backlog C37).
+  const shaped = !!data.normals && data.normals.length === data.polys.length && data.normals.every((c, i) => c.length === data.polys[i]!.length);
+  const normals =
+    direction === "normal" || (direction === "customNormal" && !shaped)
+      ? meshVertNormals(P, data.polys)
+      : direction === "customNormal"
+        ? mixCornerNormals(data, data.normals as NVec3[][])
+        : null;
   const out = new Float32Array(data.positions.length);
   for (let v = 0; v < count; v++) {
     const p = P[v]!;
@@ -303,7 +313,7 @@ export function textureDisplace(data: MeshData, opts: TextureDisplaceOptions = {
       else out[v * 3 + k] = f(p[k]! + delta);
     }
   }
-  return withPositions(data, out);
+  return withMovedPositions(data, out);
 }
 
 /**

@@ -8,6 +8,11 @@ import { cornerFans, cornerFanSpace, customDataToNormal, customNormalToData, dec
 import { meshFromData, meshToData } from "../../lib/mesh";
 import { rebuildPolygons } from "./half-edge";
 import { reverseFaces } from "./operators";
+import { withMovedPositions } from "./normal-space";
+import { setSharpnessByAngle } from "./sharpness";
+import { fanNormals, mixCornerNormals } from "./normals";
+import { textureDisplace } from "../displace";
+import { weightedNormal } from "./normal-modifiers";
 
 /** The parity `cube` (unit, centred), faces 0 and 3 flat as `--tag-sharp-faces` lays them down. */
 function cube(): MeshData {
@@ -177,3 +182,80 @@ describe("operators through the stored pairs (compat-backlog C29c)", () => {
     expect(JSON.stringify(em.loopNormals)).toBe(before);
   });
 });
+
+describe("custom normals on operators that move vertices and change edges (compat-backlog C29d)", () => {
+  const turned = (m: MeshData, t: number): Float32Array => {
+    // A quarter turn about z: (x, y, z) → (−y, x, z).
+    const P = new Float32Array(m.positions.length);
+    for (let v = 0; v < P.length / 3; v++) {
+      P[v * 3] = -m.positions[v * 3 + 1]! * t;
+      P[v * 3 + 1] = m.positions[v * 3]! * t;
+      P[v * 3 + 2] = m.positions[v * 3 + 2]! * t;
+    }
+    return P;
+  };
+
+  it("withMovedPositions turns the custom normals with the surface; withPositions-style copying would not", () => {
+    const m = cube();
+    const { clnors, sharp } = setCustomNormals(m, tagged(m));
+    const shown = decodeCustomNormals({ ...m, sharp }, clnors);
+    const out = withMovedPositions({ ...m, sharp, normals: shown }, turned(m, 1));
+    out.normals!.forEach((face, f) =>
+      face.forEach((n, i) => {
+        const was = shown[f]![i]!;
+        expect(angle(n, [-was[1]!, was[0]!, was[2]!])).toBeLessThan(2e-4);
+      }),
+    );
+  });
+
+  it("setSharpnessByAngle with no custom normals fills each corner's fan normal — not the face normal — on a smooth fan", () => {
+    // A 2×2 grid, its centre raised a little (no edge there reaches 0.5 rad), and a fifth quad folded down 90° off one
+    // side so that something does turn sharp. The centre's four corners are one fan.
+    const m: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 1, 1, 0.1, 2, 1, 0, 0, 2, 0, 1, 2, 0, 2, 2, 0, 2, 1, -1, 2, 0, -1]),
+      polys: [[0, 1, 4, 3], [1, 2, 5, 4], [3, 4, 7, 6], [4, 5, 8, 7], [5, 2, 10, 9]],
+    };
+    const out = setSharpnessByAngle(m, { angle: 0.5 });
+    expect(out.sharp && out.sharp.size).toBeGreaterThan(0);
+    const centre = out.polys.flatMap((p, f) => p.flatMap((v, i) => (v === 4 ? [out.normals![f]![i]!] : [])));
+    expect(centre).toHaveLength(4);
+    for (const n of centre) expect(angle(n, centre[0]!)).toBeLessThan(1e-6); // one fan, one normal
+    expect(angle(centre[0]!, [0, 0, 1])).toBeLessThan(0.01); // the mean of four faces tilted about it, not any one
+    expect(angle(centre[0]!, out.normals![0]![0]!)).toBeGreaterThan(0); // and not face 0's own corner normal at vertex 0
+  });
+
+  it("setSharpnessByAngle keeps a mesh's custom normals instead of overwriting them", () => {
+    const m = cube();
+    const want = tagged(m);
+    const kept = setSharpnessByAngle({ ...m, normals: want }, { angle: 0.5 });
+    kept.normals!.forEach((face, f) => face.forEach((n, i) => expect(angle(n, want[f]![i]!)).toBeLessThan(2e-4)));
+  });
+
+  it("Displace CUSTOM_NORMAL moves along the mix of each vertex's corner normals", () => {
+    const m = cube();
+    const normals = tagged(m);
+    const out = textureDisplace({ ...m, normals }, { strength: 1, midLevel: 0, direction: "customNormal" });
+    const along = mixCornerNormals(m, normals as never);
+    for (let v = 0; v < 8; v++)
+      for (let k = 0; k < 3; k++) expect(out.positions[v * 3 + k]).toBeCloseTo(m.positions[v * 3 + k]! + along[v]![k]!, 5);
+  });
+
+  it("Displace CUSTOM_NORMAL on a mesh with no custom normals moves as NORMAL does (`vert_normals_true`)", () => {
+    const m = cube();
+    const a = textureDisplace(m, { strength: 1, midLevel: 0, direction: "customNormal" });
+    const b = textureDisplace(m, { strength: 1, midLevel: 0, direction: "normal" });
+    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
+  });
+
+  it("Weighted Normal with a vertex group: a corner outside it keeps the mesh's custom normal, stored per fan", () => {
+    // Every face smooth, custom normals that disagree inside the fans; vertex 0 outside the group. Its corners keep their
+    // own normals — laying them down splits the fans with sharp edges — where the fan's mean would come from before C29d.
+    const m: MeshData = { ...cube(), sharpFaces: undefined };
+    const normals = tagged(m);
+    m.groups = new Map([["g", new Map([1, 2, 3, 4, 5, 6, 7].map((v) => [v, 1] as [number, number]))]]);
+    const out = weightedNormal({ ...m, normals }, { vertexGroup: "g" });
+    out.polys.forEach((p, f) => p.forEach((v, i) => v === 0 && expect(angle(out.normals![f]![i]!, normals[f]![i]!)).toBeLessThan(2e-4)));
+    expect(out.sharp && out.sharp.size).toBeGreaterThan(0);
+  });
+});
+

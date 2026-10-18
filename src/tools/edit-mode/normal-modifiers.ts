@@ -146,6 +146,7 @@ import {
   type Vec3,
 } from "./normals";
 import { vertexGroupWeights } from "../mesh-layers";
+import { decodeCustomNormals, setCustomNormals } from "./normal-space";
 
 export type WeightedNormalMode = "area" | "angle" | "areaAngle";
 
@@ -382,7 +383,9 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
   const defaultNormal = (f: number, i: number): Vec3 => {
     if (!defaults) {
       const fans = fanNormals(data);
-      if (options.keepSharp || members !== null) defaults = fans;
+      // `normals_calc_corners(..., clnors, ...)`: the corners as the mesh shows them, its custom normals included (C94).
+      if (options.keepSharp || members !== null)
+        defaults = data.normals && data.normals.length === data.polys.length ? (data.normals as Vec3[][]) : fans;
       else {
         // The corners as they stand — a custom normal where the mesh has one (`corner_normals()` reads them).
         const byVertex = mixCornerNormals(data, data.normals && data.normals.length === data.polys.length ? (data.normals as Vec3[][]) : fans);
@@ -448,6 +451,13 @@ export function weightedNormal(data: MeshData, options: WeightedNormalOptions = 
       // computes by itself — the angle-weighted normal of its smooth group.
       out[f]![i] = sum && Math.hypot(sum[0], sum[1], sum[2]) >= 1e-6 ? normalized(sum) : defaultNormal(f, i);
     }
+  // `normals_corner_custom_set` (keep_sharp, or a vertex group): stored per smooth fan — a fan's corners hold the mean,
+  // and an edge inside one whose corners disagree is marked sharp — then read back (compat-backlog C94, C29d). One item
+  // per vertex (`from_verts`) gives every corner of a vertex the same normal: nothing to mix.
+  if (options.keepSharp || members !== null) {
+    const { clnors, sharp } = setCustomNormals(data, out);
+    return withNormals(data, decodeCustomNormals({ ...data, sharp }, clnors) as Vec3[][], sharp);
+  }
   return withNormals(data, out);
 }
 

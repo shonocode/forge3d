@@ -14,7 +14,8 @@
  *
  * Pure and headless.
  */
-import { withPositions, type MeshData } from "../lib/mesh";
+import { withMovedPositions } from "./edit-mode/normal-space";
+import type { MeshData } from "../lib/mesh";
 import { vertexGroupWeights } from "./mesh-layers";
 
 export interface SmoothMeshOptions {
@@ -97,5 +98,5 @@ export function smoothMesh(data: MeshData, options: SmoothMeshOptions = {}): Mes
     }
   }
 
-  return withPositions(data, Float32Array.from(P));
+  return withMovedPositions(data, Float32Array.from(P));
 }

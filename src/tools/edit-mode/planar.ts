@@ -52,7 +52,8 @@
  * shared edge opposite ways, the shared corner lands on the average of what
  * each asked for.
  */
-import { withPositions, type MeshData } from "../../lib/mesh";
+import { withMovedPositions } from "./normal-space";
+import type { MeshData } from "../../lib/mesh";
 
 export interface PlanarFacesOptions {
   /** How many passes. Blender's `iterations`. Default 1. */
@@ -185,5 +186,5 @@ export function planarFaces(
     }
   }
 
-  return withPositions(data, new Float32Array(P));
+  return withMovedPositions(data, new Float32Array(P));
 }
