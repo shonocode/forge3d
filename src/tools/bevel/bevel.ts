@@ -34,7 +34,7 @@
  *
  * - a custom profile (`profileType: "CUSTOM"` and a Blender curve profile — see `curve-profile.ts`)
  *
- * Not offered at all (no option to pass): `harden_normals` (compat-backlog C35).
+ * `hardenNormals` (`harden_normals`, compat-backlog C35): on a mesh without custom normals, ported — see the option.
  *
  * UVs, colours, vertex groups and materials are carried as Blender carries
  * them (compat-backlog A8): each new corner is `BM_loop_interp_from_face` in
@@ -82,7 +82,8 @@ import {
   otherVert,
   loopPair,
 } from "../bmesh-lite";
-import { meshVertNormals } from "../blender-math";
+import { meshVertNormals, faceNormalCalc, safeAcosApprox, f as fl32, dot as dotF, sub as subF, mathNormalize as normF } from "../blender-math";
+import { cornerFans, customNormalToData, decodeCustomNormals } from "../edit-mode/normal-space";
 import { curveProfileSegments, type CurveProfileInput } from "./curve-profile";
 import { vertexGroupWeights } from "../mesh-layers";
 import { axisRows, project as projectRows } from "../triangulate";
@@ -144,6 +145,13 @@ export interface BevelMeshOptions {
    * edge faces medium; `affected`: and the rebuilt faces strong; `all`: and the untouched ones strong. Default `none`.
    */
   faceStrengthMode?: "none" | "new" | "affected" | "all";
+  /**
+   * Blender's `harden_normals` (compat-backlog C35): the new faces shaded smooth, their corners at a rebuilt face taking
+   * that face's normal, between two edge faces the mean of the two (`bevel_harden_normals`) — written as custom
+   * normals, the rest "automatic". On a mesh **without** custom normals only: one that has them comes out as it would
+   * without the option (the bevel does not carry them, C17).
+   */
+  hardenNormals?: boolean;
   /** Blender's `width` (modifier) / `offset` (operator), in the units `offsetType` names. */
   offset: number;
   /** Default `OFFSET`, the modifier's default. */
@@ -392,6 +400,8 @@ interface Params {
   bm: BM;
   vertHash: Map<BV, BevVert>;
   faceKind: Map<BF, FKind>;
+  /** `BM_ELEM_LONG_TAG`: the corners of the edge strips' long edges, which `bevel_harden_normals` reads. */
+  longTag: Set<BL>;
   faceMat: Map<BF, number>;
   /** The input face each face descends from (it is the example the new ones copy their attributes from). */
   faceOrig: Map<BF, number>;
@@ -3880,28 +3890,31 @@ function bevelBuildEdgePolygons(p: Params, bme: BE): void {
     addMap(verts[3]!, bv1.v);
     addMap(verts[2]!, bv2.v);
     const vs = [...verts];
+    let made: BF | null = null;
     if (odd && k === mid + 1) {
       if (e1.isSeam) {
         // Straddles a seam: interpolate in one face, snapping the other
         // face's corners onto the edge.
         const edges = fChoice === f1 ? [null, null, bme, bme] : [bme, bme, null, null];
-        bevCreateNgon(p, vs, null, fChoice, FKind.EDGE, edges, null, nvBvMap);
+        made = bevCreateNgon(p, vs, null, fChoice, FKind.EDGE, edges, null, nvBvMap);
       } else {
         // Straddles, no seam: the left half in f1, the right half in f2.
-        bevCreateNgon(p, vs, [f1, f1, f2, f2], fChoice, FKind.EDGE, null, null, nvBvMap);
+        made = bevCreateNgon(p, vs, [f1, f1, f2, f2], fChoice, FKind.EDGE, null, null, nvBvMap);
       }
     } else if (odd && k === centerAdjK && e1.isSeam) {
       // The strip beside the centre one, in the other island: snap the
       // side near the seam onto the edge, as the rings do.
       const edges = k === mid ? [null, null, bme, bme] : [bme, bme, null, null];
-      bevCreateNgon(p, vs, null, k === mid ? f1 : f2, FKind.EDGE, edges, null, nvBvMap);
+      made = bevCreateNgon(p, vs, null, k === mid ? f1 : f2, FKind.EDGE, edges, null, nvBvMap);
     } else if (!odd && k === mid) {
-      bevCreateNgon(p, vs, null, f1, FKind.EDGE, [null, null, bme, bme], null, nvBvMap);
+      made = bevCreateNgon(p, vs, null, f1, FKind.EDGE, [null, null, bme, bme], null, nvBvMap);
     } else if (!odd && k === mid + 1) {
-      bevCreateNgon(p, vs, null, f2, FKind.EDGE, [bme, bme, null, null], null, nvBvMap);
+      made = bevCreateNgon(p, vs, null, f2, FKind.EDGE, [bme, bme, null, null], null, nvBvMap);
     } else {
-      bevCreateNgon(p, vs, null, k <= mid ? f1 : f2, FKind.EDGE, null, null, nvBvMap);
+      made = bevCreateNgon(p, vs, null, k <= mid ? f1 : f2, FKind.EDGE, null, null, nvBvMap);
     }
+    // Tag the long edges: the corners at `verts[0]` and `verts[2]` (`BM_ELEM_LONG_TAG`, for `bevel_harden_normals`).
+    if (made) for (const l of faceLoops(made)) if (l.v === vs[0] || l.v === vs[2]) p.longTag.add(l);
     verts[0] = verts[3]!;
     verts[1] = verts[2]!;
   }
@@ -4340,6 +4353,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     bm,
     vertHash: new Map(),
     faceKind: new Map(),
+    longTag: new Set(),
     faceMat,
     faceOrig,
     selected: new Set(),
@@ -4543,6 +4557,7 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     if (seams.size) mesh.seams = seams;
     if (sharp.size) mesh.sharp = sharp;
     if (creases.size) mesh.creases = creases;
+    if (opts.hardenNormals && p.offset > 0 && !data.normals?.length) hardenNormals(p, mesh, live, at);
     const n0 = data.positions.length / 3;
     const origVert = bm.verts.filter((v): v is BV => !!v).map((v) => (v.index < n0 ? v.index : -1));
     return { mesh, faceKind, offset: p.offset, origVert };
@@ -4608,4 +4623,118 @@ export function bevelMesh(data: MeshData, opts: BevelMeshOptions): BevelResult {
     }
   bevelMergeUvs(p);
   return result();
+}
+
+/**
+ * `bevel_harden_normals` (`bmesh_bevel.cc`, Blender 5.1.1, compat-backlog C35) on a mesh that had no custom normals:
+ * `bevel_edges_sharp_boundary` marks sharp each edge between a smooth rebuilt face and a new face, the layer is made
+ * "automatic" (every pair 0), and each corner of a new face gets — through `BM_vert_step_fan_loop` to its neighbours in
+ * the fan — a rebuilt neighbour's face normal, the mean of two edge faces' (by the long edges, `BM_ELEM_LONG_TAG`), or
+ * the vertex normal between vertex faces, stored in the corner's space. Face and vertex normals as `BM_mesh_normals_update`
+ * makes them (a quad by its diagonals, the corner angle by `safe_acos_approx`). The spaces are the Mesh's
+ * (`normals_calc_corners`), which the BMesh's match but for the face normals' method — a pair can land one step apart.
+ */
+function hardenNormals(p: Params, mesh: MeshData, live: BF[], at: Map<BV, number>): void {
+  const kindOf = (f: BF | null | undefined): number => (f ? (p.faceKind.get(f) ?? FKind.ORIG) : -1);
+  const t = (a: readonly number[]): V3 => [a[0]!, a[1]!, a[2]!];
+  // `BM_mesh_normals_update`: the faces' normals first.
+  for (const f of live) f.no = t(faceNormalOf(f));
+  // `bm_vert_calc_normals_impl`: each corner's face normal by its angle.
+  const vno = new Map<BV, V3>();
+  for (const f of live)
+    for (const l of faceLoops(f)) {
+      const d1 = normF(subF(l.prev.v.co, l.v.co));
+      const d2 = normF(subF(l.next.v.co, l.v.co));
+      const fac = safeAcosApprox(dotF(d1, d2));
+      const acc = vno.get(l.v) ?? [0, 0, 0];
+      vno.set(l.v, [fl32(acc[0]! + fl32(f.no[0]! * fac)), fl32(acc[1]! + fl32(f.no[1]! * fac)), fl32(acc[2]! + fl32(f.no[2]! * fac))]);
+    }
+  const vertNormal = (v: BV): number[] => {
+    const n = normF(vno.get(v) ?? [0, 0, 0]);
+    return n[0] === 0 && n[1] === 0 && n[2] === 0 ? normF(v.co) : n;
+  };
+  const manifold = (e: BE | null): boolean => !!e && !!e.l && e.l.rn !== e.l && e.l.rn!.rn === e.l;
+  /** `BM_edge_other_loop`. */
+  const otherLoop = (e: BE, l: BL): BL => {
+    let o = (l.e === e ? l : l.prev).rn!;
+    if (o.v !== l.v) o = o.next;
+    return o;
+  };
+  /** `BM_vert_step_fan_loop`: the loop across `step.e` at the same vertex, `step.e` moved on to its other edge. */
+  const stepFan = (l: BL, step: { e: BE | null }): BL | null => {
+    const prev = step.e;
+    let next: BE | null;
+    if (l.e === prev) next = l.prev.e;
+    else if (l.prev.e === prev) next = l.e;
+    else return null;
+    if (!manifold(next)) return null;
+    step.e = next;
+    return otherLoop(next!, l);
+  };
+  const flat = mesh.sharpFaces;
+  const liveIndex = new Map(live.map((f, i) => [f, i] as const));
+  // `bevel_edges_sharp_boundary` (no custom normals yet).
+  const key = (e: BE): string => {
+    const i = at.get(e.v1)!;
+    const j = at.get(e.v2)!;
+    return i < j ? `${i}_${j}` : `${j}_${i}`;
+  };
+  const sharp = new Set(mesh.sharp ?? []);
+  for (const f of live) {
+    if (flat?.[liveIndex.get(f)!] || kindOf(f) !== FKind.RECON) continue;
+    for (const l of faceLoops(f)) {
+      const o = l.rn;
+      if (o && o !== l && (kindOf(o.f) === FKind.EDGE || kindOf(o.f) === FKind.VERT)) sharp.add(key(l.e!));
+    }
+  }
+  if (sharp.size) mesh.sharp = sharp;
+  const pnorm = new Map<BL, readonly number[]>();
+  const sum = (a: readonly number[], b: readonly number[]): number[] => normF([fl32(a[0]! + b[0]!), fl32(a[1]! + b[1]!), fl32(a[2]! + b[2]!)]);
+  for (const f of live) {
+    const fk = kindOf(f);
+    if (fk === FKind.ORIG || fk === FKind.RECON) continue;
+    for (const l of faceLoops(f)) {
+      const lprev = stepFan(l, { e: l.prev.e });
+      const lnext = stepFan(l, { e: l.e });
+      const pk = kindOf(lprev?.f);
+      const nk = kindOf(lnext?.f);
+      let n: readonly number[] | null = null;
+      if (fk === FKind.EDGE) {
+        if (pk === FKind.EDGE && p.longTag.has(l)) n = sum(f.no, lprev!.f.no);
+        else if (nk === FKind.EDGE && p.longTag.has(lnext!)) n = sum(f.no, lnext!.f.no);
+        else if (pk === FKind.RECON && p.longTag.has(l)) n = lprev!.f.no;
+        else if (nk === FKind.RECON && p.longTag.has(l.prev)) n = lnext!.f.no;
+      } else if (fk === FKind.VERT) {
+        if (pk === FKind.VERT && nk === FKind.VERT) n = vertNormal(l.v);
+        else if (pk === FKind.RECON) n = lprev!.f.no;
+        else if (nk === FKind.RECON) n = lnext!.f.no;
+        else {
+          const lpp = lprev ? stepFan(lprev, { e: lprev.prev.e }) : null;
+          const lnn = lnext ? stepFan(lnext, { e: lnext.e }) : null;
+          const ppk = kindOf(lpp?.f);
+          const nnk = kindOf(lnn?.f);
+          if (pk === FKind.EDGE && ppk === FKind.RECON) n = lpp!.f.no;
+          else if (pk === FKind.EDGE && nk === FKind.VERT && ppk === FKind.EDGE) n = sum(lprev!.f.no, lpp!.f.no);
+          else if (nk === FKind.EDGE && pk === FKind.VERT && nnk === FKind.EDGE) n = sum(lnext!.f.no, lnn!.f.no);
+        }
+      }
+      if (n) pnorm.set(l, n);
+    }
+  }
+  const fans = cornerFans({ ...mesh, normals: undefined });
+  const pairs: [number, number][] = [];
+  let c = 0;
+  for (const f of live)
+    for (const l of faceLoops(f)) {
+      const n = pnorm.get(l);
+      pairs.push(n ? customNormalToData(fans.spaces[fans.fanOf[c]!]!, [...n]) : [0, 0]);
+      c++;
+    }
+  mesh.normals = decodeCustomNormals(mesh, pairs);
+}
+
+/** `BM_face_calc_normal` on a live face. */
+function faceNormalOf(f: BF): number[] {
+  const ring = faceLoops(f);
+  return faceNormalCalc(ring.map((l) => l.v.co), ring.map((_, i) => i));
 }
