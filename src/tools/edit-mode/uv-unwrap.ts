@@ -57,6 +57,11 @@ export interface UnwrapOptions {
    *                 charts too small / degenerate to solve.
    */
   method: "project" | "conformal";
+  /**
+   * The faces to unwrap — Blender's operators unwrap the selected faces only and leave the rest's UVs alone
+   * (`smart_project_exec` skips an unselected face, `uvedit_unwrap_ops.cc`; compat-backlog C128). Default: all.
+   */
+  faces?: ReadonlySet<number>;
 }
 
 const DEFAULT_OPTIONS: UnwrapOptions = { angleLimit: 66, islandMargin: 0.02, method: "project" };
@@ -73,7 +78,7 @@ export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}):
   const cosThreshold = Math.cos((options.angleLimit * Math.PI) / 180);
 
   // 1. Cluster faces.
-  const clusters = clusterFaces(em, cosThreshold);
+  const clusters = clusterFaces(em, cosThreshold, options.faces);
 
   // 2. Flatten each cluster to 2D (LSCM when requested, else planar).
   const islands: Island[] = clusters.map((c) =>
@@ -93,8 +98,10 @@ export function smartUVProject(em: EditMesh, opts: Partial<UnwrapOptions> = {}):
 
 // ── Clustering ─────────────────────────────────────────────────────────────
 
-function clusterFaces(em: EditMesh, cosThreshold: number): number[][] {
+function clusterFaces(em: EditMesh, cosThreshold: number, only?: ReadonlySet<number>): number[][] {
   const visited = new Uint8Array(em.faces.length);
+  // A face outside the set is never a seed and never joins a cluster.
+  if (only) for (let f = 0; f < em.faces.length; f++) if (!only.has(f)) visited[f] = 1;
   const clusters: number[][] = [];
 
   for (let seed = 0; seed < em.faces.length; seed++) {

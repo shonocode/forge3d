@@ -572,6 +572,20 @@ export function setCreaseSelection(): void {
  * buffer along the islands' edges (the EditMesh keeps its vertices). Skin weights are sampled across by the commit. Morph
  * targets abort — their per-target position buffers cannot survive the render vertex count changing.
  */
+/** A new UV map's value on an `n`-cornered face — Blender's `mesh_uv_reset_array` (`mesh_data.cc` 48-86). */
+function resetUVs(n: number): number[][] {
+  if (n === 3) return [[0, 0], [1, 0], [1, 1]];
+  if (n === 4) return [[0, 0], [1, 0], [1, 1], [0, 1]];
+  const out: number[][] = [];
+  const dfac = Math.fround(Math.fround(1 / n) * Math.fround(Math.PI * 2));
+  let fac = 0;
+  for (let i = 0; i < n; i++) {
+    out.push([Math.fround(0.5 * Math.fround(Math.sin(fac)) + 0.5), Math.fround(0.5 * Math.fround(Math.cos(fac)) + 0.5)]);
+    fac = Math.fround(fac + dfac);
+  }
+  return out;
+}
+
 export function unwrapMesh(): void {
   const em = state.editMesh;
   if (!em || !currentOverlay || !currentGizmo) return;
@@ -580,21 +594,36 @@ export function unwrapMesh(): void {
     status("⚠ Unwrap: mesh has morph targets — clear them first");
     return;
   }
-  const result = smartUVProject(em, { method: state.editConfig.unwrapMethod });
+  // The selected faces only, as Blender's Unwrap and Smart UV Project: the others keep their UVs (compat-backlog C128 —
+  // until then every face was unwrapped again).
+  const faces = selectedFacesFlushed(em, state.editSelection.mode, state.editSelection.indices);
+  if (faces.size === 0) {
+    status("⚠ Unwrap: select the faces to unwrap");
+    return;
+  }
+  const result = smartUVProject(em, { method: state.editConfig.unwrapMethod, faces });
   // The result is the input's faces, grouped by island, over split vertices (`faces` names each): each corner's UV is the
   // UV of its vertex there, and goes onto that face's corner. The commit splits the render buffer by them (compat-backlog
   // C123: until then this wrote its own buffer and renumbered the EditMesh to it, the seams and creases left on the old
   // numbers). The corners are in the face's own order — `faceVerts`, which the unwrap read them in.
-  const uvs: number[][][] = em.faces.map((_, f) => faceVerts(em, f).map(() => [0, 0]));
+  // The faces left alone keep their UVs; with no UV map yet they get the one Blender adds (`ED_mesh_uv_add` →
+  // `reset_uv_map`, C128 review).
+  const uvs: number[][][] = em.faces.map((_, f) => {
+    const n = faceVerts(em, f).length;
+    const had = em.loopUVs?.[f];
+    return had && had.length === n ? had.map((uv) => [...uv]) : resetUVs(n);
+  });
   result.polys.forEach((p, k) => {
     uvs[result.faces[k]!] = p.map((v) => [result.uvs[v * 2]!, result.uvs[v * 2 + 1]!]);
   });
+  const kept = new Set(state.editSelection.indices);
   applyTopologyOp("Unwrap", () => {
     em.loopUVs = uvs;
-    return new Set<number>();
+    // The selection stays, as Blender's does — the faces are the same faces.
+    return kept;
   });
   const methodLabel = state.editConfig.unwrapMethod === "conformal" ? "Conformal (LSCM)" : "Project";
-  status(`Unwrap [${methodLabel}]: ${em.vertices.length} verts, ${em.faces.length} faces`);
+  status(`Unwrap [${methodLabel}]: ${faces.size} of ${em.faces.length} faces`);
 }
 
 
