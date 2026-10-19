@@ -316,9 +316,11 @@ export function updateModifierParam(mesh: AbstractMesh, modId: string, params: R
 }
 
 /**
- * Bake a modifier permanently: the base geometry becomes the stack evaluated
- * up to and including it. The modifiers above it are baked in by that, so
- * they leave the stack too — keeping them would apply them twice.
+ * Bake one modifier permanently, as Blender's Apply does (`object_modifier.cc`, `create_applied_mesh_for_modifier` and
+ * `modifier_apply_obdata`): the base geometry becomes that modifier **alone** over the base — evaluated even when it is
+ * switched off — and only it leaves the stack; the others stay, the ones above it (evaluated first) still running, now over the new base, which
+ * is why Blender warns when it is not the first (compat-backlog C130: until then this baked the stack up to it, so the
+ * modifiers below went into the base and off the stack, and a switched-off one left the stack doing nothing).
  */
 export function applyModifier(mesh: AbstractMesh, modId: string): void {
   const mods = state.modifierMap.get(mesh.uniqueId);
@@ -328,10 +330,17 @@ export function applyModifier(mesh: AbstractMesh, modId: string): void {
   const orig = state.originalGeometryMap.get(mesh.uniqueId);
   if (!orig) return;
 
-  const geo: OriginalGeometry = evaluateStack(orig, mods, idx + 1);
+  const mod = mods[idx]!;
+  // `modifier_apply_obdata` refuses a modifier its `is_disabled` calls off and keeps it — "Modifier is disabled,
+  // skipping apply". Of forge3d's, only Smooth gets there (`MOD_smooth.cc`: factor 0).
+  if (mod.type === "smooth" && mod.factor === 0) {
+    status("⚠ Smooth の Factor が 0 ― 何もしないので確定しない（Blender と同じ）");
+    return;
+  }
+  const geo: OriginalGeometry = evaluateStack(orig, [{ ...mod, enabled: true }]);
   if (orig.smoothAngle !== undefined) geo.smoothAngle = orig.smoothAngle;
   const beforeMods = mods.slice();
-  const afterMods = mods.slice(idx + 1);
+  const afterMods = mods.filter((_, i) => i !== idx);
 
   const set = (base: OriginalGeometry, stack: Modifier[]): void => {
     if (stack.length === 0) {
@@ -345,7 +354,8 @@ export function applyModifier(mesh: AbstractMesh, modId: string): void {
     }
   };
   set(geo, afterMods);
-  if (idx > 0) status(`モディファイア ${idx + 1} 個を確定（上にあったものも一緒に焼き込み）`);
+  // Blender's report: "Applied modifier was not first, result may not be as expected".
+  if (idx > 0) status("⚠ 先頭でないモディファイアを確定した ― 上の段は新しい形の上でかかり直すので、見た目が変わることがある");
 
   state.history.push({
     label: "Apply Modifier",
