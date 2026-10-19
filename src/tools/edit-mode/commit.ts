@@ -309,7 +309,17 @@ export function snapshotRender(em: EditMesh): RenderSnapshot {
 
 /** Put a {@link snapshotRender} back: the buffers (any other dropped), the indices, the metadata, the EditMesh's map. */
 export function restoreRender(em: EditMesh, snap: RenderSnapshot): void {
-  const mesh = sourceMesh(em);
+  restoreRenderBuffers(sourceMesh(em), snap);
+  if (snap.renderWeld) em.renderWeld = [...snap.renderWeld];
+  else delete em.renderWeld;
+  em.triToFace = [...snap.triToFace];
+}
+
+/**
+ * The mesh half of {@link restoreRender}: buffers, indices and forge3d's metadata, with no EditMesh — for undoing a
+ * whole Edit Mode session after it was left (compat-backlog C127).
+ */
+export function restoreRenderBuffers(mesh: ReturnType<typeof sourceMesh>, snap: RenderSnapshot): void {
   const vd = new VertexData();
   for (const { kind, data } of snap.kinds) vd.set(new Float32Array(data), kind);
   vd.indices = snap.indices.slice();
@@ -319,15 +329,41 @@ export function restoreRender(em: EditMesh, snap: RenderSnapshot): void {
     if (mesh.getVerticesData(kind)?.length !== data.length) mesh.setVerticesData(kind, new Float32Array(data), true, size);
   const keep = new Set(snap.kinds.map((k) => k.kind));
   for (const kind of mesh.getVerticesDataKinds()) if (!keep.has(kind)) mesh.removeVerticesData(kind);
-  // forge3d's own keys only (all plain data); any other metadata stays as it is, class instances and all.
+  putForgeKeys(mesh, snap.metadata);
+}
+
+/** forge3d's own metadata keys back as they were (all plain data); any other metadata stays as it is, class instances and all. */
+function putForgeKeys(mesh: ReturnType<typeof sourceMesh>, saved: Record<string, unknown> | null): void {
   const meta = (mesh.metadata ?? {}) as Record<string, unknown>;
   for (const k of FORGE_KEYS) {
-    if (snap.metadata && k in snap.metadata) meta[k] = structuredClone(snap.metadata[k]);
+    if (saved && k in saved) meta[k] = structuredClone(saved[k]);
     else delete meta[k];
   }
   mesh.metadata = meta;
-  if (snap.renderWeld) em.renderWeld = [...snap.renderWeld];
-  else delete em.renderWeld;
-  em.triToFace = [...snap.triToFace];
+}
+
+/**
+ * Part of the mesh: some vertex kinds (same length on both sides — no topology change between) and forge3d's metadata.
+ * What an Edit Mode drag (positions, normals) or an edge mark (metadata only) needs to be undone once its EditMesh is
+ * gone (compat-backlog C127) — a whole {@link snapshotRender} per drag was ~9 MB on a 53k-vertex mesh.
+ */
+export interface PartSnapshot {
+  part: Array<{ kind: string; data: Float32Array }>;
+  metadata: Record<string, unknown>;
+}
+
+export function snapshotPart(mesh: ReturnType<typeof sourceMesh>, kinds: readonly string[]): PartSnapshot {
+  const part: PartSnapshot["part"] = [];
+  for (const kind of kinds) {
+    const d = mesh.getVerticesData(kind);
+    if (d) part.push({ kind, data: new Float32Array(d) });
+  }
+  return { part, metadata: forgeKeys(mesh.metadata as Record<string, unknown> | null) };
+}
+
+/** Put a {@link snapshotPart} back. */
+export function restorePart(mesh: ReturnType<typeof sourceMesh>, snap: PartSnapshot): void {
+  for (const { kind, data } of snap.part) mesh.updateVerticesData(kind, new Float32Array(data));
+  putForgeKeys(mesh, snap.metadata);
 }
 

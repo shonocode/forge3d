@@ -3,7 +3,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PickingInfo } from "@babylonjs/core/Collisions/pickingInfo";
 import { state, status, isMobile, type ComponentMode } from "../../state";
 import { buildEditMesh, refreshLoopUVs } from "./build";
-import { commitTopology, restoreRender, snapshotRender, writeEdgeAttrMetadata } from "./commit";
+import { commitTopology, restorePart, restoreRender, restoreRenderBuffers, snapshotPart, snapshotRender, writeEdgeAttrMetadata, type PartSnapshot, type RenderSnapshot } from "./commit";
 import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
@@ -68,7 +68,7 @@ export function enterEditMode(mesh: AbstractMesh): void {
 
   currentOverlay = createOverlay(state.scene, em);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-  currentGizmo = createComponentGizmo(state.scene, em, state.editSelection, currentOverlay);
+  currentGizmo = createComponentGizmo(state.scene, em, state.editSelection, currentOverlay, restoreStale);
   currentGizmo.refresh(em, state.editSelection); // detaches gizmo when empty
 
   // Hide the object-mode gizmo while we're component-editing.
@@ -86,6 +86,26 @@ export function enterEditMode(mesh: AbstractMesh): void {
 export function reloadEditMesh(mesh: AbstractMesh): void {
   if (!state.editMesh || state.editMesh.source !== mesh) return;
   refreshLoopUVs(state.editMesh);
+}
+
+/**
+ * Undo or redo an Edit Mode entry whose EditMesh is no longer the one being edited — Edit Mode was left, or left and
+ * entered again (compat-backlog C127). Every entry keeps the mesh as it was on each side, so it puts that back on the
+ * mesh itself; if the mesh is being edited again, its EditMesh is built afresh from it. Until 2026-10-19 a topology
+ * step's undo did nothing here (and was spent), and a seam, a crease or a drag wrote its old keys and indices into a
+ * mesh another step had renumbered. (Blender goes back into Edit Mode to step through; this stays in the mode it is in.)
+ */
+function restoreStale(mesh: Mesh, snap: RenderSnapshot | PartSnapshot): void {
+  const editing = state.editMesh?.source === mesh;
+  if (editing) {
+    // A drag held through Ctrl+Z would otherwise be recorded from inside this undo when the gizmo goes.
+    currentGizmo?.cancelDrag();
+    exitEditMode();
+  }
+  if ("part" in snap) restorePart(mesh, snap);
+  else restoreRenderBuffers(mesh, snap);
+  if (editing) enterEditMode(mesh);
+  store.notify();
 }
 
 export function exitEditMode(): void {
@@ -189,7 +209,10 @@ function applyTopologyOp(label: string, op: () => Set<number>): void {
   const overlayRef = currentOverlay;
   const gizmoRef = currentGizmo;
   const restore = (snap: typeof after): void => {
-    if (state.editMesh !== em || !overlayRef || !gizmoRef) return;
+    if (state.editMesh !== em || !overlayRef || !gizmoRef) {
+      restoreStale(sourceMesh(em), snap.render);
+      return;
+    }
     assignFromData(em, snap.data);
     // The buffer exactly as it was — not rendered again, which would number its vertices afresh.
     restoreRender(em, snap.render);
@@ -441,14 +464,23 @@ export function markSeamSelection(): void {
   }
   const sel = new Set(state.editSelection.indices);
   const before = new Set(em.seams);
+  const renderBefore = snapshotPart(sourceMesh(em), []);
   toggleSeams(em, sel);
   const after = new Set(em.seams);
   writeEdgeAttrMetadata(em);
+  const renderAfter = snapshotPart(sourceMesh(em), []);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  const restore = (keys: Set<string>, render: PartSnapshot): void => {
+    if (state.editMesh !== em) return restoreStale(sourceMesh(em), render);
+    em.seams.clear();
+    for (const k of keys) em.seams.add(k);
+    writeEdgeAttrMetadata(em);
+    if (currentOverlay) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+  };
   state.history.push({
     label: "Mark Seam",
-    undo() { em.seams.clear(); for (const k of before) em.seams.add(k); writeEdgeAttrMetadata(em); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
-    redo() { em.seams.clear(); for (const k of after) em.seams.add(k); writeEdgeAttrMetadata(em); if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection); },
+    undo() { restore(before, renderBefore); },
+    redo() { restore(after, renderAfter); },
   });
   status(`Seams: ${em.seams.size} edge(s)`);
 }
@@ -472,20 +504,23 @@ export function markCreaseSelection(): void {
   }
   const sel = new Set(state.editSelection.indices);
   const before = new Map(em.creases);
+  const renderBefore = snapshotPart(sourceMesh(em), []);
   toggleCreases(em, sel, state.editConfig.creaseWeight);
   const after = new Map(em.creases);
   writeEdgeAttrMetadata(em);
+  const renderAfter = snapshotPart(sourceMesh(em), []);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-  const restore = (m: Map<string, number>): void => {
+  const restore = (m: Map<string, number>, render: PartSnapshot): void => {
+    if (state.editMesh !== em) return restoreStale(sourceMesh(em), render);
     em.creases.clear();
     for (const [k, v] of m) em.creases.set(k, v);
     writeEdgeAttrMetadata(em);
-    if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+    if (currentOverlay) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   };
   state.history.push({
     label: "Mark Crease",
-    undo() { restore(before); },
-    redo() { restore(after); },
+    undo() { restore(before, renderBefore); },
+    redo() { restore(after, renderAfter); },
   });
   status(`Creases: ${em.creases.size} edge(s)`);
 }
@@ -509,20 +544,23 @@ export function setCreaseSelection(): void {
   const crease = state.editConfig.creaseWeight;
   const sel = new Set(state.editSelection.indices);
   const before = new Map(em.creases);
+  const renderBefore = snapshotPart(sourceMesh(em), []);
   setCreases(em, sel, crease);
   const after = new Map(em.creases);
   writeEdgeAttrMetadata(em);
+  const renderAfter = snapshotPart(sourceMesh(em), []);
   rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
-  const restore = (m: Map<string, number>): void => {
+  const restore = (m: Map<string, number>, render: PartSnapshot): void => {
+    if (state.editMesh !== em) return restoreStale(sourceMesh(em), render);
     em.creases.clear();
     for (const [k, v] of m) em.creases.set(k, v);
     writeEdgeAttrMetadata(em);
-    if (currentOverlay && state.editMesh === em) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
+    if (currentOverlay) rebuildOverlay(state.scene, currentOverlay, em, state.editSelection);
   };
   state.history.push({
     label: "Set Crease",
-    undo() { restore(before); },
-    redo() { restore(after); },
+    undo() { restore(before, renderBefore); },
+    redo() { restore(after, renderAfter); },
   });
   status(crease > 0
     ? `Crease = ${crease}: ${sel.size} edge(s)`

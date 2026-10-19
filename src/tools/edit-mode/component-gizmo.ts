@@ -5,9 +5,11 @@ import { RotationGizmo } from "@babylonjs/core/Gizmos/rotationGizmo";
 import { ScaleGizmo } from "@babylonjs/core/Gizmos/scaleGizmo";
 import { UtilityLayerRenderer } from "@babylonjs/core/Rendering/utilityLayerRenderer";
 import type { Scene } from "@babylonjs/core/scene";
-import { commitPositions } from "./commit";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { commitPositions, snapshotPart, type PartSnapshot } from "./commit";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { readStoredNormals, storeNormals, type StoredNormals } from "./normal-space";
-import { faceVerts, edgeOrigin, edgeEnd, type EditMesh } from "./half-edge";
+import { faceVerts, edgeOrigin, edgeEnd, sourceMesh, type EditMesh } from "./half-edge";
 import { refreshOverlayPositions, type EditOverlay } from "./overlay";
 import { computeFalloffWeights } from "./proportional";
 import { state } from "../../state";
@@ -48,6 +50,11 @@ export interface ComponentGizmo {
   /** True while the pointer is over any of the three gizmos' handles. */
   isHovered(): boolean;
   dispose(): void;
+  /**
+   * Forget a drag in progress, so the dispose that follows (which ends it — `PointerDragBehavior.detach` →
+   * `releaseDrag`) records nothing. For leaving Edit Mode from inside an undo (C127 review).
+   */
+  cancelDrag(): void;
   /** Recompute centroid and reposition the proxy. Call after selection change. */
   refresh(em: EditMesh, sel: EditSelection): void;
 }
@@ -57,6 +64,8 @@ export function createComponentGizmo(
   em: EditMesh,
   sel: EditSelection,
   overlay: EditOverlay,
+  /** Puts a drag's mesh back when its EditMesh is no longer the one edited (compat-backlog C127, `restoreStale`). */
+  restoreStale: (mesh: Mesh, render: PartSnapshot) => void,
 ): ComponentGizmo {
   const layer = new UtilityLayerRenderer(scene);
   const proxy = new TransformNode("edit-gizmo-proxy", scene);
@@ -72,6 +81,9 @@ export function createComponentGizmo(
   // so each per-tick update can re-derive the new positions from a stable
   // baseline (avoids drift from floating-point accumulation).
   let dragSnapshot: Float32Array | null = null;
+  let dragRender: PartSnapshot | null = null;
+  // A drag only writes these two (`commitPositions`).
+  const DRAG_KINDS = [VertexBuffer.PositionKind, VertexBuffer.NormalKind];
   let dragWeights: Map<number, number> | null = null;
   // Custom normals, if the mesh has them: stored as pairs at the start, read in the moved shape each tick — as
   // Blender's transform leaves the pairs and reads them in the new shape (compat-backlog C29e).
@@ -88,6 +100,7 @@ export function createComponentGizmo(
     rotationGizmo.snapDistance = sc.rotationEnabled ? (sc.rotationIncrement * Math.PI) / 180 : 0;
     scaleGizmo.snapDistance = sc.scaleEnabled ? sc.scaleIncrement : 0;
     dragSnapshot = new Float32Array(em.positions);
+    dragRender = snapshotPart(sourceMesh(em), DRAG_KINDS);
     dragNormalsBefore = em.loopNormals?.map((f) => f.map((c) => [...c]));
     dragNormals = storeNormals(em);
     const affected = computeAffectedVertices(em, sel);
@@ -153,6 +166,8 @@ export function createComponentGizmo(
     if (!dragSnapshot || !dragWeights) return;
     const before = dragSnapshot;
     const after = new Float32Array(em.positions);
+    const renderBefore = dragRender!;
+    const renderAfter = snapshotPart(sourceMesh(em), DRAG_KINDS);
     const normalsBefore = dragNormalsBefore;
     const normalsAfter = em.loopNormals?.map((f) => f.map((c) => [...c]));
     const affected = [...dragWeights.keys()];
@@ -169,6 +184,7 @@ export function createComponentGizmo(
       state.history.push({
         label: `Edit: ${labelVerb} ` + sel.mode,
         undo() {
+          if (state.editMesh !== editMesh) return restoreStale(sourceMesh(editMesh), renderBefore);
           for (const v of affected) {
             editMesh.positions[v * 3] = before[v * 3]!;
             editMesh.positions[v * 3 + 1] = before[v * 3 + 1]!;
@@ -181,6 +197,7 @@ export function createComponentGizmo(
           store.notify();
         },
         redo() {
+          if (state.editMesh !== editMesh) return restoreStale(sourceMesh(editMesh), renderAfter);
           for (const v of affected) {
             editMesh.positions[v * 3] = after[v * 3]!;
             editMesh.positions[v * 3 + 1] = after[v * 3 + 1]!;
@@ -195,6 +212,7 @@ export function createComponentGizmo(
       });
     }
     dragSnapshot = null;
+    dragRender = null;
     dragWeights = null;
     dragNormals = null;
     proxy.rotationQuaternion!.copyFrom(Quaternion.Identity());
@@ -245,6 +263,11 @@ export function createComponentGizmo(
     refresh(emRef, selRef) {
       recenterProxy(proxy, emRef, selRef);
       applyMode(selRef.indices.size > 0);
+    },
+    cancelDrag() {
+      dragSnapshot = null;
+      dragRender = null;
+      dragWeights = null;
     },
     dispose() {
       gizmo.dispose();
