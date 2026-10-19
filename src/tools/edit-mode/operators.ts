@@ -63,6 +63,34 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
   return new Set();
 }
 
+
+/**
+ * A copied edge takes its source's crease, seam and sharp — `bmo_edge_copy`'s `BM_elem_attrs_copy` in `duplicate`, and
+ * `BM_face_copy(copy_edges)` (compat-backlog C129: until then every duplicated or extruded edge came out unmarked).
+ * `pairs` are [source a, source b, copy a, copy b].
+ */
+function copyEdgeMarks(em: EditMesh, pairs: Iterable<readonly [number, number, number, number]>): void {
+  for (const [a, b, na, nb] of pairs) {
+    const from = seamKey(a, b);
+    const to = seamKey(na, nb);
+    if (from === to) continue;
+    const c = em.creases.get(from);
+    if (c !== undefined) em.creases.set(to, c);
+    if (em.seams.has(from)) em.seams.add(to);
+    if (em.sharpEdges?.has(from)) em.sharpEdges.add(to);
+  }
+}
+
+/**
+ * A face's edges as source pairs onto a vertex map — the input of {@link copyEdgeMarks} for a copied face.
+ */
+function faceEdgePairs(poly: readonly number[], map: (v: number) => number): Array<[number, number, number, number]> {
+  return poly.map((a, i) => {
+    const b = poly[(i + 1) % poly.length]!;
+    return [a, b, map(a), map(b)];
+  });
+}
+
 /**
  * Extrude the selected face set.
  *
@@ -129,6 +157,12 @@ export function extrudeFaces(
     for (const v of polys[f]!) dupSource.add(v);
   }
   for (const he of extraEdges) (dupSource.add(edgeOrigin(em, he)), dupSource.add(edgeEnd(em, he)));
+  // Read before the rebuild renumbers the half-edges: the extra edges as vertex pairs, and the vertices a wall's side
+  // edge will stand on (the region's rim and the extra edges).
+  const extraPairs = extraEdges.map((he) => [edgeOrigin(em, he), edgeEnd(em, he)] as const);
+  const sideVerts = new Set<number>();
+  for (const [a, b] of extraPairs) (sideVerts.add(a), sideVerts.add(b));
+  for (const [a, b] of extraWires) (sideVerts.add(a), sideVerts.add(b));
   for (const v of extraVerts) dupSource.add(v);
   for (const [a, b] of extraWires) (dupSource.add(a), dupSource.add(b));
 
@@ -185,6 +219,8 @@ export function extrudeFaces(
       if (!isBoundary) continue;
       const a = he.v;
       const b = em.halfEdges[he.next]!.v;
+      sideVerts.add(a);
+      sideVerts.add(b);
       // Outward-facing quad (a, b on the unselected side; dups on the cap).
       newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
       if (twin < 0 && opts.wallsFrom === "outside" && opts.originalsDeleted) {
@@ -238,6 +274,32 @@ export function extrudeFaces(
     ...orphanedEdges(polys, newPolys),
     ...extraVerts.map((v) => [v, dupMap[v]!]),
   ];
+
+  // The edge marks (compat-backlog C129). Every duplicated edge copies its source (`duplicate`); a wall's side edge is
+  // new and takes `bm_extrude_region_edge_flag` (`USE_EDGE_REGION_FLAGS`): a seam if an edge at its copied vertex with
+  // two faces has one, sharp if one is sharp. When the side edge is made — at the first wall reaching that vertex — those
+  // edges are the copies of the region's inside edges there (a rim edge's copy has one face until its own wall), so the
+  // rule reads the region's edges held by two of its faces — exactly, whatever the order of the walls: every wall at a
+  // copied vertex has its side edge, so the side edge is made by the first and no wall stands there yet (C129 review).
+  const dup = (v: number): number => dupMap[v]!;
+  const marks: Array<[number, number, number, number]> = [];
+  for (const f of selectedFaces) marks.push(...faceEdgePairs(polys[f]!, dup));
+  for (const [a, b] of extraPairs) marks.push([a, b, dup(a), dup(b)]);
+  for (const [a, b] of extraWires) marks.push([a, b, dup(a), dup(b)]);
+  copyEdgeMarks(em, marks);
+  const regionUse = new Map<string, number>();
+  for (const f of selectedFaces) for (const [a, b] of faceEdgePairs(polys[f]!, dup)) regionUse.set(seamKey(a, b), (regionUse.get(seamKey(a, b)) ?? 0) + 1);
+  const inside = new Map<number, string[]>();
+  for (const [k, n] of regionUse) {
+    if (n < 2) continue;
+    for (const v of k.split("_").map(Number)) inside.set(v, [...(inside.get(v) ?? []), k]);
+  }
+  for (const v of sideVerts) {
+    const ks = inside.get(v) ?? [];
+    const side = seamKey(v, dup(v));
+    if (ks.some((k) => em.seams.has(k))) em.seams.add(side);
+    if (ks.some((k) => em.sharpEdges?.has(k))) (em.sharpEdges ??= new Set()).add(side);
+  }
 
   const newSel = new Set<number>();
   for (let i = newSelStart; i < newSelEnd; i++) newSel.add(i);
@@ -767,6 +829,7 @@ export function extrudeEdges(
   const oldPolys = newPolys.map((p) => [...p]);
   const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
   const finStart = newPolys.length;
+  const finMarks: Array<[number, number, number, number]> = [];
   for (const he of canonical) {
     // The fin runs against the face of the edge's `e->l`, the loop appended **last** (`bmesh_radial_loop_append`) — the
     // higher-numbered face; a fin on an inner edge was wound the other way until compat-backlog C126.
@@ -776,6 +839,7 @@ export function extrudeEdges(
     const b = edgeEnd(em, w);
     const aDup = dupOrCreate(a);
     const bDup = dupOrCreate(b);
+    finMarks.push([a, b, aDup, bDup]);
     // Fin quad — CCW from the fin's outside, with the b→a edge pairing as
     // twin to that face's a→b.
     const o = h.twin < 0 ? h.face : Math.min(h.face, em.halfEdges[h.twin]!.face);
@@ -794,6 +858,9 @@ export function extrudeEdges(
   for (const [v, d] of vertDup) origins.set(d, { from: [v], w: [1] });
 
   rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
+  // The new edge copies the one it came from (`duplicate`); the fin's sides are new and plain (`extrude_edge_only`
+  // makes its faces with `BM_face_create_verts`, no region flags).
+  copyEdgeMarks(em, finMarks);
 
   const newSel = new Set<number>();
   for (let i = finStart; i < finEnd; i++) newSel.add(i);
@@ -2410,6 +2477,7 @@ export function extrudeDiscreteFaces(
   }
 
   // Skirts first, caps after, so the cap ids are the tail of the list.
+  const capMarks: Array<readonly [number, number, number, number]> = [];
   const caps: number[][] = [];
   const capFaces: number[] = [];
   for (const f of selectedFaces) {
@@ -2432,6 +2500,7 @@ export function extrudeDiscreteFaces(
     }
     caps.push(dup);
     capFaces.push(f);
+    capMarks.push(...poly.map((a, i) => [a, poly[(i + 1) % poly.length]!, dup[i]!, dup[(i + 1) % poly.length]!] as const));
   }
 
   const capStart = newPolys.length;
@@ -2442,6 +2511,8 @@ export function extrudeDiscreteFaces(
   });
 
   rebuildPolygons(em, new Float32Array(newPositions), newPolys, { origins, faces: stated });
+  // The cap's edges copy the face's (`BM_face_copy(..., copy_edges)`); a wall's side edges are new and plain.
+  copyEdgeMarks(em, capMarks);
 
   const out = new Set<number>();
   for (let i = capStart; i < newPolys.length; i++) out.add(i);
@@ -2769,6 +2840,8 @@ export function duplicateFaces(em: EditMesh, selectedFaces: ReadonlySet<number>)
   for (const [v, c] of copyOf) origins.set(c, { from: [v], w: [1] });
 
   rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
+  // The copy's edges copy their sources (`bmo_edge_copy`).
+  for (const f of selectedFaces) copyEdgeMarks(em, faceEdgePairs(polys[f]!, (v) => copyOf.get(v)!));
   const made = new Set<number>();
   for (let i = start; i < out.length; i++) made.add(i);
   return made;
@@ -2820,6 +2893,19 @@ export function splitFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): Se
   const origins = new Map<number, VertexOrigin>();
   for (const [v, c] of copyOf) origins.set(c, { from: [v], w: [1] });
   rebuildPolygons(em, new Float32Array(newPositions), out, { origins, faces: stated });
+  // `split` is `duplicate` then a delete of the originals: the torn edges copy their sources' marks, and an original edge
+  // no face uses any more goes with its marks.
+  const marks = [...selectedFaces].flatMap((f) => faceEdgePairs(polys[f]!, (v) => copyOf.get(v) ?? v));
+  copyEdgeMarks(em, marks);
+  const used = new Set<string>();
+  for (const p of out) p.forEach((a, i) => used.add(seamKey(a, p[(i + 1) % p.length]!)));
+  for (const [a, b] of marks) {
+    const k = seamKey(a, b);
+    if (used.has(k)) continue;
+    em.creases.delete(k);
+    em.seams.delete(k);
+    em.sharpEdges?.delete(k);
+  }
   return new Set(copyOf.values());
 }
 

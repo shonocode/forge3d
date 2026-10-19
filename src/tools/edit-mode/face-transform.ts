@@ -326,8 +326,29 @@ export function extrudeRepeat(
     const kept = keptFrom.map((f) => [...polysBefore[f]!].reverse());
 
     const wiresBefore = new Set((em.wireEdges ?? []).map(([a, b]) => (a! < b! ? `${a}_${b}` : `${b}_${a}`)));
+    // The region's inside edges (two of its faces, none outside) go when the originals do (`EXT_DEL`), and their marks
+    // with them — kept, a later step's copy between the same vertices would read them (C129 review).
+    const insideKeys: string[] = [];
+    if (bordersOutside) {
+      const use = new Map<string, number>();
+      for (const f of caps) {
+        const p = polysBefore[f]!;
+        for (let j = 0; j < p.length; j++) {
+          const a = p[j]!;
+          const b = p[(j + 1) % p.length]!;
+          const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+          use.set(key, (use.get(key) ?? 0) + 1);
+        }
+      }
+      for (const [key, n] of use) if (n > 1 && !edgeOwners.has(key)) insideKeys.push(key);
+    }
     const countStep = em.positions.length / 3;
     caps = extrudeFaces(em, caps, { wallsFrom: "outside", extraEdges, extraVerts, extraWires, originalsDeleted: bordersOutside });
+    for (const key of insideKeys) {
+      em.creases.delete(key);
+      em.seams.delete(key);
+      em.sharpEdges?.delete(key);
+    }
     // The operator passes the region's edges too, so its inside edges go with it (`bmo_extrude.cc` 347-411);
     // `extrudeFaces` (faces only) leaves them as wire edges (compat-backlog C107). The wires to the extra vertices'
     // duplicates are new and stay.
