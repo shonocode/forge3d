@@ -8,8 +8,8 @@ import { createOverlay, rebuildOverlay, type EditOverlay } from "./overlay";
 import { createComponentGizmo, type ComponentGizmo, type EditGizmoMode } from "./component-gizmo";
 import { pickEdge, pickFace, pickVertex } from "./picking";
 import { collectBoxSelection } from "./box-select";
-import { bevelEdges, collapseEdges, edgeSlide, extrudeEdges, insetRegion, INSET_OPERATOR_DEFAULTS, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
-import { extrudeRegion } from "./face-transform";
+import { extrudeContext } from "./extrude-context";
+import { bevelEdges, collapseEdges, edgeSlide, insetRegion, INSET_OPERATOR_DEFAULTS, flipDiagonalByVerts, loopCut, mergeAtCenter, subdivideCatmullClark, trisToQuads, triangulateEditFaces, vertexSlide } from "./operators";
 import { setCreases, smartUVProject, toggleCreases, toggleSeams } from "./uv-unwrap";
 import { planeCut } from "./knife";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -210,24 +210,10 @@ export function extrudeSelection(): void {
     status("⚠ Select to extrude");
     return;
   }
-  const sel = new Set(state.editSelection.indices);
-  const mode = state.editSelection.mode;
-  if (mode === "vertex") {
-    // Tri-mesh has no representation for an unanchored edge (a-a' with no face).
-    // Skipping vertex extrude entirely — call it out so the user picks a
-    // different mode instead of getting a silent no-op.
-    status("⚠ Vertex extrude unsupported in tri-mesh — use Edge or Face mode");
-    return;
-  }
-  applyTopologyOp("Extrude " + mode, () => {
-    // The E key: Blender's Extrude Region — the inside goes, a whole sheet closes into a solid (compat-backlog C107).
-    if (mode === "face") return extrudeRegion(em, sel);
-    // Edge mode: fin extrusion. Result is face geometry, so switch the
-    // overlay to face mode for the natural drag-to-shape follow-up.
-    const newFaces = extrudeEdges(em, sel);
-    if (newFaces.size > 0) state.editSelection.mode = "face";
-    return newFaces;
-  });
+  const sel = { mode: state.editSelection.mode, indices: new Set(state.editSelection.indices) };
+  // The E key is Blender's Extrude (`MESH_OT_extrude_context`): vertices alone, edges alone into fins, or the region,
+  // from the mode and the selection; the copies come back selected in the same mode (compat-backlog C126).
+  applyTopologyOp("Extrude " + sel.mode, () => extrudeContext(em, sel).selection);
 }
 
 export function deleteSelection(): void {

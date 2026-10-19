@@ -161,7 +161,7 @@ interface OpDef {
 // key is G G (a double-press of edit.move) — not a single keymap binding,
 // so it stays a literal like the old screen.
 const OPS: OpDef[] = [
-  { label: "Extrude", key: keyLabel("edit.extrude", "edit"), modes: ["face", "edge"], run: (m) => m.extrudeSelection() },
+  { label: "Extrude", key: keyLabel("edit.extrude", "edit"), modes: ["vertex", "edge", "face"], run: (m) => m.extrudeSelection() },
   { label: "Inset", key: keyLabel("edit.inset", "edit"), modes: ["face"], run: (m) => m.insetSelection() },
   { label: "Bevel", key: keyLabel("edit.bevel", "edit"), modes: ["edge"], run: (m) => m.bevelSelection() },
   { label: "Loop Cut", key: keyLabel("edit.loopCut", "edit"), modes: ["edge"], run: (m) => m.loopCutSelection() },

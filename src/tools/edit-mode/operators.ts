@@ -90,9 +90,34 @@ export function deleteFaces(em: EditMesh, selectedFaces: ReadonlySet<number>): S
 export function extrudeFaces(
   em: EditMesh,
   selectedFaces: ReadonlySet<number>,
-  opts: { wallsFrom?: "lower" | "outside" } = {},
+  opts: {
+    wallsFrom?: "lower" | "outside";
+    /**
+     * Edges (half-edge ids) extruded with the region that lie on none of its faces — `extrude_face_region` handed edges
+     * as well as faces (`edbm_extrude_ex` with a vertex or edge selection, compat-backlog C126). Each gets a wall the
+     * way {@link extrudeEdges} builds a fin, on the duplicates it shares with the region.
+     */
+    extraEdges?: ReadonlySet<number>;
+    /** Vertices on no extruded edge or face: each gets a wire edge to its duplicate (`isovert_map.out`). */
+    extraVerts?: ReadonlySet<number>;
+    /**
+     * Wire edges (vertex pairs, as `em.wireEdges` holds them) extruded with the region: each becomes a wall
+     * `v1, v2, v2', v1'` with no corner data (it has no face to copy) and stops being a wire.
+     */
+    extraWires?: ReadonlyArray<readonly [number, number]>;
+    /**
+     * With `wallsFrom: "outside"`: the operator deletes the originals before it builds the walls, so a wall on the mesh's
+     * rim is its edge's only face and copies nothing — Blender's default corners and slot 0 (compat-backlog C126 review,
+     * `extrude-context-face-rim-layers`). Without it (a region that borders nothing keeps its originals) it copies the
+     * region face.
+     */
+    originalsDeleted?: boolean;
+  } = {},
 ): Set<number> {
-  if (selectedFaces.size === 0) return new Set();
+  const extraEdges = [...(opts.extraEdges ?? [])].map((he) => canonicalEdge(em, he));
+  const extraVerts = [...(opts.extraVerts ?? [])];
+  const extraWires = [...(opts.extraWires ?? [])];
+  if (selectedFaces.size === 0 && extraEdges.length === 0 && extraVerts.length === 0 && extraWires.length === 0) return new Set();
 
   const polys = toPolygons(em);
   const numOldV = em.vertices.length;
@@ -103,6 +128,9 @@ export function extrudeFaces(
   for (const f of selectedFaces) {
     for (const v of polys[f]!) dupSource.add(v);
   }
+  for (const he of extraEdges) (dupSource.add(edgeOrigin(em, he)), dupSource.add(edgeEnd(em, he)));
+  for (const v of extraVerts) dupSource.add(v);
+  for (const [a, b] of extraWires) (dupSource.add(a), dupSource.add(b));
 
   // 2. Allocate duplicates: dupMap[oldVertId] = newVertId (or -1 if not duplicated).
   const dupMap = new Int32Array(numOldV);
@@ -159,12 +187,36 @@ export function extrudeFaces(
       const b = em.halfEdges[he.next]!.v;
       // Outward-facing quad (a, b on the unselected side; dups on the cap).
       newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
+      if (twin < 0 && opts.wallsFrom === "outside" && opts.originalsDeleted) {
+        stated.push({ corners: [[], [], [], []], material: -1 });
+        continue;
+      }
       const across = twin < 0 ? f : em.halfEdges[twin]!.face;
       const o = opts.wallsFrom === "outside" ? across : Math.min(f, across);
       const ca: [number, number, number][] = [[o, polys[o]!.indexOf(a), 1]];
       const cb: [number, number, number][] = [[o, polys[o]!.indexOf(b), 1]];
       stated.push({ corners: [ca, cb, cb, ca], material: o });
     }
+  }
+
+  // 4b. Walls on the extra edges — `extrude_face_region`'s rule for an edge whose copy has no face: wound against the
+  //     face of the edge's `e->l` (the higher-numbered, as in `extrudeEdges`), corners from the loop after it (the lower).
+  for (const he of extraEdges) {
+    const h = em.halfEdges[he]!;
+    const w = h.twin >= 0 && em.halfEdges[h.twin]!.face > h.face ? h.twin : he;
+    const a = edgeOrigin(em, w);
+    const b = edgeEnd(em, w);
+    const o = h.twin < 0 ? h.face : Math.min(h.face, em.halfEdges[h.twin]!.face);
+    const ca: [number, number, number][] = [[o, polys[o]!.indexOf(a), 1]];
+    const cb: [number, number, number][] = [[o, polys[o]!.indexOf(b), 1]];
+    newPolys.push([a, dupMap[a]!, dupMap[b]!, b]);
+    stated.push({ corners: [ca, ca, cb, cb], material: o });
+  }
+
+  // 4c. Walls on extruded wire edges: `e_new->l` and `e->l` are both null, so `v1, v2, v2', v1'`, and nothing to copy.
+  for (const [a, b] of extraWires) {
+    newPolys.push([a, b, dupMap[b]!, dupMap[a]!]);
+    stated.push({ corners: [[], [], [], []], material: -1 });
   }
 
   // 5. Caps with duplicate refs — these become the new selection.
@@ -180,7 +232,12 @@ export function extrudeFaces(
   // is built on duplicated vertices and the skirt only takes up the boundary.
   // Measured — extruding a 4x4 grid leaves 24, which is exactly its interior
   // edge count, and Blender leaves the same 24.
-  em.wireEdges = [...(em.wireEdges ?? []), ...orphanedEdges(polys, newPolys)];
+  const walled = new Set(extraWires.map(([a, b]) => (a < b ? `${a}_${b}` : `${b}_${a}`)));
+  em.wireEdges = [
+    ...(em.wireEdges ?? []).filter(([a, b]) => !walled.has(a! < b! ? `${a}_${b}` : `${b}_${a}`)),
+    ...orphanedEdges(polys, newPolys),
+    ...extraVerts.map((v) => [v, dupMap[v]!]),
+  ];
 
   const newSel = new Set<number>();
   for (let i = newSelStart; i < newSelEnd; i++) newSel.add(i);
@@ -650,8 +707,9 @@ function loopCutRaw(
  * Extrude selected edges into "fin" quads.
  *
  * For each selected edge a-b, duplicates both endpoints (a → a', b → b') and
- * emits ONE fin quad (a, a', b', b) attached to the edge from the F1-side, so
- * the fin's twin half-edge (b→a) pairs cleanly with F1's a→b.
+ * emits ONE fin quad (a, a', b', b), where a→b is how the edge's
+ * higher-numbered face runs it (Blender's `e->l`, the loop appended last), so
+ * the fin's b→a pairs with it.
  *
  * Vertex dedup: when two selected edges share a vertex, the shared vertex's
  * duplicate is allocated once. Selecting an edge loop and extruding produces
@@ -664,8 +722,8 @@ function loopCutRaw(
  *    silhouette / fin geometry — same as Blender's behavior. The fin's
  *    half-edge wins the twin slot via the rebuild's last-write-wins.
  *
- * Returns the fin face IDs as the new selection (caller flips mode to "face"
- * so the gizmo lands on the fins for the inevitable "now drag them" step).
+ * Returns the fin face IDs. The E key selects the new edges instead and stays
+ * in edge mode ({@link extrudeContext}, compat-backlog C126).
  */
 export function extrudeEdges(
   em: EditMesh,
@@ -710,13 +768,16 @@ export function extrudeEdges(
   const stated: Array<ExplicitFace | undefined> = newPolys.map(() => undefined);
   const finStart = newPolys.length;
   for (const he of canonical) {
-    const a = edgeOrigin(em, he);
-    const b = edgeEnd(em, he);
+    // The fin runs against the face of the edge's `e->l`, the loop appended **last** (`bmesh_radial_loop_append`) — the
+    // higher-numbered face; a fin on an inner edge was wound the other way until compat-backlog C126.
+    const h = em.halfEdges[he]!;
+    const w = h.twin >= 0 && em.halfEdges[h.twin]!.face > h.face ? h.twin : he;
+    const a = edgeOrigin(em, w);
+    const b = edgeEnd(em, w);
     const aDup = dupOrCreate(a);
     const bDup = dupOrCreate(b);
     // Fin quad — CCW from the fin's outside, with the b→a edge pairing as
-    // twin to F1's existing a→b.
-    const h = em.halfEdges[he]!;
+    // twin to that face's a→b.
     const o = h.twin < 0 ? h.face : Math.min(h.face, em.halfEdges[h.twin]!.face);
     const ca: [number, number, number][] = [[o, oldPolys[o]!.indexOf(a), 1]];
     const cb: [number, number, number][] = [[o, oldPolys[o]!.indexOf(b), 1]];

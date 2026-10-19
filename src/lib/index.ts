@@ -254,6 +254,8 @@ export { beautifyFill, type BeautifyFillOptions } from "../tools/beautify-fill";
 // Edges that belong to no face. `MeshData.edges` is where they live; these
 // are the operators that make them.
 export { createVert, extrudeVertIndiv, faceSplitByEdges, orphanedEdges } from "../tools/edit-mode/wire";
+// The E key: vertices, edges or the region from the selection mode, as `MESH_OT_extrude_context` (compat-backlog C126).
+export { extrudeContext, type ExtrudeContextSelection, type ExtrudeContextKind } from "../tools/edit-mode/extrude-context";
 export { planarFaces, type PlanarFacesOptions } from "../tools/edit-mode/planar";
 export {
   smoothLaplacianVert,
@@ -334,6 +336,7 @@ export {
   extrudeFacesBy,
   extrudeRepeat,
   extrudeRegion,
+  type RegionExtras,
   extrudeManifold,
   insetFacesByWidth,
   insetIndividual,

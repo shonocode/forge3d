@@ -282,8 +282,12 @@ export function extrudeRepeat(
   em: EditMesh,
   faces: ReadonlySet<number>,
   opts: { steps: number; offset: readonly [number, number, number]; scaleOffset?: number },
+  extra: RegionExtras = {},
 ): Set<number> {
   const k = opts.scaleOffset ?? 1;
+  if (opts.steps !== 1 && ((extra.edges?.size ?? 0) > 0 || (extra.verts?.size ?? 0) > 0 || (extra.wires?.length ?? 0) > 0))
+    // Blender's repeat extrudes every copy again at each step and moves all of them; that is not ported (C126 review).
+    throw new Error("extrudeRepeat: extra edges, vertices or wires are for a single step (extrudeRegion)");
   const usedBefore = usedVertices(em);
   const countBefore = em.positions.length / 3;
   let caps = new Set(faces);
@@ -304,7 +308,11 @@ export function extrudeRepeat(
         edgeOwners.set(a < b ? `${a}_${b}` : `${b}_${a}`, f);
       }
     });
-    let bordersOutside = false;
+    // An extra edge always has a face, and that face is not extruded (compat-backlog C126).
+    const extraEdges = i === 0 ? (extra.edges ?? new Set<number>()) : new Set<number>();
+    const extraVerts = i === 0 ? (extra.verts ?? new Set<number>()) : new Set<number>();
+    const extraWires = i === 0 ? (extra.wires ?? []) : [];
+    let bordersOutside = extraEdges.size > 0;
     for (const f of caps) {
       const p = polysBefore[f]!;
       for (let j = 0; j < p.length && !bordersOutside; j++) {
@@ -318,10 +326,13 @@ export function extrudeRepeat(
     const kept = keptFrom.map((f) => [...polysBefore[f]!].reverse());
 
     const wiresBefore = new Set((em.wireEdges ?? []).map(([a, b]) => (a! < b! ? `${a}_${b}` : `${b}_${a}`)));
-    caps = extrudeFaces(em, caps, { wallsFrom: "outside" });
+    const countStep = em.positions.length / 3;
+    caps = extrudeFaces(em, caps, { wallsFrom: "outside", extraEdges, extraVerts, extraWires, originalsDeleted: bordersOutside });
     // The operator passes the region's edges too, so its inside edges go with it (`bmo_extrude.cc` 347-411);
-    // `extrudeFaces` (faces only) leaves them as wire edges (compat-backlog C107).
-    if (em.wireEdges) em.wireEdges = em.wireEdges.filter(([a, b]) => wiresBefore.has(a! < b! ? `${a}_${b}` : `${b}_${a}`));
+    // `extrudeFaces` (faces only) leaves them as wire edges (compat-backlog C107). The wires to the extra vertices'
+    // duplicates are new and stay.
+    if (em.wireEdges)
+      em.wireEdges = em.wireEdges.filter(([a, b]) => wiresBefore.has(a! < b! ? `${a}_${b}` : `${b}_${a}`) || a! >= countStep || b! >= countStep);
     if (kept.length > 0) {
       // The kept originals are the region's faces flipped
       // (`BM_face_normal_flip`): the same corners, in reverse. They are read
@@ -405,8 +416,21 @@ export function extrudeRepeat(
  *
  * Returns the new region's faces.
  */
-export function extrudeRegion(em: EditMesh, faces: ReadonlySet<number>): Set<number> {
-  return extrudeRepeat(em, faces, { steps: 1, offset: [0, 0, 0] });
+export function extrudeRegion(em: EditMesh, faces: ReadonlySet<number>, extra: RegionExtras = {}): Set<number> {
+  return extrudeRepeat(em, faces, { steps: 1, offset: [0, 0, 0] }, extra);
+}
+
+/**
+ * What the operator extrudes besides the faces, when the selection is made in vertex or edge mode (compat-backlog
+ * C126): `edges` (half-edge ids) on none of the region's faces get a wall each, `verts` on no extruded edge or face get
+ * a wire edge to their copy. Only a single step takes them ({@link extrudeRegion}; {@link extrudeRepeat} with more steps
+ * refuses). They are not checked: an edge of a region face or a vertex of one given here builds a second wall or wire.
+ */
+export interface RegionExtras {
+  edges?: ReadonlySet<number>;
+  verts?: ReadonlySet<number>;
+  /** Wire edges (vertex pairs from `em.wireEdges`) whose ends are both chosen: each becomes a wall with no corner data. */
+  wires?: ReadonlyArray<readonly [number, number]>;
 }
 
 /** Vertices some face uses. */
